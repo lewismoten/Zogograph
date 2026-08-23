@@ -89,6 +89,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'delete-file' => doDeleteFile($config, $pdo, $post),
         'empty' => doEmpty($config, $pdo, $post),
         'schedule-save' => doScheduleSave($post),
+        'scan-now' => doScanNow($pdo, $post),
         'test-email' => doTestEmail($config, $pdo, $post),
         default => throw new ActionRefused('unknown action'),
     };
@@ -102,6 +103,10 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
 
     $scan = $pdo->query(
         'SELECT * FROM scans WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1'
+    )->fetch() ?: null;
+
+    $running = $pdo->query(
+        'SELECT id, started_at FROM scans WHERE finished_at IS NULL ORDER BY id DESC LIMIT 1'
     )->fetch() ?: null;
 
     $totals = [];
@@ -118,6 +123,9 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
         'csrf' => $signedIn ? csrfToken() : null,
         'vitals' => $vitals,
         'scan' => $scan,
+        'scan_running' => $running && (time() - (int)$running['started_at']) < 3600
+            ? ['started_at' => (int)$running['started_at']]
+            : null,
         'totals' => $totals,
         'open_alerts' => (int)$pdo->query(
             'SELECT COUNT(*) FROM alerts WHERE raised_at >= ' . (time() - 86400)
@@ -395,6 +403,48 @@ function doScheduleSave(bool $post): array
     writeCrontab(replaceManagedBlock($crontab['raw'], $lines));
 
     return ['ok' => true, 'lines' => $lines];
+}
+
+/**
+ * Kicks off a scan by hand.
+ *
+ * Refused while one is already running, which is not politeness: two walks of
+ * the same tree at once double the IO on a machine somebody is already worried
+ * about, and produce two scan rows a few seconds apart that make every growth
+ * figure meaningless.
+ */
+function doScanNow(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $running = $pdo->query(
+        'SELECT id, started_at FROM scans WHERE finished_at IS NULL
+         ORDER BY id DESC LIMIT 1'
+    )->fetch();
+
+    if ($running) {
+        $age = time() - (int)$running['started_at'];
+        // A row left unfinished by a killed process would otherwise block
+        // scanning for ever, so an old one does not count as running.
+        if ($age < 3600) {
+            throw new ActionRefused(
+                'A scan started ' . ($age < 60 ? "{$age} seconds" : round($age / 60) . ' minutes')
+                . ' ago is still running.'
+            );
+        }
+    }
+
+    $binaries = phpBinaries();
+    if (!$binaries) {
+        throw new ActionRefused('No PHP binary could be found to run the scan with.');
+    }
+
+    $result = startScan(__DIR__, $binaries[0]);
+    if (!$result['started']) {
+        throw new ActionRefused($result['reason'] ?? 'Could not start the scan.');
+    }
+
+    return ['ok' => true, 'started' => true];
 }
 
 function doTestEmail(array $config, PDO $pdo, bool $post): array

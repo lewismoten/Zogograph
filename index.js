@@ -22,6 +22,8 @@ const seriesColor = i => SERIES_COLORS[i % SERIES_COLORS.length];
 /** How often the page refreshes itself, awake and in live mode. */
 const IDLE_POLL_MS = 30000;
 const LIVE_POLL_MS = 10000;
+/** While a scan is running, so its finishing is noticed promptly. */
+const SCAN_POLL_MS = 5000;
 
 const state = {
   signedIn: false,
@@ -32,6 +34,7 @@ const state = {
   historyPathId: null,
   deletable: [],
   viewable: [],
+  scanRunning: false,
   categories: [],
   log: { pathId: null, page: 0, needle: "" },
   schedule: null,
@@ -634,6 +637,28 @@ function renderTable(target, rows, columns, onRowClick) {
   el.replaceChildren(table);
 }
 
+/**
+ * The Scan now button, and what it says about a scan in flight.
+ *
+ * A scan takes minutes, so the button has to show that something is happening -
+ * otherwise the only feedback is a table that changes some time later, and
+ * people press it again.
+ */
+function syncScanButton(overview) {
+  const button = $("scanNow");
+  if (!state.signedIn) {
+    button.hidden = true;
+    return;
+  }
+  button.hidden = false;
+
+  const running = overview.scan_running;
+  button.disabled = Boolean(running);
+  button.textContent = running
+    ? `Scanning\u2026 (${humanDuration(Date.now() / 1000 - running.started_at)})`
+    : "Scan now";
+}
+
 /** Keeps the category filter in step with the rules the server is using. */
 function syncCategoryOptions() {
   const select = $("offCategory");
@@ -660,6 +685,7 @@ function syncCategoryOptions() {
 async function refreshAll() {
   if (state.busy) return;
   state.busy = true;
+  const wasScanning = state.scanRunning;
   try {
     const to = Math.floor(Date.now() / 1000);
     const from = to - state.range;
@@ -677,7 +703,9 @@ async function refreshAll() {
     applySignedInChrome();
 
     state.categories = overview.categories ?? [];
+    state.scanRunning = Boolean(overview.scan_running);
     syncCategoryOptions();
+    syncScanButton(overview);
 
     renderCards(overview, vitals.rows);
     renderVitalCharts(vitals.rows);
@@ -685,6 +713,12 @@ async function refreshAll() {
     $("lastSeen").textContent = overview.vitals
       ? `updated ${ago(overview.vitals.taken_at)}`
       : "";
+
+    if (wasScanning && !state.scanRunning) {
+      // Finished: back to the ordinary cadence.
+      schedule();
+      notice("Scan finished.", true);
+    }
 
     await Promise.all([
       refreshOffenders(), refreshAlerts(), refreshActionLog(),
@@ -1351,36 +1385,176 @@ function scheduleNote(limit) {
   return parts.join(" ");
 }
 
-/** The times the chosen schedule actually fires, spelled out. */
+/* ------------------------------------------------------- when cron fires -- */
+
+/**
+ * The values a cron field can take. Only the shapes these presets produce.
+ *
+ * `*` every value, `N` just that one, `N/S` from N stepping by S, and `*` with
+ * a step for the form older versions wrote.
+ */
+function cronFieldValues(field, max) {
+  if (field === "*") {
+    return Array.from({ length: max + 1 }, (_, i) => i);
+  }
+
+  const step = field.match(/^(\*|\d+)\/(\d+)$/);
+  if (step) {
+    const from = step[1] === "*" ? 0 : Number(step[1]);
+    const by = Number(step[2]);
+    const out = [];
+    for (let v = from; v <= max; v += by) out.push(v);
+    return out;
+  }
+
+  const single = Number(field);
+  return Number.isFinite(single) ? [single] : [];
+}
+
+/**
+ * The instant a wall-clock time in some other zone corresponds to.
+ *
+ * This is the awkward direction: a Date is an instant, and turning "02:07 in
+ * America/New_York" into one means knowing that zone's offset *at that moment*,
+ * which depends on the answer. Guessing UTC and correcting by the offset the
+ * guess lands on converges immediately for every case except the hour that
+ * daylight saving removes, and the second pass handles the rest.
+ */
+function zonedToInstant(year, month, day, hour, minute, timeZone) {
+  let guess = Date.UTC(year, month, day, hour, minute);
+
+  for (let pass = 0; pass < 2; pass++) {
+    const offset = zoneOffsetAt(guess, timeZone);
+    const corrected = Date.UTC(year, month, day, hour, minute) - offset;
+    if (corrected === guess) break;
+    guess = corrected;
+  }
+
+  return new Date(guess);
+}
+
+/** How far ahead of UTC a zone is at a given instant, in milliseconds. */
+function zoneOffsetAt(instant, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(new Date(instant));
+
+  const at = {};
+  for (const part of parts) at[part.type] = part.value;
+  // "24" for midnight is legal in this format and breaks Date.UTC.
+  const hour = at.hour === "24" ? 0 : Number(at.hour);
+
+  const asUtc = Date.UTC(
+    Number(at.year), Number(at.month) - 1, Number(at.day),
+    hour, Number(at.minute), Number(at.second)
+  );
+
+  return asUtc - instant;
+}
+
+/**
+ * The next few times a cron expression fires, and how many a day it fires.
+ *
+ * Worked out in the zone cron reads, then handed back as instants so the
+ * browser can print them wherever the person actually is. That is the whole
+ * point: a server on UTC and a reader on a half-hour offset in the middle of a
+ * daylight-saving change have no way to agree otherwise.
+ */
+function nextCronRuns(expr, timeZone, count = 4) {
+  const [minuteField, hourField] = expr.split(/\s+/);
+  const minutes = cronFieldValues(minuteField, 59);
+  const hours = cronFieldValues(hourField, 23);
+  const perDay = minutes.length * hours.length;
+  if (!perDay) return { runs: [], perDay: 0 };
+
+  const now = Date.now();
+  const runs = [];
+
+  // Today and tomorrow is always enough: the sparsest schedule here is once a
+  // day, so two days guarantee more candidates than anyone asks for.
+  for (let dayOffset = 0; dayOffset <= 1 && runs.length < count; dayOffset++) {
+    const marker = new Date(now + dayOffset * 86400000);
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(marker);
+    const at = {};
+    for (const part of parts) at[part.type] = part.value;
+
+    for (const hour of hours) {
+      for (const minute of minutes) {
+        const when = zonedToInstant(
+          Number(at.year), Number(at.month) - 1, Number(at.day), hour, minute, timeZone
+        );
+        if (when.getTime() > now) runs.push(when);
+        if (runs.length >= count * 4) break;
+      }
+    }
+  }
+
+  runs.sort((a, b) => a - b);
+  return { runs: runs.slice(0, count), perDay };
+}
+
+/**
+ * The times the chosen schedule actually fires, in the reader's own clock.
+ *
+ * Converted rather than printed as written, because the number in the crontab
+ * is in the server's zone and means nothing to somebody in another one - or in
+ * the same one six months later, on the other side of a daylight-saving change.
+ * The browser knows where it is, so it does the last step.
+ */
 function describeTimes(jobs, data, minute, hour) {
+  const zone = data.timezone?.name;
+  const here = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const said = [];
 
   for (const [job, pick] of jobs) {
     const preset = data.presets[job]?.[pick];
     if (!preset || !preset.expr) continue;
 
-    const two = String(minute).padStart(2, "0");
-    let when;
+    const expr = cronExpression(preset.expr, minute, hour);
 
-    if (!preset.expr.includes("%H") && !preset.expr.includes("%M")) {
-      when = preset.label.toLowerCase();
-    } else if (!preset.expr.includes("%H")) {
-      when = preset.minute_max != null
-        ? `at :${two} and every ${preset.minute_max + 1} minutes after`
-        : `at :${two} past every hour`;
-    } else if (preset.hour_max != null) {
-      const step = preset.hour_max + 1;
-      const times = [];
-      for (let h = hour; h < 24; h += step) times.push(`${String(h).padStart(2, "0")}:${two}`);
-      when = `at ${times.join(", ")}`;
-    } else {
-      when = `at ${String(hour).padStart(2, "0")}:${two} daily`;
+    if (!zone) {
+      said.push(`${job}: ${expr} in the server's timezone, which could not be determined`);
+      continue;
     }
 
-    said.push(`${job} ${when}`);
+    const { runs, perDay } = nextCronRuns(expr, zone, 4);
+    const clock = runs.map(when =>
+      when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+
+    /*
+     * A schedule that fires more often than hourly is described, not listed.
+     *
+     * "Every minute, next at 3:04, 3:05, 3:06, 3:07" is a worse sentence than
+     * "every minute", and the list crowds out the schedules where the actual
+     * times are the thing you need to check.
+     */
+    if (perDay > 24) {
+      said.push(`${job}: ${preset.label.toLowerCase()}, next at ${clock[0] ?? "—"}`);
+      continue;
+    }
+
+    const more = perDay - clock.length;
+    said.push(
+      `${job}: ${clock.join(", ")}`
+      + (more > 0 ? ` and ${more} more` : "")
+      + ` \u2014 ${perDay}\u00d7 a day`
+    );
   }
 
-  return said.join(" \u00b7 ");
+  if (!said.length) return "";
+
+  const where = zone && here && zone !== here
+    ? ` Times shown in yours (${here}); the crontab is read in the server's (${zone}).`
+    : zone
+      ? ` Your timezone and the server's are both ${zone}.`
+      : "";
+
+  return said.join(" \u00b7 ") + where;
 }
 
 /** Which preset the installed line looks like, so the form opens on it. */
@@ -1527,7 +1701,8 @@ async function doSignIn(password) {
 
 function schedule() {
   if (state.timer) clearInterval(state.timer);
-  state.timer = setInterval(tick, state.live ? LIVE_POLL_MS : IDLE_POLL_MS);
+  const every = state.live ? LIVE_POLL_MS : state.scanRunning ? SCAN_POLL_MS : IDLE_POLL_MS;
+  state.timer = setInterval(tick, every);
 }
 
 async function tick() {
@@ -1608,6 +1783,28 @@ $("logSearch").addEventListener("input", () => {
     state.log.page = 0;
     if (state.log.pathId) showLog(state.log.pathId, true);
   }, 350);
+});
+
+$("scanNow").addEventListener("click", async () => {
+  const button = $("scanNow");
+  button.disabled = true;
+  try {
+    await post("scan-now");
+    notice("Scan started. It runs in the background — the tables update when it finishes.", true);
+    /*
+     * Polled faster while it runs.
+     *
+     * A scan is the one thing here that takes minutes and then changes
+     * everything at once, and waiting up to thirty seconds to notice it has
+     * finished makes the button feel broken.
+     */
+    state.scanRunning = true;
+    schedule();
+    await refreshAll();
+  } catch (error) {
+    notice(String(error.message || error));
+    button.disabled = false;
+  }
 });
 
 $("healthRefresh").addEventListener("click", () => {

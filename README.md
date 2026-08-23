@@ -162,9 +162,53 @@ a day — so the field caps there and the value is clamped rather than accepted
 and quietly mangled.
 
 Above the button, the form shows the exact lines it will write and a plain
-reading of them (*"scan at 02:07, 08:07, 14:07, 20:07"*). Picking `Hourly` and
-setting an hour used to look as though it had been accepted when the hour was
-never going to be used.
+reading of them. Picking `Hourly` and setting an hour used to look as though it
+had been accepted when the hour was never going to be used.
+
+### Which clock the times are in
+
+Three clocks are in play and it is reasonable to assume they are one:
+
+- **the browser's** — where you are reading this
+- **PHP's `date.timezone`** — what the dashboard prints timestamps in
+- **the system zone** — what the cron daemon reads schedule lines in
+
+They need not agree. On the machine this was written on, PHP said `UTC` while
+the system said `America/New_York`, so a line written for "2am" would have fired
+four hours from when the config implied.
+
+So the dashboard finds the zone **cron** will use — from `/etc/localtime`, then
+`/etc/timezone`, then `TZ`, and a `CRON_TZ=` line in the crontab overrides all
+of them — and converts the times into **your browser's** zone before showing
+them:
+
+> scan: 5:37 AM, 11:37 AM, 5:37 PM, 11:37 PM — 4× a day
+> Times shown in yours (Asia/Kolkata); the crontab is read in the server's
+> (America/New_York).
+
+Up to four times are listed with a count of how many there are altogether, so a
+six-hourly job shows all four and an hourly one shows the next four of twenty-
+four. Anything more frequent than hourly is described rather than listed —
+*"every 5 minutes, next at 4:30 AM"* — because a list of consecutive minutes
+tells you nothing.
+
+The conversion goes through the IANA zone name rather than a fixed offset, so
+daylight saving and half-hour zones both come out right: the browser's own
+timezone database does the work.
+
+### Scan now
+
+The **Scan now** button beside the offenders table runs one immediately. It is
+spawned detached with its output discarded, because a scan is minutes of disk
+work and running it inside the request would hit `max_execution_time` and leave
+a half-written scan row behind. The dashboard polls every five seconds while one
+is in flight and says so on the button.
+
+A second scan is refused while one is running — two walks of the same tree
+double the IO on a machine somebody is already worried about, and produce two
+scan rows seconds apart that make every growth figure meaningless. A row left
+unfinished by a killed process stops counting after an hour, so a crash cannot
+block scanning for ever.
 
 **The rest of your crontab is left alone.** The dashboard's lines live between
 two marker comments; everything outside them is copied through in order.

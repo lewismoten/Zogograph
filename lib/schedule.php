@@ -20,6 +20,8 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/actions.php';
+// For shellRead(), which knows how to give up when shell_exec is disabled.
+require_once __DIR__ . '/collect.php';
 
 const CRON_BEGIN = '# BEGIN diskmon — managed by the dashboard, edited between these markers';
 const CRON_END = '# END diskmon';
@@ -84,6 +86,85 @@ function cronBounds(array $choices): array
     }
 
     return $bounds;
+}
+
+/**
+ * The timezone cron will actually use.
+ *
+ * Not PHP's. Three different clocks are in play and people reasonably assume
+ * they are one: the browser's, PHP's `date.timezone` (which sets what the
+ * dashboard prints), and the system zone that the cron daemon reads times in.
+ * On this machine PHP says UTC while the system says America/New_York, so a
+ * crontab written to "2am" would fire four hours from when the config implies.
+ *
+ * A `CRON_TZ` or `TZ` line in the crontab beats the system setting, so that is
+ * checked too - it is the one thing that would make everything below wrong.
+ *
+ * @return array{name: ?string, abbrev: ?string, offset: ?int, source: string, cron_tz: ?string}
+ */
+function systemTimezone(string $crontab = ''): array
+{
+    $name = null;
+    $source = 'unknown';
+
+    // The symlink is the most reliable: it names the zone, so the browser can
+    // convert with it rather than guessing from an offset that changes twice a
+    // year.
+    $link = @readlink('/etc/localtime');
+    if (is_string($link) && preg_match('#zoneinfo/(.+)$#', $link, $m)) {
+        $name = $m[1];
+        $source = '/etc/localtime';
+    }
+
+    if ($name === null && is_readable('/etc/timezone')) {
+        $candidate = trim((string)@file_get_contents('/etc/timezone'));
+        if ($candidate !== '') {
+            $name = $candidate;
+            $source = '/etc/timezone';
+        }
+    }
+
+    if ($name === null) {
+        $env = getenv('TZ');
+        if (is_string($env) && $env !== '') {
+            $name = $env;
+            $source = 'TZ';
+        }
+    }
+
+    $abbrev = null;
+    $offset = null;
+    $stamp = shellRead('date +%Z,%z 2>/dev/null');
+    if ($stamp !== null && preg_match('/^([A-Za-z+\-0-9]+),([+\-]\d{4})/', trim($stamp), $m)) {
+        $abbrev = $m[1];
+        $sign = $m[2][0] === '-' ? -1 : 1;
+        $offset = $sign * ((int)substr($m[2], 1, 2) * 3600 + (int)substr($m[2], 3, 2) * 60);
+        if ($source === 'unknown') {
+            $source = 'date';
+        }
+    }
+
+    /*
+     * A TZ set inside the crontab wins over all of it.
+     *
+     * cron reads `CRON_TZ=` (Vixie, cronie) or `TZ=` before the schedule lines
+     * and interprets everything after in that zone. Missing it would make every
+     * time this dashboard shows quietly wrong.
+     */
+    $cronTz = null;
+    foreach (preg_split('/\R/', $crontab) ?: [] as $line) {
+        if (preg_match('/^\s*(?:CRON_TZ|TZ)\s*=\s*"?([A-Za-z0-9_+\-\/]+)"?/', $line, $m)) {
+            $cronTz = $m[1];
+        }
+    }
+
+    return [
+        'name' => $cronTz ?? $name,
+        'abbrev' => $abbrev,
+        'offset' => $offset,
+        'source' => $cronTz !== null ? 'CRON_TZ in the crontab' : $source,
+        'cron_tz' => $cronTz,
+    ];
 }
 
 /** The flags each job runs with. Constants, not input. */
@@ -302,6 +383,54 @@ function buildCronLines(array $choices, string $php, string $scriptDir): array
 }
 
 /**
+ * Starts a scan in the background and returns at once.
+ *
+ * Not run inside the request: a scan is minutes of disk work on a real account,
+ * and PHP would hit max_execution_time long before it finished - leaving a
+ * half-written scan row and a browser showing a timeout. So it is spawned
+ * detached, with its output discarded, and the dashboard watches for the new
+ * scan to appear the same way it watches for a cron-driven one.
+ *
+ * @return array{started: bool, reason: ?string}
+ */
+function startScan(string $scriptDir, string $php): array
+{
+    if (!in_array($php, phpBinaries(), true)) {
+        throw new ActionRefused('that is not one of the PHP binaries found on this host');
+    }
+
+    $script = realpath($scriptDir . '/cron.php');
+    if ($script === false) {
+        throw new ActionRefused('cannot find cron.php');
+    }
+
+    if (shellRead('command -v nohup 2>/dev/null') === null && !function_exists('shell_exec')) {
+        return ['started' => false, 'reason' => 'This host does not allow starting background work.'];
+    }
+
+    /*
+     * Detached, with stdout and stderr thrown away.
+     *
+     * Without the redirect the shell waits for the pipes to close, which means
+     * waiting for the scan - exactly what this is avoiding. Errors still reach
+     * data/error.log, because cron.php logs them itself.
+     */
+    $command = sprintf(
+        'nohup %s %s --scan --alerts --quiet > /dev/null 2>&1 &',
+        escapeshellarg($php),
+        escapeshellarg($script)
+    );
+
+    if (shellRead($command . ' echo started') === null) {
+        // shell_exec returns null for empty output too, so the echo above is
+        // what tells us the shell actually ran rather than being disabled.
+        return ['started' => false, 'reason' => 'The command could not be started.'];
+    }
+
+    return ['started' => true, 'reason' => null];
+}
+
+/**
  * Installs a crontab.
  *
  * Written to a temporary file and loaded with `crontab <file>` rather than
@@ -344,6 +473,8 @@ function scheduleState(string $scriptDir): array
     return [
         'available' => $crontab['available'],
         'reason' => $crontab['reason'],
+        'timezone' => systemTimezone($crontab['raw']),
+        'php_timezone' => date_default_timezone_get(),
         'lines' => $crontab['available'] ? managedBlock($crontab['raw']) : [],
         'other_lines' => $crontab['available']
             ? max(0, count(array_filter(
