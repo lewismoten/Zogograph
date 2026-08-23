@@ -158,25 +158,7 @@ function renderCards(overview, vitalRows) {
     freePercent === null ? "" : freePercent < 5 ? "crit" : freePercent < 12 ? "warn" : ""
   );
 
-  /*
-   * How long until it is full, from the slope of what has actually happened.
-   *
-   * Worked out in the browser from the same rows the chart is drawn from, so
-   * the number and the line always agree - and so changing the range changes
-   * the horizon, which is the honest behaviour: an hour of samples cannot tell
-   * you anything about next week.
-   */
-  const trend = projectFull(vitalRows);
-  if (trend === null) {
-    setCard("cardTrend", "steady", "free space is not falling");
-  } else {
-    setCard(
-      "cardTrend",
-      humanDuration(trend.seconds),
-      `losing ${humanBytes(trend.perHour)}/h`,
-      trend.seconds < 86400 ? "crit" : trend.seconds < 604800 ? "warn" : ""
-    );
-  }
+  setTrendCard(overview.trend?.disk);
 
   const inodePercent = v.inodes_total ? (v.inodes_free / v.inodes_total) * 100 : null;
   setCard(
@@ -229,28 +211,40 @@ function renderCards(overview, vitalRows) {
   );
 }
 
-/** Seconds until free space reaches zero at the recent rate, or null. */
-function projectFull(rows) {
-  const points = rows
-    .filter(r => r.disk_free_bytes != null)
-    .map(r => [Number(r.taken_at), Number(r.disk_free_bytes)]);
-  if (points.length < 4) return null;
-
-  const n = points.length;
-  const x0 = points[0][0];
-  let sx = 0, sy = 0, sxy = 0, sxx = 0;
-  for (const [x, y] of points) {
-    const t = x - x0;
-    sx += t; sy += y; sxy += t * y; sxx += t * t;
+/**
+ * The projection card, and the distinction it exists to draw.
+ *
+ * "Losing space" and "ran out of space once" look identical on a total and are
+ * completely different problems. The server separates them - see seriesTrend in
+ * lib/alerts.php - and this shows which one it decided, because a projection
+ * you cannot see the reasoning behind is a number people learn to ignore.
+ */
+function setTrendCard(trend) {
+  if (!trend) {
+    setCard("cardTrend", "—", "not enough history yet");
+    return;
   }
-  const denominator = n * sxx - sx * sx;
-  if (Math.abs(denominator) < 1e-9) return null;
 
-  const slope = (n * sxy - sx * sy) / denominator;
-  if (slope >= 0) return null;
+  if (trend.spike) {
+    setCard(
+      "cardTrend",
+      "one-off",
+      `${humanBytes(-trend.overall * (trend.span_seconds || 1))} went at once, not a trend`
+    );
+    return;
+  }
 
-  const free = points[n - 1][1];
-  return { seconds: free / -slope, perHour: -slope * 3600 };
+  if (!trend.sustained || trend.seconds_left == null) {
+    setCard("cardTrend", "steady", "free space is not falling");
+    return;
+  }
+
+  setCard(
+    "cardTrend",
+    humanDuration(trend.seconds_left),
+    `losing ${humanBytes(-trend.rate * 3600)}/h, and still falling`,
+    trend.seconds_left < 86400 ? "crit" : trend.seconds_left < 604800 ? "warn" : ""
+  );
 }
 
 /* ----------------------------------------------------------------- charts -- */
@@ -455,6 +449,31 @@ function drawLineChart(canvas, rows, series, options = {}) {
     let hi = Math.max(...values);
 
     /*
+     * Scaled to the bulk of the readings, not to the worst one.
+     *
+     * This is the difference between a useful chart of changes and a flat line
+     * with one spike on it. A twenty-gigabyte upload is four hundred times a
+     * steady loss of fifty megabytes, so on a full-range axis the thing you are
+     * looking for is a pixel high. Trimming the extremes puts the ordinary
+     * readings back on a readable scale; the outliers are still drawn, clipped
+     * at the edge, and counted underneath so nothing is hidden.
+     */
+    if (options.trim) {
+      const sorted = [...values].sort((a, b) => a - b);
+      const cut = Math.floor(sorted.length * options.trim);
+      if (cut > 0 && sorted.length - cut > cut) {
+        const trimmedLo = sorted[cut];
+        const trimmedHi = sorted[sorted.length - 1 - cut];
+        // Only worth doing when the extremes really are extreme; otherwise it
+        // just crops a chart that was fine.
+        if ((hi - lo) > (trimmedHi - trimmedLo) * 4) {
+          lo = trimmedLo;
+          hi = trimmedHi;
+        }
+      }
+    }
+
+    /*
      * Not pinned to zero unless asked.
      *
      * On a disk that is 92% full and losing a gigabyte a day, a zero-based axis
@@ -462,6 +481,21 @@ function drawLineChart(canvas, rows, series, options = {}) {
      * to show the slope.
      */
     if (options.zeroBased) { lo = Math.min(0, lo); hi = Math.max(hi, options.max ?? hi); }
+
+    /*
+     * A chart of changes always shows zero.
+     *
+     * Zero is the reference the whole reading depends on - above it is space
+     * coming back, below it is space going - and an axis that happens to
+     * exclude it turns "steadily losing 85 MiB" into a flat line in the middle
+     * of nowhere. It also stops a perfectly constant series collapsing to a
+     * zero-height range whose tick labels are all the same number.
+     */
+    if (options.zeroLine) {
+      lo = Math.min(0, lo);
+      hi = Math.max(0, hi);
+    }
+
     if (hi === lo) hi = lo + Math.max(1, Math.abs(lo) * 0.01);
 
     const nice = niceTicks(lo, hi, 5, Boolean(options.zeroBased));
@@ -506,6 +540,23 @@ function drawLineChart(canvas, rows, series, options = {}) {
     ctx.moveTo(pad.left, yy);
     ctx.lineTo(pad.left + plotW, yy);
     ctx.stroke();
+  }
+
+  /*
+   * A brighter line at zero when the values can be negative.
+   *
+   * On a chart of changes the sign is the whole message, and telling above from
+   * below by reading the axis labels is work the chart should be doing.
+   */
+  if (options.zeroLine && gridding.min < 0 && gridding.max > 0) {
+    const zero = yOn(gridSide, 0);
+    ctx.save();
+    ctx.strokeStyle = "#6a6a6a";
+    ctx.beginPath();
+    ctx.moveTo(pad.left, zero);
+    ctx.lineTo(pad.left + plotW, zero);
+    ctx.stroke();
+    ctx.restore();
   }
 
   ctx.textAlign = "right";
@@ -707,6 +758,8 @@ async function refreshAll() {
     syncCategoryOptions();
     syncScanButton(overview);
 
+    // The card reads the trend the server worked out over exactly these rows.
+    overview.trend = vitals.trend;
     renderCards(overview, vitals.rows);
     renderVitalCharts(vitals.rows);
     renderCategoryChart(scans.rows, scans.categories ?? state.categories);
@@ -745,33 +798,155 @@ async function refreshAll() {
  * In absolute terms they cannot: bytes and a count of inodes have no common
  * scale, so inodes move to the right-hand axis and get a dashed line.
  */
+/**
+ * Disk and inodes over time, in whichever of three readings is wanted.
+ *
+ * Absolute answers "how much is left", percent answers "how close to the edge",
+ * and change answers "what is actually happening" - which the other two hide.
+ * Fifty megabytes an hour is invisible on an axis running to a terabyte and
+ * obvious the moment it is drawn as a difference, and only the difference shows
+ * the sign: whether a directory is filling or a cleanup is working.
+ */
 function renderRoomChart(rows) {
-  const percent = state.units === "percent";
+  const mode = state.units;
 
-  const withPercents = rows.map(r => ({
-    ...r,
-    disk_free_percent: r.disk_total_bytes
-      ? (Number(r.disk_free_bytes) / Number(r.disk_total_bytes)) * 100
-      : null,
-    inodes_free_percent: r.inodes_total
-      ? (Number(r.inodes_free) / Number(r.inodes_total)) * 100
-      : null,
-  }));
+  /*
+   * How long a bar of "change" covers.
+   *
+   * Per reading is what you want over an hour and useless over a month: at a
+   * reading a minute, thirty days is forty thousand points drawn into eight
+   * hundred pixels, and what reaches the screen is noise. Totalling the change
+   * over a longer bucket keeps the same information at a scale that fits.
+   *
+   * Summed, not averaged. The total bytes lost in an hour is a real quantity
+   * you can reason about; the mean of the steps inside it is a smaller number
+   * that means nothing on its own. And an average would not help with spikes
+   * anyway - the mean is precisely the statistic one outlier moves furthest.
+   * Spikes are handled by trimming the axis and by the median-based trend.
+   */
+  const bucket = state.units === "delta" ? deltaBucket(state.range) : 0;
 
-  drawLineChart($("roomChart"), withPercents,
-    percent
-      ? [
-          { key: "disk_free_percent", label: "Disk free %" },
-          { key: "inodes_free_percent", label: "Inodes free %" },
-        ]
-      : [
-          { key: "disk_free_bytes", label: "Disk free" },
-          { key: "inodes_free", label: "Inodes free (right)", axis: "right" },
-        ],
-    percent
-      ? { axis: percentAxis, zeroBased: true, max: 100 }
-      : { axis: bytesAxis, rightAxis: countAxis }
-  );
+  const prepared = rows.map((row, i) => {
+    const previous = rows[i - 1];
+    const seconds = previous ? Number(row.taken_at) - Number(previous.taken_at) : 0;
+
+    return {
+      ...row,
+      disk_free_percent: row.disk_total_bytes
+        ? (Number(row.disk_free_bytes) / Number(row.disk_total_bytes)) * 100
+        : null,
+      inodes_free_percent: row.inodes_total
+        ? (Number(row.inodes_free) / Number(row.inodes_total)) * 100
+        : null,
+      // The first reading has nothing to differ from, so it is a gap rather
+      // than a zero - a drawn zero would read as "nothing changed".
+      disk_delta: delta(previous?.disk_free_bytes, row.disk_free_bytes, seconds),
+      inodes_delta: delta(previous?.inodes_free, row.inodes_free, seconds),
+    };
+  });
+
+  const shapes = {
+    bytes: {
+      series: [
+        { key: "disk_free_bytes", label: "Disk free" },
+        { key: "inodes_free", label: "Inodes free (right)", axis: "right" },
+      ],
+      options: { axis: bytesAxis, rightAxis: countAxis },
+      note: "Disk space and inodes. Either can run out on its own \u2014 a disk with "
+        + "free gigabytes and no inodes still refuses to create a file.",
+    },
+    percent: {
+      series: [
+        { key: "disk_free_percent", label: "Disk free %" },
+        { key: "inodes_free_percent", label: "Inodes free %" },
+      ],
+      options: { axis: percentAxis, zeroBased: true, max: 100 },
+      note: "How close to the edge each one is. Both on one scale, so they can be "
+        + "read against each other.",
+    },
+    delta: {
+      series: [
+        { key: "disk_delta", label: "Disk change" },
+        { key: "inodes_delta", label: "Inode change (right)", axis: "right" },
+      ],
+      options: { axis: bytesAxis, rightAxis: countAxis, zeroLine: true, trim: 0.02 },
+      note: "What changed between one reading and the next. Below the line is space "
+        + "being consumed, above it is space coming back \u2014 small, steady losses are "
+        + "what a leak looks like, and one deep spike is a file being written.",
+    },
+  };
+
+  const bucketed = bucket > 0 ? bucketDeltas(prepared, bucket) : prepared;
+  const shape = shapes[mode] ?? shapes.bytes;
+  let note = shape.note;
+
+  if (mode === "delta" && bucket > 0) {
+    const per = bucket === 86400 ? "day"
+      : bucket === 3600 ? "hour"
+      : `${Math.round(bucket / 3600)} hours`;
+
+    shape.series = shape.series.map(entry => ({
+      ...entry,
+      label: entry.label.replace("change", `change per ${per}`),
+    }));
+    note += ` Totalled per ${per} over this range, because a reading a minute is`
+      + " more points than there are pixels to draw them in.";
+  }
+
+  if (mode === "delta") {
+    const biggest = bucketed.reduce((worst, row) => {
+      const v = Number(row.disk_delta);
+      return Number.isFinite(v) && Math.abs(v) > Math.abs(worst) ? v : worst;
+    }, 0);
+    if (biggest) {
+      note += ` Largest single change: ${humanBytes(biggest)}.`;
+    }
+  }
+
+  $("roomNote").textContent = note;
+  drawLineChart($("roomChart"), mode === "delta" ? bucketed : prepared,
+    shape.series, shape.options);
+}
+
+/** The change between two readings, or null when there is nothing to compare. */
+function delta(before, after, seconds) {
+  if (before == null || after == null || seconds <= 0) return null;
+  return Number(after) - Number(before);
+}
+
+/** How long each bar of change should cover, for the range being shown. */
+function deltaBucket(rangeSeconds) {
+  if (rangeSeconds <= 21600) return 0;        // up to 6 hours: every reading
+  if (rangeSeconds <= 172800) return 3600;    // up to 2 days: per hour
+  if (rangeSeconds <= 2678400) return 21600;  // up to a month: per 6 hours
+  return 86400;                               // longer: per day
+}
+
+/**
+ * Adds the changes up within each bucket.
+ *
+ * Summed rather than averaged: "this hour cost 1.2 GiB" is a quantity, and the
+ * mean of the steps that made it up is a smaller number nobody asked about.
+ * Buckets are aligned to the clock rather than to the first reading, so the
+ * boundaries land on the hour and two ranges of the same data agree.
+ */
+function bucketDeltas(rows, seconds) {
+  const buckets = new Map();
+
+  for (const row of rows) {
+    const at = Math.floor(Number(row.taken_at) / seconds) * seconds;
+    const into = buckets.get(at) ?? { taken_at: at, disk_delta: null, inodes_delta: null };
+
+    for (const key of ["disk_delta", "inodes_delta"]) {
+      const value = row[key];
+      if (value == null) continue;
+      into[key] = (into[key] ?? 0) + Number(value);
+    }
+
+    buckets.set(at, into);
+  }
+
+  return [...buckets.values()].sort((a, b) => a.taken_at - b.taken_at);
 }
 
 function renderVitalCharts(rows) {

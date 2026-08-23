@@ -249,6 +249,65 @@ read. That is deliberately a different list from `deletable_categories`: being
 allowed to look at a file and being allowed to remove it are different
 permissions, and the things worth reading are not the things worth deleting.
 
+## Change, and telling a leak from a spike
+
+The **Show** control has a third setting, **Change per reading**: instead of how
+much room is left, the difference between one reading and the next. Below the
+line is space being consumed, above it is space coming back. Fifty megabytes an
+hour is invisible on an axis running to a terabyte and obvious the moment it is
+drawn as a difference — and only the difference carries a sign, so a cleanup
+that is working looks different from one that is not.
+
+Two things make that chart readable:
+
+- **The axis is scaled to the bulk of the readings, not the worst one.** A
+  twenty-gigabyte upload is four hundred times a steady fifty-megabyte loss, so
+  on a full-range axis the thing you are looking for is one pixel high. The
+  extremes are trimmed off the scale, still drawn (clipped at the edge), and the
+  largest single change is named underneath, so nothing is hidden.
+- **Changes are totalled over a bucket that suits the range** — per reading up
+  to six hours, per hour up to two days, per six hours up to a month, per day
+  beyond. Totalled, not averaged: "this hour cost 1.2 GiB" is a quantity you can
+  reason about, and the mean of the steps inside it is a smaller number that
+  means nothing on its own.
+
+### Why the projection is not a line of best fit
+
+A least-squares fit was the first attempt and it is the wrong tool: one large
+upload drags the line down hard enough to predict a full disk by Thursday, and
+after a week of those nobody reads the warnings.
+
+The distinction that matters is between a **step** and a **slope**. Space that
+dropped once and stayed down is consumption that already happened. Space that
+keeps dropping is a leak. So the window is cut in half and each half measured
+on its own — a spike lands in one of them, a leak is in both — and three numbers
+come out:
+
+| | what it answers |
+| --- | --- |
+| `overall` | where the level actually went, spikes included |
+| `median` | the middle step between readings, which one outlier cannot move |
+| both halves | whether it is still going |
+
+Only a fall in **both halves** counts as a trend, and the projection uses the
+median step, so a leak that also happens to contain a spike is still projected
+at the leak's rate. Tested against seven shapes:
+
+| scenario | verdict |
+| --- | --- |
+| steady 1 GiB/h leak | sustained, 7.5 days |
+| flat | steady |
+| one 20 GiB upload | **spike — no alert** |
+| upload near the end of the window | **spike — no alert** |
+| leak *and* an upload | sustained, projected at the leak's 1 GiB/h |
+| freeing up | steady |
+| slow 100 MiB/h drift | sustained, 84 days |
+
+The card says which it decided — `6.5 days · losing 1 GiB/h, and still falling`
+versus `one-off · 20 GiB went at once, not a trend` — because a projection whose
+reasoning you cannot see is a number people learn to ignore. Inodes get the same
+treatment, and can raise their own alert.
+
 ## Alerts
 
 Two kinds of rule, both configured in `lib/config.php`.

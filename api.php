@@ -171,7 +171,26 @@ function vitalsSeries(PDO $pdo): array
     $stmt->bindValue(':step', $step, PDO::PARAM_INT);
     $stmt->execute();
 
-    return ['from' => $from, 'to' => $to, 'total' => $total, 'step' => $step, 'rows' => $stmt->fetchAll()];
+    $rows = $stmt->fetchAll();
+
+    /*
+     * The trend is computed here, over exactly the rows being returned.
+     *
+     * Not separately in the browser: the card and the chart have to be talking
+     * about the same window, or changing the range moves the line and leaves
+     * the projection saying something else.
+     */
+    return [
+        'from' => $from,
+        'to' => $to,
+        'total' => $total,
+        'step' => $step,
+        'rows' => $rows,
+        'trend' => [
+            'disk' => seriesTrend($rows, 'disk_free_bytes'),
+            'inodes' => seriesTrend($rows, 'inodes_free'),
+        ],
+    ];
 }
 
 /**

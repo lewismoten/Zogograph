@@ -135,42 +135,172 @@ function trendAlerts(PDO $pdo, array $rules): array
         return [];
     }
 
-    $since = time() - 86400;
     $rows = $pdo->prepare(
-        'SELECT taken_at, disk_free_bytes FROM vitals
-         WHERE taken_at >= ? AND disk_free_bytes IS NOT NULL ORDER BY taken_at'
+        'SELECT taken_at, disk_free_bytes, inodes_free FROM vitals
+         WHERE taken_at >= ? ORDER BY taken_at'
     );
-    $rows->execute([$since]);
-    $points = $rows->fetchAll();
+    $rows->execute([time() - 86400]);
+    $readings = $rows->fetchAll();
 
-    if (count($points) < 6) {
-        return [];
+    $out = [];
+
+    foreach ([
+        ['disk_free_bytes', 'Disk', fn(float $v): string => humanBytes((int)round($v))],
+        ['inodes_free', 'Inodes', fn(float $v): string => number_format(round($v))],
+    ] as [$field, $label, $format]) {
+        $trend = seriesTrend($readings, $field);
+
+        /*
+         * Only a sustained fall is worth an email.
+         *
+         * Without the gate this fired every time somebody uploaded something
+         * large, predicted catastrophe from a one-off, and taught the reader to
+         * ignore it - which costs more than the alert was ever worth.
+         */
+        if ($trend === null || !$trend['sustained'] || $trend['seconds_left'] === null) {
+            continue;
+        }
+        if ($trend['seconds_left'] / 3600 > $hours) {
+            continue;
+        }
+
+        $out[] = [
+            'rule' => 'projected_full:' . $field,
+            'severity' => 'warning',
+            'subject' => sprintf(
+                '%s will run out in about %s',
+                $label,
+                humanDuration($trend['seconds_left'])
+            ),
+            'detail' => sprintf(
+                "%s has been falling steadily for %s, not in one drop:\n"
+                . "  losing about %s an hour\n"
+                . "  %s left, which runs out in %s\n"
+                . "  falling in both halves of the window (%s an hour, then %s an hour)",
+                $label,
+                humanDuration((float)$trend['span_seconds']),
+                $format(-$trend['rate'] * 3600),
+                $format($trend['latest']),
+                humanDuration($trend['seconds_left']),
+                $format(-(float)$trend['first_half'] * 3600),
+                $format(-(float)$trend['second_half'] * 3600)
+            ),
+        ];
     }
 
-    $slope = leastSquaresSlope($points, 'taken_at', 'disk_free_bytes');
-    if ($slope === null || $slope >= 0) {
-        return [];
+    return $out;
+}
+
+/**
+ * How a series is really moving, told apart from a one-off event.
+ *
+ * A plain least-squares fit was the old answer and it is the wrong one: a
+ * single twenty-gigabyte upload drags the line down hard enough to predict a
+ * full disk by Thursday, and after a week of those nobody reads the warnings.
+ *
+ * The distinction that matters is between a *step* and a *slope*. Space that
+ * dropped once and stayed down is consumption that already happened; space
+ * that keeps dropping is a leak. So the window is cut in half and each half is
+ * measured on its own - a spike lands in one of them, and a leak is in both.
+ *
+ * Three rates come out, and they answer different questions:
+ *
+ *   overall  where the level actually went, spikes included
+ *   robust   the median step between readings, which a spike cannot move
+ *   halves   whether it is still going
+ *
+ * @return array|null null when there is not enough history to say anything.
+ */
+function seriesTrend(array $rows, string $field): ?array
+{
+    $points = [];
+    foreach ($rows as $row) {
+        if (($row[$field] ?? null) === null) {
+            continue;
+        }
+        $points[] = [(int)$row['taken_at'], (float)$row[$field]];
     }
 
-    $free = (int)$points[count($points) - 1]['disk_free_bytes'];
-    $secondsLeft = $free / -$slope;
-    $hoursLeft = $secondsLeft / 3600;
+    $count = count($points);
+    $span = $count > 1 ? $points[$count - 1][0] - $points[0][0] : 0;
 
-    if ($hoursLeft > $hours) {
-        return [];
+    // Too few readings, or too short a window, and any answer is noise wearing
+    // a confident face.
+    if ($count < 8 || $span < 1800) {
+        return null;
     }
 
-    return [[
-        'rule' => 'disk_projected_full',
-        'severity' => 'warning',
-        'subject' => sprintf('Disk will be full in about %s', humanDuration($secondsLeft)),
-        'detail' => sprintf(
-            'Free space is falling at about %s an hour. %s left, which at this rate runs out in %s.',
-            humanBytes((int)round(-$slope * 3600)),
-            humanBytes($free),
-            humanDuration($secondsLeft)
-        ),
-    ]];
+    $overall = ($points[$count - 1][1] - $points[0][1]) / $span;
+
+    $steps = [];
+    foreach (range(1, $count - 1) as $i) {
+        $dt = $points[$i][0] - $points[$i - 1][0];
+        if ($dt > 0) {
+            $steps[] = ($points[$i][1] - $points[$i - 1][1]) / $dt;
+        }
+    }
+    if (!$steps) {
+        return null;
+    }
+
+    $middle = (int)floor($count / 2);
+    $first = halfRate(array_slice($points, 0, $middle + 1));
+    $second = halfRate(array_slice($points, $middle));
+
+    /*
+     * Falling in both halves, or it is not a trend yet.
+     *
+     * This is the whole spike filter. An upload makes one half plummet and
+     * leaves the other flat; a log file filling up makes both of them fall.
+     */
+    $sustained = $first !== null && $second !== null && $first < 0 && $second < 0 && $overall < 0;
+
+    $median = median($steps);
+    // The median is the estimate a spike cannot inflate, so it is preferred for
+    // projecting; `overall` covers the case of a slow drift too fine to show up
+    // as a consistent step between one reading and the next.
+    $rate = $median < 0 ? $median : ($overall < 0 ? $overall : 0.0);
+
+    $latest = $points[$count - 1][1];
+    $secondsLeft = $rate < 0 ? $latest / -$rate : null;
+
+    return [
+        'rate' => $rate,
+        'overall' => $overall,
+        'median' => $median,
+        'first_half' => $first,
+        'second_half' => $second,
+        'sustained' => $sustained,
+        'seconds_left' => $secondsLeft,
+        'latest' => $latest,
+        'samples' => $count,
+        'span_seconds' => $span,
+        // Losing space overall but not in both halves: something happened, and
+        // it is not happening now.
+        'spike' => !$sustained && $overall < 0,
+    ];
+}
+
+/** The average rate across a slice, or null if it does not span any time. */
+function halfRate(array $points): ?float
+{
+    $n = count($points);
+    if ($n < 2) {
+        return null;
+    }
+    $seconds = $points[$n - 1][0] - $points[0][0];
+    return $seconds > 0 ? ($points[$n - 1][1] - $points[0][1]) / $seconds : null;
+}
+
+function median(array $values): float
+{
+    sort($values);
+    $n = count($values);
+    if ($n === 0) {
+        return 0.0;
+    }
+    $mid = intdiv($n, 2);
+    return $n % 2 === 1 ? $values[$mid] : ($values[$mid - 1] + $values[$mid]) / 2;
 }
 
 /** Bytes per second, by least squares. Null if the points are all at once. */
