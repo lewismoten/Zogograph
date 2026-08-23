@@ -39,6 +39,7 @@ define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/alerts.php';
+require_once __DIR__ . '/lib/processes.php';
 
 $flags = array_slice($argv, 1);
 $quiet = in_array('--quiet', $flags, true);
@@ -71,6 +72,17 @@ try {
 
     if ($wants('--vitals')) {
         $row = takeVitals($config, $pdo);
+
+        // Only writes anything when the reading was a busy one.
+        $processes = recordProcesses($config, $pdo, $row);
+        if ($processes['recorded'] > 0) {
+            $say(sprintf(
+                'busy    recorded %d processes (%s)',
+                $processes['recorded'],
+                implode(' and ', $processes['reasons'])
+            ));
+        }
+
         $say(sprintf(
             'vitals  disk %s free of %s, load %s, cpu %s',
             humanBytes($row['disk_free_bytes']),
@@ -149,6 +161,10 @@ function prune(PDO $pdo): string
     $scans->execute([$ancient]);
     $scanCount = $scans->rowCount();
 
+    $processes = $pdo->prepare('DELETE FROM process_samples WHERE taken_at < ?');
+    $processes->execute([$ancient]);
+    $processCount = $processes->rowCount();
+
     // A path nothing refers to any more is history nobody can ask about.
     $paths = $pdo->exec(
         'DELETE FROM paths
@@ -159,10 +175,11 @@ function prune(PDO $pdo): string
     $pdo->commit();
 
     return sprintf(
-        'thinned %d vitals, dropped %d vitals, %d scans, %d paths',
+        'thinned %d vitals, dropped %d vitals, %d scans, %d paths, %d process rows',
         $thinnedCount,
         $droppedCount,
         $scanCount,
-        (int)$paths
+        (int)$paths,
+        $processCount
     );
 }

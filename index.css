@@ -95,6 +95,19 @@ button:disabled { opacity: .5; cursor: default; }
 /* A line of prose under a chart title, saying what the numbers are. Cheaper
    than a tooltip and it survives a screenshot. */
 .sub-note { margin: -6px 0 10px; max-width: 60ch; }
+.sub-head { font-size: .95rem; margin: 22px 0 4px; color: #cfcfcf; }
+/* A command line is long and must not push the numbers off the screen. */
+td.cmd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .78rem;
+  color: var(--muted);
+  max-width: 46ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.busy-moment { margin-bottom: 14px; }
+.busy-moment h4 { margin: 0 0 4px; font-size: .85rem; font-weight: 600; color: #cfcfcf; }
 .panel-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .empty-buttons { display: flex; gap: 8px; }
 

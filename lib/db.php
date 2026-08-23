@@ -267,6 +267,29 @@ function migrations(): array
              */
             'ALTER TABLE vitals ADD COLUMN cpu_cores INTEGER',
         ],
+
+        3 => [
+            /*
+             * What was running when the machine was busy.
+             *
+             * Written only when a reading crosses the CPU or memory threshold,
+             * because a row per process per minute grows faster than anything
+             * it could warn you about. Grouped by command name rather than by
+             * pid: forty workers of one daemon are one answer, and a pid is
+             * meaningless by the time anybody reads this.
+             */
+            "CREATE TABLE process_samples (
+                id          INTEGER PRIMARY KEY,
+                taken_at    INTEGER NOT NULL,
+                reason      TEXT NOT NULL CHECK (reason IN ('cpu','memory')),
+                name        TEXT NOT NULL,
+                cpu_percent REAL,
+                mem_percent REAL,
+                rss_bytes   INTEGER,
+                procs       INTEGER NOT NULL DEFAULT 1
+            )",
+            'CREATE INDEX process_samples_taken_at ON process_samples (taken_at)',
+        ],
     ];
 }
 

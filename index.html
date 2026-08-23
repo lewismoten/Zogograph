@@ -184,6 +184,34 @@
   </section>
 </div>
 
+<section class="panel" id="processPanel" hidden>
+  <div class="panel-head">
+    <h2>What is using the machine</h2>
+    <div class="panel-controls">
+      <label class="inline">
+        By
+        <select id="procBy">
+          <option value="cpu" selected>CPU</option>
+          <option value="memory">Memory</option>
+        </select>
+      </label>
+      <button id="procRefresh" class="link">Refresh</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    Running right now, with processes of the same name added together. Arguments
+    that look like passwords are hidden.
+  </p>
+  <div id="processBody"></div>
+
+  <h3 class="sub-head">When it was last busy</h3>
+  <p class="muted small sub-note">
+    Recorded automatically whenever a reading crosses the CPU or memory
+    threshold — so an overnight spike still has an answer in the morning.
+  </p>
+  <div id="processHistory"></div>
+</section>
+
 <section class="panel" id="healthPanel">
   <div class="panel-head">
     <h2>Health</h2>

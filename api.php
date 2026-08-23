@@ -44,6 +44,7 @@ require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/logs.php';
 require_once __DIR__ . '/lib/schedule.php';
+require_once __DIR__ . '/lib/processes.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -81,6 +82,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'actions' => actionLog($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
+        'processes' => processList($pdo, $signedIn),
         'health' => healthCheck($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
@@ -386,6 +388,31 @@ function tailLog(array $config, PDO $pdo, bool $signedIn): array
     );
 
     return ['path' => $row['path'], 'category' => $row['category']] + $result;
+}
+
+/**
+ * What is running now, and what was running when the machine last struggled.
+ *
+ * Signed in only. A command line is not a size: it carries paths, arguments and
+ * sometimes a password somebody put where they should not have, which is also
+ * why the arguments are redacted before they get this far.
+ */
+function processList(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the process list');
+    }
+
+    $by = ($_GET['by'] ?? 'cpu') === 'memory' ? 'memory' : 'cpu';
+    $live = listProcesses($by, clampInt($_GET['limit'] ?? 15, 1, 100));
+
+    return [
+        'by' => $by,
+        'available' => $live['available'],
+        'reason' => $live['reason'],
+        'rows' => $live['rows'],
+        'recorded' => recordedProcesses($pdo, 8),
+    ];
 }
 
 /** What is in the crontab. Signed in only: it is a list of what runs as you. */

@@ -228,6 +228,39 @@ hosting), the panel says so and you add the lines through your control panel
 instead. It will never write a fresh crontab because it could not read the
 existing one.
 
+## What is using the machine
+
+Signed in, a panel lists the running processes by CPU or by memory, and below it
+the moments the machine was last struggling.
+
+**Processes are grouped by name.** Eighty Chrome helpers using four gigabytes
+between them is one fact; a row apiece is eighty rows, none of which look
+alarming. The totals are sums, and the pid and command line kept are the
+heaviest single process of the group — the one worth going to look at.
+
+**The recorded half is the point.** A live list is `top` with extra steps: you
+have to be watching. This project exists to answer questions after the fact, so
+whenever a reading crosses `record_when_cpu_above` or
+`record_when_memory_above` the top few processes are written down. Something
+pinned the CPU at four in the morning; in the morning there is an answer.
+
+It only records while the machine is busy. A row per process per minute would be
+a table growing faster than anything it could warn you about, and the three
+minutes the CPU was pinned is small and is the only part anybody reads. `--prune`
+drops old rows with everything else.
+
+Signed-in only, like the log viewer, and for the same reason: a command line is
+not a size. It carries paths, arguments, and often a password somebody put on a
+command line despite being told not to. **Those are redacted** — `-pSECRET`,
+`--token=…`, `auth=…` and friends become `[hidden]` before the row is stored or
+sent, so this tool does not become a second place the password leaks from.
+
+One wrinkle: names come from the command line's first word, because `ps`'s
+`comm` column is a path that can contain spaces on BSD and so cannot be split on
+reliably. An executable whose *path* contains a space therefore shows only the
+part before it — vanishingly rare on a server, common in macOS application
+bundles, so it looks worse on a laptop than where it will run.
+
 ## Reading log files
 
 Signed in, a log file in the offenders table gets a **View** button: the last N

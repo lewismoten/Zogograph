@@ -113,4 +113,17 @@ return [
      * which means logs; deleting is for trash and scratch space.
      */
     'viewable_categories' => ['logs', 'errors'],
+
+    /*
+     * Recording what was running, and when it is worth doing.
+     *
+     * Only while the machine is actually struggling. Every process every minute
+     * would be a table growing faster than the disk it is watching; the three
+     * minutes the CPU was pinned is small and is the only part anybody reads.
+     */
+    'processes' => [
+        'record_when_cpu_above' => 70.0,
+        'record_when_memory_above' => 85.0,
+        'keep' => 8,
+    ],
 ];

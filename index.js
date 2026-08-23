@@ -775,7 +775,7 @@ async function refreshAll() {
 
     await Promise.all([
       refreshOffenders(), refreshAlerts(), refreshActionLog(),
-      refreshSchedule(), refreshHealth(), refreshProblems(),
+      refreshSchedule(), refreshHealth(), refreshProblems(), refreshProcesses(),
     ]);
     if (state.historyPathId) await showHistory(state.historyPathId, true);
     if (state.log.pathId) await showLog(state.log.pathId, true);
@@ -1228,6 +1228,88 @@ function highlight(text, needle) {
 
   out.push(document.createTextNode(text.slice(at)));
   return out;
+}
+
+/* -------------------------------------------------------------- processes -- */
+
+async function refreshProcesses() {
+  const panel = $("processPanel");
+  if (!state.signedIn) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  let data;
+  try {
+    data = await api("processes", { by: $("procBy").value, limit: 15 });
+  } catch (error) {
+    $("processBody").textContent = String(error.message || error);
+    return;
+  }
+
+  if (!data.available) {
+    $("processBody").textContent = data.reason || "Cannot read the process list here.";
+  } else {
+    renderTable("processBody", data.rows, [
+      { label: "Process", render: row => row.name },
+      { label: "How many", className: "size", render: row => (row.procs > 1 ? row.procs : "") },
+      { label: "User", render: row => row.user },
+      { label: "CPU", className: "size", render: row => `${row.cpu_percent.toFixed(1)}%` },
+      { label: "Memory", className: "size", render: row => humanBytes(row.rss_bytes) },
+      { label: "Of RAM", className: "size", render: row => `${row.mem_percent.toFixed(1)}%` },
+      // The heaviest of the group, which is the one worth going to look at.
+      { label: "Biggest PID", className: "size", render: row => row.pid },
+      { label: "Command", className: "cmd", render: row => row.command },
+    ]);
+  }
+
+  renderBusyMoments(data.recorded ?? []);
+}
+
+/**
+ * The moments the machine was struggling, and what was running then.
+ *
+ * Grouped by instant rather than listed flat, because the useful unit is "at
+ * 04:12 the CPU was pinned and these were running" - a flat table of rows makes
+ * the reader reassemble that themselves.
+ */
+function renderBusyMoments(moments) {
+  const holder = $("processHistory");
+
+  if (!moments.length) {
+    holder.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: "Nothing recorded — the machine has not been busy enough to bother.",
+    }));
+    return;
+  }
+
+  holder.replaceChildren(...moments.map(moment => {
+    const section = document.createElement("div");
+    section.className = "busy-moment";
+
+    const heading = document.createElement("h4");
+    heading.textContent = `${humanTime(moment.taken_at)} — high ${moment.reason}`;
+    section.appendChild(heading);
+
+    const table = document.createElement("table");
+    const body = table.createTBody();
+    for (const row of moment.rows) {
+      const tr = body.insertRow();
+      tr.insertCell().textContent = row.name
+        + (row.procs > 1 ? ` (${row.procs} processes)` : "");
+      const cpu = tr.insertCell();
+      cpu.className = "size";
+      cpu.textContent = `${Number(row.cpu_percent).toFixed(1)}%`;
+      const rss = tr.insertCell();
+      rss.className = "size";
+      rss.textContent = humanBytes(row.rss_bytes);
+    }
+    section.appendChild(table);
+
+    return section;
+  }));
 }
 
 /* ----------------------------------------------------------------- health -- */
@@ -2023,6 +2105,14 @@ $("scanNow").addEventListener("click", async () => {
     notice(String(error.message || error));
     button.disabled = false;
   }
+});
+
+$("procBy").addEventListener("change", () => {
+  refreshProcesses().catch(e => notice(String(e.message || e)));
+});
+
+$("procRefresh").addEventListener("click", () => {
+  refreshProcesses().catch(e => notice(String(e.message || e)));
 });
 
 $("healthRefresh").addEventListener("click", () => {
