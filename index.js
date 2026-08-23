@@ -1199,7 +1199,10 @@ function drawSchedule(data) {
   const note = document.createElement("p");
   note.className = "muted small";
   note.id = "schedNote";
-  holder.appendChild(note);
+  const times = document.createElement("p");
+  times.className = "muted small";
+  times.id = "schedTimes";
+  holder.append(note, times);
 
   /*
    * What will actually be written, shown before it is.
@@ -1259,25 +1262,42 @@ function updateSchedulePreview() {
   const data = state.schedule;
   if (!data || !$("schedPreview")) return;
 
-  const minute = Math.max(0, Math.min(59, Number($("schedMinute").value) || 0));
-  const hour = Math.max(0, Math.min(23, Number($("schedHour").value) || 0));
-  const php = $("schedPhp").value;
-  const script = data.script || "cron.php";
-
   const jobs = [
     ["vitals", $("schedVitals").value, "--vitals --alerts --quiet"],
     ["scan", $("schedScan").value, "--scan --alerts --prune --quiet"],
   ];
 
-  const lines = [];
-  let usesMinute = false;
-  let usesHour = false;
+  /*
+   * What each field is for, and how far it may go.
+   *
+   * Both fields are shared between the two jobs, so the bound is whichever
+   * chosen preset is fussiest. A six-hourly scan caps the hour at 5 because
+   * cron reads `2/6` as "from 02:00, then every six hours" - a phase, not a
+   * time - and a phase of 20 would silently become a once-a-day job.
+   */
+  const limit = { minute: { used: false, max: 59 }, hour: { used: false, max: 23 } };
+  for (const [job, pick] of jobs) {
+    const preset = data.presets[job]?.[pick];
+    if (!preset || !preset.expr) continue;
+    if (preset.expr.includes("%M")) {
+      limit.minute.used = true;
+      limit.minute.max = Math.min(limit.minute.max, preset.minute_max ?? 59);
+    }
+    if (preset.expr.includes("%H")) {
+      limit.hour.used = true;
+      limit.hour.max = Math.min(limit.hour.max, preset.hour_max ?? 23);
+    }
+  }
 
+  const minute = applyBound("schedMinute", limit.minute);
+  const hour = applyBound("schedHour", limit.hour);
+  const php = $("schedPhp").value;
+  const script = data.script || "cron.php";
+
+  const lines = [];
   for (const [job, pick, flags] of jobs) {
     const preset = data.presets[job]?.[pick];
     if (!preset || !preset.expr) continue;
-    if (preset.expr.includes("%M")) usesMinute = true;
-    if (preset.expr.includes("%H")) usesHour = true;
     lines.push(`${cronExpression(preset.expr, minute, hour)} '${php}' '${script}' ${flags}`);
   }
 
@@ -1285,30 +1305,82 @@ function updateSchedulePreview() {
     ? lines.join("\n")
     : "Nothing — saving will remove this dashboard's lines from the crontab.";
 
-  /*
-   * A field that does nothing is greyed out and says why.
-   *
-   * Leaving both enabled all the time is what made "hourly at minute 7 at hour
-   * 2" look like it had been accepted when only the 7 was ever used.
-   */
-  setFieldUsable("schedMinute", usesMinute);
-  setFieldUsable("schedHour", usesHour);
-
-  const unused = [];
-  if (!usesMinute) unused.push("minute");
-  if (!usesHour) unused.push("hour");
-  $("schedNote").textContent = unused.length
-    ? `The ${unused.join(" and ")} ${unused.length === 1 ? "field is" : "fields are"} `
-      + "not used by the schedules you have chosen. "
-      + "Only \u201cOnce a day\u201d uses the hour; the fixed intervals use neither."
-    : "";
+  $("schedNote").textContent = scheduleNote(limit);
+  $("schedTimes").textContent = lines.length ? describeTimes(jobs, data, minute, hour) : "";
 }
 
-function setFieldUsable(id, usable) {
+/**
+ * Points a field at its current bounds, clamping what is in it.
+ *
+ * A field that does nothing is greyed out; one that is restricted keeps its
+ * range on the input itself so the browser's own stepper respects it. Leaving
+ * both wide open all the time is what made "hourly at minute 7 at hour 2" look
+ * as though it had been accepted when only the 7 was ever used.
+ */
+function applyBound(id, bound) {
   const field = $(id);
-  field.disabled = !usable;
-  field.style.opacity = usable ? "1" : ".4";
-  field.parentElement.style.opacity = usable ? "1" : ".55";
+  field.disabled = !bound.used;
+  field.max = String(bound.max);
+  field.style.opacity = bound.used ? "1" : ".4";
+  field.parentElement.style.opacity = bound.used ? "1" : ".55";
+
+  const value = Math.max(0, Math.min(bound.max, Number(field.value) || 0));
+  if (String(value) !== field.value) field.value = String(value);
+  return value;
+}
+
+function scheduleNote(limit) {
+  const parts = [];
+
+  const unused = [];
+  if (!limit.minute.used) unused.push("minute");
+  if (!limit.hour.used) unused.push("hour");
+  if (unused.length) {
+    parts.push(`The ${unused.join(" and ")} ${unused.length === 1 ? "field is" : "fields are"} `
+      + "not used by the schedules you have chosen.");
+  }
+
+  if (limit.hour.used && limit.hour.max < 23) {
+    parts.push(`The hour sets where the cycle starts, so it runs 0\u2013${limit.hour.max} `
+      + `and then repeats every ${limit.hour.max + 1} hours.`);
+  }
+  if (limit.minute.used && limit.minute.max < 59) {
+    parts.push(`The minute sets where the cycle starts, so it runs 0\u2013${limit.minute.max}.`);
+  }
+
+  return parts.join(" ");
+}
+
+/** The times the chosen schedule actually fires, spelled out. */
+function describeTimes(jobs, data, minute, hour) {
+  const said = [];
+
+  for (const [job, pick] of jobs) {
+    const preset = data.presets[job]?.[pick];
+    if (!preset || !preset.expr) continue;
+
+    const two = String(minute).padStart(2, "0");
+    let when;
+
+    if (!preset.expr.includes("%H") && !preset.expr.includes("%M")) {
+      when = preset.label.toLowerCase();
+    } else if (!preset.expr.includes("%H")) {
+      when = preset.minute_max != null
+        ? `at :${two} and every ${preset.minute_max + 1} minutes after`
+        : `at :${two} past every hour`;
+    } else if (preset.hour_max != null) {
+      const step = preset.hour_max + 1;
+      const times = [];
+      for (let h = hour; h < 24; h += step) times.push(`${String(h).padStart(2, "0")}:${two}`);
+      when = `at ${times.join(", ")}`;
+    } else {
+      when = `at ${String(hour).padStart(2, "0")}:${two} daily`;
+    }
+
+    said.push(`${job} ${when}`);
+  }
+
+  return said.join(" \u00b7 ");
 }
 
 /** Which preset the installed line looks like, so the form opens on it. */
@@ -1316,8 +1388,12 @@ function guessPick(lines, flag, presets) {
   const line = lines.find(l => l.includes(flag));
   if (!line) return "off";
   const expr = line.split(/\s+/).slice(0, 5).join(" ");
+  // A star counts as a phase of zero. Earlier versions wrote a star before the
+  // slash where this one writes a number, and the two mean the same thing.
+  // Without accepting both, an install that had already saved a schedule would
+  // open showing "Off" and quietly offer to replace a good crontab with nothing.
   const match = Object.entries(presets).find(([, p]) =>
-    p.expr && p.expr.replace(/%M|%H/g, "\\d+").split(" ").every(
+    p.expr && p.expr.replace(/%M|%H/g, "(?:\\d+|\\*)").split(" ").every(
       (part, i) => new RegExp(`^${part.replace(/\*/g, "\\*")}$`).test(expr.split(" ")[i] ?? "")
     ));
   return match ? match[0] : "off";

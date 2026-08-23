@@ -143,13 +143,28 @@ not do that. **No field on the page becomes part of a command.**
 - The minute and hour are cast to integers and clamped to 0–59 and 0–23.
 - The command itself is assembled from constants, with both paths quoted.
 
-**Not every schedule uses the minute and the hour.** The fixed intervals
-(`every minute`, `every 5`, `every 15`) use neither; `hourly` and `every 6
-hours` use only the minute; **only `Once a day` uses the hour**. The form greys
-out whichever fields the current choice ignores and says why, and shows the
-exact lines it is about to write before you press the button — picking `Hourly`
-and setting an hour used to look as though it had been accepted when the hour
-was never going to be used.
+**The minute and hour mean different things to different schedules**, so the
+form bounds them to whatever the current choice accepts, greys out the ones it
+ignores, and spells out the times in words:
+
+| schedule | uses | range |
+| --- | --- | --- |
+| Every minute | neither | — |
+| Every 5 / 15 minutes | minute, as a starting offset | 0–4 / 0–14 |
+| Hourly | minute | 0–59 |
+| Every 6 / 12 hours | minute, and hour as a starting offset | hour 0–5 / 0–11 |
+| Once a day | minute and hour | 0–59, 0–23 |
+
+For the repeating ones the hour is a *phase*, not a time: cron reads `2/6` as
+"from 02:00, then every six hours", so minute 7 and hour 2 gives 02:07, 08:07,
+14:07 and 20:07. Above 5 a phase stops meaning anything — `20/6` would fire once
+a day — so the field caps there and the value is clamped rather than accepted
+and quietly mangled.
+
+Above the button, the form shows the exact lines it will write and a plain
+reading of them (*"scan at 02:07, 08:07, 14:07, 20:07"*). Picking `Hourly` and
+setting an hour used to look as though it had been accepted when the hour was
+never going to be used.
 
 **The rest of your crontab is left alone.** The dashboard's lines live between
 two marker comments; everything outside them is copied through in order.

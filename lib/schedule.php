@@ -27,9 +27,14 @@ const CRON_END = '# END diskmon';
 /**
  * The schedules on offer, and the cron expression each one means.
  *
- * A closed list. `minute` is filled in for the hourly and daily ones so two
- * jobs do not start on the same tick, but it is an integer this file clamps,
- * never a string that reaches the crontab.
+ * A closed list. `%M` and `%H` are filled in from the chosen minute and hour,
+ * as integers this file clamps - never as strings that reach the crontab.
+ *
+ * `hour_max` is the largest hour a preset accepts, and it is not always 23. In
+ * cron, `2/6` in the hours field means "starting at 2, then every 6 hours", so
+ * a six-hourly job has a *phase* rather than a fixed time: 2 gives 02:00,
+ * 08:00, 14:00, 20:00. Above 5 the phase stops meaning anything - `20/6` would
+ * fire once a day at 20:00, which is not what "every 6 hours" says on the tin.
  */
 function cronPresets(): array
 {
@@ -37,17 +42,48 @@ function cronPresets(): array
         'vitals' => [
             'off' => ['label' => 'Off', 'expr' => null],
             'every-minute' => ['label' => 'Every minute', 'expr' => '* * * * *'],
-            'every-5' => ['label' => 'Every 5 minutes', 'expr' => '*/5 * * * *'],
-            'every-15' => ['label' => 'Every 15 minutes', 'expr' => '*/15 * * * *'],
+            'every-5' => ['label' => 'Every 5 minutes', 'expr' => '%M/5 * * * *', 'minute_max' => 4],
+            'every-15' => ['label' => 'Every 15 minutes', 'expr' => '%M/15 * * * *', 'minute_max' => 14],
             'hourly' => ['label' => 'Hourly', 'expr' => '%M * * * *'],
         ],
         'scan' => [
             'off' => ['label' => 'Off', 'expr' => null],
             'hourly' => ['label' => 'Hourly', 'expr' => '%M * * * *'],
-            'every-6' => ['label' => 'Every 6 hours', 'expr' => '%M */6 * * *'],
+            'every-6' => ['label' => 'Every 6 hours', 'expr' => '%M %H/6 * * *', 'hour_max' => 5],
+            'every-12' => ['label' => 'Every 12 hours', 'expr' => '%M %H/12 * * *', 'hour_max' => 11],
             'daily' => ['label' => 'Once a day', 'expr' => '%M %H * * *'],
         ],
     ];
+}
+
+/**
+ * The tightest bound a set of choices puts on the minute and the hour.
+ *
+ * Both fields are shared between the two jobs, so the limit is whichever chosen
+ * preset is fussiest: a six-hourly scan caps the hour at 5 whatever the vitals
+ * job is doing.
+ *
+ * @return array{minute: int, hour: int}
+ */
+function cronBounds(array $choices): array
+{
+    $presets = cronPresets();
+    $bounds = ['minute' => 59, 'hour' => 23];
+
+    foreach (['vitals', 'scan'] as $job) {
+        $preset = $presets[$job][(string)($choices[$job] ?? 'off')] ?? null;
+        if (!$preset || $preset['expr'] === null) {
+            continue;
+        }
+        if (isset($preset['minute_max'])) {
+            $bounds['minute'] = min($bounds['minute'], (int)$preset['minute_max']);
+        }
+        if (isset($preset['hour_max'])) {
+            $bounds['hour'] = min($bounds['hour'], (int)$preset['hour_max']);
+        }
+    }
+
+    return $bounds;
 }
 
 /** The flags each job runs with. Constants, not input. */
@@ -224,8 +260,11 @@ function buildCronLines(array $choices, string $php, string $scriptDir): array
         throw new ActionRefused('cannot find cron.php');
     }
 
-    $minute = max(0, min(59, (int)($choices['minute'] ?? 7)));
-    $hour = max(0, min(23, (int)($choices['hour'] ?? 2)));
+    // Clamped to what the chosen presets actually accept, not to the widest
+    // possible range: an hour of 20 on a six-hourly job would be a daily one.
+    $bounds = cronBounds($choices);
+    $minute = max(0, min($bounds['minute'], (int)($choices['minute'] ?? 7)));
+    $hour = max(0, min($bounds['hour'], (int)($choices['hour'] ?? 2)));
 
     $lines = [];
     foreach ($jobs as $job => $flags) {
