@@ -34,6 +34,8 @@ const state = {
   viewable: [],
   categories: [],
   log: { pathId: null, page: 0, needle: "" },
+  schedule: null,
+  scheduleDirty: false,
   units: "bytes",
   busy: false,
 };
@@ -1130,6 +1132,18 @@ async function refreshSchedule() {
   }
   panel.hidden = false;
 
+  /*
+   * Never rebuild the form out from under somebody filling it in.
+   *
+   * refreshSchedule runs on the same thirty-second poll as everything else, and
+   * it used to replace the whole panel each time - so choices made just before
+   * a tick were silently reset to whatever is installed, and the next press of
+   * Save wrote those instead of what had been picked.
+   */
+  if (state.scheduleDirty || panel.contains(document.activeElement)) {
+    return;
+  }
+
   let data;
   try {
     data = await api("schedule");
@@ -1138,6 +1152,11 @@ async function refreshSchedule() {
     return;
   }
 
+  state.schedule = data;
+  drawSchedule(data);
+}
+
+function drawSchedule(data) {
   const holder = document.createElement("div");
   holder.className = "sched";
 
@@ -1177,10 +1196,35 @@ async function refreshSchedule() {
   );
   holder.appendChild(form);
 
+  const note = document.createElement("p");
+  note.className = "muted small";
+  note.id = "schedNote";
+  holder.appendChild(note);
+
+  /*
+   * What will actually be written, shown before it is.
+   *
+   * The reason this exists: "At hour" is only used by the one preset that runs
+   * once a day, so choosing Hourly and setting the hour silently dropped it,
+   * and the first anybody knew was reading the crontab afterwards. A preview
+   * makes every one of those cases obvious without having to know which field
+   * feeds which schedule.
+   *
+   * The server builds the real lines and refuses anything not on its list; this
+   * is a rendering of the same rules, not a second source of truth.
+   */
+  const previewLabel = document.createElement("p");
+  previewLabel.className = "muted small";
+  previewLabel.textContent = "This will be written:";
+  const preview = document.createElement("pre");
+  preview.id = "schedPreview";
+  holder.append(previewLabel, preview);
+
   const buttons = document.createElement("div");
   buttons.className = "row";
 
   const save = document.createElement("button");
+  save.id = "schedSave";
   save.textContent = data.lines.length ? "Update the schedule" : "Add to the crontab";
   save.addEventListener("click", () => saveSchedule(false));
   buttons.appendChild(save);
@@ -1195,6 +1239,76 @@ async function refreshSchedule() {
 
   holder.appendChild(buttons);
   $("scheduleBody").replaceChildren(holder);
+
+  for (const id of ["schedVitals", "schedScan", "schedMinute", "schedHour", "schedPhp"]) {
+    $(id).addEventListener("input", () => {
+      state.scheduleDirty = true;
+      updateSchedulePreview();
+    });
+  }
+
+  updateSchedulePreview();
+}
+
+/** Substitutes the chosen minute and hour the way the server will. */
+function cronExpression(expr, minute, hour) {
+  return expr.replace(/%M/g, String(minute)).replace(/%H/g, String(hour));
+}
+
+function updateSchedulePreview() {
+  const data = state.schedule;
+  if (!data || !$("schedPreview")) return;
+
+  const minute = Math.max(0, Math.min(59, Number($("schedMinute").value) || 0));
+  const hour = Math.max(0, Math.min(23, Number($("schedHour").value) || 0));
+  const php = $("schedPhp").value;
+  const script = data.script || "cron.php";
+
+  const jobs = [
+    ["vitals", $("schedVitals").value, "--vitals --alerts --quiet"],
+    ["scan", $("schedScan").value, "--scan --alerts --prune --quiet"],
+  ];
+
+  const lines = [];
+  let usesMinute = false;
+  let usesHour = false;
+
+  for (const [job, pick, flags] of jobs) {
+    const preset = data.presets[job]?.[pick];
+    if (!preset || !preset.expr) continue;
+    if (preset.expr.includes("%M")) usesMinute = true;
+    if (preset.expr.includes("%H")) usesHour = true;
+    lines.push(`${cronExpression(preset.expr, minute, hour)} '${php}' '${script}' ${flags}`);
+  }
+
+  $("schedPreview").textContent = lines.length
+    ? lines.join("\n")
+    : "Nothing — saving will remove this dashboard's lines from the crontab.";
+
+  /*
+   * A field that does nothing is greyed out and says why.
+   *
+   * Leaving both enabled all the time is what made "hourly at minute 7 at hour
+   * 2" look like it had been accepted when only the 7 was ever used.
+   */
+  setFieldUsable("schedMinute", usesMinute);
+  setFieldUsable("schedHour", usesHour);
+
+  const unused = [];
+  if (!usesMinute) unused.push("minute");
+  if (!usesHour) unused.push("hour");
+  $("schedNote").textContent = unused.length
+    ? `The ${unused.join(" and ")} ${unused.length === 1 ? "field is" : "fields are"} `
+      + "not used by the schedules you have chosen. "
+      + "Only \u201cOnce a day\u201d uses the hour; the fixed intervals use neither."
+    : "";
+}
+
+function setFieldUsable(id, usable) {
+  const field = $(id);
+  field.disabled = !usable;
+  field.style.opacity = usable ? "1" : ".4";
+  field.parentElement.style.opacity = usable ? "1" : ".55";
 }
 
 /** Which preset the installed line looks like, so the form opens on it. */
@@ -1238,9 +1352,10 @@ function numberField(id, label, min, max, value) {
 }
 
 async function saveSchedule(remove) {
+  const preview = remove ? "" : ($("schedPreview")?.textContent ?? "");
   const what = remove
     ? "Remove this dashboard's lines from your crontab?"
-    : "Write these lines into your crontab?";
+    : `Write this into your crontab?\n\n${preview}`;
   if (!confirm(`${what}\n\nNothing else in it is changed.`)) return;
 
   try {
@@ -1254,6 +1369,8 @@ async function saveSchedule(remove) {
     notice(result.lines.length
       ? `Crontab updated with ${result.lines.length} line${result.lines.length === 1 ? "" : "s"}.`
       : "Removed from the crontab.", true);
+    // The edits are committed, so the panel may follow the installed state again.
+    state.scheduleDirty = false;
     await refreshSchedule();
   } catch (error) {
     notice(String(error.message || error));

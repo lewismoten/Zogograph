@@ -143,6 +143,14 @@ not do that. **No field on the page becomes part of a command.**
 - The minute and hour are cast to integers and clamped to 0–59 and 0–23.
 - The command itself is assembled from constants, with both paths quoted.
 
+**Not every schedule uses the minute and the hour.** The fixed intervals
+(`every minute`, `every 5`, `every 15`) use neither; `hourly` and `every 6
+hours` use only the minute; **only `Once a day` uses the hour**. The form greys
+out whichever fields the current choice ignores and says why, and shows the
+exact lines it is about to write before you press the button — picking `Hourly`
+and setting an hour used to look as though it had been accepted when the hour
+was never going to be used.
+
 **The rest of your crontab is left alone.** The dashboard's lines live between
 two marker comments; everything outside them is copied through in order.
 Removing the schedule takes the markers with it, so nothing is left behind.
