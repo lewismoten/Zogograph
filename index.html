@@ -44,7 +44,10 @@ td.size { text-align: right; white-space: nowrap; }
 .muted { color: #999; }
 .error { padding: 12px; background: #4b1c1c; border-radius: 8px; margin-bottom: 12px; }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .85rem; color: #bbb; margin-top: 8px; }
-.legend span::before { content: "●"; margin-right: 5px; }
+/* The dot is the series colour and the label stays muted, so the swatch is
+   readable without the text shouting. --dot is set from the same palette the
+   chart draws with; see SERIES_COLORS. */
+.legend span::before { content: "●"; margin-right: 5px; color: var(--dot, currentColor); }
 @media (max-width: 700px) {
   body { padding: 12px; }
   .grid { grid-template-columns: 1fr; }
@@ -94,7 +97,6 @@ td.size { text-align: right; white-space: nowrap; }
   <section class="panel">
     <h2>Trash / Logs / Temp</h2>
     <canvas id="categoryChart"></canvas>
-    <div class="legend"><span>Trash</span><span>Logs</span><span>Temp</span></div>
   </section>
 
   <section class="panel">
@@ -130,6 +132,18 @@ td.size { text-align: right; white-space: nowrap; }
 
 <script>
 const DATA_ROOT = "./data/";
+
+/**
+ * The colours a chart draws its series in, in order.
+ *
+ * Up here rather than inside drawLineChart because the legend has to agree with
+ * it. It used to be a local in the drawing code and the legend was three
+ * hand-written spans with no colour on them at all, so every swatch came out
+ * the inherited grey and matched nothing on the chart.
+ */
+const SERIES_COLORS = ["#73b7ff", "#ffb86b", "#75d58a", "#d5a6ff", "#ff7f9f"];
+
+const seriesColor = i => SERIES_COLORS[i % SERIES_COLORS.length];
 let indexData = null;
 let allRows = [];
 let latestSnapshot = null;
@@ -343,7 +357,31 @@ function renderTables(snapshot) {
   renderTable("tempDirs", snapshot.categories?.temp?.top_directories || [], columns);
 }
 
+/**
+ * Writes the legend for a chart, from the series it was actually given.
+ *
+ * Kept next to the canvas and rebuilt on every draw, so a series that is added,
+ * removed or reordered cannot leave the key behind saying something else.
+ */
+function drawLegend(canvas, series) {
+  let el = canvas.nextElementSibling;
+  if (!el || !el.classList.contains("legend")) {
+    el = document.createElement("div");
+    el.className = "legend";
+    canvas.after(el);
+  }
+
+  el.replaceChildren(...series.map((s, i) => {
+    const span = document.createElement("span");
+    span.textContent = s.label;
+    span.style.setProperty("--dot", seriesColor(i));
+    return span;
+  }));
+}
+
 function drawLineChart(canvas, rows, series) {
+  drawLegend(canvas, series);
+
   const dpr = window.devicePixelRatio || 1;
   const cssW = Math.max(300, canvas.clientWidth);
   const cssH = 280;
@@ -405,11 +443,9 @@ function drawLineChart(canvas, rows, series) {
     ctx.fillText(text, Math.min(Math.max(pad.left, xx - 45), cssW - 120), cssH - 12);
   }
 
-  const defaultColors = ["#73b7ff", "#ffb86b", "#75d58a", "#d5a6ff", "#ff7f9f"];
-
   series.forEach((s, si) => {
-    ctx.strokeStyle = defaultColors[si % defaultColors.length];
-    ctx.fillStyle = defaultColors[si % defaultColors.length];
+    ctx.strokeStyle = seriesColor(si);
+    ctx.fillStyle = seriesColor(si);
     ctx.lineWidth = 2;
     ctx.beginPath();
 
