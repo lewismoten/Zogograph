@@ -11,6 +11,8 @@ monitor you have to remember to look at is a monitor that tells you afterwards.
 
 - `cron.php` — the collector. Command line only; `.htaccess` denies it over HTTP.
 - `setup.php` — the config wizard, in a browser or at a prompt.
+- `health.php` — a diagnostic page that depends on nothing and works when the
+  rest does not.
 - `api.php` — the only thing the dashboard talks to.
 - `index.html` / `index.css` / `index.js` — the dashboard.
 - `lib/` — config, database, collection, alerting, auth, masking, actions.
@@ -289,6 +291,9 @@ One SQLite file, normalised on `paths`:
 | `alerts` | what was raised, and whether the email went |
 | `actions` | every delete attempted, and what happened |
 
+Problems go to `data/error.log` rather than a table, so that a database that
+cannot be opened is still able to report why.
+
 Reading a log and editing the crontab do not write to the database. Deleting
 does, and always has, including the refusals.
 
@@ -336,6 +341,42 @@ temporary, and `Empty temp` would offer to delete the lot.
 
 The monitor's own `data/` directory is excluded, and symlinks are never
 followed.
+
+## When something goes wrong
+
+Open **`health.php`**. It requires nothing, includes nothing and never touches
+the database or the config, so it runs on an install that is otherwise entirely
+broken — which is the only time it is worth having. It checks that every file is
+present and actually parses (a truncated upload looks identical to a healthy
+file until PHP compiles it), that PHP is new enough, that SQLite is there, and
+that `data/` is writable. It reports states and never paths, because it answers
+to anyone who can reach it.
+
+If everything there is green, the fault is at runtime. Every failed request now
+returns a **reference** instead of a blank page:
+
+```json
+{"error":"Something went wrong on the server.","reference":"c5767186"}
+```
+
+Find that reference in `data/error.log`, or on the dashboard under **Recent
+problems** once you are signed in. The message itself is never sent to the
+browser — it names file paths and sometimes SQL, and the API answers to people
+who are not signed in.
+
+### Why there is no error_log to read
+
+Because many hosts do not configure one. `health.php` says whether yours has,
+and this project writes its own to `data/error.log` regardless, at a known path,
+denied by `data/.htaccess`.
+
+The boundary is installed before anything that can fail, which matters more than
+it sounds: the previous version wrapped the request in a try/catch, and a fatal
+during `require` happens before the try block exists. What escaped was either a
+blank 500 or — with `display_errors` on — HTML warnings printed into the middle
+of a JSON body with a 200 status on top. Three separate handlers now cover
+warnings, uncaught exceptions and fatals, and all three end in a JSON body with
+the right status code.
 
 ## Security
 

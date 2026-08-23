@@ -32,6 +32,11 @@ declare(strict_types=1);
  * straight away, and delete setup.php afterwards - the page says so itself.
  */
 
+require_once __DIR__ . '/lib/boot.php';
+if (PHP_SAPI !== 'cli') {
+    installErrorBoundary('html');
+}
+
 $root = __DIR__;
 $samplePath = $root . '/lib/config.sample.php';
 $targetPath = $root . '/lib/config.php';

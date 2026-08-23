@@ -33,6 +33,9 @@ if (!is_file($configFile)) {
 $config = require $configFile;
 date_default_timezone_set($config['timezone'] ?? 'UTC');
 
+require_once __DIR__ . '/lib/boot.php';
+define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
+
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/alerts.php';
@@ -103,6 +106,9 @@ try {
         $say('prune   ' . prune($pdo));
     }
 } catch (Throwable $e) {
+    // To the log as well as to stderr: cron's stderr goes to whatever the
+    // crontab line redirects to, which is often nowhere.
+    logProblem('error', 'cron: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
     fwrite(STDERR, 'error: ' . $e->getMessage() . "\n");
     exit(1);
 }

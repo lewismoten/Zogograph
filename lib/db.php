@@ -70,6 +70,19 @@ function migrate(PDO $pdo): void
         $pdo->beginTransaction();
         try {
             foreach ($statements as $sql) {
+                /*
+                 * Adding a column that is already there is not a failure.
+                 *
+                 * A migration that dies halfway leaves its earlier statements
+                 * applied but its version unrecorded, so the next run tries
+                 * them again and SQLite refuses with "duplicate column name" -
+                 * permanently, on every request, with no way out but a hand
+                 * edit. Skipping the ones already done makes a retry work.
+                 */
+                if (preg_match('/^ALTER TABLE (\w+) ADD COLUMN (\w+)/i', trim($sql), $m)
+                    && columnExists($pdo, $m[1], $m[2])) {
+                    continue;
+                }
                 $pdo->exec($sql);
             }
             $pdo->prepare('INSERT INTO schema_version (version) VALUES (?)')->execute([$version]);
@@ -79,6 +92,13 @@ function migrate(PDO $pdo): void
             throw $e;
         }
     }
+}
+
+function columnExists(PDO $pdo, string $table, string $column): bool
+{
+    $stmt = $pdo->prepare('SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?');
+    $stmt->execute([$table, $column]);
+    return (int)$stmt->fetchColumn() > 0;
 }
 
 function migrations(): array

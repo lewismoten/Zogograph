@@ -11,6 +11,16 @@ declare(strict_types=1);
  * markup. Everything that changes the disk is POST, signed in, and CSRF checked.
  */
 
+/*
+ * The error boundary goes on before anything else can fail.
+ *
+ * Every require below this line, the config file, the database - any of them
+ * can blow up, and until this is installed a failure produces a blank 500 with
+ * nothing in the body to read.
+ */
+require_once __DIR__ . '/lib/boot.php';
+installErrorBoundary('json');
+
 $configFile = __DIR__ . '/lib/config.php';
 if (!is_file($configFile)) {
     http_response_code(503);
@@ -21,6 +31,10 @@ if (!is_file($configFile)) {
 
 $config = require $configFile;
 date_default_timezone_set($config['timezone'] ?? 'UTC');
+
+// Now that the config is known, problems go beside the database rather than to
+// the fallback path guessed before it was read.
+define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
@@ -44,14 +58,13 @@ try {
     $pdo = db($config);
     echo json_encode(route($config, $pdo, $action, $post), JSON_UNESCAPED_SLASHES);
 } catch (ActionRefused $e) {
+    // An expected refusal, not a fault: the message is written for the person
+    // reading it and is safe to show.
     http_response_code(403);
     echo json_encode(['error' => $e->getMessage()]);
-} catch (Throwable $e) {
-    http_response_code(500);
-    // The message can name paths and SQL. It goes to the log, not the browser.
-    error_log('[diskmon] ' . $e->getMessage());
-    echo json_encode(['error' => 'Request failed. See the server error log.']);
 }
+// Anything else falls through to the boundary installed above, which logs it
+// with a reference and returns that reference as JSON.
 
 function route(array $config, PDO $pdo, string $action, bool $post): array
 {
@@ -68,6 +81,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'actions' => actionLog($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
+        'health' => healthCheck($config, $pdo, $signedIn),
+        'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
         'signin' => doSignIn($config, $post),
         'signout' => doSignOut(),
@@ -386,6 +401,74 @@ function doTestEmail(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
     return sendTestEmail($config, $pdo);
+}
+
+/**
+ * What is wrong with this install, in the terms that actually break it.
+ *
+ * Written for the moment when the dashboard is returning 500s and there is no
+ * error log to be found: it answers "can PHP write where it needs to", "is the
+ * database reachable", "which PHP is this" without needing a shell. Open to
+ * everybody because a broken install has to be diagnosable by whoever can see
+ * it, and it deliberately reports states rather than paths.
+ */
+function healthCheck(array $config, PDO $pdo, bool $signedIn): array
+{
+    $dataDir = dirname((string)$config['database']);
+    $scanRoot = (string)$config['scan_root'];
+
+    $checks = [
+        'php_version' => PHP_VERSION,
+        'php_new_enough' => PHP_VERSION_ID >= 80100,
+        'sqlite' => in_array('sqlite', PDO::getAvailableDrivers(), true),
+        'data_dir_writable' => is_dir($dataDir) && is_writable($dataDir),
+        'database_writable' => is_file($config['database'])
+            ? is_writable($config['database'])
+            : (is_dir($dataDir) && is_writable($dataDir)),
+        'scan_root_readable' => is_dir($scanRoot) && is_readable($scanRoot),
+        'schema_version' => (int)$pdo->query(
+            'SELECT COALESCE(MAX(version), 0) FROM schema_version'
+        )->fetchColumn(),
+        'mail_available' => function_exists('mail'),
+        'shell_available' => function_exists('shell_exec')
+            && !in_array('shell_exec', array_map('trim', explode(',', (string)ini_get('disable_functions'))), true),
+        'proc_readable' => @is_readable('/proc/stat'),
+        'problem_log_entries' => count(recentProblems(problemLogPath($config), 200)),
+    ];
+
+    // Only somebody signed in gets told where any of it is.
+    if ($signedIn) {
+        $checks['data_dir'] = $dataDir;
+        $checks['problem_log'] = problemLogPath($config);
+        $checks['php_error_log'] = ini_get('error_log') ?: '(PHP is not configured with one)';
+        $checks['php_binary_guess'] = PHP_BINDIR . '/php';
+    }
+
+    return ['checks' => $checks];
+}
+
+function problemLogPath(array $config): string
+{
+    return dirname((string)$config['database']) . '/error.log';
+}
+
+/**
+ * The dashboard's own error log.
+ *
+ * Signed in only: the entries name file paths, class names and sometimes SQL,
+ * which is the whole reason they are not sent to the browser in the first
+ * place.
+ */
+function problemLog(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to read the problem log');
+    }
+
+    return [
+        'path' => problemLogPath($config),
+        'rows' => recentProblems(problemLogPath($config), 80),
+    ];
 }
 
 function sessionState(array $config): array

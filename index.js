@@ -85,8 +85,10 @@ async function api(action, params = {}) {
     cache: "no-store",
     credentials: "same-origin",
   });
-  const body = await response.json().catch(() => ({ error: "Bad response" }));
-  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  const body = await response.json().catch(() => ({
+    error: `The server returned ${response.status} with something that is not JSON.`,
+  }));
+  if (!response.ok) throw new Error(withReference(body, response.status));
   return body;
 }
 
@@ -98,9 +100,24 @@ async function post(action, fields = {}) {
     credentials: "same-origin",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
   });
-  const parsed = await response.json().catch(() => ({ error: "Bad response" }));
-  if (!response.ok) throw new Error(parsed.error || `HTTP ${response.status}`);
+  const parsed = await response.json().catch(() => ({
+    error: `The server returned ${response.status} with something that is not JSON.`,
+  }));
+  if (!response.ok) throw new Error(withReference(parsed, response.status));
   return parsed;
+}
+
+/**
+ * The message to show for a failed request.
+ *
+ * The reference is the point of it. The server will not put the real error in a
+ * response - it names paths and sometimes SQL - so the reference is what ties
+ * what you saw on screen to the entry in the problem log.
+ */
+function withReference(body, status) {
+  const parts = [body.error || `HTTP ${status}`];
+  if (body.reference) parts.push(`(reference ${body.reference})`);
+  return parts.join(" ");
 }
 
 function notice(message, ok = false) {
@@ -668,7 +685,8 @@ async function refreshAll() {
       : "";
 
     await Promise.all([
-      refreshOffenders(), refreshAlerts(), refreshActionLog(), refreshSchedule(),
+      refreshOffenders(), refreshAlerts(), refreshActionLog(),
+      refreshSchedule(), refreshHealth(), refreshProblems(),
     ]);
     if (state.historyPathId) await showHistory(state.historyPathId, true);
     if (state.log.pathId) await showLog(state.log.pathId, true);
@@ -1001,6 +1019,107 @@ function highlight(text, needle) {
   return out;
 }
 
+/* ----------------------------------------------------------------- health -- */
+
+/** Plain-language names for the checks, and what a false one means. */
+const HEALTH_LABELS = {
+  data_dir_writable: ["Data directory writable", "The database cannot be created or updated."],
+  database_writable: ["Database writable", "Readings cannot be recorded."],
+  scan_root_readable: ["Watched directory readable", "Scans will find nothing."],
+  php_new_enough: ["PHP 8.1 or newer", "This code will not run correctly."],
+  sqlite: ["SQLite driver", "Nothing can be stored at all."],
+  mail_available: ["mail() available", "Alert emails cannot be sent from here."],
+  shell_available: ["shell_exec available", "Inodes and the crontab editor are unavailable."],
+  proc_readable: ["/proc readable", "CPU, memory and network stay empty."],
+};
+
+async function refreshHealth() {
+  let data;
+  try {
+    data = await api("health");
+  } catch (error) {
+    $("healthBody").textContent = String(error.message || error);
+    return;
+  }
+
+  const checks = data.checks;
+  const rows = Object.entries(HEALTH_LABELS)
+    .filter(([key]) => key in checks)
+    .map(([key, [label, consequence]]) => ({
+      label,
+      ok: Boolean(checks[key]),
+      consequence,
+      /*
+       * A host with no /proc and no mail() is limited, not broken.
+       *
+       * Painting those red would put two permanent failures on every shared
+       * host, which is how people learn to ignore the whole panel.
+       */
+      soft: ["mail_available", "shell_available", "proc_readable"].includes(key),
+    }));
+
+  const table = document.createElement("table");
+  const body = table.createTBody();
+  for (const row of rows) {
+    const tr = body.insertRow();
+    const mark = tr.insertCell();
+    mark.textContent = row.ok ? "\u2713" : row.soft ? "\u2014" : "\u2715";
+    mark.className = row.ok ? "shrank" : row.soft ? "muted" : "grew";
+    mark.style.width = "2ch";
+    tr.insertCell().textContent = row.label;
+    const note = tr.insertCell();
+    note.className = "muted small";
+    note.textContent = row.ok ? "" : row.consequence;
+  }
+
+  const facts = document.createElement("p");
+  facts.className = "muted small";
+  const bits = [
+    `PHP ${checks.php_version}`,
+    `schema v${checks.schema_version}`,
+    `${checks.problem_log_entries} problem${checks.problem_log_entries === 1 ? "" : "s"} logged`,
+  ];
+  if (checks.php_error_log) bits.push(`PHP logs to ${checks.php_error_log}`);
+  if (checks.problem_log) bits.push(`this log: ${checks.problem_log}`);
+  facts.textContent = bits.join(" \u00b7 ");
+
+  $("healthBody").replaceChildren(table, facts);
+}
+
+async function refreshProblems() {
+  const panel = $("problemPanel");
+  if (!state.signedIn) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  let data;
+  try {
+    data = await api("problems");
+  } catch (error) {
+    $("problemBody").textContent = String(error.message || error);
+    return;
+  }
+
+  $("problemPath").textContent = data.path;
+
+  if (!data.rows.length) {
+    $("problemBody").replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: "Nothing has gone wrong. Good.",
+    }));
+    return;
+  }
+
+  renderTable("problemBody", data.rows, [
+    { label: "When", render: row => (row.at ? new Date(row.at).toLocaleString() : "") },
+    { label: "Level", render: row => row.level },
+    { label: "Where", render: row => row.where },
+    { label: "What happened", className: "name", render: row => row.message },
+  ]);
+}
+
 /* --------------------------------------------------------------- schedule -- */
 
 async function refreshSchedule() {
@@ -1296,6 +1415,11 @@ $("logSearch").addEventListener("input", () => {
     state.log.page = 0;
     if (state.log.pathId) showLog(state.log.pathId, true);
   }, 350);
+});
+
+$("healthRefresh").addEventListener("click", () => {
+  refreshHealth().catch(e => notice(String(e.message || e)));
+  refreshProblems().catch(() => {});
 });
 
 $("testEmail").addEventListener("click", async () => {
