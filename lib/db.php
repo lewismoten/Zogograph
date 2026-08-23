@@ -223,6 +223,30 @@ function migrations(): array
             )",
             'CREATE INDEX actions_at ON actions (at)',
         ],
+
+        2 => [
+            /*
+             * Network throughput, and how many cores the load average is over.
+             *
+             * Same shape as the CPU columns and for the same reason: the
+             * interesting number is a rate, a rate is a difference between two
+             * moments, and keeping the counters means a gap in collection
+             * produces an honest average over the gap rather than a wrong
+             * instant. The counters are cumulative since boot and reset when
+             * the machine does, which the reader has to allow for.
+             */
+            'ALTER TABLE vitals ADD COLUMN net_rx_bytes INTEGER',
+            'ALTER TABLE vitals ADD COLUMN net_tx_bytes INTEGER',
+            'ALTER TABLE vitals ADD COLUMN net_rx_rate REAL',
+            'ALTER TABLE vitals ADD COLUMN net_tx_rate REAL',
+            /*
+             * Load average means nothing without this.
+             *
+             * A load of 4 is a busy afternoon on eight cores and a fire on one,
+             * and the dashboard cannot say which without knowing the number.
+             */
+            'ALTER TABLE vitals ADD COLUMN cpu_cores INTEGER',
+        ],
     ];
 }
 

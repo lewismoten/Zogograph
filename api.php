@@ -59,7 +59,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'overview' => overview($config, $pdo, $signedIn),
         'vitals' => vitalsSeries($pdo),
         'sample' => liveSample($config, $pdo),
-        'scans' => scanSeries($pdo),
+        'scans' => scanSeries($config, $pdo),
         'offenders' => offenders($config, $pdo, $signedIn),
         'history' => pathHistory($config, $pdo, $signedIn),
         'alerts' => alertList($config, $pdo, $signedIn),
@@ -102,6 +102,9 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
             'SELECT COUNT(*) FROM alerts WHERE raised_at >= ' . (time() - 86400)
         )->fetchColumn(),
         'deletable' => $config['deletable_categories'] ?? [],
+        // So the dashboard builds its filters and its chart from the rules that
+        // are actually in force, rather than a copy of them that goes stale.
+        'categories' => categoryNames($config['scan']),
         'server_time' => time(),
     ];
 }
@@ -154,20 +157,41 @@ function liveSample(array $config, PDO $pdo): array
     return ['vitals' => takeVitals($config, $pdo, 'live')];
 }
 
-function scanSeries(PDO $pdo): array
+function scanSeries(array $config, PDO $pdo): array
 {
     [$from, $to] = window();
+
+    /*
+     * One column per category, built from the config rather than written out.
+     *
+     * The value is bound; the column *alias* cannot be, so it is filtered to
+     * plain identifiers instead. These names come from a config file rather
+     * than from a request, but an alias built by string concatenation is an
+     * alias built by string concatenation - and a category someone names with a
+     * space in it would otherwise produce a syntax error nobody could explain.
+     */
+    $categories = array_values(array_filter(
+        categoryNames($config['scan']),
+        fn(string $name): bool => (bool)preg_match('/^[a-z][a-z0-9_]{0,30}$/i', $name)
+    ));
+
+    $columns = [];
+    $params = [':from' => $from, ':to' => $to];
+    foreach ($categories as $i => $category) {
+        $columns[] = "MAX(CASE WHEN t.category = :c$i THEN t.bytes END) AS {$category}_bytes";
+        $params[":c$i"] = $category;
+    }
+
     $stmt = $pdo->prepare(
-        'SELECT s.id, s.started_at, s.finished_at, s.duration_ms, s.files_seen, s.dirs_seen, s.bytes_seen,
-                MAX(CASE WHEN t.category = \'trash\' THEN t.bytes END) AS trash_bytes,
-                MAX(CASE WHEN t.category = \'logs\'  THEN t.bytes END) AS logs_bytes,
-                MAX(CASE WHEN t.category = \'temp\'  THEN t.bytes END) AS temp_bytes
+        'SELECT s.id, s.started_at, s.finished_at, s.duration_ms, s.files_seen, s.dirs_seen,
+                s.bytes_seen' . ($columns ? ', ' . implode(', ', $columns) : '') . '
          FROM scans s LEFT JOIN scan_totals t ON t.scan_id = s.id
-         WHERE s.finished_at IS NOT NULL AND s.started_at BETWEEN ? AND ?
+         WHERE s.finished_at IS NOT NULL AND s.started_at BETWEEN :from AND :to
          GROUP BY s.id ORDER BY s.started_at'
     );
-    $stmt->execute([$from, $to]);
-    return ['rows' => $stmt->fetchAll()];
+    $stmt->execute($params);
+
+    return ['rows' => $stmt->fetchAll(), 'categories' => $categories];
 }
 
 /**

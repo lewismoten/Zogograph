@@ -23,6 +23,13 @@
         <option value="31536000">Last year</option>
       </select>
     </label>
+    <label class="inline">
+      Show
+      <select id="units">
+        <option value="bytes" selected>Absolute</option>
+        <option value="percent">Percent free</option>
+      </select>
+    </label>
     <button id="live" class="toggle" aria-pressed="false">
       <span class="dot" aria-hidden="true"></span> Live
     </button>
@@ -41,32 +48,53 @@
   <div class="card" id="cardInodes"><div class="label">Inodes free</div><div class="value">—</div><div class="sub muted"></div></div>
   <div class="card" id="cardCpu"><div class="label">CPU</div><div class="value">—</div><div class="sub muted"></div></div>
   <div class="card" id="cardMem"><div class="label">Memory used</div><div class="value">—</div><div class="sub muted"></div></div>
-  <div class="card" id="cardLoad"><div class="label">Load</div><div class="value">—</div><div class="sub muted"></div></div>
+  <div class="card" id="cardLoad"><div class="label">Load average</div><div class="value">—</div><div class="sub muted"></div></div>
+  <div class="card" id="cardNet"><div class="label">Network</div><div class="value">—</div><div class="sub muted"></div></div>
 </div>
 
 <div class="grid">
   <section class="panel">
-    <h2>Disk free</h2>
-    <canvas id="diskChart"></canvas>
+    <h2>Room left</h2>
+    <p class="muted small sub-note">
+      Disk space and inodes. Either can run out on its own — a disk with free
+      gigabytes and no inodes still refuses to create a file.
+    </p>
+    <canvas id="roomChart"></canvas>
   </section>
 
   <section class="panel">
     <h2>CPU and memory</h2>
+    <p class="muted small sub-note">
+      Share of the machine in use, since the previous reading.
+    </p>
     <canvas id="cpuChart"></canvas>
   </section>
 
   <section class="panel">
     <h2>Load average</h2>
+    <p class="muted small sub-note">
+      Not a percentage: it is how many processes wanted to run at once. Compare
+      it to the core count — at one per core the machine is busy, above that
+      work is queueing.
+    </p>
     <canvas id="loadChart"></canvas>
   </section>
 
   <section class="panel">
-    <h2>Inodes free</h2>
-    <canvas id="inodeChart"></canvas>
+    <h2>Network</h2>
+    <p class="muted small sub-note">
+      Bytes a second in and out, summed over the real interfaces. Loopback is
+      not counted.
+    </p>
+    <canvas id="netChart"></canvas>
   </section>
 
   <section class="panel wide">
-    <h2>Trash / Logs / Temp</h2>
+    <h2>Categories over time</h2>
+    <p class="muted small sub-note">
+      Totals from each completed scan. <code>error_log</code> files are counted
+      on their own, wherever they turn up — one of them can be the whole problem.
+    </p>
     <canvas id="categoryChart"></canvas>
   </section>
 </div>

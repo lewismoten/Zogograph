@@ -20,10 +20,16 @@ monitor you have to remember to look at is a monitor that tells you afterwards.
 
 Two kinds of reading, on two clocks, because they cost wildly different amounts.
 
-**Vitals** — disk bytes, inodes, load average, memory, CPU. A handful of file
-reads, so a minute apart is reasonable. CPU and memory come from `/proc`; on a
-host that does not expose it those columns are simply empty and everything else
-still works.
+**Vitals** — disk bytes, inodes, load average, memory, CPU, and network bytes
+in and out. A handful of file reads, so a minute apart is reasonable. CPU,
+memory and network come from `/proc`; on a host that does not expose it those
+columns are simply empty and everything else still works.
+
+CPU and network are stored as their raw cumulative counters as well as a
+computed rate, because a rate only exists as a difference between two moments.
+Keeping the counters means a gap in collection produces an honest average over
+the gap instead of a wrong instant, and a counter that goes backwards (a
+reboot) is discarded rather than reported as a spectacular negative.
 
 **Scans** — walk the tree, size everything, record the biggest files, the
 biggest directories, the fullest directories by file count, and the totals for
@@ -176,6 +182,31 @@ that table is the only place it would show.
 `Empty trash` and `Empty temp` remove the files in a category and leave the
 directories alone.
 
+## Reading the charts
+
+**Room left** puts disk space and inodes together, because they are the same
+question: either can run out on its own, and a disk with free gigabytes and no
+inodes still refuses to create a file. In **Absolute** they cannot share a scale
+— bytes and a count have nothing in common — so inodes move to the right-hand
+axis and get a dashed line. In **Percent free** they share one 0–100% axis and
+can be read against each other directly. The **Show** control at the top
+switches between the two.
+
+Absolute is the mode that shows a slope; percent is the mode that shows how
+close to the edge you are. A nearly-full disk looks flat in percent and
+obviously falling in bytes, which is why both exist.
+
+**Load average is not a percentage.** It is how many processes wanted to run at
+once, so it only means something against the core count: 4.00 is half busy on
+eight cores and twice oversubscribed on two. The card shows it as a share of the
+cores it has, and the collector records the core count alongside it.
+
+Axis ticks land on round numbers — 1, 2 or 5 times a power of ten — and carry
+enough decimals for neighbouring labels to differ. The unit is chosen by how big
+the numbers are and the decimals by how far apart they are, which are two
+different questions: 72 GiB of space moving by 50 MiB an hour reads as
+`71.94 GiB`, not as `73671 MiB`.
+
 ## Live updates
 
 The dashboard refreshes every 30 seconds. The **Live** button switches it to
@@ -218,9 +249,22 @@ sqlite3 data/stats.db "
 A file is assigned to at most one category, so the totals mean something next to
 each other. Directory names win over extensions.
 
+- Errors: any file actually **named** `error_log`, `php_errorlog` or `error.log`
 - Trash: under a directory named `.trash` or `trash`
 - Logs: under `log` or `logs`, or a `*.log` anywhere
 - Temp: under `tmp`, `temp` or `temporary`, or a `*.tmp` / `*.temp` anywhere
+
+Whole filenames (`category_files`) win over both directory and extension rules,
+and that ordering is the point of them. Apache and cPanel drop an `error_log`
+into every directory that has ever thrown a warning, and any one of them can
+quietly reach ten gigabytes. Counted as logs they vanish into a total; counted
+on their own you can see them, and the per-path history says which one is
+growing.
+
+The category list is derived from the rules, so adding one to
+`category_dirs`, `category_files` or `category_extensions` makes it appear in
+the scan totals, the chart, the offenders filter and the wizard's deletable
+list without touching any of them.
 
 Only the part of the path **below `scan_root`** is examined. Whatever the
 account happens to live under is not the user's doing — a home directory at

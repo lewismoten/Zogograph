@@ -92,6 +92,9 @@ button:disabled { opacity: .5; cursor: default; }
   margin-bottom: 10px;
 }
 .panel-head h2 { margin: 0; }
+/* A line of prose under a chart title, saying what the numbers are. Cheaper
+   than a tooltip and it survives a screenshot. */
+.sub-note { margin: -6px 0 10px; max-width: 60ch; }
 .panel-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .empty-buttons { display: flex; gap: 8px; }
 

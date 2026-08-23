@@ -19,6 +19,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/configure.php';
 
 /* ---------------------------------------------------------------- vitals -- */
 
@@ -31,6 +32,7 @@ function takeVitals(array $config, PDO $pdo, string $source = 'cron'): array
     $mem = memoryUsage();
     $cpu = cpuTicks();
     $load = loadAverage();
+    $net = networkCounters();
 
     // Busy time since the last reading, whoever took it. Null on the first one,
     // because a rate needs two points and inventing one would be a lie.
@@ -45,6 +47,33 @@ function takeVitals(array $config, PDO $pdo, string $source = 'cron'): array
             $totalDelta = $cpu['total'] - (int)$previous['cpu_total_ticks'];
             $idleDelta = $cpu['idle'] - (int)$previous['cpu_idle_ticks'];
             $percent = round(max(0.0, min(100.0, (1 - $idleDelta / $totalDelta) * 100)), 2);
+        }
+    }
+
+    /*
+     * Throughput since the last reading.
+     *
+     * Null on the first one, and null again after a reboot: the counters are
+     * cumulative since boot, so a smaller number than last time means the
+     * machine restarted, and dividing that difference would report a
+     * spectacular negative transfer rate.
+     */
+    $rxRate = null;
+    $txRate = null;
+    if ($net !== null) {
+        $previous = $pdo->query(
+            'SELECT taken_at, net_rx_bytes, net_tx_bytes FROM vitals
+             WHERE net_rx_bytes IS NOT NULL ORDER BY taken_at DESC, id DESC LIMIT 1'
+        )->fetch();
+
+        if ($previous) {
+            $seconds = $now - (int)$previous['taken_at'];
+            $rxDelta = $net['rx'] - (int)$previous['net_rx_bytes'];
+            $txDelta = $net['tx'] - (int)$previous['net_tx_bytes'];
+            if ($seconds > 0 && $rxDelta >= 0 && $txDelta >= 0) {
+                $rxRate = round($rxDelta / $seconds, 2);
+                $txRate = round($txDelta / $seconds, 2);
+            }
         }
     }
 
@@ -69,6 +98,11 @@ function takeVitals(array $config, PDO $pdo, string $source = 'cron'): array
         'mem_used_percent' => $mem['used_percent'],
         'swap_total_bytes' => $mem['swap_total'],
         'swap_used_bytes' => $mem['swap_used'],
+        'net_rx_bytes' => $net['rx'] ?? null,
+        'net_tx_bytes' => $net['tx'] ?? null,
+        'net_rx_rate' => $rxRate,
+        'net_tx_rate' => $txRate,
+        'cpu_cores' => cpuCores(),
         'source' => $source,
     ];
 
@@ -165,6 +199,61 @@ function cpuTicks(): ?array
     }
 
     return null;
+}
+
+/**
+ * Bytes in and out since boot, summed over the real interfaces.
+ *
+ * Loopback is excluded because it is not bandwidth - a busy local database can
+ * push gigabytes over `lo` without a byte leaving the machine, and counting it
+ * makes the graph a measure of something nobody is asking about.
+ *
+ * @return array{rx: int, tx: int}|null
+ */
+function networkCounters(): ?array
+{
+    $raw = @file_get_contents('/proc/net/dev');
+    if ($raw === false) {
+        return null;
+    }
+
+    $rx = 0;
+    $tx = 0;
+    $found = false;
+
+    foreach (preg_split('/\R/', $raw) ?: [] as $line) {
+        if (!preg_match('/^\s*([^:]+):\s*(.*)$/', $line, $m)) {
+            continue;
+        }
+        $name = trim($m[1]);
+        if ($name === 'lo' || str_starts_with($name, 'veth') || str_starts_with($name, 'docker')) {
+            continue;
+        }
+        $fields = preg_split('/\s+/', trim($m[2])) ?: [];
+        if (count($fields) < 9) {
+            continue;
+        }
+        $rx += (int)$fields[0];
+        $tx += (int)$fields[8];
+        $found = true;
+    }
+
+    return $found ? ['rx' => $rx, 'tx' => $tx] : null;
+}
+
+/** How many cores the load average is spread over, or null. */
+function cpuCores(): ?int
+{
+    $raw = @file_get_contents('/proc/cpuinfo');
+    if ($raw !== false) {
+        $count = preg_match_all('/^processor\s*:/m', $raw);
+        if ($count > 0) {
+            return $count;
+        }
+    }
+
+    $nproc = shellRead('getconf _NPROCESSORS_ONLN 2>/dev/null');
+    return $nproc !== null && ctype_digit(trim($nproc)) ? (int)trim($nproc) : null;
 }
 
 function memoryUsage(): array
@@ -312,7 +401,7 @@ function runScan(array $config, PDO $pdo): array
         $insertTotal = $pdo->prepare(
             'INSERT INTO scan_totals (scan_id, category, bytes, files) VALUES (?, ?, ?, ?)'
         );
-        foreach (['trash', 'logs', 'temp'] as $category) {
+        foreach (categoryNames($rules) as $category) {
             $insertTotal->execute([
                 $scanId,
                 $category,
@@ -449,6 +538,25 @@ function walk(
 function categoryOf(string $path, array $rules, string $root = ''): ?string
 {
     $lower = strtolower($path);
+
+    /*
+     * A whole filename wins over everything else.
+     *
+     * Checked first and against the full path, before the scan root is even
+     * trimmed off, because these are the files that hide: `error_log` inside a
+     * `logs/` directory would otherwise be counted as logs and vanish into a
+     * total, when the whole reason for the rule is that one of them can be ten
+     * gigabytes on its own.
+     */
+    $name = strtolower(basename($path));
+    foreach ($rules['category_files'] ?? [] as $category => $names) {
+        foreach ($names as $candidate) {
+            if ($name === strtolower($candidate)) {
+                return $category;
+            }
+        }
+    }
+
     if ($root !== '') {
         $lowerRoot = strtolower(rtrim($root, '/'));
         if (str_starts_with($lower, $lowerRoot . '/')) {
@@ -490,7 +598,7 @@ function categoryTops(
     string $root
 ): array {
     $picked = [];
-    foreach (array_keys($rules['category_dirs'] ?? []) as $category) {
+    foreach (categoryNames($rules) as $category) {
         foreach (['file' => $fileBytes, 'dir' => $dirBytes] as $kind => $sizes) {
             $inCategory = [];
             foreach ($sizes as $path => $bytes) {

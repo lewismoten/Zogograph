@@ -14,6 +14,25 @@ declare(strict_types=1);
  */
 
 /**
+ * Every category the rules can produce, in a stable order.
+ *
+ * Derived rather than written out, because it was written out - in the scan, in
+ * the API's column list and in the dashboard's filter - and adding a fourth
+ * meant finding all three. A category defined in the config and missing from
+ * one of those lists is one that gets collected and never shown.
+ */
+function categoryNames(array $rules): array
+{
+    $names = [];
+    foreach (['category_dirs', 'category_files', 'category_extensions'] as $group) {
+        foreach (array_keys($rules[$group] ?? []) as $category) {
+            $names[$category] = true;
+        }
+    }
+    return array_keys($names);
+}
+
+/**
  * Every question the wizard asks.
  *
  * `path` is where the answer lands in the config array. `type` decides how it
@@ -142,7 +161,9 @@ function configFields(array $sample): array
             'label' => 'Categories that may be deleted from the dashboard',
             'help' => 'Only ever by a signed-in session, and only inside the watched directory.',
             'default' => (array)$sample['deletable_categories'],
-            'options' => ['trash', 'logs', 'temp'],
+            // Whatever the rules define, so a category added to the config
+            // shows up here instead of being quietly undeletable.
+            'options' => categoryNames($sample['scan']),
         ],
     ];
 }

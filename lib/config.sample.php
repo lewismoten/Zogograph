@@ -71,6 +71,19 @@ return [
             'logs' => ['log', 'logs'],
             'temp' => ['tmp', 'temp', 'temporary'],
         ],
+        /*
+         * Whole filenames, matched case-insensitively, wherever they turn up.
+         *
+         * These win over both the directory and the extension rules, which is
+         * the point of them: Apache and cPanel drop `error_log` all over an
+         * account, one per directory that has ever thrown a warning, and any
+         * one of them can quietly reach ten gigabytes. Counted as logs they
+         * disappear into the log total; counted on their own you can see them.
+         */
+        'category_files' => [
+            'errors' => ['error_log', 'php_errorlog', 'error.log'],
+        ],
+
         // Standalone files outside matching directories.
         'category_extensions' => [
             'logs' => ['log'],

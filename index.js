@@ -31,6 +31,8 @@ const state = {
   timer: null,
   historyPathId: null,
   deletable: [],
+  categories: [],
+  units: "bytes",
   busy: false,
 };
 
@@ -174,10 +176,32 @@ function renderCards(overview, vitalRows) {
     v.mem_used_percent > 92 ? "crit" : v.mem_used_percent > 80 ? "warn" : ""
   );
 
+  /*
+   * Load, said in a way that means something.
+   *
+   * The raw figure is "processes wanting to run", which is only interpretable
+   * against the number of cores: 4.00 is half busy on eight and twice
+   * oversubscribed on two. So the card shows the ratio and the card's subtitle
+   * says what it is measured against.
+   */
+  const cores = v.cpu_cores ? Number(v.cpu_cores) : null;
+  const perCore = v.load1 != null && cores ? Number(v.load1) / cores : null;
   setCard(
     "cardLoad",
     v.load1 == null ? "n/a" : Number(v.load1).toFixed(2),
-    v.load1 == null ? "" : `${Number(v.load5).toFixed(2)} / ${Number(v.load15).toFixed(2)} over 5 and 15 min`
+    v.load1 == null
+      ? ""
+      : (cores ? `${(perCore * 100).toFixed(0)}% of ${cores} cores · ` : "")
+        + `${Number(v.load5).toFixed(2)} / ${Number(v.load15).toFixed(2)} at 5 and 15 min`,
+    perCore == null ? "" : perCore > 1.5 ? "crit" : perCore > 1 ? "warn" : ""
+  );
+
+  const rx = v.net_rx_rate == null ? null : Number(v.net_rx_rate);
+  const tx = v.net_tx_rate == null ? null : Number(v.net_tx_rate);
+  setCard(
+    "cardNet",
+    rx == null ? "n/a" : `${humanBytes(rx, 1)}/s`,
+    rx == null ? "no /proc/net/dev here" : `in · ${humanBytes(tx, 1)}/s out`
   );
 }
 
@@ -230,6 +254,122 @@ function drawLegend(canvas, series) {
 }
 
 /**
+ * Tick values on round numbers covering a range.
+ *
+ * The old chart divided the range into four and printed whatever fell out,
+ * which on a nearly-full disk produced five ticks all reading "71.8 GiB" while
+ * the line visibly moved between them. Two things were wrong: the steps were
+ * arbitrary fractions of an arbitrary range, and the labels were rounded to
+ * fewer digits than it took to tell them apart.
+ *
+ * Steps of 1, 2 or 5 times a power of ten fix the first - they are the numbers
+ * people can read differences off without doing arithmetic. `tickPrecision`
+ * below fixes the second.
+ */
+function niceTicks(min, max, target = 5, floorAtZero = false) {
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+    return { ticks: [min, max], step: Math.max(1e-9, max - min), min, max };
+  }
+
+  const rough = (max - min) / Math.max(1, target - 1);
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const normalised = rough / magnitude;
+  const step = (normalised <= 1 ? 1 : normalised <= 2 ? 2 : normalised <= 5 ? 5 : 10) * magnitude;
+
+  let first = Math.floor(min / step) * step;
+  const last = Math.ceil(max / step) * step;
+  // A load average of -1, or -500 MiB free, is not a thing. Rounding the bottom
+  // of the range down to a round number is right until it crosses zero.
+  if (floorAtZero && first < 0) first = 0;
+
+  const ticks = [];
+  // Counted rather than accumulated, because adding a float to itself thirty
+  // times lands on 0.30000000000000004 and prints as its own tick label.
+  for (let i = 0; first + i * step <= last + step * 1e-9; i += 1) {
+    ticks.push(first + i * step);
+  }
+
+  return { ticks, step, min: first, max: last };
+}
+
+/**
+ * How many decimals a label needs for neighbouring ticks to differ.
+ *
+ * The reason "82,701,000 / 82,700,999 / 82,700,999" happened: two ticks a
+ * thousandth of a percent apart, printed to the same width, come out identical
+ * and the axis looks broken. Given the step, this works out what it takes to
+ * show the difference - and if that is more digits than anybody wants to read,
+ * the caller should be showing a delta instead.
+ */
+function tickPrecision(step, scale = 1) {
+  const shown = step / scale;
+  if (!Number.isFinite(shown) || shown <= 0) return 0;
+  return Math.max(0, Math.min(4, Math.ceil(-Math.log10(shown)) + 1));
+}
+
+/**
+ * Bytes, with the unit chosen by the size of the numbers and the number of
+ * decimals chosen by the distance between them.
+ *
+ * Those are two different questions and picking the unit from the step gets the
+ * first one wrong: on a disk with 72 GiB free changing by 50 MiB an hour, a
+ * step-sized unit labels the axis "73671 MiB", which is the right precision
+ * expressed in a unit nobody thinks in. Magnitude picks GiB; step then says it
+ * needs two decimals, and the label is "71.94 GiB".
+ */
+function bytesAxis(step, magnitude = step) {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+  let scale = 1;
+  let i = 0;
+  while (Math.abs(magnitude) / scale >= 1024 && i < units.length - 1) { scale *= 1024; i++; }
+  const digits = tickPrecision(step, scale);
+  return {
+    scale,
+    unit: units[i],
+    format: v => `${(v / scale).toFixed(digits)} ${units[i]}`,
+  };
+}
+
+/**
+ * Plain counts, shortened only when shortening does not cost readability.
+ *
+ * Inodes run to eight digits and change by tens, so "82.70100M" is a worse
+ * label than "82,701,000" - the abbreviation is supposed to save you reading
+ * digits and there it adds two. Past two decimals it gives up and groups.
+ */
+function countAxis(step, magnitude = step) {
+  const units = [["", 1], ["K", 1e3], ["M", 1e6], ["B", 1e9]];
+  let at = 0;
+  while (at < units.length - 1 && Math.abs(magnitude) / units[at + 1][1] >= 1) at++;
+  const [suffix, scale] = units[at];
+  const digits = tickPrecision(step, scale);
+
+  if (digits > 2) {
+    return {
+      scale: 1,
+      unit: "",
+      format: v => new Intl.NumberFormat().format(Math.round(v)),
+    };
+  }
+
+  return {
+    scale,
+    unit: suffix,
+    format: v => `${(v / scale).toFixed(digits)}${suffix}`,
+  };
+}
+
+function percentAxis(step) {
+  const digits = Math.min(1, tickPrecision(step));
+  return { scale: 1, unit: "%", format: v => `${v.toFixed(digits)}%` };
+}
+
+function rateAxis(step, magnitude = step) {
+  const inner = bytesAxis(step, magnitude);
+  return { ...inner, format: v => `${inner.format(v)}/s` };
+}
+
+/**
  * A line chart of one or more series against time.
  *
  * `rows` carry their own x in `xKey` (a unix timestamp) rather than being
@@ -255,9 +395,7 @@ function drawLineChart(canvas, rows, series, options = {}) {
   ctx.lineWidth = 1;
 
   const xKey = options.xKey || "taken_at";
-  const format = options.format || (v => String(Math.round(v)));
-  const pad = { left: 72, right: 14, top: 14, bottom: 34 };
-  const w = cssW - pad.left - pad.right;
+  const pad = { left: 78, right: 16, top: 14, bottom: 34 };
   const h = cssH - pad.top - pad.bottom;
 
   const usable = rows.filter(r => series.some(s => Number.isFinite(Number(r[s.key]))));
@@ -266,65 +404,147 @@ function drawLineChart(canvas, rows, series, options = {}) {
     return;
   }
 
-  const values = [];
-  for (const s of series) {
-    for (const r of usable) {
-      const v = Number(r[s.key]);
-      if (Number.isFinite(v)) values.push(v);
+  /*
+   * One scale per axis.
+   *
+   * A series says which side it belongs to. That is what lets disk space and
+   * inodes share a chart: they are both "how much room is left" but one is
+   * bytes and the other is a count, and forcing them onto one scale makes
+   * whichever is smaller a flat line along the bottom.
+   */
+  const sides = ["left", "right"];
+  const scales = {};
+  for (const side of sides) {
+    const mine = series.filter(s => (s.axis || "left") === side);
+    if (!mine.length) continue;
+
+    const values = [];
+    for (const s of mine) {
+      for (const r of usable) {
+        const v = Number(r[s.key]);
+        if (Number.isFinite(v)) values.push(v);
+      }
     }
+    if (!values.length) continue;
+
+    let lo = Math.min(...values);
+    let hi = Math.max(...values);
+
+    /*
+     * Not pinned to zero unless asked.
+     *
+     * On a disk that is 92% full and losing a gigabyte a day, a zero-based axis
+     * draws a flat line across the top of the one chart whose whole purpose is
+     * to show the slope.
+     */
+    if (options.zeroBased) { lo = Math.min(0, lo); hi = Math.max(hi, options.max ?? hi); }
+    if (hi === lo) hi = lo + Math.max(1, Math.abs(lo) * 0.01);
+
+    const nice = niceTicks(lo, hi, 5, Boolean(options.zeroBased));
+    const axisFor = (side === "right" ? options.rightAxis : options.axis) || bytesAxis;
+    // The axis is told how big the numbers are as well as how far apart the
+    // ticks are: the first picks the unit, the second picks the decimals.
+    scales[side] = { ...nice, ...axisFor(nice.step, Math.max(Math.abs(lo), Math.abs(hi))) };
   }
 
-  let min = Math.min(...values);
-  let max = Math.max(...values);
+  if (!scales.left && !scales.right) {
+    ctx.fillText(options.empty || "Nothing collected for this range yet", pad.left, pad.top + 20);
+    return;
+  }
 
-  /*
-   * The axis is not pinned to zero.
-   *
-   * It used to be, and on a disk that is 65% full and losing a gigabyte a day
-   * that draws a flat line across the top of the chart - the one chart whose
-   * whole purpose is to show the slope. Instead the range is padded a little
-   * either side of the data, which keeps the shape readable, and `baseline`
-   * lets a caller that genuinely wants zero (percentages) ask for it.
-   */
-  if (options.zeroBased) min = Math.min(0, min);
-  if (options.max != null) max = Math.max(max, options.max);
-  if (max === min) { max = min + 1; }
-  const padding = (max - min) * 0.08;
-  min -= padding;
-  max += padding;
-  if (options.zeroBased) min = Math.max(0, min);
+  if (scales.right) pad.right = 76;
+  const plotW = cssW - pad.left - pad.right;
 
   const t0 = Number(usable[0][xKey]);
   const t1 = Number(usable[usable.length - 1][xKey]);
-  const span = t1 - t0 || 1;
+  const single = t1 <= t0;
+  const span = single ? 1 : t1 - t0;
 
-  const x = t => pad.left + ((Number(t) - t0) / span) * w;
-  const y = v => pad.top + h - ((v - min) / (max - min)) * h;
+  // A single reading has no time axis to speak of. Drawn at the left edge it
+  // looks like a bug and its three identical date labels look like another, so
+  // it goes in the middle with one label under it.
+  const x = t => single
+    ? pad.left + plotW / 2
+    : pad.left + ((Number(t) - t0) / span) * plotW;
+  const yOn = (side, v) => {
+    const scale = scales[side] || scales.left;
+    return pad.top + h - ((v - scale.min) / (scale.max - scale.min)) * h;
+  };
 
-  for (let i = 0; i <= 4; i++) {
-    const yy = pad.top + (i / 4) * h;
+  // Gridlines follow the left axis; the right one only gets labels, or two
+  // sets of lines cross each other and the chart turns into a net.
+  const gridding = scales.left || scales.right;
+  const gridSide = scales.left ? "left" : "right";
+  for (const value of gridding.ticks) {
+    const yy = yOn(gridSide, value);
+    if (yy < pad.top - 1 || yy > pad.top + h + 1) continue;
     ctx.beginPath();
     ctx.moveTo(pad.left, yy);
-    ctx.lineTo(pad.left + w, yy);
+    ctx.lineTo(pad.left + plotW, yy);
     ctx.stroke();
-    ctx.fillText(format(max - (i / 4) * (max - min)), 4, yy + 4);
   }
 
-  const marks = [t0, t0 + span / 2, t1];
+  ctx.textAlign = "right";
+  if (scales.left) {
+    for (const value of scales.left.ticks) {
+      const yy = yOn("left", value);
+      if (yy < pad.top - 1 || yy > pad.top + h + 1) continue;
+      ctx.fillText(scales.left.format(value), pad.left - 8, yy + 4);
+    }
+  }
+  ctx.textAlign = "left";
+  if (scales.right) {
+    for (const value of scales.right.ticks) {
+      const yy = yOn("right", value);
+      if (yy < pad.top - 1 || yy > pad.top + h + 1) continue;
+      ctx.fillText(scales.right.format(value), pad.left + plotW + 8, yy + 4);
+    }
+  }
+
+  /*
+   * Time labels sized to the span, not to a fixed format.
+   *
+   * Three full date-times do not fit across a panel four hundred pixels wide -
+   * they ran into each other and read as one long string. Within a day the date
+   * is the same on every tick anyway, so it is the part to drop.
+   */
+  const sameDay = span < 86400;
+  const stamp = t => new Date(t * 1000).toLocaleString([], sameDay
+    ? { hour: "2-digit", minute: "2-digit" }
+    : { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+  const marks = single ? [t0] : [t0, t0 + span / 2, t1];
   marks.forEach((t, i) => {
-    const label = new Date(t * 1000).toLocaleString([], {
-      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-    });
+    const label = stamp(t);
     const at = x(t);
-    ctx.textAlign = i === 0 ? "left" : i === marks.length - 1 ? "right" : "center";
-    ctx.fillText(label, Math.min(Math.max(pad.left, at), pad.left + w), cssH - 10);
+    ctx.textAlign = marks.length === 1
+      ? "center"
+      : i === 0 ? "left" : i === marks.length - 1 ? "right" : "center";
+    ctx.fillText(label, Math.min(Math.max(pad.left, at), pad.left + plotW), cssH - 10);
   });
   ctx.textAlign = "left";
 
+  /*
+   * The lines stay inside the plot.
+   *
+   * Without this a value below the axis floor - a load average the axis has
+   * clamped at zero, a spike past the top between two redraws - is drawn over
+   * the date labels and the legend, which looks like a rendering fault rather
+   * than data out of range.
+   */
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.left, pad.top - 2, plotW, h + 4);
+  ctx.clip();
+
   series.forEach((s, si) => {
+    const side = (s.axis || "left") in scales ? (s.axis || "left") : Object.keys(scales)[0];
     ctx.strokeStyle = seriesColor(si);
     ctx.fillStyle = seriesColor(si);
     ctx.lineWidth = 2;
+    // A dashed line for the right-hand axis, so which series belongs to which
+    // set of numbers survives being printed, or being looked at quickly.
+    ctx.setLineDash(side === "right" ? [5, 4] : []);
     ctx.beginPath();
 
     let started = false;
@@ -332,22 +552,25 @@ function drawLineChart(canvas, rows, series, options = {}) {
       const v = Number(r[s.key]);
       if (!Number.isFinite(v)) { started = false; continue; }
       const xx = x(r[xKey]);
-      const yy = y(v);
+      const yy = yOn(side, v);
       if (started) ctx.lineTo(xx, yy); else ctx.moveTo(xx, yy);
       started = true;
     }
     ctx.stroke();
+    ctx.setLineDash([]);
 
     if (usable.length <= 80) {
       for (const r of usable) {
         const v = Number(r[s.key]);
         if (!Number.isFinite(v)) continue;
         ctx.beginPath();
-        ctx.arc(x(r[xKey]), y(v), 2.2, 0, Math.PI * 2);
+        ctx.arc(x(r[xKey]), yOn(side, v), 2.2, 0, Math.PI * 2);
         ctx.fill();
       }
     }
   });
+
+  ctx.restore();
 }
 
 /* ------------------------------------------------------------------ table -- */
@@ -390,6 +613,27 @@ function renderTable(target, rows, columns, onRowClick) {
   el.replaceChildren(table);
 }
 
+/** Keeps the category filter in step with the rules the server is using. */
+function syncCategoryOptions() {
+  const select = $("offCategory");
+  const wanted = ["", ...state.categories];
+  const have = [...select.options].map(o => o.value);
+  if (have.length === wanted.length && have.every((v, i) => v === wanted[i])) {
+    return;
+  }
+
+  const chosen = select.value;
+  select.replaceChildren(...wanted.map(value => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value === ""
+      ? "All"
+      : value.charAt(0).toUpperCase() + value.slice(1);
+    return option;
+  }));
+  if (wanted.includes(chosen)) select.value = chosen;
+}
+
 /* ------------------------------------------------------------------ views -- */
 
 async function refreshAll() {
@@ -410,9 +654,12 @@ async function refreshAll() {
     state.deletable = overview.deletable || [];
     applySignedInChrome();
 
+    state.categories = overview.categories ?? [];
+    syncCategoryOptions();
+
     renderCards(overview, vitals.rows);
     renderVitalCharts(vitals.rows);
-    renderCategoryChart(scans.rows);
+    renderCategoryChart(scans.rows, scans.categories ?? state.categories);
     $("lastSeen").textContent = overview.vitals
       ? `updated ${ago(overview.vitals.taken_at)}`
       : "";
@@ -427,37 +674,87 @@ async function refreshAll() {
   }
 }
 
+/**
+ * Disk and inodes on one chart, because they are the same question.
+ *
+ * "How much room is left" has two answers on a Unix filesystem and either can
+ * run out on its own - a disk with plenty of gigabytes and no inodes refuses to
+ * create a file, which looks exactly like a disk that is full.
+ *
+ * In percent they share one axis and can be read against each other directly.
+ * In absolute terms they cannot: bytes and a count of inodes have no common
+ * scale, so inodes move to the right-hand axis and get a dashed line.
+ */
+function renderRoomChart(rows) {
+  const percent = state.units === "percent";
+
+  const withPercents = rows.map(r => ({
+    ...r,
+    disk_free_percent: r.disk_total_bytes
+      ? (Number(r.disk_free_bytes) / Number(r.disk_total_bytes)) * 100
+      : null,
+    inodes_free_percent: r.inodes_total
+      ? (Number(r.inodes_free) / Number(r.inodes_total)) * 100
+      : null,
+  }));
+
+  drawLineChart($("roomChart"), withPercents,
+    percent
+      ? [
+          { key: "disk_free_percent", label: "Disk free %" },
+          { key: "inodes_free_percent", label: "Inodes free %" },
+        ]
+      : [
+          { key: "disk_free_bytes", label: "Disk free" },
+          { key: "inodes_free", label: "Inodes free (right)", axis: "right" },
+        ],
+    percent
+      ? { axis: percentAxis, zeroBased: true, max: 100 }
+      : { axis: bytesAxis, rightAxis: countAxis }
+  );
+}
+
 function renderVitalCharts(rows) {
-  drawLineChart($("diskChart"), rows,
-    [{ key: "disk_free_bytes", label: "Free" }],
-    { format: v => humanBytes(v, 1) });
+  renderRoomChart(rows);
 
   drawLineChart($("cpuChart"), rows,
     [{ key: "cpu_percent", label: "CPU %" }, { key: "mem_used_percent", label: "Memory %" }],
-    { format: v => `${v.toFixed(0)}%`, zeroBased: true, max: 100 });
+    { axis: percentAxis, zeroBased: true, max: 100 });
 
+  /*
+   * Load average is not a percentage, which is the single most common thing to
+   * get wrong about it, so the chart says what it is in the panel subtitle and
+   * draws a line at one-per-core - the level above which work is queueing.
+   */
   drawLineChart($("loadChart"), rows,
-    [{ key: "load1", label: "1 min" }, { key: "load5", label: "5 min" }, { key: "load15", label: "15 min" }],
-    { format: v => v.toFixed(2), zeroBased: true });
+    [
+      { key: "load1", label: "1 min" },
+      { key: "load5", label: "5 min" },
+      { key: "load15", label: "15 min" },
+    ],
+    { axis: step => ({ scale: 1, unit: "", format: v => v.toFixed(tickPrecision(step)) }),
+      zeroBased: true });
 
-  drawLineChart($("inodeChart"), rows,
-    [{ key: "inodes_free", label: "Free" }],
-    { format: v => humanCount(Math.round(v)) });
+  drawLineChart($("netChart"), rows,
+    [{ key: "net_rx_rate", label: "In" }, { key: "net_tx_rate", label: "Out" }],
+    { axis: rateAxis, zeroBased: true,
+      empty: "No network counters here — /proc/net/dev is not readable" });
 }
 
-function renderCategoryChart(rows) {
-  drawLineChart($("categoryChart"), rows,
-    [
-      { key: "trash_bytes", label: "Trash" },
-      { key: "logs_bytes", label: "Logs" },
-      { key: "temp_bytes", label: "Temp" },
-    ],
-    {
-      xKey: "started_at",
-      format: v => humanBytes(v, 1),
-      zeroBased: true,
-      empty: "No scan has finished in this range yet",
-    });
+function renderCategoryChart(rows, categories) {
+  // Built from the categories the server actually has rules for, so adding one
+  // to the config puts it on the chart rather than collecting it invisibly.
+  const series = (categories ?? []).map(name => ({
+    key: `${name}_bytes`,
+    label: name.charAt(0).toUpperCase() + name.slice(1),
+  }));
+
+  drawLineChart($("categoryChart"), rows, series, {
+    xKey: "started_at",
+    axis: bytesAxis,
+    zeroBased: true,
+    empty: "No scan has finished in this range yet",
+  });
 }
 
 async function refreshOffenders() {
@@ -563,9 +860,15 @@ async function showHistory(pathId, quiet = false) {
 
   $("historyPanel").hidden = false;
   $("historyTitle").textContent = data.path.display;
+  // Size on the left in bytes, file count on the right: a directory holding
+  // ten thousand small files and one holding a single huge one are different
+  // problems, and on one axis the count is a flat line along the bottom.
   drawLineChart($("historyChart"), data.rows,
-    [{ key: "bytes", label: "Size" }, { key: "files", label: "Files" }],
-    { xKey: "started_at", format: v => humanBytes(v, 1), zeroBased: true,
+    [
+      { key: "bytes", label: "Size" },
+      { key: "files", label: "Files (right)", axis: "right" },
+    ],
+    { xKey: "started_at", axis: bytesAxis, rightAxis: countAxis, zeroBased: true,
       empty: "This path has only been seen in one scan so far" });
 
   if (!quiet) $("historyPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -674,6 +977,11 @@ async function tick() {
 }
 
 /* -------------------------------------------------------------------- wire -- */
+
+$("units").addEventListener("change", () => {
+  state.units = $("units").value;
+  refreshAll();
+});
 
 $("range").addEventListener("change", () => {
   state.range = Number($("range").value);
