@@ -1,0 +1,396 @@
+<?php
+declare(strict_types=1);
+
+/*
+ * What a config is made of, described once.
+ *
+ * Two front ends ask these questions - the browser and the command line - and
+ * they used to be two separate lists of prompts. One list, described as data,
+ * is the only way they stay the same: a field added here appears in both, with
+ * the same label, the same default and the same validation.
+ *
+ * The defaults all come from lib/config.sample.php, which remains the single
+ * description of what an option means.
+ */
+
+/**
+ * Every question the wizard asks.
+ *
+ * `path` is where the answer lands in the config array. `type` decides how it
+ * is prompted for and how it is parsed. `when` hides a field unless another
+ * answer makes it relevant.
+ */
+function configFields(array $sample): array
+{
+    return [
+        [
+            'key' => 'scan_root',
+            'path' => ['scan_root'],
+            'type' => 'text',
+            'label' => 'Directory to watch',
+            'help' => 'Everything is measured under here, and nothing outside it can ever be deleted.',
+            'default' => (string)$sample['scan_root'],
+            'validate' => function (string $value): ?string {
+                if ($value === '') {
+                    return 'A directory is required.';
+                }
+                if (!is_dir($value)) {
+                    return "There is no directory at $value.";
+                }
+                if (!is_readable($value)) {
+                    return "$value is not readable by this user.";
+                }
+                return null;
+            },
+        ],
+        [
+            'key' => 'timezone',
+            'path' => ['timezone'],
+            'type' => 'text',
+            'label' => 'Timezone',
+            'help' => 'Used for the timestamps on the dashboard and in alert emails.',
+            'default' => (string)$sample['timezone'],
+            'validate' => fn(string $v): ?string => in_array($v, timezone_identifiers_list(), true)
+                ? null
+                : 'Not a timezone PHP knows. Try America/New_York or UTC.',
+        ],
+        [
+            'key' => 'password',
+            'path' => ['password_hash'],
+            'type' => 'password',
+            'label' => 'Sign-in password',
+            'help' => 'Reveals real paths and enables deleting. Leave blank to disable sign-in, '
+                . 'which leaves the dashboard readable with every path masked.',
+            'default' => '',
+        ],
+        [
+            'key' => 'alerts_enabled',
+            'path' => ['alerts', 'enabled'],
+            'type' => 'bool',
+            'label' => 'Send alert emails',
+            'help' => 'The point of the thing: it tells you before the disk fills, not after.',
+            'default' => (bool)$sample['alerts']['enabled'],
+        ],
+        [
+            'key' => 'alerts_to',
+            'path' => ['alerts', 'to'],
+            'type' => 'email',
+            'label' => 'Send alerts to',
+            'default' => (string)$sample['alerts']['to'],
+            'when' => 'alerts_enabled',
+            'validate' => fn(string $v): ?string => filter_var($v, FILTER_VALIDATE_EMAIL)
+                ? null
+                : 'That does not look like an email address.',
+        ],
+        [
+            'key' => 'alerts_from',
+            'path' => ['alerts', 'from'],
+            'type' => 'email',
+            'label' => 'Send alerts from',
+            'help' => 'Blank uses whatever the server sends as by default.',
+            'default' => (string)$sample['alerts']['from'],
+            'when' => 'alerts_enabled',
+            'optional' => true,
+            'validate' => fn(string $v): ?string => $v === '' || filter_var($v, FILTER_VALIDATE_EMAIL)
+                ? null
+                : 'That does not look like an email address.',
+        ],
+        [
+            'key' => 'disk_free_bytes',
+            'path' => ['alerts', 'disk_free_bytes'],
+            'type' => 'bytes',
+            'label' => 'Warn when free space drops below',
+            'help' => 'Write it how you say it: 5G, 500M, or a plain number of bytes.',
+            'default' => (int)$sample['alerts']['disk_free_bytes'],
+            'when' => 'alerts_enabled',
+        ],
+        [
+            'key' => 'projected_full_hours',
+            'path' => ['alerts', 'projected_full_hours'],
+            'type' => 'number',
+            'label' => 'Warn when the trend says it will be full within (hours)',
+            'help' => 'Fitted over the last day of readings. This is the alert that arrives '
+                . 'while there is still time to do something.',
+            'default' => (float)$sample['alerts']['projected_full_hours'],
+            'when' => 'alerts_enabled',
+            'validate' => fn(string $v): ?string => is_numeric($v) && (float)$v > 0
+                ? null
+                : 'Enter a number of hours.',
+        ],
+        [
+            'key' => 'path_jump_bytes',
+            'path' => ['alerts', 'path_jump_bytes'],
+            'type' => 'bytes',
+            'label' => 'Warn when one file or directory grows in a single scan by',
+            'help' => 'The alert that names the culprit rather than the symptom.',
+            'default' => (int)$sample['alerts']['path_jump_bytes'],
+            'when' => 'alerts_enabled',
+        ],
+        [
+            'key' => 'cooldown_seconds',
+            'path' => ['alerts', 'cooldown_seconds'],
+            'type' => 'seconds',
+            'label' => 'Wait at least this long before repeating an alert (seconds)',
+            'help' => 'An alert that arrives every minute becomes a filter rule within a day.',
+            'default' => (int)$sample['alerts']['cooldown_seconds'],
+            'when' => 'alerts_enabled',
+        ],
+        [
+            'key' => 'deletable_categories',
+            'path' => ['deletable_categories'],
+            'type' => 'categories',
+            'label' => 'Categories that may be deleted from the dashboard',
+            'help' => 'Only ever by a signed-in session, and only inside the watched directory.',
+            'default' => (array)$sample['deletable_categories'],
+            'options' => ['trash', 'logs', 'temp'],
+        ],
+    ];
+}
+
+/** Whether a field applies, given the answers so far. */
+function fieldApplies(array $field, array $values): bool
+{
+    return !isset($field['when']) || !empty($values[$field['when']]);
+}
+
+/**
+ * Turns one raw answer into the value that belongs in the config.
+ *
+ * Returns [value, error]. The error is what the caller shows; a field that
+ * cannot be parsed keeps its default so the rest of the form still renders.
+ */
+function parseField(array $field, mixed $raw): array
+{
+    $type = $field['type'];
+
+    if ($type === 'bool') {
+        if (is_string($raw)) {
+            return [(bool)preg_match('/^(y|yes|1|on|true)$/i', trim($raw)), null];
+        }
+        return [(bool)$raw, null];
+    }
+
+    if ($type === 'categories') {
+        $chosen = is_array($raw) ? $raw : [];
+        $allowed = $field['options'];
+        return [array_values(array_intersect($allowed, array_map('strval', $chosen))), null];
+    }
+
+    $value = is_string($raw) ? trim($raw) : '';
+
+    if ($value === '' && ($field['optional'] ?? false)) {
+        return ['', null];
+    }
+
+    if (isset($field['validate'])) {
+        $problem = ($field['validate'])($value);
+        if ($problem !== null) {
+            return [$field['default'], $problem];
+        }
+    }
+
+    if ($type === 'bytes' || $type === 'seconds') {
+        $parsed = parseBytes($value, $type === 'bytes');
+        if ($parsed === null) {
+            return [
+                $field['default'],
+                $type === 'bytes'
+                    ? 'Enter a size, like 5G or 500M or a plain number of bytes.'
+                    : 'Enter a whole number of seconds.',
+            ];
+        }
+        return [$parsed, null];
+    }
+
+    if ($type === 'number') {
+        return [(float)$value, null];
+    }
+
+    return [$value, null];
+}
+
+/**
+ * Builds the finished config from the sample and the answers.
+ *
+ * Merged over the sample rather than written from scratch: everything nobody
+ * was asked about - the category rules, the excluded paths, the thresholds that
+ * are fine as they are - comes from the sample at whatever it says today.
+ */
+function buildConfig(array $sample, array $values, string $passwordHash, string $maskSecret): array
+{
+    $config = $sample;
+
+    foreach (configFields($sample) as $field) {
+        if ($field['type'] === 'password' || !fieldApplies($field, $values)) {
+            continue;
+        }
+        if (!array_key_exists($field['key'], $values)) {
+            continue;
+        }
+        assignPath($config, $field['path'], $values[$field['key']]);
+    }
+
+    $config['password_hash'] = $passwordHash;
+    $config['mask_secret'] = $maskSecret;
+
+    return $config;
+}
+
+function assignPath(array &$target, array $path, mixed $value): void
+{
+    $cursor = &$target;
+    foreach ($path as $step) {
+        if (!is_array($cursor[$step] ?? null)) {
+            $cursor[$step] ??= null;
+        }
+        $cursor = &$cursor[$step];
+    }
+    $cursor = $value;
+}
+
+/* ------------------------------------------------------------------ sizes -- */
+
+/**
+ * A size, accepting the way people actually write sizes.
+ *
+ * "5G" is what somebody types when asked for a threshold. Making them work out
+ * 5368709120 is how a config ends up three orders of magnitude off with an
+ * alert that never fires.
+ */
+function parseBytes(string $value, bool $units = true): ?int
+{
+    $value = trim($value);
+    if ($value === '') {
+        return null;
+    }
+    if (ctype_digit($value)) {
+        return (int)$value;
+    }
+    if (!$units || !preg_match('/^(\d+(?:\.\d+)?)\s*([kmgt])i?b?$/i', $value, $m)) {
+        return null;
+    }
+
+    $scale = ['k' => 1024, 'm' => 1024 ** 2, 'g' => 1024 ** 3, 't' => 1024 ** 4];
+    return (int)round((float)$m[1] * $scale[strtolower($m[2])]);
+}
+
+function formatBytes(int $bytes): string
+{
+    foreach ([['T', 1024 ** 4], ['G', 1024 ** 3], ['M', 1024 ** 2], ['K', 1024]] as [$suffix, $scale]) {
+        if ($bytes >= $scale && $bytes % $scale === 0) {
+            return ($bytes / $scale) . $suffix;
+        }
+    }
+    return (string)$bytes;
+}
+
+/** How a field's current value should appear in a prompt or an input box. */
+function displayValue(array $field, mixed $value): string
+{
+    return match ($field['type']) {
+        'bytes' => formatBytes((int)$value),
+        'bool' => $value ? 'y' : 'n',
+        'categories' => implode(', ', (array)$value),
+        default => (string)$value,
+    };
+}
+
+/* --------------------------------------------------------------- printing -- */
+
+/**
+ * The finished config, as PHP source.
+ *
+ * `var_export` would do the job but produces `array (` and one entry per line
+ * with no shape to it, and this is a file somebody has to read and edit later.
+ * The header points at the sample, which is where the explanation of every
+ * option lives - duplicating those comments here is how the two drift apart.
+ */
+function renderConfig(array $config, string $libDir): string
+{
+    $when = date('Y-m-d H:i');
+    $lines = [
+        '<?php',
+        'declare(strict_types=1);',
+        '',
+        '/*',
+        " * Disk Usage Monitor configuration, written by setup.php on $when.",
+        ' *',
+        ' * Every option is described in lib/config.sample.php. This file holds the',
+        ' * password hash and the mask secret, so it is gitignored and lib/.htaccess',
+        ' * denies the directory - keep both of those true.',
+        ' *',
+        ' * Changing mask_secret renames every masked path on the dashboard. It is',
+        ' * safe to do, but the pseudonyms people have got used to will all change.',
+        ' */',
+        '',
+        'return ' . renderValue($config, 0, $libDir) . ';',
+        '',
+    ];
+
+    return implode("\n", $lines);
+}
+
+function renderValue(mixed $value, int $depth, string $libDir = ''): string
+{
+    $pad = str_repeat('    ', $depth + 1);
+    $close = str_repeat('    ', $depth);
+
+    if (is_array($value)) {
+        if ($value === []) {
+            return '[]';
+        }
+
+        $isList = array_is_list($value);
+        $parts = [];
+        foreach ($value as $key => $item) {
+            $rendered = is_string($item)
+                ? relativeToLib($item, $libDir)
+                : renderValue($item, $depth + 1, $libDir);
+            $parts[] = $isList
+                ? $pad . $rendered . ','
+                : $pad . renderScalar($key) . ' => ' . $rendered . ',';
+        }
+
+        return "[\n" . implode("\n", $parts) . "\n" . $close . ']';
+    }
+
+    return renderScalar($value);
+}
+
+/**
+ * Paths under lib/ are written back as __DIR__ expressions.
+ *
+ * The sample computes the database path and the exclusions from __DIR__.
+ * Exporting the result would freeze whatever absolute path the wizard happened
+ * to run from, so a config generated on a laptop and pasted onto the server
+ * would point at a directory that is not there - and the exclusion that stops
+ * the scanner reporting its own database would quietly stop matching.
+ */
+function relativeToLib(string $value, string $libDir): string
+{
+    if ($libDir !== '' && str_starts_with($value, $libDir . '/')) {
+        return '__DIR__ . ' . renderScalar(substr($value, strlen($libDir)));
+    }
+    return renderScalar($value);
+}
+
+function renderScalar(mixed $value): string
+{
+    if ($value === null) {
+        return 'null';
+    }
+    if (is_bool($value)) {
+        return $value ? 'true' : 'false';
+    }
+    if (is_int($value)) {
+        return (string)$value;
+    }
+    if (is_float($value)) {
+        // A float that prints as "5" reads back as an int, which then fails a
+        // strict comparison somewhere far from here.
+        $printed = (string)$value;
+        return str_contains($printed, '.') ? $printed : $printed . '.0';
+    }
+
+    return "'" . strtr((string)$value, ["\\" => '\\\\', "'" => "\\'"]) . "'";
+}

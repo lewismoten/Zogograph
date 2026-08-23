@@ -10,6 +10,7 @@ monitor you have to remember to look at is a monitor that tells you afterwards.
 ## Files
 
 - `cron.php` — the collector. Command line only; `.htaccess` denies it over HTTP.
+- `setup.php` — the config wizard, in a browser or at a prompt.
 - `api.php` — the only thing the dashboard talks to.
 - `index.html` / `index.css` / `index.js` — the dashboard.
 - `lib/` — config, database, collection, alerting, auth, masking, actions.
@@ -33,21 +34,20 @@ trash / logs / temp. Minutes of IO on a large account, so hourly at most.
 ```bash
 mkdir -p ~/public_html/stats.example.com
 # everything except data/ and lib/config.php
-cp -r cron.php api.php index.html index.css index.js lib .htaccess \
+cp -r cron.php api.php setup.php index.html index.css index.js lib .htaccess \
       ~/public_html/stats.example.com/
 ```
 
-Create the config:
+Then open `setup.php` in a browser and fill the form in. It writes
+`lib/config.php` for you, hashes the password and generates the mask secret.
+
+The same wizard runs at a prompt if you prefer:
 
 ```bash
-cd ~/public_html/stats.example.com
-cp lib/config.sample.php lib/config.php
-php -r 'echo password_hash("your password", PASSWORD_DEFAULT), "\n";'   # password_hash
-php -r 'echo bin2hex(random_bytes(32)), "\n";'                          # mask_secret
+php setup.php --write
 ```
 
-Edit `lib/config.php`: set `scan_root`, `timezone`, the two secrets above, and
-the alert thresholds and recipient.
+Either way, **delete `setup.php` once you are done**.
 
 Take the first readings:
 
@@ -57,6 +57,44 @@ php cron.php --scan
 ```
 
 Then open the site. `data/stats.db` is created on the first run.
+
+## The wizard
+
+`setup.php` asks the questions, overlays the answers on
+`lib/config.sample.php`, and produces a finished config. Both front ends read
+the same field definitions from `lib/configure.php`, so the browser and the
+prompt cannot drift apart.
+
+Who is allowed to write `lib/config.php`:
+
+| state | what happens |
+| --- | --- |
+| the file is missing | anybody may write it — this is the install, and there is no password yet to ask for |
+| the file exists | you must enter the password already in it |
+| the file exists, sign-in was never set up | nobody — there is no secret to prove, so paste it yourself |
+
+Anyone who cannot write still gets the finished text to paste into the file.
+Having a file to edit is its own authorisation.
+
+Entering the current password **unlocks** the form for fifteen minutes and
+fills it with the settings the system is actually running — without that the
+form starts from the sample's defaults, and adjusting one threshold would
+quietly reset your scan root and alert address along with it. The unlock uses
+its own short-lived cookie, unrelated to the dashboard's session.
+
+Two things are never shown to somebody who has not entered the password: the
+existing password hash, and the existing mask secret. Text generated for an
+unauthorised visitor carries a **new** mask secret, and using it renames every
+masked path on the dashboard. Unlocked, the existing secret is kept unless you
+tick the box to rotate it.
+
+Sizes can be written the way people say them — `5G`, `500M`, or a plain number
+of bytes.
+
+The install window is a real window: between uploading these files and
+finishing setup, whoever reaches the page first chooses the password. Do it
+straight away, then delete `setup.php`. If you would rather keep the file,
+`.htaccess` has a commented-out block that denies it.
 
 ## Cron
 

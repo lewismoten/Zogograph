@@ -26,6 +26,19 @@ DirectoryIndex index.html
   Require all denied
 </Files>
 
+# setup.php is deliberately reachable: it is how the thing gets configured
+# without an ssh session. It guards itself instead - it writes lib/config.php
+# freely only while that file does not exist, and once it does, replacing it
+# needs the password already in it. Anyone else gets text to paste, which needs
+# filesystem access and is therefore its own authorisation.
+#
+# Delete setup.php once you are set up. Or, if you would rather keep it and shut
+# the door completely, uncomment this:
+#
+# <Files "setup.php">
+#   Require all denied
+# </Files>
+
 <IfModule mod_headers.c>
   # The dashboard loads nothing from anywhere else, so it can say so.
   Header always set Content-Security-Policy "default-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
