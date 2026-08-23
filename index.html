@@ -8,80 +8,141 @@
 <script src="index.js" defer></script>
 </head>
 <body>
-<h1>Disk Usage Monitor</h1>
-<p class="muted">Choose a saved period or enter a custom timestamp range.</p>
 
-<div id="error"></div>
+<header class="bar">
+  <h1>Disk Usage Monitor</h1>
+  <div class="bar-controls">
+    <label class="inline">
+      Range
+      <select id="range">
+        <option value="3600">Last hour</option>
+        <option value="21600">Last 6 hours</option>
+        <option value="86400" selected>Last day</option>
+        <option value="604800">Last week</option>
+        <option value="2592000">Last 30 days</option>
+        <option value="31536000">Last year</option>
+      </select>
+    </label>
+    <button id="live" class="toggle" aria-pressed="false">
+      <span class="dot" aria-hidden="true"></span> Live
+    </button>
+    <span id="lastSeen" class="muted small"></span>
+    <button id="signInOut">Sign in</button>
+  </div>
+</header>
 
-<div class="controls">
-  <label>
-    Year
-    <select id="year"><option value="">All</option></select>
-  </label>
-  <label>
-    Month
-    <select id="month"><option value="">All</option></select>
-  </label>
-  <label>
-    Day
-    <select id="day"><option value="">All</option></select>
-  </label>
-  <label>
-    From
-    <input id="from" type="datetime-local">
-  </label>
-  <label>
-    To
-    <input id="to" type="datetime-local">
-  </label>
-  <button id="apply">Apply range</button>
-</div>
+<div id="notice"></div>
+
+<section id="alertBanner" hidden></section>
 
 <div class="cards">
-  <div class="card"><div class="label">Trash</div><div class="value" id="trashValue">—</div></div>
-  <div class="card"><div class="label">Logs</div><div class="value" id="logsValue">—</div></div>
-  <div class="card"><div class="label">Temp</div><div class="value" id="tempValue">—</div></div>
-  <div class="card"><div class="label">Disk available</div><div class="value" id="diskValue">—</div></div>
-  <div class="card"><div class="label">Inodes available</div><div class="value" id="inodeValue">—</div></div>
-  <div class="card"><div class="label">Snapshots shown</div><div class="value" id="countValue">—</div></div>
+  <div class="card" id="cardDisk"><div class="label">Disk free</div><div class="value">—</div><div class="sub muted"></div></div>
+  <div class="card" id="cardTrend"><div class="label">Projected full</div><div class="value">—</div><div class="sub muted"></div></div>
+  <div class="card" id="cardInodes"><div class="label">Inodes free</div><div class="value">—</div><div class="sub muted"></div></div>
+  <div class="card" id="cardCpu"><div class="label">CPU</div><div class="value">—</div><div class="sub muted"></div></div>
+  <div class="card" id="cardMem"><div class="label">Memory used</div><div class="value">—</div><div class="sub muted"></div></div>
+  <div class="card" id="cardLoad"><div class="label">Load</div><div class="value">—</div><div class="sub muted"></div></div>
 </div>
 
 <div class="grid">
   <section class="panel">
-    <h2>Trash / Logs / Temp</h2>
-    <canvas id="categoryChart"></canvas>
-  </section>
-
-  <section class="panel">
-    <h2>Disk Available</h2>
+    <h2>Disk free</h2>
     <canvas id="diskChart"></canvas>
   </section>
 
   <section class="panel">
-    <h2>Inodes Available</h2>
+    <h2>CPU and memory</h2>
+    <canvas id="cpuChart"></canvas>
+  </section>
+
+  <section class="panel">
+    <h2>Load average</h2>
+    <canvas id="loadChart"></canvas>
+  </section>
+
+  <section class="panel">
+    <h2>Inodes free</h2>
     <canvas id="inodeChart"></canvas>
   </section>
 
-  <section class="panel">
-    <h2>Largest Files — latest snapshot</h2>
-    <div id="topFiles"></div>
-  </section>
-
-  <section class="panel">
-    <h2>Largest Trash Directories</h2>
-    <div id="trashDirs"></div>
-  </section>
-
-  <section class="panel">
-    <h2>Largest Log Directories</h2>
-    <div id="logDirs"></div>
-  </section>
-
-  <section class="panel">
-    <h2>Largest Temp Directories</h2>
-    <div id="tempDirs"></div>
+  <section class="panel wide">
+    <h2>Trash / Logs / Temp</h2>
+    <canvas id="categoryChart"></canvas>
   </section>
 </div>
+
+<section class="panel" id="offenderPanel">
+  <div class="panel-head">
+    <h2>What is taking the space</h2>
+    <div class="panel-controls">
+      <label class="inline">
+        Category
+        <select id="offCategory">
+          <option value="">All</option>
+          <option value="trash">Trash</option>
+          <option value="logs">Logs</option>
+          <option value="temp">Temp</option>
+        </select>
+      </label>
+      <label class="inline">
+        Kind
+        <select id="offKind">
+          <option value="">All</option>
+          <option value="file">Files</option>
+          <option value="dir">Directories</option>
+        </select>
+      </label>
+      <label class="inline">
+        Sort
+        <select id="offSort">
+          <option value="growth">Fastest growing</option>
+          <option value="bytes">Largest</option>
+        </select>
+      </label>
+      <span id="emptyButtons" class="empty-buttons"></span>
+    </div>
+  </div>
+  <p class="muted small" id="maskNote" hidden>
+    Names are hidden until you sign in. The sizes and the growth are real.
+  </p>
+  <div id="offenders"></div>
+</section>
+
+<section class="panel" id="historyPanel" hidden>
+  <div class="panel-head">
+    <h2 id="historyTitle">History</h2>
+    <button id="historyClose" class="link">Close</button>
+  </div>
+  <canvas id="historyChart"></canvas>
+</section>
+
+<div class="grid">
+  <section class="panel">
+    <h2>Alerts</h2>
+    <div id="alerts"></div>
+  </section>
+
+  <section class="panel" id="actionPanel" hidden>
+    <h2>What has been deleted</h2>
+    <div id="actionLog"></div>
+  </section>
+</div>
+
+<dialog id="signInDialog">
+  <form id="signInForm">
+    <h2>Sign in</h2>
+    <p class="muted small">Reveals real paths and enables deleting.</p>
+    <label>
+      Password
+      <input type="password" id="password" autocomplete="current-password" required>
+    </label>
+    <p class="error small" id="signInError" hidden></p>
+    <div class="dialog-buttons">
+      <button type="button" id="signInCancel">Cancel</button>
+      <button type="submit" id="signInSubmit">Sign in</button>
+    </div>
+  </form>
+</dialog>
 
 </body>
 </html>

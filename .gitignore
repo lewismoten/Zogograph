@@ -1,0 +1,6 @@
+# Holds the password hash and the mask secret.
+lib/config.php
+
+# The database, its write-ahead log, and anything else the collector leaves.
+data/*
+!data/.htaccess
