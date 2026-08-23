@@ -143,27 +143,32 @@ not do that. **No field on the page becomes part of a command.**
 - The minute and hour are cast to integers and clamped to 0–59 and 0–23.
 - The command itself is assembled from constants, with both paths quoted.
 
-**The minute and hour mean different things to different schedules**, so the
-form bounds them to whatever the current choice accepts, greys out the ones it
-ignores, and spells out the times in words:
+**Schedules are written as explicit lists, not as `4/6`.** The `start/step` form
+is a Vixie extension: cronie accepts it, and cPanel's cron editor and several
+other panels reject it — so a schedule written that way installs cleanly over
+ssh and is refused through the interface most people on shared hosting actually
+use. `0,4,8,12,16,20` is understood by every cron ever written, and reads
+without knowing any syntax.
 
-| schedule | uses | range |
-| --- | --- | --- |
-| Every minute | neither | — |
-| Every 5 / 15 minutes | minute, as a starting offset | 0–4 / 0–14 |
-| Hourly | minute | 0–59 |
-| Every 6 / 12 hours | minute, and hour as a starting offset | hour 0–5 / 0–11 |
-| Once a day | minute and hour | 0–59, 0–23 |
+Every 4 hours from 4:07am gives:
 
-For the repeating ones the hour is a *phase*, not a time: cron reads `2/6` as
-"from 02:00, then every six hours", so minute 7 and hour 2 gives 02:07, 08:07,
-14:07 and 20:07. Above 5 a phase stops meaning anything — `20/6` would fire once
-a day — so the field caps there and the value is clamped rather than accepted
-and quietly mangled.
+```cron
+7 0,4,8,12,16,20 * * * '/path/php' '/path/cron.php' --scan --alerts --prune --quiet
+```
 
-Above the button, the form shows the exact lines it will write and a plain
-reading of them. Picking `Hourly` and setting an hour used to look as though it
-had been accepted when the hour was never going to be used.
+Intervals available: vitals every 1, 2, 5, 10, 15 or 30 minutes, or hourly;
+scans every 1, 2, 3, 4, 6, 8 or 12 hours, or once a day.
+
+**The minute and hour are when it first runs**, and a repeating schedule carries
+on from there. Any value is accepted — a start outside one turn of the cycle
+just names the same set from a different point, and **the set always contains
+the time you asked for**. Asking for every 4 hours from 16 gives the same six
+hours as from 4, both including 16:07 and 04:07. An earlier version clamped the
+start into the cycle instead, which quietly turned "every 4 hours from 4am" into
+a job that ran at 3am.
+
+Fields a schedule ignores are greyed out: `every minute` uses neither, and
+`hourly` uses only the minute.
 
 ### Which clock the times are in
 

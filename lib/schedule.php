@@ -27,65 +27,130 @@ const CRON_BEGIN = '# BEGIN diskmon — managed by the dashboard, edited between
 const CRON_END = '# END diskmon';
 
 /**
- * The schedules on offer, and the cron expression each one means.
+ * The schedules on offer, described as steps rather than as cron text.
  *
- * A closed list. `%M` and `%H` are filled in from the chosen minute and hour,
- * as integers this file clamps - never as strings that reach the crontab.
+ * `minute_step` and `hour_step` are in minutes and hours. A step of 1 means
+ * every one of them, so the field becomes `*`. A step equal to the whole cycle
+ * (60 minutes, 24 hours) means it happens once per cycle, so the field is a
+ * single number. Anything between is a list.
  *
- * `hour_max` is the largest hour a preset accepts, and it is not always 23. In
- * cron, `2/6` in the hours field means "starting at 2, then every 6 hours", so
- * a six-hourly job has a *phase* rather than a fixed time: 2 gives 02:00,
- * 08:00, 14:00, 20:00. Above 5 the phase stops meaning anything - `20/6` would
- * fire once a day at 20:00, which is not what "every 6 hours" says on the tin.
+ * Written out as a list, and not as `4/6`.
+ *
+ * The `start/step` form is a Vixie extension. It works in cronie, and it is
+ * rejected by cPanel's cron editor and by several other panels and minimal
+ * crons - so a schedule written that way installs cleanly over ssh and is
+ * refused through the interface most people on shared hosting actually use.
+ * `0,4,8,12,16,20` is understood by every cron ever written, and has the
+ * further merit of being readable without knowing any syntax at all.
  */
 function cronPresets(): array
 {
     return [
         'vitals' => [
-            'off' => ['label' => 'Off', 'expr' => null],
-            'every-minute' => ['label' => 'Every minute', 'expr' => '* * * * *'],
-            'every-5' => ['label' => 'Every 5 minutes', 'expr' => '%M/5 * * * *', 'minute_max' => 4],
-            'every-15' => ['label' => 'Every 15 minutes', 'expr' => '%M/15 * * * *', 'minute_max' => 14],
-            'hourly' => ['label' => 'Hourly', 'expr' => '%M * * * *'],
+            'off' => ['label' => 'Off', 'minute_step' => null],
+            'every-minute' => ['label' => 'Every minute', 'minute_step' => 1],
+            'every-2m' => ['label' => 'Every 2 minutes', 'minute_step' => 2],
+            'every-5m' => ['label' => 'Every 5 minutes', 'minute_step' => 5],
+            'every-10m' => ['label' => 'Every 10 minutes', 'minute_step' => 10],
+            'every-15m' => ['label' => 'Every 15 minutes', 'minute_step' => 15],
+            'every-30m' => ['label' => 'Every 30 minutes', 'minute_step' => 30],
+            'hourly' => ['label' => 'Hourly', 'minute_step' => 60, 'hour_step' => 1],
         ],
         'scan' => [
-            'off' => ['label' => 'Off', 'expr' => null],
-            'hourly' => ['label' => 'Hourly', 'expr' => '%M * * * *'],
-            'every-6' => ['label' => 'Every 6 hours', 'expr' => '%M %H/6 * * *', 'hour_max' => 5],
-            'every-12' => ['label' => 'Every 12 hours', 'expr' => '%M %H/12 * * *', 'hour_max' => 11],
-            'daily' => ['label' => 'Once a day', 'expr' => '%M %H * * *'],
+            'off' => ['label' => 'Off', 'minute_step' => null],
+            'hourly' => ['label' => 'Every hour', 'minute_step' => 60, 'hour_step' => 1],
+            'every-2h' => ['label' => 'Every 2 hours', 'minute_step' => 60, 'hour_step' => 2],
+            'every-3h' => ['label' => 'Every 3 hours', 'minute_step' => 60, 'hour_step' => 3],
+            'every-4h' => ['label' => 'Every 4 hours', 'minute_step' => 60, 'hour_step' => 4],
+            'every-6h' => ['label' => 'Every 6 hours', 'minute_step' => 60, 'hour_step' => 6],
+            'every-8h' => ['label' => 'Every 8 hours', 'minute_step' => 60, 'hour_step' => 8],
+            'every-12h' => ['label' => 'Every 12 hours', 'minute_step' => 60, 'hour_step' => 12],
+            'daily' => ['label' => 'Once a day', 'minute_step' => 60, 'hour_step' => 24],
         ],
     ];
 }
 
 /**
- * The tightest bound a set of choices puts on the minute and the hour.
+ * One cron field: every value, a single value, or the list a step produces.
  *
- * Both fields are shared between the two jobs, so the limit is whichever chosen
- * preset is fussiest: a six-hourly scan caps the hour at 5 whatever the vitals
- * job is doing.
+ * `$start` is where the cycle begins, so a four-hour step starting at 4 gives
+ * 4, 8, 12, 16, 20 and then 0 - written back in order, because a sorted list is
+ * what somebody reading their crontab later expects to see.
  *
- * @return array{minute: int, hour: int}
+ * Any start works, because the set repeats with the step: asking for every four
+ * hours from 16 gives the same six hours as asking from 4, and both of them
+ * contain the hour that was asked for. An earlier version clamped the start to
+ * one turn of the cycle instead, which quietly turned "every 4 hours from 4am"
+ * into a job that ran at 3am - the exact kind of silent rewrite this form is
+ * supposed to prevent.
+ */
+function cronField(int $start, int $step, int $cycle): string
+{
+    if ($step <= 1) {
+        return '*';
+    }
+    if ($step >= $cycle) {
+        return (string)($start % $cycle);
+    }
+
+    $values = [];
+    for ($k = 0; $k * $step < $cycle; $k++) {
+        $values[] = ($start + $k * $step) % $cycle;
+    }
+
+    $values = array_values(array_unique($values));
+    sort($values);
+
+    return implode(',', $values);
+}
+
+/** The five-field expression a preset produces at a given minute and hour. */
+function cronExpressionFor(array $preset, int $minute, int $hour): ?string
+{
+    $minuteStep = $preset['minute_step'] ?? null;
+    if ($minuteStep === null) {
+        return null;
+    }
+
+    $hourStep = $preset['hour_step'] ?? 1;
+
+    return sprintf(
+        '%s %s * * *',
+        cronField($minute, (int)$minuteStep, 60),
+        cronField($hour, (int)$hourStep, 24)
+    );
+}
+
+/**
+ * Whether the minute and hour fields do anything, given the chosen presets.
+ *
+ * Only whether, not how far. The full 0-59 and 0-23 are always accepted: a
+ * start outside one turn of the cycle is not an error, it names the same set
+ * from a different point, and the set always contains the time that was asked
+ * for. Restricting the range was worse than useless - it rewrote the answer.
+ *
+ * @return array{minute_used: bool, hour_used: bool}
  */
 function cronBounds(array $choices): array
 {
     $presets = cronPresets();
-    $bounds = ['minute' => 59, 'hour' => 23];
+    $used = ['minute_used' => false, 'hour_used' => false];
 
     foreach (['vitals', 'scan'] as $job) {
         $preset = $presets[$job][(string)($choices[$job] ?? 'off')] ?? null;
-        if (!$preset || $preset['expr'] === null) {
+        $minuteStep = $preset['minute_step'] ?? null;
+        if ($preset === null || $minuteStep === null) {
             continue;
         }
-        if (isset($preset['minute_max'])) {
-            $bounds['minute'] = min($bounds['minute'], (int)$preset['minute_max']);
+        if ($minuteStep > 1) {
+            $used['minute_used'] = true;
         }
-        if (isset($preset['hour_max'])) {
-            $bounds['hour'] = min($bounds['hour'], (int)$preset['hour_max']);
+        if ((int)($preset['hour_step'] ?? 1) > 1) {
+            $used['hour_used'] = true;
         }
     }
 
-    return $bounds;
+    return $used;
 }
 
 /**
@@ -94,11 +159,12 @@ function cronBounds(array $choices): array
  * Not PHP's. Three different clocks are in play and people reasonably assume
  * they are one: the browser's, PHP's `date.timezone` (which sets what the
  * dashboard prints), and the system zone that the cron daemon reads times in.
- * On this machine PHP says UTC while the system says America/New_York, so a
- * crontab written to "2am" would fire four hours from when the config implies.
+ * On the machine this was written on PHP said UTC while the system said
+ * America/New_York, so a crontab written for "2am" would fire four hours from
+ * when the config implied.
  *
  * A `CRON_TZ` or `TZ` line in the crontab beats the system setting, so that is
- * checked too - it is the one thing that would make everything below wrong.
+ * checked too - it is the one thing that would make everything else wrong.
  *
  * @return array{name: ?string, abbrev: ?string, offset: ?int, source: string, cron_tz: ?string}
  */
@@ -107,9 +173,9 @@ function systemTimezone(string $crontab = ''): array
     $name = null;
     $source = 'unknown';
 
-    // The symlink is the most reliable: it names the zone, so the browser can
-    // convert with it rather than guessing from an offset that changes twice a
-    // year.
+    // The symlink is the most useful: it names the zone, so the browser can
+    // convert with its own database rather than guessing from an offset that
+    // changes twice a year.
     $link = @readlink('/etc/localtime');
     if (is_string($link) && preg_match('#zoneinfo/(.+)$#', $link, $m)) {
         $name = $m[1];
@@ -148,8 +214,8 @@ function systemTimezone(string $crontab = ''): array
      * A TZ set inside the crontab wins over all of it.
      *
      * cron reads `CRON_TZ=` (Vixie, cronie) or `TZ=` before the schedule lines
-     * and interprets everything after in that zone. Missing it would make every
-     * time this dashboard shows quietly wrong.
+     * and interprets everything after it in that zone. Missing it would make
+     * every time this dashboard shows quietly wrong.
      */
     $cronTz = null;
     foreach (preg_split('/\R/', $crontab) ?: [] as $line) {
@@ -341,11 +407,10 @@ function buildCronLines(array $choices, string $php, string $scriptDir): array
         throw new ActionRefused('cannot find cron.php');
     }
 
-    // Clamped to what the chosen presets actually accept, not to the widest
-    // possible range: an hour of 20 on a six-hourly job would be a daily one.
-    $bounds = cronBounds($choices);
-    $minute = max(0, min($bounds['minute'], (int)($choices['minute'] ?? 7)));
-    $hour = max(0, min($bounds['hour'], (int)($choices['hour'] ?? 2)));
+    // Clamped to real clock values and nothing narrower. cronField folds a
+    // start into its own cycle, and the resulting set always includes it.
+    $minute = max(0, min(59, (int)($choices['minute'] ?? 7)));
+    $hour = max(0, min(23, (int)($choices['hour'] ?? 2)));
 
     $lines = [];
     foreach ($jobs as $job => $flags) {
@@ -354,12 +419,10 @@ function buildCronLines(array $choices, string $php, string $scriptDir): array
             throw new ActionRefused("unknown schedule for $job");
         }
 
-        $expr = $presets[$job][$pick]['expr'];
+        $expr = cronExpressionFor($presets[$job][$pick], $minute, $hour);
         if ($expr === null) {
             continue;
         }
-
-        $expr = str_replace(['%M', '%H'], [(string)$minute, (string)$hour], $expr);
 
         /*
          * escapeshellarg on both paths.

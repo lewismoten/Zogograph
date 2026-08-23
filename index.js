@@ -1287,11 +1287,6 @@ function drawSchedule(data) {
   updateSchedulePreview();
 }
 
-/** Substitutes the chosen minute and hour the way the server will. */
-function cronExpression(expr, minute, hour) {
-  return expr.replace(/%M/g, String(minute)).replace(/%H/g, String(hour));
-}
-
 function updateSchedulePreview() {
   const data = state.schedule;
   if (!data || !$("schedPreview")) return;
@@ -1312,15 +1307,9 @@ function updateSchedulePreview() {
   const limit = { minute: { used: false, max: 59 }, hour: { used: false, max: 23 } };
   for (const [job, pick] of jobs) {
     const preset = data.presets[job]?.[pick];
-    if (!preset || !preset.expr) continue;
-    if (preset.expr.includes("%M")) {
-      limit.minute.used = true;
-      limit.minute.max = Math.min(limit.minute.max, preset.minute_max ?? 59);
-    }
-    if (preset.expr.includes("%H")) {
-      limit.hour.used = true;
-      limit.hour.max = Math.min(limit.hour.max, preset.hour_max ?? 23);
-    }
+    if (!preset || preset.minute_step == null) continue;
+    if (preset.minute_step > 1) limit.minute.used = true;
+    if ((preset.hour_step ?? 1) > 1) limit.hour.used = true;
   }
 
   const minute = applyBound("schedMinute", limit.minute);
@@ -1330,9 +1319,9 @@ function updateSchedulePreview() {
 
   const lines = [];
   for (const [job, pick, flags] of jobs) {
-    const preset = data.presets[job]?.[pick];
-    if (!preset || !preset.expr) continue;
-    lines.push(`${cronExpression(preset.expr, minute, hour)} '${php}' '${script}' ${flags}`);
+    const expr = expressionFor(data.presets[job]?.[pick], minute, hour);
+    if (!expr) continue;
+    lines.push(`${expr} '${php}' '${script}' ${flags}`);
   }
 
   $("schedPreview").textContent = lines.length
@@ -1364,38 +1353,65 @@ function applyBound(id, bound) {
 }
 
 function scheduleNote(limit) {
-  const parts = [];
-
   const unused = [];
   if (!limit.minute.used) unused.push("minute");
   if (!limit.hour.used) unused.push("hour");
-  if (unused.length) {
-    parts.push(`The ${unused.join(" and ")} ${unused.length === 1 ? "field is" : "fields are"} `
-      + "not used by the schedules you have chosen.");
+
+  if (!unused.length) {
+    // Any value is accepted: a repeating schedule always includes the time it
+    // was asked to start from, whatever the step.
+    return "The minute and hour are when it first runs; a repeating schedule "
+      + "then carries on from there at its own interval.";
   }
 
-  if (limit.hour.used && limit.hour.max < 23) {
-    parts.push(`The hour sets where the cycle starts, so it runs 0\u2013${limit.hour.max} `
-      + `and then repeats every ${limit.hour.max + 1} hours.`);
-  }
-  if (limit.minute.used && limit.minute.max < 59) {
-    parts.push(`The minute sets where the cycle starts, so it runs 0\u2013${limit.minute.max}.`);
-  }
-
-  return parts.join(" ");
+  return `The ${unused.join(" and ")} ${unused.length === 1 ? "field is" : "fields are"} `
+    + "not used by the schedules you have chosen.";
 }
 
 /* ------------------------------------------------------- when cron fires -- */
 
 /**
- * The values a cron field can take. Only the shapes these presets produce.
+ * One cron field, built from a start and a step. Mirrors cronField() in PHP.
  *
- * `*` every value, `N` just that one, `N/S` from N stepping by S, and `*` with
- * a step for the form older versions wrote.
+ * A list, not `4/6`: the start/step form is a Vixie extension that cronie
+ * accepts and cPanel's cron editor rejects, so a schedule written that way
+ * installs over ssh and is refused through the interface most people on shared
+ * hosting actually use.
+ *
+ * The server builds the real line and this is a preview of the same rules, not
+ * a second source of truth.
+ */
+function cronField(start, step, cycle) {
+  if (step <= 1) return "*";
+  if (step >= cycle) return String(((start % cycle) + cycle) % cycle);
+
+  const values = new Set();
+  for (let k = 0; k * step < cycle; k++) {
+    values.add((((start + k * step) % cycle) + cycle) % cycle);
+  }
+  return [...values].sort((a, b) => a - b).join(",");
+}
+
+/** The expression a preset produces, or null when it is switched off. */
+function expressionFor(preset, minute, hour) {
+  if (!preset || preset.minute_step == null) return null;
+  return `${cronField(minute, preset.minute_step, 60)} `
+    + `${cronField(hour, preset.hour_step ?? 1, 24)} * * *`;
+}
+
+/**
+ * The values a cron field stands for.
+ *
+ * Handles every form this project has ever written: `*`, a single number, a
+ * comma list, and the `N/S` and `*` + step forms earlier versions produced.
  */
 function cronFieldValues(field, max) {
   if (field === "*") {
     return Array.from({ length: max + 1 }, (_, i) => i);
+  }
+
+  if (field.includes(",")) {
+    return field.split(",").map(Number).filter(Number.isFinite).sort((a, b) => a - b);
   }
 
   const step = field.match(/^(\*|\d+)\/(\d+)$/);
@@ -1409,6 +1425,15 @@ function cronFieldValues(field, max) {
 
   const single = Number(field);
   return Number.isFinite(single) ? [single] : [];
+}
+
+/** The start and step a field describes, for recognising an installed line. */
+function cronFieldShape(field, cycle) {
+  const values = cronFieldValues(field, cycle - 1);
+  if (!values.length) return null;
+  if (values.length === cycle) return { start: 0, step: 1 };
+  if (values.length === 1) return { start: values[0], step: cycle };
+  return { start: values[0], step: values[1] - values[0] };
 }
 
 /**
@@ -1513,18 +1538,27 @@ function describeTimes(jobs, data, minute, hour) {
 
   for (const [job, pick] of jobs) {
     const preset = data.presets[job]?.[pick];
-    if (!preset || !preset.expr) continue;
+    if (!preset || preset.minute_step == null) continue;
 
-    const expr = cronExpression(preset.expr, minute, hour);
+    const expr = expressionFor(preset, minute, hour);
+    if (!expr) continue;
 
     if (!zone) {
       said.push(`${job}: ${expr} in the server's timezone, which could not be determined`);
       continue;
     }
 
+    /*
+     * Never list more times than the schedule actually has.
+     *
+     * Asking for four from a three-a-day job returns tomorrow's first as well,
+     * so it printed "9:15 PM, 5:15 AM, 1:15 PM, 9:15 PM" - which reads as a
+     * mistake rather than as the next four occurrences.
+     */
     const { runs, perDay } = nextCronRuns(expr, zone, 4);
-    const clock = runs.map(when =>
-      when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+    const clock = runs
+      .slice(0, Math.min(4, perDay))
+      .map(when => when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
 
     /*
      * A schedule that fires more often than hourly is described, not listed.
@@ -1557,19 +1591,28 @@ function describeTimes(jobs, data, minute, hour) {
   return said.join(" \u00b7 ") + where;
 }
 
-/** Which preset the installed line looks like, so the form opens on it. */
+/**
+ * Which preset an installed line came from, so the form opens on it.
+ *
+ * Compared by shape - the start and step each field describes - rather than by
+ * matching text, so a line written by any earlier version is still recognised.
+ * Getting this wrong is not cosmetic: a schedule shown as "Off" invites
+ * somebody to replace a working crontab with nothing.
+ */
 function guessPick(lines, flag, presets) {
   const line = lines.find(l => l.includes(flag));
   if (!line) return "off";
-  const expr = line.split(/\s+/).slice(0, 5).join(" ");
-  // A star counts as a phase of zero. Earlier versions wrote a star before the
-  // slash where this one writes a number, and the two mean the same thing.
-  // Without accepting both, an install that had already saved a schedule would
-  // open showing "Off" and quietly offer to replace a good crontab with nothing.
+
+  const [minuteField, hourField] = line.split(/\s+/);
+  const minute = cronFieldShape(minuteField, 60);
+  const hour = cronFieldShape(hourField, 24);
+  if (!minute || !hour) return "off";
+
   const match = Object.entries(presets).find(([, p]) =>
-    p.expr && p.expr.replace(/%M|%H/g, "(?:\\d+|\\*)").split(" ").every(
-      (part, i) => new RegExp(`^${part.replace(/\*/g, "\\*")}$`).test(expr.split(" ")[i] ?? "")
-    ));
+    p.minute_step != null
+    && p.minute_step === minute.step
+    && (p.hour_step ?? 1) === hour.step);
+
   return match ? match[0] : "off";
 }
 
