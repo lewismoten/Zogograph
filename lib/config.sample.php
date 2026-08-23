@@ -103,4 +103,14 @@ return [
      * requested by a signed-in session over POST with a matching token.
      */
     'deletable_categories' => ['trash', 'temp'],
+
+    /*
+     * What a signed-in session may read the contents of.
+     *
+     * Separate from deletable_categories, and deliberately a different set:
+     * being allowed to look at a file and being allowed to remove it are
+     * different permissions. Reading is for finding out what filled the disk,
+     * which means logs; deleting is for trash and scratch space.
+     */
+    'viewable_categories' => ['logs', 'errors'],
 ];

@@ -136,6 +136,32 @@
   <div id="offenders"></div>
 </section>
 
+<section class="panel" id="logPanel" hidden>
+  <div class="panel-head">
+    <h2 id="logTitle">Log</h2>
+    <div class="panel-controls">
+      <label class="inline">
+        Search
+        <input type="search" id="logSearch" placeholder="text to find" size="18">
+      </label>
+      <label class="inline">
+        Lines
+        <select id="logLines">
+          <option>100</option>
+          <option selected>200</option>
+          <option>500</option>
+          <option>1000</option>
+        </select>
+      </label>
+      <button id="logNewer">Newer</button>
+      <button id="logOlder">Older</button>
+      <button id="logClose" class="link">Close</button>
+    </div>
+  </div>
+  <p class="muted small" id="logStatus"></p>
+  <pre id="logBody" class="logview"></pre>
+</section>
+
 <section class="panel" id="historyPanel" hidden>
   <div class="panel-head">
     <h2 id="historyTitle">History</h2>
@@ -155,6 +181,19 @@
     <div id="actionLog"></div>
   </section>
 </div>
+
+<section class="panel" id="schedulePanel" hidden>
+  <div class="panel-head">
+    <h2>Schedule</h2>
+    <button id="testEmail">Send a test email</button>
+  </div>
+  <p class="muted small sub-note">
+    The two jobs run on different clocks: vitals cost milliseconds, a scan costs
+    minutes of disk work. Only the lines between this dashboard's markers are
+    touched — anything else in your crontab is left exactly as it is.
+  </p>
+  <div id="scheduleBody"></div>
+</section>
 
 <dialog id="signInDialog">
   <form id="signInForm">

@@ -28,6 +28,8 @@ require_once __DIR__ . '/lib/mask.php';
 require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/actions.php';
+require_once __DIR__ . '/lib/logs.php';
+require_once __DIR__ . '/lib/schedule.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -64,11 +66,15 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'history' => pathHistory($config, $pdo, $signedIn),
         'alerts' => alertList($config, $pdo, $signedIn),
         'actions' => actionLog($config, $pdo, $signedIn),
+        'tail' => tailLog($config, $pdo, $signedIn),
+        'schedule' => scheduleRead($signedIn),
         'session' => sessionState($config),
         'signin' => doSignIn($config, $post),
         'signout' => doSignOut(),
         'delete-file' => doDeleteFile($config, $pdo, $post),
         'empty' => doEmpty($config, $pdo, $post),
+        'schedule-save' => doScheduleSave($post),
+        'test-email' => doTestEmail($config, $pdo, $post),
         default => throw new ActionRefused('unknown action'),
     };
 }
@@ -105,6 +111,7 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
         // So the dashboard builds its filters and its chart from the rules that
         // are actually in force, rather than a copy of them that goes stale.
         'categories' => categoryNames($config['scan']),
+        'viewable' => $config['viewable_categories'] ?? [],
         'server_time' => time(),
     ];
 }
@@ -305,6 +312,80 @@ function actionLog(array $config, PDO $pdo, bool $signedIn): array
         throw new ActionRefused('sign in to see the action log');
     }
     return ['rows' => $pdo->query('SELECT * FROM actions ORDER BY at DESC LIMIT 100')->fetchAll()];
+}
+
+/**
+ * The end of a log file.
+ *
+ * Signed in only, and only for the categories the config marks readable. The
+ * reader never loads the file - see lib/logs.php - which is the difference
+ * between this working on a ten gigabyte error log and taking the site down.
+ */
+function tailLog(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to read log files');
+    }
+
+    $pathId = clampInt($_GET['path_id'] ?? 0, 1, PHP_INT_MAX);
+    $stmt = $pdo->prepare('SELECT id, path, kind, category FROM paths WHERE id = ?');
+    $stmt->execute([$pathId]);
+    $row = $stmt->fetch();
+    if (!$row) {
+        throw new ActionRefused('unknown path');
+    }
+
+    $real = resolveViewable($config, (string)$row['path']);
+    $result = tailFile(
+        $real,
+        clampInt($_GET['lines'] ?? 200, 1, 2000),
+        clampInt($_GET['page'] ?? 0, 0, 100000),
+        substr((string)($_GET['q'] ?? ''), 0, 200)
+    );
+
+    return ['path' => $row['path'], 'category' => $row['category']] + $result;
+}
+
+/** What is in the crontab. Signed in only: it is a list of what runs as you. */
+function scheduleRead(bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the schedule');
+    }
+    return scheduleState(__DIR__);
+}
+
+function doScheduleSave(bool $post): array
+{
+    requireWrite($post);
+
+    $crontab = readCrontab();
+    if (!$crontab['available']) {
+        throw new ActionRefused($crontab['reason'] ?? 'crontab is not available here');
+    }
+
+    // An empty pick for both jobs removes the block entirely, which is how the
+    // dashboard deletes a schedule - there is no separate destructive path.
+    $lines = buildCronLines(
+        [
+            'vitals' => (string)($_POST['vitals'] ?? 'off'),
+            'scan' => (string)($_POST['scan'] ?? 'off'),
+            'minute' => $_POST['minute'] ?? 7,
+            'hour' => $_POST['hour'] ?? 2,
+        ],
+        (string)($_POST['php'] ?? ''),
+        __DIR__
+    );
+
+    writeCrontab(replaceManagedBlock($crontab['raw'], $lines));
+
+    return ['ok' => true, 'lines' => $lines];
+}
+
+function doTestEmail(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    return sendTestEmail($config, $pdo);
 }
 
 function sessionState(array $config): array

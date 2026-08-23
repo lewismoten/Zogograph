@@ -150,6 +150,44 @@ dialog::backdrop { background: rgba(0, 0, 0, .6); }
 dialog form { display: grid; gap: 12px; }
 .dialog-buttons { display: flex; justify-content: flex-end; gap: 8px; }
 
+/* The log viewer. Monospaced, scrolls on its own, and never wraps: a wrapped
+   log line makes two entries look like one. */
+.logview {
+  margin: 0;
+  max-height: 60vh;
+  overflow: auto;
+  background: #0d0d0d;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .78rem;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 4;
+}
+.logview .num {
+  color: #666;
+  user-select: none;
+  display: inline-block;
+  min-width: 5ch;
+  text-align: right;
+  margin-right: 12px;
+}
+.logview mark { background: #6b5a1c; color: #ffe9a8; border-radius: 2px; }
+
+.sched { display: grid; gap: 12px; }
+.sched .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.sched pre {
+  margin: 0;
+  background: #0d0d0d;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: .76rem;
+}
+
 @media (max-width: 760px) {
   body { padding: 12px; }
   .grid { grid-template-columns: 1fr; }

@@ -104,7 +104,12 @@ straight away, then delete `setup.php`. If you would rather keep the file,
 
 ## Cron
 
-Two lines, because the two jobs run on different clocks:
+The **Schedule** panel on the dashboard writes these lines for you once you are
+signed in — pick how often each job runs and press the button. See
+[Scheduling from the dashboard](#scheduling-from-the-dashboard) for what it will
+and will not touch.
+
+By hand it is two lines, because the two jobs run on different clocks:
 
 ```cron
 # Vitals every minute, and evaluate the alert rules with them.
@@ -121,6 +126,54 @@ the web server uses.
 Vitals every minute is roughly half a megabyte of database a week before
 pruning. `--prune` keeps the last two weeks at full resolution, thins everything
 older to one reading an hour, and drops anything past about a year.
+
+## Scheduling from the dashboard
+
+A crontab line is a command the machine runs as you, on a timer, so letting a
+browser put text into one is remote code execution with extra steps. This does
+not do that. **No field on the page becomes part of a command.**
+
+- The schedule comes from a fixed list of presets; anything not on the list is
+  refused.
+- The PHP binary is picked from binaries actually found on disk. This matters
+  beyond safety: the PHP the web server runs is often not the CLI one, and a
+  cron job running the wrong PHP fails in a way that is tedious to diagnose.
+- The minute and hour are cast to integers and clamped to 0–59 and 0–23.
+- The command itself is assembled from constants, with both paths quoted.
+
+**The rest of your crontab is left alone.** The dashboard's lines live between
+two marker comments; everything outside them is copied through in order.
+Removing the schedule takes the markers with it, so nothing is left behind.
+
+The crontab is written by handing `crontab` a temporary file rather than piping
+into it — a pipe means building a shell command that contains the content, and
+the content is the one thing that must never be inside a command string.
+
+If `shell_exec` is disabled or the host has no `crontab` (both common on managed
+hosting), the panel says so and you add the lines through your control panel
+instead. It will never write a fresh crontab because it could not read the
+existing one.
+
+## Reading log files
+
+Signed in, a log file in the offenders table gets a **View** button: the last N
+lines, paging backwards, with search.
+
+The reader never reads the file. It seeks to the end and walks backwards in
+blocks, so showing the last two hundred lines of a ten gigabyte `error_log`
+costs the same as for a ten kilobyte one — measured at **65 KB read, 0.7 ms,
+2 MB of memory** against a 126 MB file. That is the whole reason it exists: the
+file that fills a disk is exactly the file you cannot open.
+
+Search cannot be free in the same way, since a match may be anywhere, so it is
+bounded instead — it scans backwards through 64 MB and **says when it stopped
+early** rather than quietly reporting "no matches" for a file it only partly
+looked at.
+
+Only categories in `viewable_categories` (logs and errors by default) can be
+read. That is deliberately a different list from `deletable_categories`: being
+allowed to look at a file and being allowed to remove it are different
+permissions, and the things worth reading are not the things worth deleting.
 
 ## Alerts
 
@@ -144,6 +197,13 @@ separate messages about one event is how people learn to ignore them.
 
 A directory is not blamed for its child's growth: one runaway log would
 otherwise alert for itself, for its directory, and for the home directory.
+
+**Send a test email** on the Schedule panel sends the current status report to
+the configured address — the same report a real alert carries, built by the same
+function, because a test that exercises a different code path tells you nothing
+about the one that matters. It always goes to the address in the config and
+never to one in the request: a monitor that emails its file listing to whoever
+asks is an open relay with a disk inventory attached.
 
 ## Signed in and signed out
 
@@ -228,6 +288,9 @@ One SQLite file, normalised on `paths`:
 | `path_sizes` | one path's size and file count at one scan |
 | `alerts` | what was raised, and whether the email went |
 | `actions` | every delete attempted, and what happened |
+
+Reading a log and editing the crontab do not write to the database. Deleting
+does, and always has, including the refusals.
 
 A path is written once and referred to by id everywhere else. A home directory
 has the same few thousand interesting paths in it every hour, so stored inline

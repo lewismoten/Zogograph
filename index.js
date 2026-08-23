@@ -31,7 +31,9 @@ const state = {
   timer: null,
   historyPathId: null,
   deletable: [],
+  viewable: [],
   categories: [],
+  log: { pathId: null, page: 0, needle: "" },
   units: "bytes",
   busy: false,
 };
@@ -652,6 +654,7 @@ async function refreshAll() {
     state.signedIn = overview.signed_in;
     state.csrf = overview.csrf;
     state.deletable = overview.deletable || [];
+    state.viewable = overview.viewable || [];
     applySignedInChrome();
 
     state.categories = overview.categories ?? [];
@@ -664,8 +667,11 @@ async function refreshAll() {
       ? `updated ${ago(overview.vitals.taken_at)}`
       : "";
 
-    await Promise.all([refreshOffenders(), refreshAlerts(), refreshActionLog()]);
+    await Promise.all([
+      refreshOffenders(), refreshAlerts(), refreshActionLog(), refreshSchedule(),
+    ]);
     if (state.historyPathId) await showHistory(state.historyPathId, true);
+    if (state.log.pathId) await showLog(state.log.pathId, true);
     notice("");
   } catch (error) {
     notice(String(error.message || error));
@@ -785,8 +791,27 @@ async function refreshOffenders() {
         return span;
       },
     },
-    { label: "", className: "size", render: row => deleteButton(row) },
+    { label: "", className: "size", render: row => rowButtons(row) },
   ], row => showHistory(row.path_id));
+}
+
+/** The buttons for one row: view a log, delete a file, or neither. */
+function rowButtons(row) {
+  const holder = document.createElement("span");
+  holder.style.display = "inline-flex";
+  holder.style.gap = "6px";
+
+  if (state.signedIn && row.kind === "file" && state.viewable.includes(row.category)) {
+    const view = document.createElement("button");
+    view.textContent = "View";
+    view.addEventListener("click", () => showLog(row.path_id));
+    holder.appendChild(view);
+  }
+
+  const remove = deleteButton(row);
+  if (remove !== "") holder.appendChild(remove);
+
+  return holder.childElementCount ? holder : "";
 }
 
 /**
@@ -872,6 +897,248 @@ async function showHistory(pathId, quiet = false) {
       empty: "This path has only been seen in one scan so far" });
 
   if (!quiet) $("historyPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/**
+ * Shows the end of a log file.
+ *
+ * `page` counts backwards from the end, so 0 is the newest lines and paging
+ * "older" walks back through the file. With a search, it walks back through
+ * matches instead - which is the only way to page through the interesting lines
+ * of a file too big to read.
+ */
+async function showLog(pathId, quiet = false) {
+  if (!pathId) return;
+  if (pathId !== state.log.pathId) {
+    state.log = { pathId, page: 0, needle: $("logSearch").value.trim() };
+  }
+
+  const panel = $("logPanel");
+  const body = $("logBody");
+
+  let data;
+  try {
+    data = await api("tail", {
+      path_id: pathId,
+      lines: $("logLines").value,
+      page: state.log.page,
+      q: state.log.needle,
+    });
+  } catch (error) {
+    panel.hidden = false;
+    $("logTitle").textContent = "Log";
+    $("logStatus").textContent = String(error.message || error);
+    body.replaceChildren();
+    return;
+  }
+
+  panel.hidden = false;
+  $("logTitle").textContent = data.path;
+
+  const shown = data.lines.length;
+  const parts = [];
+  if (state.log.needle) {
+    parts.push(`${data.matched} match${data.matched === 1 ? "" : "es"} found`);
+  }
+  parts.push(`${shown} line${shown === 1 ? "" : "s"}`);
+  if (state.log.page > 0) parts.push(`page ${state.log.page + 1} back from the end`);
+  parts.push(`file is ${humanBytes(data.size)}`);
+  parts.push(`read ${humanBytes(data.scanned)} of it`);
+  if (data.truncated) {
+    parts.push("stopped searching before the start of the file — narrow the search or look at the file directly");
+  } else if (data.reached_start) {
+    parts.push("this is the beginning of the file");
+  }
+  $("logStatus").textContent = parts.join(" · ");
+
+  /*
+   * Built as nodes rather than a string of HTML.
+   *
+   * A log file is the least trustworthy text on the machine - it is full of
+   * whatever was sent to the server, which is exactly where somebody would put
+   * a script tag hoping an admin tool would render it.
+   */
+  body.replaceChildren(...data.lines.map(line => {
+    const row = document.createElement("div");
+    const number = document.createElement("span");
+    number.className = "num";
+    number.textContent = String(line.n);
+    row.appendChild(number);
+    row.append(...highlight(line.text, state.log.needle));
+    return row;
+  }));
+
+  if (!shown) {
+    body.textContent = state.log.needle ? "No matching lines here." : "Nothing to show.";
+  }
+
+  $("logNewer").disabled = state.log.page === 0;
+  $("logOlder").disabled = data.reached_start && shown === 0;
+
+  if (!quiet) panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/** Splits a line around the search term, so the match can be marked. */
+function highlight(text, needle) {
+  if (!needle) return [document.createTextNode(text)];
+
+  const out = [];
+  const haystack = text.toLowerCase();
+  const found = needle.toLowerCase();
+  let at = 0;
+
+  for (;;) {
+    const next = haystack.indexOf(found, at);
+    if (next === -1) break;
+    if (next > at) out.push(document.createTextNode(text.slice(at, next)));
+    const mark = document.createElement("mark");
+    mark.textContent = text.slice(next, next + needle.length);
+    out.push(mark);
+    at = next + needle.length;
+  }
+
+  out.push(document.createTextNode(text.slice(at)));
+  return out;
+}
+
+/* --------------------------------------------------------------- schedule -- */
+
+async function refreshSchedule() {
+  const panel = $("schedulePanel");
+  if (!state.signedIn) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  let data;
+  try {
+    data = await api("schedule");
+  } catch (error) {
+    $("scheduleBody").textContent = String(error.message || error);
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.className = "sched";
+
+  if (!data.available) {
+    holder.textContent = data.reason || "The crontab cannot be read here.";
+    $("scheduleBody").replaceChildren(holder);
+    return;
+  }
+
+  const current = document.createElement("div");
+  if (data.lines.length) {
+    const pre = document.createElement("pre");
+    pre.textContent = data.lines.join("\n");
+    current.append(Object.assign(document.createElement("p"), {
+      className: "muted small",
+      textContent: `Installed now${data.other_lines > 0
+        ? `, alongside ${data.other_lines} other line${data.other_lines === 1 ? "" : "s"} this dashboard does not touch`
+        : ""}:`,
+    }), pre);
+  } else {
+    current.append(Object.assign(document.createElement("p"), {
+      className: "muted small",
+      textContent: "Nothing is scheduled. The dashboard will only show whatever you collect by hand.",
+    }));
+  }
+  holder.appendChild(current);
+
+  const form = document.createElement("div");
+  form.className = "row";
+  form.append(
+    picker("schedVitals", "Vitals", data.presets.vitals, guessPick(data.lines, "--vitals", data.presets.vitals)),
+    picker("schedScan", "Scan", data.presets.scan, guessPick(data.lines, "--scan", data.presets.scan)),
+    numberField("schedMinute", "At minute", 0, 59, 7),
+    numberField("schedHour", "At hour", 0, 23, 2),
+    picker("schedPhp", "PHP binary",
+      Object.fromEntries(data.binaries.map(b => [b, { label: b }])), data.binaries[0]),
+  );
+  holder.appendChild(form);
+
+  const buttons = document.createElement("div");
+  buttons.className = "row";
+
+  const save = document.createElement("button");
+  save.textContent = data.lines.length ? "Update the schedule" : "Add to the crontab";
+  save.addEventListener("click", () => saveSchedule(false));
+  buttons.appendChild(save);
+
+  if (data.lines.length) {
+    const remove = document.createElement("button");
+    remove.className = "danger";
+    remove.textContent = "Remove from the crontab";
+    remove.addEventListener("click", () => saveSchedule(true));
+    buttons.appendChild(remove);
+  }
+
+  holder.appendChild(buttons);
+  $("scheduleBody").replaceChildren(holder);
+}
+
+/** Which preset the installed line looks like, so the form opens on it. */
+function guessPick(lines, flag, presets) {
+  const line = lines.find(l => l.includes(flag));
+  if (!line) return "off";
+  const expr = line.split(/\s+/).slice(0, 5).join(" ");
+  const match = Object.entries(presets).find(([, p]) =>
+    p.expr && p.expr.replace(/%M|%H/g, "\\d+").split(" ").every(
+      (part, i) => new RegExp(`^${part.replace(/\*/g, "\\*")}$`).test(expr.split(" ")[i] ?? "")
+    ));
+  return match ? match[0] : "off";
+}
+
+function picker(id, label, options, chosen) {
+  const wrap = document.createElement("label");
+  wrap.className = "inline";
+  wrap.append(label);
+  const select = document.createElement("select");
+  select.id = id;
+  for (const [value, option] of Object.entries(options)) {
+    const el = document.createElement("option");
+    el.value = value;
+    el.textContent = option.label;
+    if (value === chosen) el.selected = true;
+    select.appendChild(el);
+  }
+  wrap.appendChild(select);
+  return wrap;
+}
+
+function numberField(id, label, min, max, value) {
+  const wrap = document.createElement("label");
+  wrap.className = "inline";
+  wrap.append(label);
+  const input = document.createElement("input");
+  Object.assign(input, { id, type: "number", min, max, value });
+  input.style.width = "5.5rem";
+  wrap.appendChild(input);
+  return wrap;
+}
+
+async function saveSchedule(remove) {
+  const what = remove
+    ? "Remove this dashboard's lines from your crontab?"
+    : "Write these lines into your crontab?";
+  if (!confirm(`${what}\n\nNothing else in it is changed.`)) return;
+
+  try {
+    const result = await post("schedule-save", {
+      vitals: remove ? "off" : $("schedVitals").value,
+      scan: remove ? "off" : $("schedScan").value,
+      minute: $("schedMinute").value,
+      hour: $("schedHour").value,
+      php: $("schedPhp").value,
+    });
+    notice(result.lines.length
+      ? `Crontab updated with ${result.lines.length} line${result.lines.length === 1 ? "" : "s"}.`
+      : "Removed from the crontab.", true);
+    await refreshSchedule();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
 }
 
 async function refreshAlerts() {
@@ -998,6 +1265,53 @@ $("live").addEventListener("click", () => {
 for (const id of ["offCategory", "offKind", "offSort"]) {
   $(id).addEventListener("change", () => refreshOffenders().catch(e => notice(String(e.message || e))));
 }
+
+$("logClose").addEventListener("click", () => {
+  state.log = { pathId: null, page: 0, needle: "" };
+  $("logPanel").hidden = true;
+});
+
+$("logOlder").addEventListener("click", () => {
+  state.log.page += 1;
+  showLog(state.log.pathId, true);
+});
+
+$("logNewer").addEventListener("click", () => {
+  state.log.page = Math.max(0, state.log.page - 1);
+  showLog(state.log.pathId, true);
+});
+
+$("logLines").addEventListener("change", () => {
+  state.log.page = 0;
+  if (state.log.pathId) showLog(state.log.pathId, true);
+});
+
+// Searching restarts at the newest match rather than keeping the page number,
+// which would otherwise land somewhere arbitrary in a different set of results.
+let searchTimer = null;
+$("logSearch").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    state.log.needle = $("logSearch").value.trim();
+    state.log.page = 0;
+    if (state.log.pathId) showLog(state.log.pathId, true);
+  }, 350);
+});
+
+$("testEmail").addEventListener("click", async () => {
+  const button = $("testEmail");
+  button.disabled = true;
+  try {
+    const result = await post("test-email");
+    notice(result.sent
+      ? `Test email sent to ${result.to}. If it does not arrive, check the spam folder and the host's mail log.`
+      : (result.error || "Could not send."), result.sent);
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    button.disabled = false;
+  }
+});
 
 $("historyClose").addEventListener("click", () => {
   state.historyPathId = null;

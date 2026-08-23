@@ -444,29 +444,11 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
         $lines[] = '';
     }
 
-    $vitals = latestVitals($pdo);
-    if ($vitals) {
-        $lines[] = 'At the last reading:';
-        $lines[] = sprintf(
-            '  disk    %s free of %s (%.1f%% used)',
-            humanBytes((int)$vitals['disk_free_bytes']),
-            humanBytes((int)$vitals['disk_total_bytes']),
-            (float)$vitals['disk_used_percent']
-        );
-        if ($vitals['inodes_free'] !== null) {
-            $lines[] = sprintf(
-                '  inodes  %s free of %s',
-                number_format((float)$vitals['inodes_free']),
-                number_format((float)$vitals['inodes_total'])
-            );
-        }
-        if ($vitals['load1'] !== null) {
-            $lines[] = sprintf('  load    %.2f %.2f %.2f',
-                (float)$vitals['load1'], (float)$vitals['load5'], (float)$vitals['load15']);
-        }
-        $lines[] = '';
+    foreach (statusReport($pdo) as $line) {
+        $lines[] = $line;
     }
 
+    $lines[] = '';
     $lines[] = 'This message will not repeat for '
         . humanDuration((float)($rules['cooldown_seconds'] ?? 21600)) . '.';
 
@@ -482,6 +464,145 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
     foreach ($raised as $alert) {
         $update->execute([$sent ? time() : null, $sent ? null : 'mail() returned false', $alert['id']]);
     }
+}
+
+/**
+ * Where things stand, as lines of plain text.
+ *
+ * Shared by the alert emails and the test email, so what a test sends is
+ * literally the report a real alert would carry - a test that exercises a
+ * different code path tells you the wrong thing about the one that matters.
+ *
+ * @return list<string>
+ */
+function statusReport(PDO $pdo): array
+{
+    $lines = [];
+    $vitals = latestVitals($pdo);
+
+    if (!$vitals) {
+        return ['Nothing has been collected yet. Run: php cron.php --vitals'];
+    }
+
+    $lines[] = 'At the last reading (' . date('Y-m-d H:i', (int)$vitals['taken_at']) . '):';
+    $lines[] = sprintf(
+        '  disk     %s free of %s (%.1f%% used)',
+        humanBytes((int)$vitals['disk_free_bytes']),
+        humanBytes((int)$vitals['disk_total_bytes']),
+        (float)$vitals['disk_used_percent']
+    );
+
+    if ($vitals['inodes_free'] !== null) {
+        $lines[] = sprintf(
+            '  inodes   %s free of %s (%.1f%% used)',
+            number_format((float)$vitals['inodes_free']),
+            number_format((float)$vitals['inodes_total']),
+            (float)$vitals['inodes_used_percent']
+        );
+    }
+    if ($vitals['load1'] !== null) {
+        $cores = $vitals['cpu_cores'] ? ' over ' . (int)$vitals['cpu_cores'] . ' cores' : '';
+        $lines[] = sprintf('  load     %.2f %.2f %.2f%s',
+            (float)$vitals['load1'], (float)$vitals['load5'], (float)$vitals['load15'], $cores);
+    }
+    if ($vitals['cpu_percent'] !== null) {
+        $lines[] = sprintf('  cpu      %.0f%%', (float)$vitals['cpu_percent']);
+    }
+    if ($vitals['mem_used_percent'] !== null) {
+        $lines[] = sprintf('  memory   %.0f%% used, %s available',
+            (float)$vitals['mem_used_percent'], humanBytes((int)$vitals['mem_available_bytes']));
+    }
+    if ($vitals['net_rx_rate'] !== null) {
+        $lines[] = sprintf('  network  %s/s in, %s/s out',
+            humanBytes((int)$vitals['net_rx_rate']), humanBytes((int)$vitals['net_tx_rate']));
+    }
+
+    $scan = $pdo->query(
+        'SELECT id, started_at FROM scans WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1'
+    )->fetch();
+
+    if (!$scan) {
+        $lines[] = '';
+        $lines[] = 'No scan has finished yet. Run: php cron.php --scan';
+        return $lines;
+    }
+
+    $lines[] = '';
+    $lines[] = 'Last scan (' . date('Y-m-d H:i', (int)$scan['started_at']) . '):';
+
+    $totals = $pdo->prepare('SELECT category, bytes, files FROM scan_totals WHERE scan_id = ? ORDER BY bytes DESC');
+    $totals->execute([$scan['id']]);
+    foreach ($totals->fetchAll() as $row) {
+        $lines[] = sprintf('  %-8s %10s in %s files',
+            $row['category'], humanBytes((int)$row['bytes']), number_format((float)$row['files']));
+    }
+
+    /*
+     * The five biggest things, by name.
+     *
+     * Unmasked, because this goes to the address in the config and nowhere
+     * else - the masking exists for people looking at the dashboard without a
+     * password, and an email you asked to be sent to yourself is not that.
+     */
+    $top = $pdo->prepare(
+        'SELECT p.path, ps.bytes FROM path_sizes ps JOIN paths p ON p.id = ps.path_id
+         WHERE ps.scan_id = ? AND p.kind = \'file\' ORDER BY ps.bytes DESC LIMIT 5'
+    );
+    $top->execute([$scan['id']]);
+    $biggest = $top->fetchAll();
+
+    if ($biggest) {
+        $lines[] = '';
+        $lines[] = 'Largest files:';
+        foreach ($biggest as $row) {
+            $lines[] = sprintf('  %10s  %s', humanBytes((int)$row['bytes']), $row['path']);
+        }
+    }
+
+    return $lines;
+}
+
+/**
+ * Sends the status report on demand, from the dashboard.
+ *
+ * Deliberately goes to the configured recipient rather than to an address in
+ * the request: a monitor that will email arbitrary people its file listing on
+ * request is an open relay with a disk inventory attached.
+ *
+ * @return array{sent: bool, to: string, error: ?string}
+ */
+function sendTestEmail(array $config, PDO $pdo): array
+{
+    $rules = $config['alerts'] ?? [];
+    $to = trim((string)($rules['to'] ?? ''));
+
+    if ($to === '') {
+        return ['sent' => false, 'to' => '', 'error' => 'No alert address is configured.'];
+    }
+    if (!function_exists('mail')) {
+        return ['sent' => false, 'to' => $to, 'error' => 'mail() is not available on this host.'];
+    }
+
+    $host = php_uname('n');
+    $body = array_merge(
+        ['Disk Usage Monitor on ' . $host, '', 'This is a test. Nothing has tripped.', ''],
+        statusReport($pdo),
+        ['', 'Alerts are ' . (($rules['enabled'] ?? false) ? 'enabled' : 'DISABLED in the config') . '.']
+    );
+
+    $headers = ['Auto-Submitted: auto-generated'];
+    $from = trim((string)($rules['from'] ?? ''));
+    if ($from !== '') {
+        $headers[] = 'From: ' . $from;
+    }
+
+    $sent = @mail($to, "[test] $host disk monitor", implode("\n", $body), implode("\r\n", $headers));
+
+    return [
+        'sent' => (bool)$sent,
+        'to' => $to,
+        'error' => $sent ? null : 'mail() returned false. The host may not accept mail from PHP.',
+    ];
 }
 
 function humanBytes(?int $bytes): string
