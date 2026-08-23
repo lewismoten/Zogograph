@@ -6,6 +6,8 @@ A small PHP CLI collector plus a static HTML dashboard.
 
 - `cron.php` — run this from cron.
 - `index.html` — browser dashboard.
+- `index.css` — dashboard styling.
+- `index.js` — dashboard behaviour.
 - `data/` — created automatically by the collector.
 
 The collector writes:
@@ -43,6 +45,8 @@ Copy these files there:
 ```text
 cron.php
 index.html
+index.css
+index.js
 ```
 
 Protect the directory with authentication if it is reachable from the public internet.
