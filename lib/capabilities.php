@@ -1,0 +1,957 @@
+<?php
+declare(strict_types=1);
+
+/*
+ * What this machine can actually do, and what this account can actually reach.
+ *
+ * On ordinary hosting those are the same question. On CloudLinux they are not,
+ * and the gap between them is the reason half of this project's diagnostics
+ * report "not available" on a server where the tool is installed and working.
+ *
+ * CageFS gives every account its own private view of the filesystem, built from
+ * a skeleton at /usr/share/cagefs-skeleton. An account sees a small, curated
+ * /usr, /opt and /bin - enough to run a website - and nothing else. A program
+ * the host has in /usr/sbin is not hidden by permissions; it is simply not
+ * present in the filesystem the account is looking at. `which iostat` inside
+ * the account is not being refused, it is telling the truth about a world where
+ * iostat does not exist.
+ *
+ * That produces states an ordinary "is it installed?" check cannot express, and
+ * the whole point of this file is to keep them apart:
+ *
+ *   available      on the host and reachable from the account
+ *   host_only      installed, working, and invisible in here - exposing it is a
+ *                  CageFS configuration change, not an installation
+ *   alternate      not on PATH but present under another name or directory,
+ *                  which on cPanel is routine: php is ea-php85 in
+ *                  /opt/cpanel/ea-php85/root/usr/bin
+ *   unusable       found and not executable by this account
+ *   missing        not on the host at all - this one needs a package installed
+ *
+ * Telling somebody to install a package that is already installed, because the
+ * check could not see it, wastes an afternoon. Telling them it is missing when
+ * it needs a CageFS entry instead wastes the same afternoon differently.
+ */
+
+require_once __DIR__ . '/collect.php';
+
+/** Anything run through a shell must match this. Nothing else is ever passed. */
+const PROGRAM_NAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/';
+
+/** Where a program may be found when it is not on PATH. */
+const CAPABILITY_SEARCH_ROOTS = ['/usr/bin', '/usr/sbin', '/usr/local/bin', '/usr/local/sbin',
+                                 '/bin', '/sbin', '/opt'];
+
+/**
+ * The programs worth knowing about, and what each one buys you.
+ *
+ * The description is deliberately the *capability*, not the program. "iostat"
+ * means nothing to somebody deciding whether to ask their host for it; "disk
+ * I/O history per device" is a thing they can want.
+ *
+ * `key` marks the ones that unlock more than they cost. Checking a hundred
+ * packages is busywork; these fifteen are the difference between guessing at a
+ * problem and measuring it.
+ */
+function capabilityCatalogue(): array
+{
+    $g = static fn(string $group, array $rows): array =>
+        array_map(fn(array $r): array => $r + ['group' => $group], $rows);
+
+    return array_merge(
+        $g('core', [
+            ['name' => 'sh', 'does' => 'Run shell commands at all'],
+            ['name' => 'bash', 'does' => 'Shell scripting beyond POSIX sh'],
+            ['name' => 'cat', 'does' => 'Read files'],
+            ['name' => 'cp', 'does' => 'Copy files'],
+            ['name' => 'mv', 'does' => 'Move and rename'],
+            ['name' => 'rm', 'does' => 'Delete files'],
+            ['name' => 'mkdir', 'does' => 'Create directories'],
+            ['name' => 'find', 'does' => 'Search the filesystem by name, size or age'],
+            ['name' => 'grep', 'does' => 'Search inside files'],
+            ['name' => 'sed', 'does' => 'Edit text in a stream'],
+            ['name' => 'awk', 'does' => 'Field-based text processing'],
+            ['name' => 'sort', 'does' => 'Order lines'],
+            ['name' => 'uniq', 'does' => 'Collapse duplicates'],
+            ['name' => 'cut', 'does' => 'Take columns from text'],
+            ['name' => 'tr', 'does' => 'Translate characters'],
+            ['name' => 'head', 'does' => 'Read the start of a file'],
+            ['name' => 'tail', 'does' => 'Follow the end of a log'],
+            ['name' => 'wc', 'does' => 'Count lines and bytes'],
+            ['name' => 'xargs', 'does' => 'Build command lines from input'],
+            ['name' => 'date', 'does' => 'Read and format the clock'],
+            ['name' => 'stat', 'does' => 'File size, owner, times and inode'],
+            ['name' => 'du', 'does' => 'Directory sizes'],
+            ['name' => 'df', 'does' => 'Filesystem space'],
+            ['name' => 'ps', 'does' => 'What is running'],
+            ['name' => 'kill', 'does' => 'Stop a process'],
+            ['name' => 'nice', 'does' => 'Run something at lower priority'],
+            ['name' => 'nohup', 'does' => 'Survive a disconnect'],
+            ['name' => 'tar', 'does' => 'Archive directories'],
+            ['name' => 'gzip', 'does' => 'Compress'],
+            ['name' => 'gunzip', 'does' => 'Decompress'],
+            ['name' => 'ln', 'does' => 'Hard and symbolic links'],
+            ['name' => 'chmod', 'does' => 'Change permissions'],
+            ['name' => 'chown', 'does' => 'Change ownership'],
+            ['name' => 'touch', 'does' => 'Create a file or set its time'],
+            ['name' => 'env', 'does' => 'Inspect the environment'],
+            ['name' => 'id', 'does' => 'Which user and groups'],
+            ['name' => 'whoami', 'does' => 'Which user'],
+            ['name' => 'uname', 'does' => 'Kernel and architecture'],
+            ['name' => 'hostname', 'does' => 'Machine name'],
+            ['name' => 'mount', 'does' => 'List or attach filesystems'],
+            ['name' => 'umount', 'does' => 'Detach filesystems'],
+        ]),
+
+        $g('sysadmin', [
+            ['name' => 'top', 'does' => 'Live process and CPU view'],
+            ['name' => 'free', 'does' => 'Memory in use and available'],
+            ['name' => 'uptime', 'does' => 'Load average and time since boot'],
+            ['name' => 'vmstat', 'does' => 'Memory, swap and CPU over time', 'package' => 'procps-ng'],
+            ['name' => 'lsblk', 'does' => 'Block devices and partitions', 'package' => 'util-linux'],
+            ['name' => 'findmnt', 'does' => 'Mount tree, including bind mounts', 'package' => 'util-linux'],
+            ['name' => 'ss', 'does' => 'Open sockets and listening ports', 'package' => 'iproute', 'key' => true],
+            ['name' => 'ip', 'does' => 'Interfaces, addresses and routes', 'package' => 'iproute'],
+            ['name' => 'ping', 'does' => 'Reachability of a host', 'package' => 'iputils'],
+            ['name' => 'traceroute', 'does' => 'Where along a path traffic stops', 'package' => 'traceroute'],
+            ['name' => 'curl', 'does' => 'HTTP checks against a URL', 'package' => 'curl', 'key' => true],
+            ['name' => 'wget', 'does' => 'Fetch over HTTP', 'package' => 'wget'],
+            ['name' => 'ssh', 'does' => 'Connect to another machine', 'package' => 'openssh-clients'],
+            ['name' => 'scp', 'does' => 'Copy files between machines', 'package' => 'openssh-clients'],
+            ['name' => 'sftp', 'does' => 'Interactive file transfer', 'package' => 'openssh-clients'],
+            ['name' => 'openssl', 'does' => 'Certificate and TLS inspection', 'package' => 'openssl'],
+            ['name' => 'systemctl', 'does' => 'Service state and restart counts', 'package' => 'systemd'],
+            ['name' => 'journalctl', 'does' => 'System log, including crashes', 'package' => 'systemd'],
+            ['name' => 'crontab', 'does' => 'Scheduled jobs', 'package' => 'cronie'],
+            ['name' => 'logger', 'does' => 'Write to the system log', 'package' => 'util-linux'],
+            ['name' => 'dmesg', 'does' => 'Kernel messages: OOM kills, disk errors', 'package' => 'util-linux'],
+        ]),
+
+        $g('dev', [
+            ['name' => 'php', 'does' => 'Run PHP from the command line', 'version_arg' => '-v'],
+            ['name' => 'perl', 'does' => 'Run Perl', 'version_arg' => '-v'],
+            ['name' => 'python3', 'does' => 'Run Python'],
+            ['name' => 'git', 'does' => 'Inspect repositories and history', 'package' => 'git', 'key' => true],
+            ['name' => 'make', 'does' => 'Build from a Makefile', 'package' => 'make'],
+            ['name' => 'gcc', 'does' => 'Compile C', 'package' => 'gcc'],
+            ['name' => 'mysql', 'does' => 'Query MySQL/MariaDB directly', 'package' => 'mysql', 'key' => true],
+            ['name' => 'mariadb', 'does' => 'Query MariaDB directly', 'package' => 'mariadb', 'key' => true],
+            ['name' => 'mysqldump', 'does' => 'Back up a database'],
+            ['name' => 'sqlite3', 'does' => 'Query SQLite files', 'package' => 'sqlite', 'key' => true],
+            ['name' => 'composer', 'does' => 'PHP dependency management'],
+            ['name' => 'npm', 'does' => 'Node dependency management'],
+            ['name' => 'node', 'does' => 'Run JavaScript', 'version_arg' => '-v'],
+            ['name' => 'wp', 'does' => 'WordPress administration from the shell'],
+            ['name' => 'rsync', 'does' => 'Efficient copies and backups', 'package' => 'rsync', 'key' => true],
+        ]),
+
+        $g('diagnostics', [
+            ['name' => 'htop', 'does' => 'Interactive process view', 'package' => 'htop'],
+            ['name' => 'iotop', 'does' => 'Which process is using the disk', 'package' => 'iotop'],
+            ['name' => 'iostat', 'does' => 'Disk I/O history per device', 'package' => 'sysstat', 'key' => true],
+            ['name' => 'sar', 'does' => 'Historical CPU, memory and I/O', 'package' => 'sysstat', 'key' => true],
+            ['name' => 'lsof', 'does' => 'Open files, including deleted ones holding space',
+             'package' => 'lsof', 'key' => true, 'version_arg' => '-v'],
+            ['name' => 'strace', 'does' => 'What a stuck process is waiting on', 'package' => 'strace', 'key' => true],
+            ['name' => 'tcpdump', 'does' => 'Packet capture', 'package' => 'tcpdump', 'key' => true],
+            ['name' => 'nmap', 'does' => 'Port scanning', 'package' => 'nmap'],
+            ['name' => 'nc', 'does' => 'Raw TCP connections', 'package' => 'nmap-ncat'],
+            ['name' => 'dig', 'does' => 'DNS diagnostics', 'package' => 'bind-utils', 'key' => true],
+            ['name' => 'host', 'does' => 'Quick DNS lookups', 'package' => 'bind-utils'],
+            ['name' => 'whois', 'does' => 'Domain registration detail', 'package' => 'whois'],
+            ['name' => 'jq', 'does' => 'Parse JSON in scripts', 'package' => 'jq', 'key' => true],
+            ['name' => 'tree', 'does' => 'Directory structure at a glance', 'package' => 'tree'],
+            ['name' => 'ncdu', 'does' => 'Interactive disk usage explorer', 'package' => 'ncdu', 'key' => true],
+            ['name' => 'smartctl', 'does' => 'SMART disk health and failure prediction',
+             'package' => 'smartmontools', 'key' => true],
+        ]),
+
+        $g('media', [
+            ['name' => 'ffmpeg', 'does' => 'Transcode audio and video', 'package' => 'ffmpeg'],
+            ['name' => 'ffprobe', 'does' => 'Inspect media files', 'package' => 'ffmpeg'],
+            ['name' => 'convert', 'does' => 'Resize and convert images', 'package' => 'ImageMagick'],
+            ['name' => 'magick', 'does' => 'ImageMagick 7 entry point', 'package' => 'ImageMagick'],
+            ['name' => 'identify', 'does' => 'Image dimensions and format', 'package' => 'ImageMagick'],
+            ['name' => 'exiftool', 'does' => 'Read and strip image metadata', 'package' => 'perl-Image-ExifTool'],
+        ]),
+
+        $g('archive', [
+            ['name' => 'zip', 'does' => 'Create zip archives', 'package' => 'zip'],
+            ['name' => 'unzip', 'does' => 'Extract zip archives', 'package' => 'unzip'],
+            ['name' => '7z', 'does' => '7-zip archives', 'package' => 'p7zip'],
+            ['name' => 'xz', 'does' => 'High-ratio compression', 'package' => 'xz'],
+            ['name' => 'bzip2', 'does' => 'bzip2 compression', 'package' => 'bzip2'],
+            ['name' => 'zstd', 'does' => 'Fast modern compression', 'package' => 'zstd'],
+        ]),
+
+        $g('extras', [
+            ['name' => 'redis-cli', 'does' => 'Query Redis directly', 'package' => 'redis', 'key' => true],
+            ['name' => 'mongosh', 'does' => 'Query MongoDB directly', 'key' => true],
+            ['name' => 'docker', 'does' => 'Container management'],
+            ['name' => 'podman', 'does' => 'Rootless containers'],
+            ['name' => 'tmux', 'does' => 'Keep a session alive across disconnects', 'package' => 'tmux'],
+            ['name' => 'screen', 'does' => 'Detachable terminal sessions', 'package' => 'screen'],
+            ['name' => 'supervisord', 'does' => 'Keep a process running'],
+            ['name' => 'fail2ban-client', 'does' => 'Ban hosts after failed logins', 'package' => 'fail2ban'],
+            ['name' => 'clamdscan', 'does' => 'Virus scanning', 'package' => 'clamav'],
+            ['name' => 'rclone', 'does' => 'Sync to object storage and cloud drives',
+             'package' => 'rclone', 'key' => true],
+        ])
+    );
+}
+
+/** Human names for the groups, in the order worth reading them. */
+function capabilityGroups(): array
+{
+    return [
+        'core' => 'Core Linux — expected everywhere',
+        'sysadmin' => 'System and network tools',
+        'dev' => 'Development and hosting',
+        'diagnostics' => 'Diagnostics — the ones worth asking for',
+        'media' => 'Media and images',
+        'archive' => 'Compression and archives',
+        'extras' => 'Servers and applications',
+    ];
+}
+
+/**
+ * The catalogue plus anything the config adds.
+ *
+ * A custom entry is a name and a description of what it buys you. Anything
+ * whose name would not survive being handed to a shell is dropped here rather
+ * than at the point of use, so there is one place to be sure about it.
+ */
+function capabilityList(array $config): array
+{
+    $rows = capabilityCatalogue();
+
+    foreach ((array)($config['capabilities']['extra'] ?? []) as $entry) {
+        if (is_string($entry)) {
+            $entry = ['name' => $entry];
+        }
+        if (!is_array($entry) || !isset($entry['name'])) {
+            continue;
+        }
+        $rows[] = [
+            'name' => (string)$entry['name'],
+            'does' => (string)($entry['does'] ?? 'Added to the watch list'),
+            'group' => (string)($entry['group'] ?? 'custom'),
+            'package' => $entry['package'] ?? null,
+            'version_arg' => $entry['version_arg'] ?? null,
+            'key' => (bool)($entry['key'] ?? false),
+        ];
+    }
+
+    $seen = [];
+    $out = [];
+    foreach ($rows as $row) {
+        $name = (string)$row['name'];
+        if (!preg_match(PROGRAM_NAME_PATTERN, $name) || isset($seen[$name])) {
+            continue;
+        }
+        $seen[$name] = true;
+        $out[] = $row + ['package' => null, 'version_arg' => null, 'key' => false];
+    }
+
+    return $out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Probing
+ * ------------------------------------------------------------------ */
+
+/**
+ * Where each program is, from the point of view of whoever is running this.
+ *
+ * One shell for the whole list rather than one per program. A hundred and
+ * fifteen `command -v` calls is a hundred and fifteen process spawns, which on
+ * a loaded shared host is several seconds of doing nothing useful; a single sh
+ * loop is one spawn and a few milliseconds.
+ *
+ * `command -v` rather than `which`: it is a shell builtin required by POSIX,
+ * it respects the shell's own idea of PATH, and it does not depend on a
+ * /usr/bin/which existing - which, inside a caged account, is exactly the sort
+ * of thing that might not.
+ *
+ * @param list<string> $names
+ * @return array<string, string> name => path, only for those found
+ */
+function probePaths(array $names, ?string $asUser = null): array
+{
+    $safe = array_values(array_filter(
+        $names,
+        fn(string $n): bool => (bool)preg_match(PROGRAM_NAME_PATTERN, $n)
+    ));
+    if ($safe === []) {
+        return [];
+    }
+
+    $script = 'for p in ' . implode(' ', $safe) . '; do '
+        . 'printf "%s\t%s\n" "$p" "$(command -v "$p" 2>/dev/null || true)"; done';
+
+    if ($asUser !== null) {
+        /*
+         * Asking the question from inside the cage.
+         *
+         * cagefs_enter_user runs a command in the account's own namespace, so
+         * this is the only way to learn what that account can actually see -
+         * as opposed to what root can see, which is the wrong answer to the
+         * question being asked.
+         */
+        if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $asUser)) {
+            return [];
+        }
+        $command = '/usr/sbin/cagefs_enter_user ' . escapeshellarg($asUser)
+            . ' /bin/sh -c ' . escapeshellarg($script) . ' 2>/dev/null';
+    } else {
+        $command = '/bin/sh -c ' . escapeshellarg($script) . ' 2>/dev/null';
+    }
+
+    $out = shellRead($command);
+    if ($out === null) {
+        return [];
+    }
+
+    $found = [];
+    foreach (preg_split('/\R/', trim($out)) ?: [] as $line) {
+        $parts = explode("\t", $line, 2);
+        if (count($parts) !== 2) {
+            continue;
+        }
+        [$name, $path] = $parts;
+        $path = trim($path);
+        if ($path !== '') {
+            $found[$name] = $path;
+        }
+    }
+
+    return $found;
+}
+
+/**
+ * Looks for a program that is not on PATH.
+ *
+ * Routine on cPanel rather than exotic: the system php is a stub and the real
+ * ones live in /opt/cpanel/ea-php85/root/usr/bin, so "php is not installed" is
+ * both what PATH says and completely wrong. Reported as its own state so the
+ * answer is "it is here, under another path" rather than "it is missing".
+ *
+ * Bounded hard. This runs `find` over /usr and /opt, which on a shared host is
+ * a lot of inodes, so it is only ever used for the handful of programs that
+ * were not found the cheap way.
+ *
+ * @param list<string> $names
+ * @return array<string, string> name => first path found
+ */
+function probeAlternatePaths(array $names, float $budgetSeconds = 8.0): array
+{
+    $safe = array_values(array_filter(
+        $names,
+        fn(string $n): bool => (bool)preg_match(PROGRAM_NAME_PATTERN, $n)
+    ));
+    if ($safe === []) {
+        return [];
+    }
+
+    $roots = array_values(array_filter(CAPABILITY_SEARCH_ROOTS, 'is_dir'));
+    if ($roots === []) {
+        return [];
+    }
+
+    $expressions = [];
+    foreach ($safe as $name) {
+        $expressions[] = '-name ' . escapeshellarg($name);
+    }
+
+    $command = 'find ' . implode(' ', array_map('escapeshellarg', $roots))
+        . ' -maxdepth 6 -type f -perm -111 \\( ' . implode(' -o ', $expressions) . ' \\) '
+        . '2>/dev/null';
+
+    // A find over /usr and /opt can run for minutes on a busy host; the whole
+    // check is worth a few seconds and no more.
+    if (is_executable('/usr/bin/timeout') || is_executable('/bin/timeout')) {
+        $command = 'timeout ' . (int)ceil($budgetSeconds) . ' ' . $command;
+    }
+
+    $out = shellRead($command);
+    if ($out === null) {
+        return [];
+    }
+
+    $found = [];
+    foreach (preg_split('/\R/', trim($out)) ?: [] as $path) {
+        $path = trim($path);
+        if ($path === '') {
+            continue;
+        }
+        $name = basename($path);
+        // The first hit wins: find walks in directory order, and any of them
+        // answers "it exists somewhere".
+        $found[$name] ??= $path;
+    }
+
+    return $found;
+}
+
+/**
+ * The version string, for programs that are actually there.
+ *
+ * Deliberately last and deliberately bounded. Asking a program its version
+ * means running it, and some of them are slow, some read standard input if
+ * given the wrong flag, and a few are interactive. Every one gets a timeout, a
+ * closed stdin, and a flag from the catalogue where the usual one is wrong.
+ *
+ * @param array<string, string> $paths name => path
+ * @return array<string, string> name => version line
+ */
+function probeVersions(array $paths, array $catalogue, int $limit = 40): array
+{
+    $args = [];
+    foreach ($catalogue as $row) {
+        $args[$row['name']] = $row['version_arg'] ?? '--version';
+    }
+
+    $hasTimeout = is_executable('/usr/bin/timeout') || is_executable('/bin/timeout');
+    $versions = [];
+    $done = 0;
+
+    foreach ($paths as $name => $path) {
+        if ($done >= $limit) {
+            break;
+        }
+        if (!preg_match(PROGRAM_NAME_PATTERN, $name) || !is_executable($path)) {
+            continue;
+        }
+
+        $flag = $args[$name] ?? '--version';
+        if (!preg_match('/^-{1,2}[A-Za-z-]{1,16}$/', $flag)) {
+            continue;
+        }
+
+        // stdin closed so nothing can sit waiting for input it will never get.
+        $command = escapeshellarg($path) . ' ' . $flag . ' </dev/null 2>&1';
+        if ($hasTimeout) {
+            $command = 'timeout 3 ' . $command;
+        }
+
+        $out = shellRead($command);
+        $done++;
+        if ($out === null) {
+            continue;
+        }
+
+        $first = trim(strtok($out, "\n") ?: '');
+        if ($first !== '') {
+            $versions[$name] = mb_substr($first, 0, 120);
+        }
+    }
+
+    return $versions;
+}
+
+/**
+ * Whether CageFS is installed, and whether this account is inside it.
+ *
+ * The question that decides how every other answer should be read. On a host
+ * with no CageFS, "the account cannot see it" means a permissions or PATH
+ * problem. On a host with CageFS and the account enabled, it means the program
+ * is not in the skeleton - a completely different fix.
+ */
+function cagefsStatus(?string $user = null): array
+{
+    $ctl = null;
+    foreach (['/usr/sbin/cagefsctl', '/sbin/cagefsctl', '/usr/bin/cagefsctl'] as $candidate) {
+        if (is_executable($candidate)) {
+            $ctl = $candidate;
+            break;
+        }
+    }
+
+    if ($ctl === null) {
+        return [
+            'installed' => false,
+            'user' => $user,
+            'enabled' => null,
+            'raw' => null,
+            'note' => 'CageFS is not installed on this host, so every account sees the same '
+                . 'filesystem and "installed" means the same thing everywhere.',
+        ];
+    }
+
+    if ($user === null || !preg_match('/^[A-Za-z0-9._-]{1,32}$/', $user)) {
+        return [
+            'installed' => true, 'user' => $user, 'enabled' => null, 'raw' => null,
+            'note' => 'CageFS is installed. Without an account name its status cannot be checked.',
+        ];
+    }
+
+    $raw = shellRead($ctl . ' --user-status ' . escapeshellarg($user) . ' 2>&1');
+    if ($raw === null) {
+        return [
+            'installed' => true, 'user' => $user, 'enabled' => null, 'raw' => null,
+            'note' => 'CageFS is installed but cagefsctl could not be run - this needs root.',
+        ];
+    }
+
+    $text = trim($raw);
+    $enabled = null;
+    if (preg_match('/\bEnabled\b/i', $text) && !preg_match('/\bNot enabled|Disabled\b/i', $text)) {
+        $enabled = true;
+    } elseif (preg_match('/\bDisabled|Not enabled\b/i', $text)) {
+        $enabled = false;
+    }
+
+    return [
+        'installed' => true,
+        'user' => $user,
+        'enabled' => $enabled,
+        'raw' => mb_substr($text, 0, 400),
+        'note' => $enabled === true
+            ? 'This account is inside CageFS, so it sees a curated filesystem rather than '
+              . 'the host\'s. A program missing here may be installed and simply not exposed.'
+            : ($enabled === false
+                ? 'CageFS is installed but this account is not caged, so it sees the host '
+                  . 'filesystem directly.'
+                : 'CageFS is installed; the account\'s status could not be read.'),
+    ];
+}
+
+/* ------------------------------------------------------------------ *
+ * Working out what it all means
+ * ------------------------------------------------------------------ */
+
+/**
+ * Which package a binary came from, where the host can say.
+ *
+ * One rpm call for every path rather than one each: rpm -qf accepts a list and
+ * answers in order, and on a box with several hundred binaries the difference
+ * is a second against a minute.
+ *
+ * Falls back to reading the path, which is a hint rather than an answer and is
+ * labelled as one. /usr/bin is where a package manager puts things and
+ * /usr/local is where people put things by hand, but neither is a rule.
+ *
+ * @param array<string, string> $paths name => path
+ * @return array<string, string> name => source
+ */
+function probeSources(array $paths): array
+{
+    $out = [];
+
+    $rpm = null;
+    foreach (['/usr/bin/rpm', '/bin/rpm'] as $candidate) {
+        if (is_executable($candidate)) {
+            $rpm = $candidate;
+            break;
+        }
+    }
+
+    if ($rpm !== null && $paths !== []) {
+        $names = array_keys($paths);
+        $args = implode(' ', array_map('escapeshellarg', array_values($paths)));
+        $raw = shellRead($rpm . ' -qf --queryformat "%{NAME}\n" ' . $args . ' 2>&1');
+
+        if ($raw !== null) {
+            $lines = preg_split('/\R/', trim($raw)) ?: [];
+            foreach ($names as $i => $name) {
+                $line = trim($lines[$i] ?? '');
+                // "file ... is not owned by any package" is rpm telling us it
+                // was installed by hand, which is a real answer.
+                $out[$name] = ($line === '' || str_contains($line, 'not owned'))
+                    ? 'custom'
+                    : $line;
+            }
+            return $out;
+        }
+    }
+
+    foreach ($paths as $name => $path) {
+        $out[$name] = str_starts_with($path, '/usr/local/') || str_starts_with($path, '/opt/')
+            ? 'custom?'
+            : 'unknown';
+    }
+
+    return $out;
+}
+
+/**
+ * The state of one program, and why.
+ *
+ * The reason matters as much as the state. "Not available" sends somebody to
+ * install a package; "installed on the host but not exposed through CageFS"
+ * sends them to cagefsctl, and only one of those will work.
+ */
+function capabilityState(array $row): array
+{
+    $inAccount = ($row['account_path'] ?? '') !== '';
+    $executable = (bool)($row['executable'] ?? false);
+    $alternate = ($row['alternate_path'] ?? '') !== '';
+    $onHost = (bool)($row['on_host'] ?? false);
+    $caged = (bool)($row['caged'] ?? false);
+
+    if ($inAccount && $executable) {
+        return ['state' => 'available', 'reason' => null];
+    }
+
+    if ($inAccount && !$executable) {
+        return [
+            'state' => 'unusable',
+            'reason' => 'Found at ' . $row['account_path'] . ' but this account cannot execute it.',
+        ];
+    }
+
+    if ($alternate) {
+        return [
+            'state' => 'alternate',
+            'reason' => 'Not on PATH, but present at ' . $row['alternate_path']
+                . '. Call it by its full path, or ask for it to be linked onto PATH.',
+        ];
+    }
+
+    if ($onHost) {
+        return [
+            'state' => 'host_only',
+            'reason' => $caged
+                ? 'Installed on the host and not exposed through CageFS. This needs a CageFS '
+                  . 'configuration change, not an installation.'
+                : 'Present on the host but not reachable from this account\'s PATH.',
+        ];
+    }
+
+    return [
+        'state' => 'missing',
+        'reason' => 'Not found on the host either. This one needs installing'
+            . (($row['package'] ?? null) ? ' (' . $row['package'] . ').' : '.'),
+    ];
+}
+
+/**
+ * Probes everything this side can see and returns rows ready to store.
+ *
+ * `$asUser` switches the question from "what can I see" to "what can that
+ * account see", which only root can ask and only through CageFS.
+ *
+ * @return array{rows: list<array>, seconds: float, cagefs: array}
+ */
+function probeCapabilities(
+    array $config,
+    ?string $asUser = null,
+    bool $withVersions = true,
+    bool $withAlternates = true
+): array {
+    $started = microtime(true);
+    $catalogue = capabilityList($config);
+    $names = array_column($catalogue, 'name');
+
+    $cagefs = cagefsStatus($asUser);
+    $paths = probePaths($names, $asUser);
+
+    $missing = array_values(array_diff($names, array_keys($paths)));
+    $alternates = $withAlternates && $asUser === null
+        ? probeAlternatePaths($missing)
+        : [];
+
+    $versions = $withVersions ? probeVersions($paths, $catalogue) : [];
+    $sources = probeSources($paths);
+
+    $rows = [];
+    foreach ($catalogue as $entry) {
+        $name = $entry['name'];
+        $path = $paths[$name] ?? '';
+
+        $rows[] = [
+            'name' => $name,
+            'group_name' => $entry['group'],
+            'does' => $entry['does'],
+            'package' => $entry['package'],
+            'key' => (bool)$entry['key'],
+            'path' => $path,
+            /*
+             * is_executable() rather than trusting the -x that found it.
+             *
+             * command -v answers from PATH and the shell's own idea of what is
+             * runnable, which is not always this process's idea - a binary can
+             * be listed and still refuse to run for the account asking.
+             */
+            'executable' => $path !== '' && @is_executable($path),
+            'alternate_path' => $alternates[$name] ?? '',
+            'version' => $versions[$name] ?? '',
+            'source' => $sources[$name] ?? '',
+        ];
+    }
+
+    return [
+        'rows' => $rows,
+        'cagefs' => $cagefs,
+        'seconds' => round(microtime(true) - $started, 2),
+    ];
+}
+
+/**
+ * Combines what the account sees with what the host sees.
+ *
+ * The account's view decides whether something is usable *here*, which is the
+ * question. The host's view decides whether the fix is an installation or a
+ * CageFS entry, which is what to do about it. Neither alone is enough.
+ *
+ * @param list<array> $account rows from probeCapabilities() run as the account
+ * @param list<array> $host    rows from the host collector, or []
+ */
+function mergeCapabilities(array $account, array $host, array $cagefs = []): array
+{
+    $byName = [];
+    foreach ($host as $row) {
+        $byName[(string)$row['name']] = $row;
+    }
+
+    $caged = (bool)($cagefs['enabled'] ?? false);
+    $out = [];
+
+    foreach ($account as $row) {
+        $name = (string)$row['name'];
+        $hostRow = $byName[$name] ?? null;
+
+        $merged = [
+            'name' => $name,
+            'group_name' => (string)$row['group_name'],
+            'does' => (string)$row['does'],
+            'package' => $row['package'],
+            'key' => (bool)$row['key'],
+            'account_path' => (string)$row['path'],
+            'executable' => (bool)$row['executable'],
+            'alternate_path' => (string)($row['alternate_path'] ?? ''),
+            'version' => (string)($row['version'] ?? ''),
+            'source' => (string)($row['source'] ?? ''),
+            /*
+             * Absent host data is not evidence of absence.
+             *
+             * Without the host collector the honest answer to "is it on the
+             * host" is that nobody asked. Treating unknown as no would report
+             * every missing program as needing an installation, when half of
+             * them are installed and merely not exposed.
+             */
+            'host_known' => $hostRow !== null,
+            'on_host' => $hostRow !== null && (string)$hostRow['path'] !== '',
+            'host_path' => $hostRow === null ? '' : (string)$hostRow['path'],
+            'host_version' => $hostRow === null ? '' : (string)($hostRow['version'] ?? ''),
+            'caged' => $caged,
+        ];
+
+        // The host knows the package where the account cannot see the binary.
+        if ($merged['source'] === '' && $hostRow !== null) {
+            $merged['source'] = (string)($hostRow['source'] ?? '');
+        }
+
+        $verdict = capabilityState($merged);
+        if (!$merged['host_known'] && $verdict['state'] === 'missing') {
+            $verdict = [
+                'state' => 'unknown_host',
+                'reason' => 'Not reachable from this account. Whether the host has it is '
+                    . 'unknown - that needs the host collector.',
+            ];
+        }
+
+        $out[] = $merged + $verdict;
+    }
+
+    return $out;
+}
+
+/** A one-line summary of how much of the catalogue is actually usable. */
+function capabilitySummary(array $rows): array
+{
+    $counts = ['available' => 0, 'alternate' => 0, 'host_only' => 0,
+               'unusable' => 0, 'missing' => 0, 'unknown_host' => 0];
+
+    foreach ($rows as $row) {
+        $state = (string)$row['state'];
+        $counts[$state] = ($counts[$state] ?? 0) + 1;
+    }
+
+    $key = array_values(array_filter($rows, fn(array $r): bool => (bool)$r['key']));
+
+    return [
+        'total' => count($rows),
+        'counts' => $counts,
+        'key_total' => count($key),
+        'key_available' => count(array_filter($key, fn(array $r): bool => $r['state'] === 'available')),
+    ];
+}
+
+/* ------------------------------------------------------------------ *
+ * Storing and reading back
+ * ------------------------------------------------------------------ */
+
+/** Writes an account-side probe. */
+function storeCapabilities(PDO $pdo, array $probe): void
+{
+    $pdo->beginTransaction();
+    try {
+        $at = time();
+        $pdo->exec('DELETE FROM capabilities');
+
+        $insert = $pdo->prepare(
+            'INSERT INTO capabilities (name, group_name, checked_at, path, executable,
+                alternate_path, version, source)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $found = 0;
+        foreach ($probe['rows'] as $row) {
+            if ($row['path'] !== '') {
+                $found++;
+            }
+            $insert->execute([
+                $row['name'], $row['group_name'], $at, $row['path'],
+                $row['executable'] ? 1 : 0, $row['alternate_path'],
+                $row['version'], $row['source'],
+            ]);
+        }
+
+        $pdo->prepare(
+            'INSERT INTO capability_runs (ran_at, seconds, found, total,
+                cagefs_installed, cagefs_enabled, cagefs_note)
+             VALUES (?, ?, ?, ?, ?, ?, ?)'
+        )->execute([
+            $at, $probe['seconds'], $found, count($probe['rows']),
+            ($probe['cagefs']['installed'] ?? false) ? 1 : 0,
+            $probe['cagefs']['enabled'] === null ? null : (($probe['cagefs']['enabled']) ? 1 : 0),
+            $probe['cagefs']['note'] ?? null,
+        ]);
+
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+}
+
+/** Writes a host-side probe. */
+function storeHostCapabilities(PDO $host, array $probe, array $inCage, ?string $user): void
+{
+    $host->beginTransaction();
+    try {
+        $at = time();
+        $host->exec('DELETE FROM host_capabilities');
+
+        $insert = $host->prepare(
+            'INSERT INTO host_capabilities (name, group_name, checked_at, path, executable,
+                version, source, account_path, account_seen)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+
+        $onHost = 0;
+        $seen = 0;
+        foreach ($probe['rows'] as $row) {
+            $accountPath = $inCage[$row['name']] ?? '';
+            if ($row['path'] !== '') {
+                $onHost++;
+            }
+            if ($accountPath !== '') {
+                $seen++;
+            }
+            $insert->execute([
+                $row['name'], $row['group_name'], $at, $row['path'],
+                $row['executable'] ? 1 : 0, $row['version'], $row['source'],
+                $accountPath, $accountPath !== '' ? 1 : 0,
+            ]);
+        }
+
+        $host->prepare(
+            'INSERT INTO host_capability_runs (ran_at, seconds, total, on_host, seen_by_account,
+                user, cagefs_installed, cagefs_enabled, cagefs_note)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        )->execute([
+            $at, $probe['seconds'], count($probe['rows']), $onHost, $seen, $user,
+            ($probe['cagefs']['installed'] ?? false) ? 1 : 0,
+            $probe['cagefs']['enabled'] === null ? null : (($probe['cagefs']['enabled']) ? 1 : 0),
+            $probe['cagefs']['note'] ?? null,
+        ]);
+
+        $host->commit();
+    } catch (Throwable $e) {
+        $host->rollBack();
+        throw $e;
+    }
+}
+
+/**
+ * The merged view, from whatever has been recorded.
+ *
+ * Never probes. The dashboard reads this on every poll and probing there would
+ * put a shell spawn behind a page refresh.
+ */
+function capabilityReport(array $config, PDO $pdo, ?PDO $host): array
+{
+    $catalogue = [];
+    foreach (capabilityList($config) as $row) {
+        $catalogue[$row['name']] = $row;
+    }
+
+    $stored = $pdo->query('SELECT * FROM capabilities')->fetchAll(PDO::FETCH_ASSOC);
+    $run = $pdo->query('SELECT * FROM capability_runs ORDER BY ran_at DESC LIMIT 1')
+        ->fetch(PDO::FETCH_ASSOC);
+
+    if (!$stored) {
+        return [
+            'available' => false,
+            'reason' => 'Nothing has been checked yet. Press Check now.',
+            'rows' => [], 'groups' => capabilityGroups(), 'summary' => null,
+            'cagefs' => null, 'host' => null,
+        ];
+    }
+
+    $account = [];
+    foreach ($stored as $row) {
+        $entry = $catalogue[(string)$row['name']] ?? null;
+        $account[] = [
+            'name' => (string)$row['name'],
+            'group_name' => (string)$row['group_name'],
+            'does' => (string)($entry['does'] ?? ''),
+            'package' => $entry['package'] ?? null,
+            'key' => (bool)($entry['key'] ?? false),
+            'path' => (string)($row['path'] ?? ''),
+            'executable' => (bool)$row['executable'],
+            'alternate_path' => (string)($row['alternate_path'] ?? ''),
+            'version' => (string)($row['version'] ?? ''),
+            'source' => (string)($row['source'] ?? ''),
+        ];
+    }
+
+    $hostRows = [];
+    $hostRun = null;
+    if ($host !== null) {
+        try {
+            $hostRows = $host->query('SELECT * FROM host_capabilities')->fetchAll(PDO::FETCH_ASSOC);
+            $hostRun = $host->query(
+                'SELECT * FROM host_capability_runs ORDER BY ran_at DESC LIMIT 1'
+            )->fetch(PDO::FETCH_ASSOC);
+        } catch (Throwable) {
+            // An older host database has no such table, which simply means the
+            // host side has never been asked.
+            $hostRows = [];
+        }
+    }
+
+    $cagefs = [
+        'installed' => (bool)($hostRun['cagefs_installed'] ?? $run['cagefs_installed'] ?? false),
+        'enabled' => isset($hostRun['cagefs_enabled'])
+            ? (bool)$hostRun['cagefs_enabled']
+            : (isset($run['cagefs_enabled']) ? (bool)$run['cagefs_enabled'] : null),
+        'note' => (string)($hostRun['cagefs_note'] ?? $run['cagefs_note'] ?? ''),
+        'user' => $hostRun['user'] ?? null,
+    ];
+
+    $rows = mergeCapabilities($account, $hostRows, $cagefs);
+
+    return [
+        'available' => true,
+        'reason' => null,
+        'rows' => $rows,
+        'groups' => capabilityGroups(),
+        'summary' => capabilitySummary($rows),
+        'cagefs' => $cagefs,
+        'checked_at' => (int)($run['ran_at'] ?? 0),
+        'seconds' => (float)($run['seconds'] ?? 0),
+        'host_checked_at' => $hostRun ? (int)$hostRun['ran_at'] : null,
+    ];
+}

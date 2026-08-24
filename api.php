@@ -46,6 +46,8 @@ require_once __DIR__ . '/lib/growth.php';
 require_once __DIR__ . '/lib/retention.php';
 require_once __DIR__ . '/lib/treemap.php';
 require_once __DIR__ . '/lib/hostdisk.php';
+require_once __DIR__ . '/lib/mountinfo.php';
+require_once __DIR__ . '/lib/capabilities.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/logs.php';
@@ -95,6 +97,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'incident' => incidentView($config, $pdo, $signedIn),
         'treemap' => treemapView($config, $signedIn),
         'host-disk' => hostDiskView($config, $signedIn),
+        'capabilities' => capabilitiesView($config, $pdo, $signedIn),
+        'mounts' => mountsView($config, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
         'processes' => processList($config, $pdo, $signedIn),
@@ -116,6 +120,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'clear-problems' => doClearProblems($config, $pdo, $post),
         'daemon-watch' => doDaemonWatch($config, $pdo, $post),
         'request-host-walk' => doRequestHostWalk($config, $pdo, $post),
+        'check-capabilities' => doCheckCapabilities($config, $pdo, $post),
+        'request-host-task' => doRequestHostTask($config, $pdo, $post),
         'match-processes' => doMatchProcesses($config, $post),
         'stop-process' => doStopProcess($config, $pdo, $post),
         'stop-group' => doStopGroup($config, $pdo, $post),
@@ -657,6 +663,99 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
  * accounts' homes, which is exactly the information the host collector exists
  * to gather and exactly the information not to hand to an anonymous visitor.
  */
+/**
+ * What this account and this host can actually run.
+ *
+ * Read-only and cheap: it reports the last probe rather than running one. The
+ * probe shells out, and putting that behind a page refresh would spawn a shell
+ * every ten seconds to answer a question whose answer changes when somebody
+ * installs a package.
+ */
+function capabilitiesView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see what this account can run');
+    }
+
+    $host = null;
+    try {
+        $host = hostDb($config, false);
+    } catch (Throwable) {
+        // No host database is a normal state, handled inside the report.
+    }
+
+    $report = capabilityReport($config, $pdo, $host);
+    $report['tasks'] = pendingHostTasks($config, $pdo, $host);
+
+    return $report;
+}
+
+/**
+ * The mount table as the kernel describes it, and the CageFS view of it.
+ */
+function mountsView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the mount table');
+    }
+
+    $host = hostDb($config, false);
+    $mounts = [];
+    $at = 0;
+
+    if ($host !== null) {
+        try {
+            $at = (int)$host->query('SELECT MAX(taken_at) FROM host_mountinfo')->fetchColumn();
+            if ($at > 0) {
+                $stmt = $host->prepare('SELECT * FROM host_mountinfo WHERE taken_at = ?');
+                $stmt->execute([$at]);
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                    $mounts[] = [
+                        'mount_id' => (int)$row['mount_id'],
+                        'parent_id' => (int)$row['parent_id'],
+                        'device' => (string)$row['device'],
+                        'fs_root' => (string)$row['fs_root'],
+                        'mount_point' => (string)$row['mount_point'],
+                        'fs_type' => (string)$row['fs_type'],
+                        'source' => (string)$row['source'],
+                        'options' => (string)$row['options'],
+                        'propagation' => (string)$row['propagation'],
+                        'read_only' => (bool)$row['read_only'],
+                        'bind' => (bool)$row['bind'],
+                    ];
+                }
+            }
+        } catch (Throwable) {
+            $mounts = [];
+        }
+    }
+
+    /*
+     * The account's own mount table, when the host has not recorded one.
+     *
+     * Inside CageFS this is the *account's* view rather than the machine's,
+     * which is a different and still useful answer - it is precisely the small
+     * curated filesystem the account lives in.
+     */
+    $ownView = false;
+    if ($mounts === []) {
+        $mounts = readMountInfo();
+        $ownView = $mounts !== [];
+    }
+
+    return [
+        'available' => $mounts !== [],
+        'own_view' => $ownView,
+        'taken_at' => $at,
+        'reason' => $mounts === []
+            ? 'No mount table could be read. /proc/self/mountinfo is where this comes from.'
+            : null,
+        'mounts' => $mounts,
+        'filesystems' => groupByFilesystem($mounts),
+        'cagefs' => cagefsMounts($mounts),
+    ];
+}
+
 function hostDiskView(array $config, bool $signedIn): array
 {
     if (!$signedIn) {
@@ -1342,6 +1441,65 @@ function problemLog(array $config, bool $signedIn): array
  * answer is that it says so plainly rather than spinning as if something is
  * happening now.
  */
+/**
+ * Probes what this account can run, now, and stores the answer.
+ *
+ * Runs on demand rather than on a schedule: the answer changes when somebody
+ * installs something, which is not a thing to poll for. Versions are optional
+ * because asking forty programs their version means running forty programs.
+ */
+function doCheckCapabilities(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $withVersions = ($_POST['versions'] ?? '1') !== '0';
+    $probe = probeCapabilities($config, null, $withVersions, true);
+    storeCapabilities($pdo, $probe);
+
+    logAction($pdo, 'check_capabilities', 'account', 'ok', 0, 0,
+        sprintf('%d programs in %ss', count($probe['rows']), $probe['seconds']));
+
+    return ['ok' => true, 'seconds' => $probe['seconds'], 'total' => count($probe['rows'])];
+}
+
+/**
+ * Queues something for the root collector: a capability sweep, or exposing one
+ * program to this account.
+ */
+function doRequestHostTask(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $task = (string)($_POST['task'] ?? '');
+    $program = trim((string)($_POST['program'] ?? ''));
+
+    if ($task === 'capabilities') {
+        $at = requestHostTask($pdo, 'capabilities');
+        logAction($pdo, 'request_host_task', 'capabilities', 'ok', 0, 0, 'queued');
+        return ['ok' => true, 'task' => 'capabilities', 'requested_at' => $at];
+    }
+
+    if ($task === 'expose') {
+        /*
+         * Only a program the catalogue knows about.
+         *
+         * This name ends up in a command the root collector runs, so it is
+         * checked against a fixed list rather than merely pattern-matched -
+         * the pattern is the second line of defence, not the first.
+         */
+        $known = array_column(capabilityList($config), 'name');
+        if (!in_array($program, $known, true)) {
+            throw new ActionRefused('not a program this monitor knows about');
+        }
+
+        $at = requestHostTask($pdo, 'expose:' . $program);
+        logAction($pdo, 'request_host_task', 'expose:' . $program, 'ok', 0, 0, 'queued');
+        return ['ok' => true, 'task' => 'expose', 'program' => $program, 'requested_at' => $at];
+    }
+
+    throw new ActionRefused('unknown task');
+}
+
 function doRequestHostWalk(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);

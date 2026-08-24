@@ -627,6 +627,55 @@ function hostMigrations(): array
             )',
             'CREATE INDEX host_walks_at ON host_walks (taken_at)',
         ],
+
+        /*
+         * The same question asked from the host, plus the mount topology.
+         *
+         * Separate from the account's answer on purpose: the difference between
+         * the two is the entire diagnosis. A program in host_capabilities and
+         * not in capabilities is installed and not exposed, which is a CageFS
+         * change; one in neither needs a package.
+         */
+        13 => [
+            'CREATE TABLE host_capabilities (
+                name TEXT PRIMARY KEY,
+                group_name TEXT NOT NULL,
+                checked_at INTEGER NOT NULL,
+                path TEXT,
+                executable INTEGER NOT NULL DEFAULT 0,
+                version TEXT,
+                source TEXT,
+                account_path TEXT,
+                account_seen INTEGER
+            )',
+            'CREATE TABLE host_capability_runs (
+                ran_at INTEGER NOT NULL,
+                seconds REAL,
+                total INTEGER,
+                on_host INTEGER,
+                seen_by_account INTEGER,
+                user TEXT,
+                cagefs_installed INTEGER,
+                cagefs_enabled INTEGER,
+                cagefs_note TEXT
+            )',
+
+            'CREATE TABLE host_mountinfo (
+                taken_at INTEGER NOT NULL,
+                mount_id INTEGER NOT NULL,
+                parent_id INTEGER NOT NULL,
+                device TEXT NOT NULL,
+                fs_root TEXT NOT NULL,
+                mount_point TEXT NOT NULL,
+                fs_type TEXT,
+                source TEXT,
+                options TEXT,
+                propagation TEXT,
+                read_only INTEGER NOT NULL DEFAULT 0,
+                bind INTEGER NOT NULL DEFAULT 0
+            )',
+            'CREATE INDEX host_mountinfo_at ON host_mountinfo (taken_at)',
+        ],
     ];
 }
 

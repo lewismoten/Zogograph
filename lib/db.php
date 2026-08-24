@@ -460,6 +460,35 @@ function migrations(): array
                 requested_by TEXT
             )',
         ],
+
+        /*
+         * What this account can reach, as last probed.
+         *
+         * Stored rather than probed on every page load: the check shells out,
+         * and a dashboard that spawned a shell every ten seconds to ask the
+         * same question would be its own performance problem.
+         */
+        13 => [
+            'CREATE TABLE capabilities (
+                name TEXT PRIMARY KEY,
+                group_name TEXT NOT NULL,
+                checked_at INTEGER NOT NULL,
+                path TEXT,
+                executable INTEGER NOT NULL DEFAULT 0,
+                alternate_path TEXT,
+                version TEXT,
+                source TEXT
+            )',
+            'CREATE TABLE capability_runs (
+                ran_at INTEGER NOT NULL,
+                seconds REAL,
+                found INTEGER,
+                total INTEGER,
+                cagefs_installed INTEGER,
+                cagefs_enabled INTEGER,
+                cagefs_note TEXT
+            )',
+        ],
     ];
 }
 

@@ -38,13 +38,16 @@ require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/host.php';
 require_once __DIR__ . '/lib/hostdisk.php';
+require_once __DIR__ . '/lib/mountinfo.php';
+require_once __DIR__ . '/lib/capabilities.php';
 
 $args = array_slice($argv, 1);
 $quiet = in_array('--quiet', $args, true);
 $want = fn(string $flag): bool => in_array($flag, $args, true);
 
 // Nothing named means collect, which is what a crontab line usually wants.
-$doCollect = $want('--collect') || (!$want('--prune') && !$want('--show') && !$want('--disk'));
+$doCollect = $want('--collect')
+    || (!$want('--prune') && !$want('--show') && !$want('--disk') && !$want('--capabilities'));
 
 /*
  * The disk walk is its own mode, and deliberately not part of --collect.
@@ -56,6 +59,7 @@ $doCollect = $want('--collect') || (!$want('--prune') && !$want('--show') && !$w
  * where. Both are served by giving it a flag of its own.
  */
 $doDisk = $want('--disk');
+$doCapabilities = $want('--capabilities');
 
 /*
  * Or because somebody asked for one from the dashboard.
@@ -66,6 +70,7 @@ $doDisk = $want('--disk');
  * takes forty seconds still counts as answering the request that started it.
  */
 $requestedAt = requestedHostWalk($config);
+$requestedTasks = requestedHostTasks($config);
 
 $say = function (string $line) use ($quiet): void {
     if (!$quiet) {
@@ -159,6 +164,119 @@ try {
 
     if ($collectFailure !== null) {
         $say('Collection failed: ' . $collectFailure);
+    }
+
+    /*
+     * A capability sweep, if one was asked for.
+     *
+     * Requests to expose a program count as well: whether it worked is only
+     * visible by re-probing, so the sweep is the answer to that request too.
+     */
+    $capabilityRequests = array_filter(
+        $requestedTasks,
+        fn(string $task): bool => $task === 'capabilities' || str_starts_with($task, 'expose:'),
+        ARRAY_FILTER_USE_KEY
+    );
+
+    if (!$doCapabilities && $capabilityRequests !== []) {
+        $lastRun = 0;
+        try {
+            $lastRun = (int)$pdo->query('SELECT MAX(ran_at) FROM host_capability_runs')->fetchColumn();
+        } catch (Throwable) {
+            $lastRun = 0;
+        }
+        if (max($capabilityRequests) >= $lastRun) {
+            $doCapabilities = true;
+            $say(sprintf('%d capability request(s) outstanding. Running a sweep.',
+                count($capabilityRequests)));
+        }
+    }
+
+    if ($doCapabilities) {
+        $user = (string)($config['host']['owner'] ?? '');
+        $cagefs = cagefsStatus($user !== '' ? $user : null);
+
+        $say($cagefs['note']);
+
+        $probe = probeCapabilities($config, null, true, true);
+
+        /*
+         * The same list asked again from inside the account's cage.
+         *
+         * This is the only measurement that distinguishes "installed" from
+         * "reachable by the account", and it is the entire reason the host side
+         * of this check exists. Without CageFS the two are the same and the
+         * second probe is skipped.
+         */
+        $inCage = [];
+        if ($cagefs['installed'] && $user !== '' && ($cagefs['enabled'] ?? false)) {
+            $inCage = probePaths(array_column($probe['rows'], 'name'), $user);
+            $say(sprintf('  %d of %d visible inside %s\'s cage.',
+                count($inCage), count($probe['rows']), $user));
+        }
+
+        storeHostCapabilities($pdo, $probe, $inCage, $user !== '' ? $user : null);
+
+        $onHost = count(array_filter($probe['rows'], fn(array $r): bool => $r['path'] !== ''));
+        $say(sprintf('Capabilities: %d of %d present on the host, checked in %ss.',
+            $onHost, count($probe['rows']), $probe['seconds']));
+
+        // The mount table goes with it: both answer "what can this account see".
+        $mounts = readMountInfo();
+        if ($mounts !== []) {
+            $at = time();
+            $pdo->prepare('DELETE FROM host_mountinfo')->execute();
+            $insert = $pdo->prepare(
+                'INSERT INTO host_mountinfo (taken_at, mount_id, parent_id, device, fs_root,
+                    mount_point, fs_type, source, options, propagation, read_only, bind)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            foreach ($mounts as $mount) {
+                $insert->execute([
+                    $at, $mount['mount_id'], $mount['parent_id'], $mount['device'],
+                    $mount['fs_root'], $mount['mount_point'], $mount['fs_type'],
+                    $mount['source'], $mount['options'], $mount['propagation'],
+                    $mount['read_only'] ? 1 : 0, $mount['bind'] ? 1 : 0,
+                ]);
+            }
+
+            $cage = cagefsMounts($mounts);
+            $say(sprintf('Mount table: %d mounts recorded. %s', count($mounts), $cage['note']));
+        }
+
+        /*
+         * Requests to expose a program are reported, not performed.
+         *
+         * Exposing one means editing /etc/cagefs/conf.d and remounting every
+         * caged account, which is a real change to how the machine works. A web
+         * button that did that silently would be a privilege escalation with a
+         * friendly label, so the commands are printed and run only when the
+         * config explicitly allows it.
+         */
+        foreach (array_keys($capabilityRequests) as $task) {
+            if (!str_starts_with($task, 'expose:')) {
+                continue;
+            }
+            $program = substr($task, strlen('expose:'));
+            $path = null;
+            foreach ($probe['rows'] as $row) {
+                if ($row['name'] === $program) {
+                    $path = $row['path'];
+                    break;
+                }
+            }
+
+            if ($path === null || $path === '') {
+                $say(sprintf('Cannot expose %s: it is not installed on this host.', $program));
+                continue;
+            }
+
+            $say(sprintf('Requested: expose %s (%s) to %s.', $program, $path, $user ?: 'the account'));
+            $say('  To do it, as root:');
+            $say(sprintf('    echo %s >> /etc/cagefs/conf.d/monitor.cfg', escapeshellarg($path)));
+            $say('    cagefsctl --force-update');
+            $say('  Not done automatically: it changes what every caged account can run.');
+        }
     }
 
     if (!$doDisk && $requestedAt !== null && hostWalkPending($pdo, $requestedAt)) {

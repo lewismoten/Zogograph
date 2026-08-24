@@ -32,6 +32,7 @@ const state = {
   signedIn: false,
   csrf: null,
   range: 86400,
+  capabilities: null,
   live: false,
   timer: null,
   historyPathId: null,
@@ -1219,6 +1220,11 @@ async function refreshAll() {
        * poll: it reads four small tables and never touches a disk.
        */
       refreshHostDisk(),
+      /*
+       * Both read stored rows only. The probe that fills them shells out and
+       * runs on demand, never on a poll.
+       */
+      refreshCapabilities().then(() => refreshMounts()),
     ]);
     if (state.historyPathId) await showHistory(state.historyPathId, true);
     if (state.log.pathId) await showLog(state.log.pathId, true);
@@ -5491,6 +5497,304 @@ $("treeSource").addEventListener("change", () => {
   refreshTreemap("");
 });
 
+
+/* ------------------------------------------------------------ capabilities -- */
+
+/*
+ * What this account can run, and what the machine has that it cannot reach.
+ *
+ * The states are the point. "Not available" sends somebody to install a
+ * package; "installed on the host and not exposed" sends them to cagefsctl.
+ * Only one of those will work, and a tick-or-cross display cannot tell them
+ * apart - so the mark has three values and the reason is always in reach.
+ */
+const CAP_MARKS = {
+  available: { mark: "✓", className: "cap-yes" },
+  alternate: { mark: "✓", className: "cap-part" },
+  host_only: { mark: "—", className: "cap-part" },
+  unusable: { mark: "—", className: "cap-part" },
+  missing: { mark: "—", className: "cap-no" },
+  unknown_host: { mark: "—", className: "cap-no" },
+};
+
+const CAP_SHORT = {
+  available: "",
+  alternate: "alternate path",
+  host_only: "host-only",
+  unusable: "not executable",
+  missing: "not installed",
+  unknown_host: "not here",
+};
+
+async function refreshCapabilities() {
+  const body = $("capBody");
+  if (!body) return;
+
+  let data;
+  try {
+    data = await api("capabilities");
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    $("capSummary").replaceChildren();
+    return;
+  }
+
+  state.capabilities = data;
+
+  if (!data.available) {
+    $("capSummary").replaceChildren();
+    body.replaceChildren(note(data.reason || "Nothing checked yet."));
+    return;
+  }
+
+  renderCapSummary(data);
+  renderCapList(data);
+}
+
+function renderCapSummary(data) {
+  const s = data.summary;
+  const facts = [
+    ["Worth having", `${s.key_available} of ${s.key_total} available here`],
+    ["Whole catalogue", `${s.counts.available} of ${s.total} available here`],
+  ];
+  if (s.counts.host_only) facts.push(["On the host, not reachable", String(s.counts.host_only)]);
+  if (s.counts.alternate) facts.push(["Only under another path", String(s.counts.alternate)]);
+  if (s.counts.missing) facts.push(["Not installed anywhere", String(s.counts.missing)]);
+  if (s.counts.unknown_host) {
+    facts.push(["Host not asked", `${s.counts.unknown_host} — press “Ask the host”`]);
+  }
+
+  const when = [];
+  if (data.checked_at) when.push(`Account checked ${ago(data.checked_at)}`);
+  if (data.host_checked_at) when.push(`host checked ${ago(data.host_checked_at)}`);
+
+  const frag = document.createDocumentFragment();
+  frag.appendChild(factGrid(facts));
+  if (when.length) frag.appendChild(note(when.join(", ") + "."));
+
+  for (const task of data.tasks || []) {
+    if (!task.pending) continue;
+    frag.appendChild(note(`Requested ${ago(task.requested_at)}: ${task.task} — waiting for the `
+      + "host collector's next run."));
+  }
+
+  $("capSummary").replaceChildren(frag);
+}
+
+function renderCapList(data) {
+  const filter = $("capFilter").value;
+  const rows = data.rows.filter(row => {
+    if (filter === "key") return row.key;
+    if (filter === "gap") return row.state !== "available";
+    return true;
+  });
+
+  const body = $("capBody");
+  if (!rows.length) {
+    body.replaceChildren(note(filter === "gap"
+      ? "Everything in the catalogue is available here."
+      : "Nothing matches."));
+    return;
+  }
+
+  const byGroup = new Map();
+  for (const row of rows) {
+    if (!byGroup.has(row.group_name)) byGroup.set(row.group_name, []);
+    byGroup.get(row.group_name).push(row);
+  }
+
+  const frag = document.createDocumentFragment();
+
+  for (const [group, members] of byGroup) {
+    const box = document.createElement("div");
+    box.className = "cap-group";
+
+    const head = document.createElement("h3");
+    head.textContent = data.groups[group] || group;
+    box.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "cap-list";
+
+    for (const row of members) {
+      const shown = CAP_MARKS[row.state] || CAP_MARKS.missing;
+
+      const mark = document.createElement("div");
+      mark.className = `cap-mark ${shown.className}`;
+      mark.textContent = shown.mark;
+
+      const does = document.createElement("div");
+      does.className = "cap-does";
+      does.textContent = row.does || row.name;
+      if (row.reason) {
+        const why = document.createElement("div");
+        why.className = "cap-why";
+        why.textContent = row.reason;
+        does.appendChild(why);
+      }
+
+      const prog = document.createElement("div");
+      prog.className = "cap-prog";
+      const label = CAP_SHORT[row.state];
+      prog.textContent = label ? `${row.name} ${label}` : row.name;
+      if (row.version) prog.title = row.version;
+
+      /*
+       * The button only where it can do anything.
+       *
+       * Offering "ask for this" against a program the host does not have would
+       * queue a request that can only ever come back "not installed".
+       */
+      if (row.state === "host_only") {
+        const ask = document.createElement("button");
+        ask.className = "link cap-expose";
+        ask.textContent = "ask for it";
+        ask.title = "Queue a request for the host collector to report exactly how to expose "
+          + "this to the account.";
+        ask.addEventListener("click", async () => {
+          ask.disabled = true;
+          try {
+            await post("request-host-task", { task: "expose", program: row.name });
+            notice(`Requested: expose ${row.name}. The host collector will report on its next run.`);
+            await refreshCapabilities();
+          } catch (error) {
+            notice(String(error.message || error));
+            ask.disabled = false;
+          }
+        });
+        prog.appendChild(ask);
+      }
+
+      list.append(mark, does, prog);
+    }
+
+    box.appendChild(list);
+    frag.appendChild(box);
+  }
+
+  body.replaceChildren(frag);
+}
+
+/*
+ * What CageFS is, written for somebody meeting it for the first time.
+ *
+ * Shown only where it applies. On a host without CageFS this whole explanation
+ * is noise, and a panel that explains something irrelevant every time teaches
+ * people to skip the panel.
+ */
+function renderCagefsExplainer(mounts, capabilities) {
+  const holder = $("cagefsExplainer");
+  if (!holder) return;
+
+  const cage = mounts?.cagefs;
+  const installed = capabilities?.cagefs?.installed || cage?.present;
+
+  if (!installed) {
+    holder.replaceChildren();
+    return;
+  }
+
+  const box = document.createElement("div");
+  box.className = "explainer";
+
+  const head = document.createElement("h3");
+  head.textContent = "What CageFS is";
+  box.appendChild(head);
+
+  const paragraphs = [
+    "CageFS gives every account its own private view of the filesystem. Instead of the "
+    + "machine's real /usr and /bin, an account sees a small curated copy built from a "
+    + "skeleton at /usr/share/cagefs-skeleton — enough to run a website and nothing else.",
+
+    "So a program the host has in /usr/sbin is not hidden from you by permissions. It is "
+    + "simply not present in the filesystem you are looking at. When the account says a "
+    + "program is not found, it is telling the truth about a world where that program does "
+    + "not exist — which is why “installed” and “available here” are different questions on "
+    + "this machine, and why this page answers both.",
+
+    "Adding a program for accounts means listing its path in /etc/cagefs/conf.d and running "
+    + "cagefsctl --force-update as root. That changes what every caged account can run, so "
+    + "this tool reports the exact commands rather than running them for you.",
+  ];
+
+  if (capabilities?.cagefs?.note) paragraphs.push(capabilities.cagefs.note);
+
+  for (const text of paragraphs) {
+    const p = document.createElement("p");
+    p.textContent = text;
+    box.appendChild(p);
+  }
+
+  holder.replaceChildren(box);
+}
+
+async function refreshMounts() {
+  const body = $("mountBody");
+  if (!body) return;
+
+  let data;
+  try {
+    data = await api("mounts");
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  renderCagefsExplainer(data, state.capabilities);
+
+  if (!data.available) {
+    body.replaceChildren(note(data.reason || "No mount table."));
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+
+  if (data.own_view) {
+    frag.appendChild(note("Read from this account's own /proc/self/mountinfo. Inside CageFS "
+      + "that is the account's view of the filesystem, not the machine's — which is itself "
+      + "worth seeing. The host collector records the machine's."));
+  }
+
+  /*
+   * Filesystems, not mount points, and the difference is the whole point.
+   *
+   * Seventy bind mounts of one device is one filesystem's worth of space. A
+   * table with a row per mount point invites adding a column of sizes, and
+   * that column would be wrong by a factor of seventy.
+   */
+  frag.appendChild(section(`Filesystems — ${count(data.filesystems.length, "device")}`,
+    simpleTable(
+      ["Mounted at", "Type", "Source", "Mounts", "Binds", "Read-only"],
+      data.filesystems.map(fs => [
+        fs.mount_point, fs.fs_type, fs.source,
+        String(fs.mounts), String(fs.binds), fs.read_only ? "yes" : "no",
+      ]),
+      ["name", null, "name", "size", "size", null]
+    )));
+
+  const cage = data.cagefs;
+  const cageBox = document.createDocumentFragment();
+  cageBox.appendChild(note(cage.note));
+
+  if (cage.present) {
+    cageBox.appendChild(simpleTable(
+      ["Path inside the skeleton", "Type", "From", "Bind", "Read-only"],
+      cage.mounts.map(m => [
+        m.relative, m.fs_type, m.fs_root === "/" ? m.source : m.fs_root,
+        m.bind ? "yes" : "no", m.read_only ? "yes" : "no",
+      ]),
+      ["name", null, "name", null, null]
+    ));
+  }
+
+  frag.appendChild(section(
+    cage.present ? `CageFS skeleton — ${count(cage.count, "mount")}` : "CageFS",
+    cageBox
+  ));
+
+  body.replaceChildren(frag);
+}
+
 /* ----------------------------------------------------------------- polling -- */
 
 function schedule() {
@@ -5703,6 +6007,37 @@ $("historyClose").addEventListener("click", () => {
 });
 
 $("listDialogClose").addEventListener("click", () => $("listDialog").close());
+
+$("capFilter").addEventListener("change", () => {
+  if (state.capabilities?.available) renderCapList(state.capabilities);
+});
+
+$("capCheck").addEventListener("click", async () => {
+  const button = $("capCheck");
+  button.disabled = true;
+  button.textContent = "Checking…";
+  try {
+    const result = await post("check-capabilities");
+    notice(`Checked ${count(result.total, "program")} in ${result.seconds}s.`);
+    await refreshCapabilities();
+    await refreshMounts();
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    button.disabled = false;
+    button.textContent = "Check now";
+  }
+});
+
+$("capHostCheck").addEventListener("click", async () => {
+  try {
+    await post("request-host-task", { task: "capabilities" });
+    notice("Requested. The host collector will check on its next run.");
+    await refreshCapabilities();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
 
 $("incidentClose").addEventListener("click", () => {
   $("incidentPanel").hidden = true;

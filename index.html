@@ -190,6 +190,39 @@
   <canvas id="historyChart"></canvas>
 </section>
 
+<section class="panel" id="capabilityPanel">
+  <div class="panel-head">
+    <h2>Capabilities</h2>
+    <div class="panel-controls">
+      <label class="inline">
+        Show
+        <select id="capFilter">
+          <option value="key">The ones worth having</option>
+          <option value="gap">Not available here</option>
+          <option value="all">Everything</option>
+        </select>
+      </label>
+      <button id="capCheck">Check now</button>
+      <button id="capHostCheck" class="link">Ask the host</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    What this account can actually run, and what the machine has that it cannot
+    reach. Those are the same question on ordinary hosting and different ones
+    here — see below.
+  </p>
+  <div id="capSummary"></div>
+  <div id="capBody"></div>
+</section>
+
+<section class="panel" id="mountPanel">
+  <div class="panel-head">
+    <h2>Filesystem layout</h2>
+  </div>
+  <div id="cagefsExplainer"></div>
+  <div id="mountBody"></div>
+</section>
+
 <section class="panel" id="hostDiskPanel">
   <h2>Where the disk went — the whole machine</h2>
   <p class="muted small sub-note">

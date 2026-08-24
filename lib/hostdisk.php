@@ -570,14 +570,110 @@ const HOSTDISK_TASK = 'disk-walk';
  */
 function requestHostWalk(PDO $account, ?string $who = null): int
 {
+    return requestHostTask($account, HOSTDISK_TASK, $who);
+}
+
+/**
+ * Leaves any job for the root collector to pick up.
+ *
+ * One row per task name, overwritten rather than queued: two people asking for
+ * the same sweep want one sweep. The task name is the whole protocol - there is
+ * no argument column, so anything parameterised encodes it in the name
+ * ("expose:iostat"), and the collector validates it again before acting.
+ */
+function requestHostTask(PDO $account, string $task, ?string $who = null): int
+{
     $at = time();
     $account->prepare(
         'INSERT INTO host_tasks (task, requested_at, requested_by)
          VALUES (:task, :at, :who)
          ON CONFLICT(task) DO UPDATE SET requested_at = :at, requested_by = :who'
-    )->execute([':task' => HOSTDISK_TASK, ':at' => $at, ':who' => $who]);
+    )->execute([':task' => $task, ':at' => $at, ':who' => $who]);
 
     return $at;
+}
+
+/**
+ * Every outstanding request, read by root out of the account's database.
+ *
+ * @return array<string, int> task => requested_at
+ */
+function requestedHostTasks(array $config): array
+{
+    $file = (string)($config['database'] ?? '');
+    if ($file === '' || !is_file($file) || !is_readable($file)) {
+        return [];
+    }
+
+    try {
+        $pdo = new PDO('sqlite:' . $file, null, null, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+        $pdo->exec('PRAGMA query_only = 1');
+
+        $rows = $pdo->query('SELECT task, requested_at FROM host_tasks')
+            ->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        return array_map('intval', $rows);
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+/**
+ * What the dashboard should say about outstanding requests.
+ *
+ * Completion is inferred rather than recorded, because the collector must not
+ * write to the account's database: a task counts as done once the host side has
+ * something newer than the request.
+ */
+function pendingHostTasks(array $config, PDO $account, ?PDO $host): array
+{
+    try {
+        $rows = $account->query('SELECT task, requested_at FROM host_tasks')
+            ->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable) {
+        return [];
+    }
+
+    $capabilityRun = 0;
+    $walkRun = 0;
+    if ($host !== null) {
+        try {
+            $capabilityRun = (int)$host->query(
+                'SELECT MAX(ran_at) FROM host_capability_runs'
+            )->fetchColumn();
+        } catch (Throwable) {
+            $capabilityRun = 0;
+        }
+        try {
+            $walkRun = (int)$host->query('SELECT MAX(taken_at) FROM host_walks')->fetchColumn();
+        } catch (Throwable) {
+            $walkRun = 0;
+        }
+    }
+
+    $out = [];
+    foreach ($rows as $row) {
+        $task = (string)$row['task'];
+        $at = (int)$row['requested_at'];
+
+        // See hostWalkPending(): a same-second tie goes to "still pending".
+        $done = match (true) {
+            $task === HOSTDISK_TASK => $walkRun > $at,
+            $task === 'capabilities', str_starts_with($task, 'expose:') => $capabilityRun > $at,
+            default => false,
+        };
+
+        $out[] = [
+            'task' => $task,
+            'requested_at' => $at,
+            'pending' => !$done,
+        ];
+    }
+
+    return $out;
 }
 
 /**

@@ -535,3 +535,34 @@ canvas.pie { height: 340px; }
   color: var(--muted);
 }
 .more-link { margin-left: 6px; white-space: nowrap; }
+
+/* --------------------------------------------------------- capabilities -- */
+
+/*
+ * A tick, a description, and the program that provides it.
+ *
+ * Fixed columns rather than a table so the ticks line up down the left edge and
+ * the eye can run down them; a table would align on the longest description and
+ * scatter the marks.
+ */
+.cap-list { display: grid; grid-template-columns: 1.6em 1fr auto; gap: 2px 10px; align-items: baseline; }
+.cap-mark { font-size: .95rem; line-height: 1.5; }
+.cap-yes { color: var(--ok); }
+.cap-no { color: var(--muted); }
+.cap-part { color: var(--warn); }
+.cap-does { font-size: .88rem; }
+.cap-prog {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .8rem;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+.cap-why { color: var(--muted); font-size: .78rem; }
+.cap-group { margin-top: 18px; }
+.cap-group h3 { font-size: .9rem; margin: 0 0 8px; padding-bottom: 5px; border-bottom: 1px solid var(--line); }
+.cap-expose { margin-left: 8px; font-size: .75rem; }
+.explainer { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+.explainer h3 { font-size: .92rem; margin: 0 0 6px; }
+.explainer p { margin: 0 0 8px; font-size: .86rem; line-height: 1.55; color: #cfcfcf; }
+.explainer p:last-child { margin-bottom: 0; }
