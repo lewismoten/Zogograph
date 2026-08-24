@@ -431,6 +431,29 @@ return [
         'keep_days' => 14,
 
         /*
+         * The disk walk, run by `php host-cron.php --disk`.
+         *
+         * Its own command and its own schedule, because it takes tens of
+         * seconds and answers a question that does not change minute to
+         * minute. Weekly in cron is plenty; run it by hand when space has gone
+         * missing and you want to know where.
+         *
+         * The walk never crosses a filesystem boundary - other disks are
+         * separate questions with their own rows - and never follows a symlink.
+         */
+        'walk_root' => '/',
+        'walk_seconds' => 45,
+
+        /*
+         * Directories to step over.
+         *
+         * Network mounts and backup volumes turn a one-minute job into an
+         * unbounded one. Anything on a different filesystem is skipped
+         * automatically; this is for the ones that are not.
+         */
+        'walk_skip' => ['/proc', '/sys', '/dev'],
+
+        /*
          * Which daemons to watch, and what they are called here.
          *
          * Leave this out entirely and a sensible list is used: Apache, MariaDB,

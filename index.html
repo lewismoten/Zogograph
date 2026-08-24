@@ -190,6 +190,22 @@
   <canvas id="historyChart"></canvas>
 </section>
 
+<section class="panel" id="hostDiskPanel">
+  <h2>Where the disk went — the whole machine</h2>
+  <p class="muted small sub-note">
+    For when <code>df</code> reports a number nothing else can explain. This is
+    the root's-eye view: every filesystem, the biggest directories anywhere on
+    the machine, and the space held by files that have been deleted but are
+    still open — which no directory listing anywhere can show you.
+  </p>
+  <p class="muted small sub-note">
+    Run <code>php host-cron.php --disk</code> as root. It takes tens of seconds,
+    so it is deliberately not part of the per-minute collection and has its own
+    schedule.
+  </p>
+  <div id="hostDisk"></div>
+</section>
+
 <section class="panel" id="treemapPanel">
   <div class="panel-head">
     <h2>Where the space is</h2>

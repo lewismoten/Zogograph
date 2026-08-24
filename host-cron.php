@@ -37,13 +37,25 @@ require_once __DIR__ . '/lib/db.php';
 // For humanBytes, the same way cron.php gets it.
 require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/host.php';
+require_once __DIR__ . '/lib/hostdisk.php';
 
 $args = array_slice($argv, 1);
 $quiet = in_array('--quiet', $args, true);
 $want = fn(string $flag): bool => in_array($flag, $args, true);
 
 // Nothing named means collect, which is what a crontab line usually wants.
-$doCollect = $want('--collect') || (!$want('--prune') && !$want('--show'));
+$doCollect = $want('--collect') || (!$want('--prune') && !$want('--show') && !$want('--disk'));
+
+/*
+ * The disk walk is its own mode, and deliberately not part of --collect.
+ *
+ * Collection runs every minute and must stay cheap. Walking the root
+ * filesystem takes tens of seconds and answers a question that does not change
+ * minute to minute, so it belongs on its own much slower schedule - or on a
+ * command somebody types when 72 GB has gone missing and they want to know
+ * where. Both are served by giving it a flag of its own.
+ */
+$doDisk = $want('--disk');
 
 $say = function (string $line) use ($quiet): void {
     if (!$quiet) {
@@ -119,6 +131,105 @@ try {
                 humanBytes((int)$result['unaccounted'])
             ));
         }
+    }
+
+    if ($doDisk) {
+        $at = time();
+
+        $mounts = hostMounts();
+        $insert = $pdo->prepare(
+            'INSERT INTO host_mounts (taken_at, device, mount, type, total_bytes,
+                used_bytes, free_bytes, used_percent, also_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        foreach ($mounts as $row) {
+            $insert->execute([
+                $at, $row['device'], $row['mount'], $row['type'], $row['total_bytes'],
+                $row['used_bytes'], $row['free_bytes'], $row['used_percent'],
+                $row['also_at'] ? implode(' ', $row['also_at']) : null,
+            ]);
+        }
+        if ($mounts === []) {
+            /*
+             * No filesystems is not "the disk is fine", it is "the question
+             * could not be asked" - and that is the first question of the
+             * three, so saying which it is matters.
+             */
+            $say('No filesystems could be read. /proc/mounts is where this comes from, so '
+                . 'either this is not Linux or /proc is not mounted.');
+        } else {
+            $say(sprintf('Recorded %d filesystem(s), fullest first:', count($mounts)));
+        }
+        foreach (array_slice($mounts, 0, 6) as $row) {
+            $say(sprintf(
+                '  %-28s %6s used of %-8s (%.0f%%) on %s',
+                $row['mount'],
+                humanBytes($row["used_bytes"]),
+                humanBytes($row["total_bytes"]),
+                $row['used_percent'],
+                $row['device']
+            ));
+        }
+
+        $root = (string)($config['host']['walk_root'] ?? '/');
+        $skip = array_map('strval', $config['host']['walk_skip'] ?? []);
+        $budget = (float)($config['host']['walk_seconds'] ?? HOSTDISK_WALK_SECONDS);
+
+        $say(sprintf('Walking %s (up to %.0fs)...', $root, $budget));
+        $walk = hostDirectoryUsage($root, $budget, $skip);
+
+        $dirs = $pdo->prepare(
+            'INSERT INTO host_dirs (taken_at, path, depth, bytes, files) VALUES (?, ?, ?, ?, ?)'
+        );
+        foreach ($walk['dirs'] as $row) {
+            $dirs->execute([$at, $row['path'], $row['depth'], $row['bytes'], $row['files']]);
+        }
+        $say(sprintf(
+            '  %d directories kept from %s scanned in %ss%s.',
+            count($walk['dirs']),
+            number_format($walk['scanned']),
+            $walk['seconds'],
+            $walk['complete'] ? '' : ' - STOPPED EARLY, the totals are lower bounds'
+        ));
+        foreach (array_slice($walk['dirs'], 0, 8) as $row) {
+            $say(sprintf('  %10s  %s', humanBytes($row["bytes"]), $row['path']));
+        }
+
+        $deleted = hostDeletedOpen();
+        $del = $pdo->prepare(
+            'INSERT INTO host_deleted (taken_at, pid, process, path, bytes, holders)
+             VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        foreach ($deleted['files'] as $row) {
+            $del->execute([$at, $row['pid'], $row['process'], $row['path'], $row['bytes'], $row['holders']]);
+        }
+
+        if ($deleted['bytes'] > 0) {
+            $say(sprintf(
+                'Deleted but still open: %s held by %d file(s). This space is gone from df '
+                . 'and invisible to du.',
+                humanBytes($deleted["bytes"]),
+                count($deleted['files'])
+            ));
+            foreach (array_slice($deleted['files'], 0, 8) as $row) {
+                $say(sprintf('  %10s  %s (pid %d, %s)',
+                    humanBytes($row["bytes"]), $row['path'], $row['pid'], $row['process']));
+            }
+        } else {
+            $say('No deleted-but-open files holding space.');
+        }
+        if ($deleted['reason'] !== null) {
+            $say('  ' . $deleted['reason']);
+        }
+
+        $pdo->prepare(
+            'INSERT INTO host_walks (taken_at, root, complete, seconds, dirs_scanned,
+                deleted_bytes, deleted_readable, note)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        )->execute([
+            $at, $root, $walk['complete'] ? 1 : 0, $walk['seconds'], $walk['scanned'],
+            $deleted['bytes'], $deleted['readable'] ? 1 : 0, $deleted['reason'],
+        ]);
     }
 
     if ($want('--prune')) {

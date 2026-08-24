@@ -1209,6 +1209,16 @@ async function refreshAll() {
       refreshOffenders(), refreshAlerts(), refreshActionLog(),
       refreshSchedule(), refreshHealth(), refreshProblems(), refreshProcesses(),
       refreshHost(), refreshUptime(),
+      /*
+       * Its own panel and its own refresh, not part of refreshHost().
+       *
+       * The host panel gives up early when no reading has been collected, and
+       * the disk walk writes different tables on a different schedule - so
+       * somebody who ran --disk to chase missing space would have been told
+       * "no readings recorded yet" and shown nothing at all. Cheap enough to
+       * poll: it reads four small tables and never touches a disk.
+       */
+      refreshHostDisk(),
     ]);
     if (state.historyPathId) await showHistory(state.historyPathId, true);
     if (state.log.pathId) await showLog(state.log.pathId, true);
@@ -2892,6 +2902,118 @@ function renderHostFiles(rows, totals) {
 }
 
 /** Per-device throughput, utilisation and queue depth. */
+/*
+ * The root-side answer to "df says 72 GB and I can only find 4".
+ *
+ * Laid out as the three questions in the order worth asking them, because the
+ * cheapest one ends the investigation surprisingly often: which filesystem,
+ * then which directories, then the space that has no directory entry at all.
+ */
+async function refreshHostDisk() {
+  const holder = $("hostDisk");
+  if (!holder) return;
+
+  let data;
+  try {
+    data = await api("host-disk");
+  } catch (error) {
+    holder.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  if (!data.available) {
+    holder.replaceChildren(note(data.reason || "No disk walk recorded."));
+    return;
+  }
+
+  const body = document.createDocumentFragment();
+
+  /*
+   * The missing figure first, and stated as a quantity.
+   *
+   * "Some space is unaccounted for" is a feeling. "58.2 GiB is unaccounted
+   * for" is a fact somebody can chase, and it is the whole reason this panel
+   * exists.
+   */
+  const gap = data.unaccounted;
+  if (gap) {
+    const facts = [
+      [`${gap.mount} says used`, humanBytes(gap.used_bytes)],
+      ["Found by walking", humanBytes(gap.found_bytes) + (gap.complete ? "" : " (walk stopped early)")],
+    ];
+    if (gap.deleted_bytes > 0) {
+      facts.push(["Deleted but still open", humanBytes(gap.deleted_bytes)]);
+    }
+    facts.push(["Still unaccounted for", humanBytes(gap.missing_bytes)]);
+    body.appendChild(section("The gap", factGrid(facts)));
+
+    if (!gap.complete) {
+      body.appendChild(note("The walk ran out of time, so \u201cfound\u201d is a lower bound and "
+        + "the gap is an upper one. Raise host.walk_seconds and run it again before "
+        + "chasing the difference."));
+    }
+  }
+
+  if (data.mounts.length) {
+    body.appendChild(section("Filesystems", simpleTable(
+      ["Mounted at", "Device", "Type", "Used", "Free", "Full"],
+      data.mounts.map(m => [
+        m.mount + (m.also_at ? ` (also ${m.also_at})` : ""),
+        m.device, m.type || "—",
+        humanBytes(m.used_bytes), humanBytes(m.free_bytes),
+        `${Number(m.used_percent).toFixed(0)}%`,
+      ]),
+      ["name", null, null, "size", "size", "size"]
+    )));
+  }
+
+  if (data.deleted.length) {
+    /*
+     * Before the directories, deliberately.
+     *
+     * This is the one a directory walk can never find, so if there is anything
+     * here it is very likely the answer - and somebody scrolling a list of
+     * directories will not think to look further down for it.
+     */
+    body.appendChild(section(
+      `Deleted, still holding ${humanBytes(data.deleted_bytes)}`,
+      (() => {
+        const wrap = document.createDocumentFragment();
+        wrap.appendChild(note("These files have been unlinked but a process still has them "
+          + "open, so the blocks stay allocated. df counts them; du, ls, find and the "
+          + "treemap cannot see them. Restarting the process listed frees the space."));
+        wrap.appendChild(simpleTable(
+          ["Path", "Held by", "PID", "Size"],
+          data.deleted.map(d => [
+            d.path, d.process + (d.holders > 1 ? ` (\u00d7${d.holders})` : ""),
+            String(d.pid), humanBytes(d.bytes),
+          ]),
+          ["name", null, "size", "size"]
+        ));
+        return wrap;
+      })()
+    ));
+  } else if (data.deleted_readable) {
+    body.appendChild(section("Deleted, still open",
+      note("None — no process is holding space in a deleted file.")));
+  }
+
+  if (data.dirs.length) {
+    body.appendChild(section(`Biggest directories under ${data.root}`, simpleTable(
+      ["Directory", "Size", "Files"],
+      data.dirs.map(d => [d.path, humanBytes(d.bytes), humanCount(d.files)]),
+      ["name", "size", "size"]
+    )));
+  }
+
+  const when = [`Walked ${humanTime(data.taken_at)} (${ago(data.taken_at)})`];
+  if (data.dirs_scanned) when.push(`${humanCount(data.dirs_scanned)} directories in ${data.seconds}s.`);
+  if (data.note) when.push(data.note);
+  body.appendChild(note(when.join(" · ")));
+
+  holder.replaceChildren(body);
+}
+
 /*
  * Whether each watched service is alive.
  *

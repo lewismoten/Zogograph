@@ -568,6 +568,65 @@ function hostMigrations(): array
             'CREATE INDEX host_daemons_at ON host_daemons (taken_at)',
             'CREATE INDEX host_daemons_name ON host_daemons (name, taken_at)',
         ],
+
+        /*
+         * Where the disk actually went, from root's point of view.
+         *
+         * Three tables because there are three different answers to "72 GB is
+         * used and I can only find 4", and they are not variations of each
+         * other - see lib/hostdisk.php.
+         *
+         * All three keep their own timestamp rather than a sample_id: a walk of
+         * the disk is expensive and is not run on every collection, so these
+         * rows do not line up with the per-minute samples and must not be
+         * pruned with them.
+         */
+        12 => [
+            'CREATE TABLE host_mounts (
+                taken_at INTEGER NOT NULL,
+                device TEXT NOT NULL,
+                mount TEXT NOT NULL,
+                type TEXT,
+                total_bytes INTEGER NOT NULL,
+                used_bytes INTEGER NOT NULL,
+                free_bytes INTEGER NOT NULL,
+                used_percent REAL,
+                also_at TEXT
+            )',
+            'CREATE INDEX host_mounts_at ON host_mounts (taken_at)',
+
+            'CREATE TABLE host_dirs (
+                taken_at INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                depth INTEGER NOT NULL,
+                bytes INTEGER NOT NULL,
+                files INTEGER NOT NULL
+            )',
+            'CREATE INDEX host_dirs_at ON host_dirs (taken_at, bytes)',
+            'CREATE INDEX host_dirs_path ON host_dirs (path)',
+
+            'CREATE TABLE host_deleted (
+                taken_at INTEGER NOT NULL,
+                pid INTEGER,
+                process TEXT,
+                path TEXT NOT NULL,
+                bytes INTEGER NOT NULL,
+                holders INTEGER NOT NULL DEFAULT 1
+            )',
+            'CREATE INDEX host_deleted_at ON host_deleted (taken_at)',
+
+            'CREATE TABLE host_walks (
+                taken_at INTEGER NOT NULL,
+                root TEXT NOT NULL,
+                complete INTEGER NOT NULL,
+                seconds REAL,
+                dirs_scanned INTEGER,
+                deleted_bytes INTEGER,
+                deleted_readable INTEGER,
+                note TEXT
+            )',
+            'CREATE INDEX host_walks_at ON host_walks (taken_at)',
+        ],
     ];
 }
 

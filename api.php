@@ -45,6 +45,7 @@ require_once __DIR__ . '/lib/daemons.php';
 require_once __DIR__ . '/lib/growth.php';
 require_once __DIR__ . '/lib/retention.php';
 require_once __DIR__ . '/lib/treemap.php';
+require_once __DIR__ . '/lib/hostdisk.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/logs.php';
@@ -93,6 +94,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'actions' => actionLog($config, $pdo, $signedIn),
         'incident' => incidentView($config, $pdo, $signedIn),
         'treemap' => treemapView($config, $signedIn),
+        'host-disk' => hostDiskView($config, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
         'processes' => processList($config, $pdo, $signedIn),
@@ -647,6 +649,35 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
  * private directory - or to ask for an expensive walk over and over - is not
  * something masking fixes.
  */
+/**
+ * The last root-side disk walk: filesystems, directories, and hidden space.
+ *
+ * Signed-in only. It names every large directory on the machine including other
+ * accounts' homes, which is exactly the information the host collector exists
+ * to gather and exactly the information not to hand to an anonymous visitor.
+ */
+function hostDiskView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the host disk report');
+    }
+
+    $host = hostDb($config, false);
+    if ($host === null) {
+        return [
+            'available' => false,
+            'reason' => 'The host collector is not installed, so nothing outside this '
+                . 'account can be seen at all.',
+            'mounts' => [], 'dirs' => [], 'deleted' => [],
+        ];
+    }
+
+    $report = hostDiskReport($host);
+    $report['unaccounted'] = hostUnaccounted($report);
+
+    return $report;
+}
+
 function treemapView(array $config, bool $signedIn): array
 {
     if (!$signedIn) {
