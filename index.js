@@ -2876,6 +2876,11 @@ async function refreshUptime() {
   if (a.coverage_percent != null && a.coverage_percent < 100) {
     parts.push(`${trimPercent(a.coverage_percent)}% of it was actually recorded`);
   }
+  if (a.uptime_percent === 100 && a.unmonitored > 0 && !a.boots) {
+    // Worth stating outright: the holes below are gaps in the record, and the
+    // machine is not known to have been off at any point.
+    parts.push("no downtime detected");
+  }
   if (a.boots) {
     parts.push(count(a.boots, "restart") + " in this window");
   }
@@ -2900,16 +2905,29 @@ async function refreshUptime() {
         + `${humanTime(o.booted_at)}; it went down at some point after the last `
         + "reading, so this is an upper bound rather than a measurement.",
     })),
+    /*
+     * All three are called a reading gap, not an outage.
+     *
+     * "Unexplained" in a panel headed "Uptime and outages" reads as though the
+     * machine might have been off, and none of these say that - the uptime
+     * figure beside them is untouched by any of it. What varies is how much can
+     * be said about why the readings stop, so that goes in the explanation
+     * rather than in the label.
+     */
     ...(a.gaps || []).map(g => ({
-      kind: g.kind === "not_recorded" ? "Not recorded" : "Unexplained",
+      kind: "Reading gap",
       from: g.from,
       to: g.to,
       seconds: g.seconds,
       note: g.kind === "not_recorded"
         ? "Boot time was unchanged either side, so the machine ran straight "
-          + "through this. The collector was not running."
-        : "No boot time either side to compare, so whether the machine was up "
-          + "cannot be told from these readings.",
+          + "through this — it was up, and the collector was not running."
+        : (g.kind === "before_tracking"
+          ? "These readings predate boot-time recording, so whether the machine "
+            + "restarted here cannot be told. Not an outage — just a stretch that "
+            + "cannot be classified. Gaps from now on will say which."
+          : "No boot time either side to compare, so whether the machine stayed "
+            + "up through this cannot be told from these readings."),
     })),
   ].sort((x, y) => y.from - x.from);
 
@@ -2926,7 +2944,10 @@ async function refreshUptime() {
         render: row => {
           const span = document.createElement("span");
           span.textContent = row.kind;
+          // Only a restart is coloured. A gap in the readings is not a fault of
+          // the machine's, and colouring it the same invites reading it as one.
           if (row.kind === "Restarted") span.className = "grew";
+          else span.className = "muted";
           return span;
         },
       },

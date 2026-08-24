@@ -50,6 +50,7 @@ function analyseUptime(array $rows, int $from, int $to): array
     $empty = [
         'outages' => [], 'gaps' => [], 'boots' => 0,
         'covered' => 0, 'window' => $window, 'expected_interval' => 0,
+        'tracking_from' => null,
         'downtime' => 0, 'unmonitored' => 0,
         'uptime_percent' => null, 'coverage_percent' => null,
     ];
@@ -90,6 +91,22 @@ function analyseUptime(array $rows, int $from, int $to): array
     }
     if (!$steps) {
         return $empty;
+    }
+
+    /*
+     * When boot times started being recorded at all.
+     *
+     * Readings older than that column cannot be classified - not because
+     * anything is wrong, but because the evidence did not exist yet. Saying so
+     * is much better than "no boot time either side to compare", which in a
+     * panel about outages reads as though the machine might have been off.
+     */
+    $trackingFrom = null;
+    foreach ($points as $point) {
+        if ($point['boot'] !== null) {
+            $trackingFrom = $point['at'];
+            break;
+        }
     }
 
     sort($steps);
@@ -150,10 +167,13 @@ function analyseUptime(array $rows, int $from, int $to): array
             continue;
         }
 
-        // No boot time to compare. Measurable, not explainable.
+        // No boot time to compare. Measurable, not explainable - and the
+        // reason it cannot be explained is worth distinguishing.
         $unmonitored += $length;
         $gaps[] = [
-            'kind' => 'unknown',
+            'kind' => $trackingFrom === null || $after['at'] <= $trackingFrom
+                ? 'before_tracking'
+                : 'unknown',
             'from' => $before['at'],
             'to' => $after['at'],
             'seconds' => $length,
@@ -169,6 +189,7 @@ function analyseUptime(array $rows, int $from, int $to): array
         'covered' => $covered,
         'window' => $window,
         'expected_interval' => $interval,
+        'tracking_from' => $trackingFrom,
         'downtime' => $downtime,
         'unmonitored' => $unmonitored,
         /*
@@ -208,9 +229,28 @@ function analyseUptime(array $rows, int $from, int $to): array
 function bootHistory(?string $output = null): array
 {
     if ($output === null) {
-        // -F for full timestamps: the short form omits the year, which makes
-        // any boot older than a few months ambiguous.
-        $output = shellRead('last -x -F reboot shutdown 2>/dev/null');
+        /*
+         * ISO timestamps first, because they carry their own offset.
+         *
+         * `last` prints in the *system's* timezone, and this program has
+         * already set PHP's default to the one in the config. Where those
+         * differ - a server running UTC, a config saying America/New_York -
+         * strtotime reads "03:54" as if it were already Eastern and every boot
+         * lands four hours late. The card at the top of the dashboard reads
+         * btime, a true epoch, so it stayed right while this table drifted,
+         * which is a nasty way to be wrong: two figures for the same reboot
+         * that disagree, and no clue which to trust.
+         *
+         * `--time-format iso` gives 2026-08-24T03:54:16-04:00, and an explicit
+         * offset makes the default timezone irrelevant.
+         */
+        $output = shellRead('last -x -F --time-format iso reboot shutdown 2>/dev/null');
+
+        // Older util-linux has no --time-format and writes the usage message to
+        // stderr, leaving nothing useful on stdout.
+        if ($output === null || !preg_match('/\d{4}-\d{2}-\d{2}T/', $output)) {
+            $output = shellRead('last -x -F reboot shutdown 2>/dev/null');
+        }
     }
 
     if ($output === null || trim($output) === '') {
@@ -241,25 +281,8 @@ function bootHistory(?string $output = null): array
          * be "- <date>", "still running", "crash", or a duration in brackets,
          * none of which are needed to place the event.
          */
-        if (!preg_match(
-            '/^[A-Z][a-z]{2}\s+([A-Z][a-z]{2}\s+\d+\s+\d+:\d+:\d+\s+\d{4})/',
-            $rest,
-            $d
-        )) {
-            continue;
-        }
-
-        /*
-         * The weekday name is matched but deliberately not passed on.
-         *
-         * strtotime treats a leading weekday as an instruction rather than as a
-         * label: given "Tue Jul 01 2026", where the 1st is a Wednesday, it
-         * moves the date to the following Tuesday and returns the 7th without
-         * complaint. The month, day, time and year are unambiguous on their own,
-         * so the redundant part is dropped rather than trusted.
-         */
-        $at = strtotime($d[1]);
-        if ($at === false) {
+        $at = eventTime($rest);
+        if ($at === null) {
             continue;
         }
 
@@ -320,6 +343,68 @@ function bootHistory(?string $output = null): array
     usort($boots, fn(array $a, array $b): int => $b['booted_at'] <=> $a['booted_at']);
 
     return ['available' => true, 'reason' => null, 'boots' => $boots];
+}
+
+/**
+ * The moment an event happened, from whichever format `last` used.
+ *
+ * ISO with an offset is taken as-is and needs no assumption about anybody's
+ * timezone. The legacy format has no offset, so it is read in the timezone the
+ * *system* is in - the one `last` printed it in - and not in whatever the
+ * config asked the rest of this program to use.
+ *
+ * The weekday name in the legacy format is matched but deliberately discarded.
+ * strtotime treats a leading weekday as an instruction rather than a label:
+ * given "Tue Jul 01 2026", where the 1st is a Wednesday, it moves to the
+ * following Tuesday and returns the 7th without complaint.
+ */
+function eventTime(string $rest): ?int
+{
+    if (preg_match('/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:?\d{2}|Z))/', $rest, $m)) {
+        $at = strtotime($m[1]);
+        return $at === false ? null : $at;
+    }
+
+    if (!preg_match(
+        '/^[A-Z][a-z]{2}\s+([A-Z][a-z]{2}\s+\d+\s+\d+:\d+:\d+\s+\d{4})/',
+        $rest,
+        $m
+    )) {
+        return null;
+    }
+
+    $was = date_default_timezone_get();
+    $system = systemZone();
+    if ($system !== null) {
+        date_default_timezone_set($system);
+    }
+
+    $at = strtotime($m[1]);
+
+    date_default_timezone_set($was);
+    return $at === false ? null : $at;
+}
+
+/**
+ * The timezone the machine itself is in, or null if it cannot be told.
+ *
+ * Read from the system rather than from the config, because the question here
+ * is what `last` meant by the numbers it printed - not what the dashboard
+ * would like to display them in.
+ */
+function systemZone(): ?string
+{
+    $link = @readlink('/etc/localtime');
+    if (is_string($link) && preg_match('#zoneinfo/(.+)$#', $link, $m)) {
+        return $m[1];
+    }
+
+    $out = shellRead('timedatectl show --property=Timezone --value 2>/dev/null');
+    if (is_string($out) && trim($out) !== '') {
+        return trim($out);
+    }
+
+    return null;
 }
 
 /**

@@ -820,9 +820,41 @@ the median rather than the mean because the mean is dragged upward by exactly
 the gaps being looked for — using it would raise the bar every time something
 went wrong and hide the next one.
 
+### Two things that are not outages
+
+A gap in the readings gets its own label — **Reading gap** — and never a red
+band. Three of them exist and the difference is only in how much can be said:
+
+| | what it means |
+|---|---|
+| boot time unchanged either side | the machine ran straight through; the collector was not running |
+| readings predate the `boot_at` column | it cannot be classified at all — not an outage, just unclassifiable |
+| no boot time either side, later | same, but without the excuse |
+
+Only the first two are common, and the middle one disappears once boot times
+have been recorded for as long as the window. Calling any of them
+"Unexplained" in a panel headed *Uptime and outages* invited exactly the wrong
+reading — that the machine had been off — while the uptime figure beside it said
+100%. Two numbers on one screen disagreeing about the same hour is worse than
+either being absent.
+
 ### Why it restarted
 
-From `last -x -F reboot shutdown` on the host, which only root can read. A boot
+From `last` on the host, which only root can read.
+
+**Timestamps are asked for in ISO 8601.** `last` prints in the *system's*
+timezone, and this program has already set PHP's default to the one in the
+config. Where those differ — a server running UTC, a config saying
+America/New_York — `strtotime` reads `03:54` as though it were already Eastern
+and every boot lands four hours late. The card at the top reads `btime`, a true
+epoch, so it stays correct while the table drifts: two figures for the same
+reboot that disagree, and nothing to say which to trust.
+
+`last -x -F --time-format iso` gives `2026-08-24T03:54:16+00:00`, and an
+explicit offset makes the default timezone irrelevant. Older `util-linux` has no
+`--time-format`, so the legacy output is parsed as a fallback — in the *system's*
+zone, read from `/etc/localtime` or `timedatectl`, and not in whatever the config
+asked the rest of the program to display in. A boot
 with a shutdown record shortly before it was asked to stop; a boot with none
 means the previous session ended without recording one.
 
@@ -833,11 +865,12 @@ panel says *stopped without recording a shutdown* and lists the possibilities.
 The oldest record has nothing before it, which is reported as unknown rather
 than as a crash.
 
-One trap worth recording: the weekday name in `last`'s output is matched but
-never passed to `strtotime`. Given `Tue Jul 01 2026`, where the 1st is a
-Wednesday, `strtotime` treats the weekday as an instruction and returns the 7th
-without complaint. The month, day, time and year are unambiguous alone, so the
-redundant part is dropped rather than trusted.
+Two traps worth recording, both found the hard way. The weekday name in the
+legacy format is matched but never passed to `strtotime`: given `Tue Jul 01
+2026`, where the 1st is a Wednesday, it treats the weekday as an instruction and
+returns the 7th without complaint. And the timezone problem above is invisible
+in testing on a machine whose system zone and configured zone agree — which is
+most development machines and few servers.
 
 ## Reading log files
 
