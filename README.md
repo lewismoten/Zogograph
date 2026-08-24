@@ -1106,11 +1106,31 @@ does not light the whole list up.
 **Identical faults are counted, not repeated.** A failing endpoint is not one
 problem: the dashboard polls, every poll calls the API, and one broken function
 becomes forty lines within a minute. Listed flat that reads as forty faults and
-buries the two others that are genuinely different. The grouping has to ignore
-the reference — every entry carries its own so a failure on screen can be traced
-here, which means two records of the same fault never match as text — so it is
-stripped for comparison and one sample kept for the link back. Seventy-three
-lines from a bad afternoon collapse to three rows.
+buries the ones that are genuinely different.
+
+Three things have to be normalised before two records of the same fault will
+match, and each was found by a log that failed to collapse without it:
+
+- **The reference.** Every entry carries its own `[bd94dc4b]` so a failure on
+  screen can be traced here — which means the raw text never matches. Stripped
+  for comparison, one sample kept for the link back.
+- **The query string.** `?action=host&from=1787449952&to=1787536352` and the
+  same call thirty seconds later are one endpoint failing twice. The window
+  moves with the clock, so only the `action` is kept.
+- **The endpoint itself.** A missing include breaks everything that requires it,
+  and keying on the endpoint put one absent file on eight rows. Faults are keyed
+  on what went wrong; the endpoints are collected and shown as *4 endpoints*
+  with the full list on hover.
+
+Together those take a real 91-line log down to the eight distinct faults it
+actually contained.
+
+**One failure writes one entry.** An uncaught `Error` runs the exception
+handler, and PHP then treats that same uncaught exception as fatal — so
+`error_get_last()` hands it to the shutdown function too, and both wrote a
+record. Every web error in the log read `x2`, which meant a count that exists to
+show repetition was reporting the boundary's own double vision. The second call
+would also have printed a second body onto an already-written response.
 
 **Clear the log** removes the entries for good, once you have fixed what caused
 them. There is no per-entry dismissal: entries are lines in a text file with no

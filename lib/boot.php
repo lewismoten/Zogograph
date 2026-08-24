@@ -94,6 +94,22 @@ function respondWithFailure(
     int $line,
     string $kind
 ): void {
+    /*
+     * One failure produces one entry, not two.
+     *
+     * An uncaught Error runs the exception handler, and PHP then treats the
+     * same uncaught exception as a fatal - so error_get_last() hands it to the
+     * shutdown function as well and the request is logged twice. Every web
+     * error in the log read "x2", which made a count that exists to show
+     * repetition report the boundary's own double vision instead. The second
+     * call would also print a second body onto a response already written.
+     */
+    static $handled = false;
+    if ($handled) {
+        return;
+    }
+    $handled = true;
+
     $reference = substr(bin2hex(random_bytes(4)), 0, 8);
     logProblem('error', sprintf('[%s] %s: %s in %s:%d', $reference, $kind, $message, $file, $line));
 
@@ -242,29 +258,76 @@ function groupedProblems(string $path, int $scan = 4000): array
         $reference = preg_match('/\[([0-9a-f]{8})\]/', $message, $m) ? $m[1] : null;
         $canonical = trim((string)preg_replace('/\[[0-9a-f]{8}\]\s*/', '', $message));
 
-        $key = $level . "\0" . $where . "\0" . $canonical;
+        /*
+         * Keyed on what went wrong, not on where it was noticed.
+         *
+         * A missing include breaks every endpoint that requires it, and keying
+         * on the endpoint too put one absent file on eight rows. The endpoints
+         * are still worth keeping - a fault that only ever appears on one of
+         * them is a different shape of problem from one that appears on all -
+         * so they are collected and counted rather than multiplied out.
+         */
+        $key = $level . "\0" . $canonical;
         if (!isset($groups[$key])) {
             $groups[$key] = [
                 'level' => $level,
-                'where' => $where,
                 'message' => $canonical,
                 'reference' => $reference,
                 'count' => 0,
                 'first' => $at,
                 'last' => $at,
+                'endpoints' => [],
             ];
         }
 
         $groups[$key]['count']++;
         $groups[$key]['last'] = $at;
         $groups[$key]['reference'] ??= $reference;
+        $groups[$key]['endpoints'][problemEndpoint($where)] = true;
     }
 
     // Most recent first: what broke last is what somebody is looking for.
-    $rows = array_values($groups);
+    $rows = [];
+    foreach ($groups as $group) {
+        $endpoints = array_keys($group['endpoints']);
+        unset($group['endpoints']);
+        $rows[] = $group + [
+            'where' => count($endpoints) === 1
+                ? $endpoints[0]
+                : count($endpoints) . ' endpoints',
+            // Listed in full for the tooltip, so collapsing them hides nothing.
+            'endpoint_list' => implode(', ', $endpoints),
+        ];
+    }
     usort($rows, fn(array $a, array $b): int => strcmp((string)$b['last'], (string)$a['last']));
 
     return ['rows' => $rows, 'lines' => $total];
+}
+
+/**
+ * The endpoint an entry came from, without the part that changes every call.
+ *
+ * `/api.php?action=host&from=1787449952&to=1787536352` and the same URL thirty
+ * seconds later are one endpoint failing twice, not two problems. The window is
+ * in the query string and moves with the clock, so grouping on the raw string
+ * put eight identical faults on eight rows - which is exactly the noise the
+ * grouping was added to remove.
+ *
+ * The action is kept because it is the part that identifies what was being
+ * asked for; everything else is dropped.
+ */
+function problemEndpoint(string $where): string
+{
+    if (!str_contains($where, '?')) {
+        return $where;
+    }
+
+    [$path, $query] = explode('?', $where, 2);
+    parse_str($query, $params);
+
+    return isset($params['action']) && is_string($params['action'])
+        ? $path . '?action=' . $params['action']
+        : $path;
 }
 
 /**

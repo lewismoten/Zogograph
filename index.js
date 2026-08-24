@@ -2566,7 +2566,20 @@ async function refreshProblems() {
       render: row => (row.count > 1 ? row.count : ""),
     },
     { label: "Level", render: row => row.level },
-    { label: "Where", render: row => row.where },
+    {
+      label: "Where",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.where;
+        // The full list on hover, so collapsing several endpoints into a count
+        // never costs the reader information.
+        if (row.endpoint_list && row.endpoint_list !== row.where) {
+          span.title = row.endpoint_list;
+          span.className = "muted";
+        }
+        return span;
+      },
+    },
     { label: "What happened", className: "name", render: row => row.message },
     {
       label: "Reference",
