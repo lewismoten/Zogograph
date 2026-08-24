@@ -120,6 +120,13 @@ return [
      * Only while the machine is actually struggling. Every process every minute
      * would be a table growing faster than the disk it is watching; the three
      * minutes the CPU was pinned is small and is the only part anybody reads.
+     *
+     * On CloudLinux, mind what the percentage means. Inside CageFS /proc/stat is
+     * virtualised to the account's own CPU allowance, so 70 here is 70% of what
+     * this account may use - which a single busy PHP request can reach while the
+     * server is otherwise idle. If the record fills with moments that were not
+     * interesting, raise it; the host collector reports the machine's real load
+     * separately.
      */
     'processes' => [
         'record_when_cpu_above' => 70.0,

@@ -37,7 +37,9 @@ function listProcesses(string $by = 'cpu', int $limit = 20, bool $group = true):
 {
     // `etime` rather than `etimes`: the seconds form is procps only, and the
     // clock form is understood by both. It has no spaces, so it stays a field.
-    $out = shellRead('ps -eo pid,user,pcpu,pmem,rss,etime,args 2>/dev/null');
+    // ppid is here so the collector can identify its own tree and leave itself
+    // out of the record - see excludeOwnTree().
+    $out = shellRead('ps -eo pid,ppid,user,pcpu,pmem,rss,etime,args 2>/dev/null');
     if ($out === null) {
         return [
             'available' => false,
@@ -56,20 +58,21 @@ function listProcesses(string $by = 'cpu', int $limit = 20, bool $group = true):
             continue;
         }
 
-        // Seven fields, and the last one keeps its spaces because it is the
+        // Eight fields, and the last one keeps its spaces because it is the
         // command line.
-        $parts = preg_split('/\s+/', $line, 7);
-        if (!$parts || count($parts) < 7) {
+        $parts = preg_split('/\s+/', $line, 8);
+        if (!$parts || count($parts) < 8) {
             continue;
         }
 
-        [$pid, $user, $cpu, $mem, $rss, $etime, $args] = $parts;
+        [$pid, $ppid, $user, $cpu, $mem, $rss, $etime, $args] = $parts;
         if (!ctype_digit($pid)) {
             continue;
         }
 
         $rows[] = [
             'pid' => (int)$pid,
+            'ppid' => (int)$ppid,
             'user' => $user,
             'cpu_percent' => (float)$cpu,
             'mem_percent' => (float)$mem,
@@ -152,6 +155,68 @@ function processName(string $args): string
 }
 
 /**
+ * Removes the collector and everything it started from a process list.
+ *
+ * The record of a busy moment kept filling up with `ps`, `sh -c ps`,
+ * `php cron.php` and the shell between them - the observer, its own
+ * measurement, and nothing else. On an account where a single page render can
+ * cross the threshold, that left snapshots where every visible process read
+ * 0.0% and the thing that actually caused it had already exited.
+ *
+ * Both directions have to go. Upwards is the collector itself and whatever
+ * launched it: cron, the shell, the PHP binary. Downwards is the `ps` this very
+ * function is reading the output of, which cannot help but appear in it.
+ *
+ * @param list<array> $rows Ungrouped rows carrying pid and ppid.
+ * @return list<array>
+ */
+function excludeOwnTree(array $rows): array
+{
+    $me = getmypid();
+    if ($me === false) {
+        return $rows;
+    }
+
+    $parentOf = [];
+    $childrenOf = [];
+    foreach ($rows as $row) {
+        $parentOf[$row['pid']] = $row['ppid'];
+        $childrenOf[$row['ppid']][] = $row['pid'];
+    }
+
+    $drop = [];
+
+    // Up: this process and everything that launched it.
+    $at = $me;
+    $hops = 0;
+    while ($at > 1 && $hops++ < 40) {
+        $drop[$at] = true;
+        $next = $parentOf[$at] ?? 0;
+        if ($next < 2 || isset($drop[$next])) {
+            break;
+        }
+        $at = $next;
+    }
+
+    // Down: the shell and the `ps` it ran, and anything else we spawned.
+    $queue = [$me];
+    while ($queue) {
+        $pid = array_pop($queue);
+        foreach ($childrenOf[$pid] ?? [] as $child) {
+            if (!isset($drop[$child])) {
+                $drop[$child] = true;
+                $queue[] = $child;
+            }
+        }
+    }
+
+    return array_values(array_filter(
+        $rows,
+        fn(array $row): bool => !isset($drop[$row['pid']])
+    ));
+}
+
+/**
  * Blanks out anything on a command line that looks like a secret.
  *
  * People put passwords in arguments. `ps` shows them to anyone on the box, and
@@ -206,19 +271,37 @@ function recordProcesses(array $config, PDO $pdo, array $vitals): array
         return ['recorded' => 0, 'reasons' => []];
     }
 
-    $snapshot = listProcesses('cpu', 500);
+    // Ungrouped, so the tree can be walked, then grouped afterwards.
+    $snapshot = listProcesses('cpu', 5000, false);
     if (!$snapshot['available']) {
         return ['recorded' => 0, 'reasons' => $reasons];
     }
 
-    $grouped = $snapshot['rows'];
+    $grouped = groupByName(excludeOwnTree($snapshot['rows']));
+    usort($grouped, fn(array $a, array $b): int => $b['cpu_percent'] <=> $a['cpu_percent']);
+
     $keep = max(1, (int)($rules['keep'] ?? PROCESS_KEEP_DEFAULT));
+
+    /*
+     * What triggered it, alongside what the snapshot can explain.
+     *
+     * Stored because the two often disagree and the gap is the useful part. A
+     * reading of 78% with 3% visible in the process list means whatever did it
+     * finished before `ps` ran - which is a real answer, and a different one
+     * from "the machine is under sustained load". Without both figures the
+     * panel can only show a list of near-idle processes under a heading that
+     * says the machine was busy.
+     */
+    $accounted = 0.0;
+    foreach (array_slice($grouped, 0, $keep) as $row) {
+        $accounted += (float)$row['cpu_percent'];
+    }
 
     $insert = $pdo->prepare(
         'INSERT INTO process_samples
             (taken_at, reason, name, cpu_percent, mem_percent, rss_bytes, procs,
-             oldest_seconds, newest_seconds)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+             oldest_seconds, newest_seconds, trigger_percent, accounted_percent)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
 
     $written = 0;
@@ -242,6 +325,8 @@ function recordProcesses(array $config, PDO $pdo, array $vitals): array
                 $row['procs'],
                 $row['oldest_seconds'],
                 $row['newest_seconds'],
+                round($reason === 'memory' ? (float)$memory : (float)$cpu, 2),
+                round($reason === 'memory' ? 0.0 : $accounted, 2),
             ]);
             $written++;
         }
@@ -339,7 +424,7 @@ function recordedProcesses(PDO $pdo, int $limit = 12): array
 
     $rows = $pdo->prepare(
         'SELECT name, cpu_percent, mem_percent, rss_bytes, procs,
-                oldest_seconds, newest_seconds
+                oldest_seconds, newest_seconds, trigger_percent, accounted_percent
          FROM process_samples WHERE taken_at = ? AND reason = ?
          ORDER BY ' . '(CASE WHEN ? = \'memory\' THEN rss_bytes ELSE cpu_percent END) DESC'
     );

@@ -360,6 +360,18 @@ function migrations(): array
         7 => [
             'ALTER TABLE vitals ADD COLUMN boot_at INTEGER',
         ],
+
+        /*
+         * What set a busy record off, and how much of it the processes explain.
+         *
+         * Recorded together because the difference is the finding. A reading of
+         * 78% with 3% visible means the cause had already exited by the time
+         * `ps` ran; the same 78% with 74% visible names the culprit.
+         */
+        8 => [
+            'ALTER TABLE process_samples ADD COLUMN trigger_percent REAL',
+            'ALTER TABLE process_samples ADD COLUMN accounted_percent REAL',
+        ],
     ];
 }
 

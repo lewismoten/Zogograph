@@ -282,6 +282,37 @@ An age that cannot be read shows as `—` rather than as zero, which would read 
 "just started" — the opposite of "not known", and exactly the sort of thing
 somebody would act on.
 
+**The collector leaves itself out.** Records of busy moments were filling with
+`ps`, `sh -c ps`, `php cron.php` and the shell between them — the observer, its
+own measurement, and little else. Both directions are excluded: upwards is the
+collector and whatever launched it (cron, the shell, the wrapper), downwards is
+the `ps` whose output is being read, which cannot help but appear in it. On a
+632-process machine that removes seven rows and leaves the rest. The cost worth
+knowing: a genuinely busy parent — a cron daemon thrashing — is hidden along with
+the chain, which is the right trade for a list whose purpose is naming what else
+was running.
+
+**What triggered it is stored beside what was visible.** A reading of 78% with
+nothing measurable in the list means the cause had already exited when `ps` ran —
+a burst, not sustained load — and that is a different answer from the same 78%
+with a process sitting at 60%. Without both, a list of near-idle processes under
+a heading saying "high cpu" reads as the tool being wrong.
+
+The panel deliberately does *not* express one as a fraction of the other. `ps`
+reports a lifetime average per core, so on a multi-core machine the rows sum well
+past 100 and the arithmetic would claim the processes account for more than the
+whole reading. The coarser distinction survives the mismatch and is the one worth
+having.
+
+**On CloudLinux the percentage is of the account, not the machine.** Inside
+CageFS `/proc/stat` is virtualised to the account's own CPU allowance, so one PHP
+request working hard can cross 70% while the server as a whole is idle. That is
+not a fault in the reading — it is a different question being answered — but it
+means the default threshold fires more often than "the server is struggling"
+would suggest. Raise `processes.record_when_cpu_above` if the record fills with
+moments that were not interesting; the host collector reports the machine's real
+load separately.
+
 **The recorded half is the point.** A live list is `top` with extra steps: you
 have to be watching. This project exists to answer questions after the fact, so
 whenever a reading crosses `record_when_cpu_above` or

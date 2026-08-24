@@ -2223,6 +2223,32 @@ function renderBusyMoments(moments) {
     heading.textContent = `${humanTime(moment.taken_at)} — high ${moment.reason}`;
     section.appendChild(heading);
 
+    /*
+     * What set it off, and whether anything visible was doing it.
+     *
+     * Deliberately not expressed as a fraction of the trigger. `ps` reports a
+     * lifetime average per core, so a busy multi-core machine sums well past
+     * 100 and the arithmetic would claim the processes account for more than
+     * the whole reading. The useful distinction is coarser and survives the
+     * mismatch: either something in the list was working, or nothing was and
+     * the cause had already exited.
+     */
+    const first = moment.rows[0] || {};
+    if (moment.reason === "cpu" && first.trigger_percent != null) {
+      const trigger = Number(first.trigger_percent);
+      const busiest = Number(first.cpu_percent ?? 0);
+      const note = document.createElement("p");
+      note.className = "muted small";
+      note.textContent = busiest >= 2
+        ? `The reading was ${trigger.toFixed(0)}%. These were the busiest processes `
+          + `at that moment — ps reports a lifetime average per core, so they will `
+          + `not add up to it.`
+        : `The reading was ${trigger.toFixed(0)}%, but nothing in the list was using `
+          + `measurable CPU: whatever caused it had already finished when the process `
+          + `list was taken. A burst rather than steady load.`;
+      section.appendChild(note);
+    }
+
     const table = document.createElement("table");
     const body = table.createTBody();
     for (const row of moment.rows) {
