@@ -698,6 +698,15 @@ function healthCheck(array $config, PDO $pdo, bool $signedIn): array
         'shell_available' => function_exists('shell_exec')
             && !in_array('shell_exec', array_map('trim', explode(',', (string)ini_get('disable_functions'))), true),
         'proc_readable' => @is_readable('/proc/stat'),
+        'diskstats_readable' => @is_readable('/proc/diskstats'),
+        /*
+         * Pressure stall information, which needs kernel 4.20+ built with
+         * CONFIG_PSI - and, on kernels built with CONFIG_PSI_DEFAULT_DISABLED,
+         * `psi=1` on the boot command line as well. Reading the file is the
+         * only test that covers all three at once, which is why it is the check
+         * rather than a version comparison.
+         */
+        'io_pressure_available' => @is_readable('/proc/pressure/io'),
         'problem_log_entries' => count(recentProblems(problemLogPath($config), 200)),
     ];
 

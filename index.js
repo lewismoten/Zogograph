@@ -2381,6 +2381,12 @@ const HEALTH_LABELS = {
   mail_available: ["mail() available", "Alert emails cannot be sent from here."],
   shell_available: ["shell_exec available", "Inodes and the crontab editor are unavailable."],
   proc_readable: ["/proc readable", "CPU, memory and network stay empty."],
+  diskstats_readable: ["Disk counters readable", "Disk I/O throughput and utilisation stay empty."],
+  io_pressure_available: [
+    "I/O pressure available",
+    "Needs kernel 4.20+ with CONFIG_PSI. Everything else about disk I/O still works; "
+      + "only the stall percentages are missing.",
+  ],
 };
 
 async function refreshHealth() {
@@ -2405,7 +2411,10 @@ async function refreshHealth() {
        * Painting those red would put two permanent failures on every shared
        * host, which is how people learn to ignore the whole panel.
        */
-      soft: ["mail_available", "shell_available", "proc_readable"].includes(key),
+      soft: [
+        "mail_available", "shell_available", "proc_readable",
+        "diskstats_readable", "io_pressure_available",
+      ].includes(key),
     }));
 
   const table = document.createElement("table");
