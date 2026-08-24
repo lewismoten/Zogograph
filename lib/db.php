@@ -489,6 +489,35 @@ function migrations(): array
                 cagefs_note TEXT
             )',
         ],
+
+        /*
+         * When a program appeared, vanished, or changed version.
+         *
+         * The interesting series is not what is installed - that is a list -
+         * but when it moved. A package upgrade, a CageFS change, someone
+         * removing a tool: each is one row here, and together they are the
+         * history of what this account could do.
+         *
+         * Written by comparing a probe against the one before it, which is why
+         * there is no schedule: a change is recorded when somebody checks, and
+         * the timestamp is when it was *noticed* rather than when it happened.
+         * Saying so matters - a weekly check turns a Tuesday upgrade into a
+         * Sunday event.
+         */
+        14 => [
+            'CREATE TABLE capability_changes (
+                at INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                group_name TEXT NOT NULL,
+                side TEXT NOT NULL,
+                old_state TEXT,
+                new_state TEXT,
+                old_version TEXT,
+                new_version TEXT
+            )',
+            'CREATE INDEX capability_changes_at ON capability_changes (at)',
+            'CREATE INDEX capability_changes_name ON capability_changes (name, at)',
+        ],
     ];
 }
 

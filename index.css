@@ -569,3 +569,48 @@ canvas.pie { height: 340px; }
 .explainer h3 { font-size: .92rem; margin: 0 0 6px; }
 .explainer p { margin: 0 0 8px; font-size: .86rem; line-height: 1.55; color: #cfcfcf; }
 .explainer p:last-child { margin-bottom: 0; }
+
+/* ------------------------------------------------- capability changes -- */
+
+#capChanges { width: 100%; height: 200px; display: block; cursor: pointer; }
+
+/*
+ * The icons sit at the end of the program column and must not wrap away from
+ * it, so the whole cell is nowrap and the icons are inline-block.
+ */
+.cap-icon {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 0 3px;
+  font-size: .9rem;
+  line-height: 1;
+  text-decoration: none;
+  opacity: .55;
+}
+.cap-icon:hover, .cap-icon:focus { opacity: 1; }
+
+.change-list { max-height: 60vh; overflow-y: auto; }
+.change-row {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: .85rem;
+}
+.change-when { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; }
+.change-what .prog { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
+.change-arrow { color: var(--muted); }
+.change-gain { color: var(--ok); }
+.change-loss { color: var(--crit); }
+pre.commands {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: .8rem;
+  line-height: 1.5;
+  white-space: pre;
+}

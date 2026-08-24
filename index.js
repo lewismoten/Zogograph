@@ -1225,6 +1225,7 @@ async function refreshAll() {
        * runs on demand, never on a poll.
        */
       refreshCapabilities().then(() => refreshMounts()),
+      refreshCapabilityChanges(),
     ]);
     if (state.historyPathId) await showHistory(state.historyPathId, true);
     if (state.log.pathId) await showLog(state.log.pathId, true);
@@ -2941,6 +2942,9 @@ function showPathList(title, paths, note) {
   $("listDialogNote").textContent = note || "";
 
   const body = $("listDialogBody");
+  // The dialog is shared, so whoever opens it sets its own class rather than
+  // inheriting whatever the last caller left behind.
+  body.className = "scroll-list";
   const frag = document.createDocumentFragment();
 
   for (const group of groupPaths(paths)) {
@@ -5665,29 +5669,38 @@ function renderCapList(data) {
       }
 
       /*
-       * The button only where it can do anything.
+       * Only where it can do anything.
        *
-       * Offering "ask for this" against a program the host does not have would
-       * queue a request that can only ever come back "not installed".
+       * Offering this against a program the host does not have would open a
+       * dialog full of commands that cannot work.
        */
-      if (row.state === "host_only") {
-        const ask = document.createElement("button");
-        ask.className = "link cap-expose";
-        ask.textContent = "ask for it";
-        ask.title = "Queue a request for the host collector to report exactly how to expose "
-          + "this to the account.";
-        ask.addEventListener("click", async () => {
-          ask.disabled = true;
-          try {
-            await post("request-host-task", { task: "expose", program: row.name });
-            notice(`Requested: expose ${row.name}. The host collector will report on its next run.`);
-            await refreshCapabilities();
-          } catch (error) {
-            notice(String(error.message || error));
-            ask.disabled = false;
-          }
-        });
-        prog.appendChild(ask);
+      if (row.state === "host_only" && row.expose) {
+        const open = document.createElement("button");
+        open.className = "link cap-icon";
+        open.textContent = "🔑";
+        open.setAttribute("aria-label", `How to expose ${row.name} to this account`);
+        open.title = `How to expose ${row.name} to this account`;
+        open.addEventListener("click", () => showExposeDialog(row));
+        prog.appendChild(open);
+      }
+
+      /*
+       * A link to the documentation, not to a search for it.
+       *
+       * Points at the manual page for the tools that have one and at the real
+       * documentation for the ones whose man page is a stub - nobody has ever
+       * learned jq from man(1).
+       */
+      if (row.help) {
+        const help = document.createElement("a");
+        help.className = "cap-icon";
+        help.href = row.help;
+        help.target = "_blank";
+        help.rel = "noopener noreferrer";
+        help.textContent = "?";
+        help.setAttribute("aria-label", `Documentation for ${row.name}`);
+        help.title = `Documentation for ${row.name}`;
+        prog.appendChild(help);
       }
 
       list.append(mark, does, prog);
@@ -5837,6 +5850,359 @@ async function refreshMounts() {
   body.replaceChildren(frag);
 }
 
+
+/*
+ * The commands to expose one program, ready to copy.
+ *
+ * Shown rather than run. Exposing a program edits /etc/cagefs/conf.d and
+ * rebuilds the skeleton for every caged account on the machine, which is not
+ * something a web button should do quietly on somebody's behalf.
+ */
+function showExposeDialog(row) {
+  $("listDialogTitle").textContent = `Expose ${row.name} to this account`;
+  $("listDialogNote").textContent = row.reason || "";
+
+  const body = $("listDialogBody");
+  body.className = "";
+
+  const frag = document.createDocumentFragment();
+
+  const intro = document.createElement("p");
+  intro.className = "muted small";
+  intro.textContent = `${row.name} is installed at ${row.host_path} and is not visible inside `
+    + "this account. Run these as root on the host. They write a CageFS config fragment and "
+    + "rebuild the skeleton — which changes what every caged account can run, so nothing here "
+    + "does it for you.";
+  frag.appendChild(intro);
+
+  const pre = document.createElement("pre");
+  pre.className = "commands";
+  pre.textContent = row.expose.commands.join("\n");
+  frag.appendChild(pre);
+
+  const buttons = document.createElement("p");
+
+  const copy = document.createElement("button");
+  copy.textContent = "Copy";
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(row.expose.commands.join("\n"));
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+    } catch {
+      /*
+       * Clipboard access is refused outside a secure context, which is
+       * exactly where a self-hosted panel often lives. Selecting the text is
+       * the fallback, and saying so beats a button that silently does nothing.
+       */
+      copy.textContent = "Select it and copy";
+      const range = document.createRange();
+      range.selectNodeContents(pre);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  });
+  buttons.appendChild(copy);
+
+  const queue = document.createElement("button");
+  queue.className = "link";
+  queue.style.marginLeft = "10px";
+  queue.textContent = "Ask the collector to check afterwards";
+  queue.title = "Queues a capability sweep so the next host run confirms whether it worked.";
+  queue.addEventListener("click", async () => {
+    queue.disabled = true;
+    try {
+      await post("request-host-task", { task: "expose", program: row.name });
+      notice(`Queued. The host collector will confirm ${row.name} on its next run.`);
+      await refreshCapabilities();
+    } catch (error) {
+      notice(String(error.message || error));
+      queue.disabled = false;
+    }
+  });
+  buttons.appendChild(queue);
+
+  frag.appendChild(buttons);
+
+  const note = document.createElement("p");
+  note.className = "muted small";
+  note.textContent = "These files are INI. A bare path without the [section] header makes "
+    + "cagefsctl refuse to run at all until the file is removed.";
+  frag.appendChild(note);
+
+  body.replaceChildren(frag);
+  $("listDialog").showModal();
+}
+
+/* --------------------------------------------------- capability changes -- */
+
+const changeState = { data: null, bars: [], hover: null };
+
+async function refreshCapabilityChanges() {
+  const canvas = $("capChanges");
+  if (!canvas) return;
+
+  const to = Math.floor(Date.now() / 1000);
+  try {
+    changeState.data = await api("capability-changes", { from: to - state.range, to });
+  } catch (error) {
+    changeState.data = null;
+    $("capChangeNote").textContent = String(error.message || error);
+  }
+
+  drawChangeChart();
+}
+
+/*
+ * A stacked bar per bucket, one colour per group.
+ *
+ * Bars rather than a line because these are counts of discrete events, and a
+ * line between "three changes on Tuesday" and "none on Wednesday" draws a slope
+ * through days on which nothing happened - implying a rate where there is only
+ * a tally.
+ */
+function drawChangeChart() {
+  const canvas = $("capChanges");
+  const holder = canvas.parentElement;
+  const ratio = window.devicePixelRatio || 1;
+  const width = holder.clientWidth;
+  const height = 200;
+
+  canvas.width = Math.max(1, Math.floor(width * ratio));
+  canvas.height = Math.max(1, Math.floor(height * ratio));
+  canvas.style.height = height + "px";
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const data = changeState.data;
+  changeState.bars = [];
+
+  if (!data || !data.buckets.length) {
+    ctx.fillStyle = "#9a9a9a";
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(
+      data ? "Nothing has changed in this period." : "No history yet.",
+      width / 2, height / 2);
+    $("capChangeLegend").replaceChildren();
+    renderChangeNote();
+    return;
+  }
+
+  const pad = { left: 34, right: 8, top: 10, bottom: 22 };
+  const plotW = Math.max(1, width - pad.left - pad.right);
+  const plotH = Math.max(1, height - pad.top - pad.bottom);
+
+  const span = Math.max(1, data.to - data.from);
+  const tallest = Math.max(...data.buckets.map(b => b.total));
+  const scale = plotH / Math.max(1, tallest);
+
+  // A bar is one bucket wide, with a floor so a single change is still visible.
+  const barW = Math.max(3, Math.min(28, (plotW / (span / data.bucket_seconds)) - 1));
+
+  const groups = data.groups;
+  const colour = group => seriesColor(groups.indexOf(group));
+
+  ctx.strokeStyle = "#333";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad.left, pad.top + plotH + .5);
+  ctx.lineTo(pad.left + plotW, pad.top + plotH + .5);
+  ctx.stroke();
+
+  // Whole numbers only: half a change does not exist.
+  ctx.fillStyle = "#9a9a9a";
+  ctx.font = "10px system-ui, sans-serif";
+  ctx.textAlign = "right";
+  for (const value of [0, tallest]) {
+    const y = pad.top + plotH - value * scale;
+    ctx.fillText(String(value), pad.left - 6, y + 3);
+  }
+
+  for (const bucket of data.buckets) {
+    const x = pad.left + ((bucket.at - data.from) / span) * plotW;
+    let y = pad.top + plotH;
+
+    for (const group of groups) {
+      const n = bucket.counts[group] || 0;
+      if (!n) continue;
+      const h = n * scale;
+      y -= h;
+      ctx.fillStyle = colour(group);
+      ctx.fillRect(x, y, barW, h);
+    }
+
+    changeState.bars.push({
+      at: bucket.at, total: bucket.total, counts: bucket.counts,
+      x, y, w: barW, h: pad.top + plotH - y,
+    });
+  }
+
+  if (changeState.hover) {
+    const bar = changeState.bars.find(b => b.at === changeState.hover);
+    if (bar) {
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(bar.x - 1, bar.y - 1, bar.w + 2, bar.h + 2);
+    }
+  }
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#9a9a9a";
+  for (const at of [data.from, data.to]) {
+    const x = pad.left + ((at - data.from) / span) * plotW;
+    ctx.fillText(humanTime(at).split(",")[0],
+      Math.min(Math.max(x, pad.left + 20), pad.left + plotW - 20),
+      height - 6);
+  }
+
+  const legend = $("capChangeLegend");
+  legend.replaceChildren(...groups.map(group => {
+    const span2 = document.createElement("span");
+    span2.textContent = data.group_names[group] || group;
+    span2.style.setProperty("--dot", colour(group));
+    return span2;
+  }));
+
+  renderChangeNote();
+}
+
+function renderChangeNote() {
+  const data = changeState.data;
+  const note = $("capChangeNote");
+  if (!data) return;
+
+  const parts = [`${count(data.total, "change")} in this period, one bar per ${data.bucket_unit}.`];
+  if (data.truncated) {
+    parts.push(`Only the most recent ${data.changes.length} are listed when a bar is clicked.`);
+  }
+  if (data.total) parts.push("Click a bar for the detail.");
+  note.textContent = parts.join(" ");
+}
+
+function barAt(x, y) {
+  for (const bar of changeState.bars) {
+    // Generous vertically: a bar one change tall is three pixels, and nobody
+    // can be asked to hit that.
+    if (x >= bar.x - 2 && x <= bar.x + bar.w + 2) return bar;
+  }
+  return null;
+}
+
+$("capChanges").addEventListener("mousemove", event => {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const bar = barAt(event.clientX - rect.left, event.clientY - rect.top);
+  const at = bar ? bar.at : null;
+  if (at !== changeState.hover) {
+    changeState.hover = at;
+    drawChangeChart();
+  }
+  event.currentTarget.style.cursor = bar ? "pointer" : "default";
+});
+
+$("capChanges").addEventListener("mouseleave", () => {
+  changeState.hover = null;
+  drawChangeChart();
+});
+
+$("capChanges").addEventListener("click", event => {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const bar = barAt(event.clientX - rect.left, event.clientY - rect.top);
+  if (bar) showChangesIn(bar);
+});
+
+/*
+ * What actually changed inside one bar.
+ *
+ * The chart says how many; this says which, from what to what. Without it a
+ * spike is a mystery with a tooltip.
+ */
+function showChangesIn(bar) {
+  const data = changeState.data;
+  const upper = bar.at + data.bucket_seconds;
+  const rows = data.changes.filter(c => c.at >= bar.at && c.at < upper);
+
+  $("listDialogTitle").textContent =
+    `${count(bar.total, "change")} — ${humanTime(bar.at)}`;
+  $("listDialogNote").textContent = rows.length < bar.total
+    ? `Showing ${rows.length} of ${bar.total}; the rest are beyond the detail limit.`
+    : "When a check noticed the change, not necessarily when it happened.";
+
+  const body = $("listDialogBody");
+  body.className = "change-list";
+
+  const frag = document.createDocumentFragment();
+
+  for (const row of rows) {
+    const box = document.createElement("div");
+    box.className = "change-row";
+
+    const when = document.createElement("div");
+    when.className = "change-when";
+    when.textContent = humanTime(row.at);
+    box.appendChild(when);
+
+    const what = document.createElement("div");
+    what.className = "change-what";
+
+    const prog = document.createElement("span");
+    prog.className = "prog";
+    prog.textContent = row.name;
+    what.appendChild(prog);
+
+    if (row.does) {
+      const does = document.createElement("span");
+      does.className = "muted";
+      does.textContent = ` — ${row.does}`;
+      what.appendChild(does);
+    }
+
+    const detail = document.createElement("div");
+    detail.className = "muted";
+
+    /*
+     * State and version are reported separately.
+     *
+     * A program can gain a version without changing state (an upgrade) or
+     * change state without a version (exposed through CageFS), and running the
+     * two together produces sentences like "absent 1.2 to available 1.2" that
+     * hide which of the two actually moved.
+     */
+    const bits = [];
+    if (row.old_state !== row.new_state) {
+      const gained = row.new_state === "available" || row.new_state === "present";
+      bits.push(`<state>${row.old_state} → ${row.new_state}</state>${gained ? "+" : "-"}`);
+    }
+    if (row.old_version_short !== row.new_version_short) {
+      bits.push(`version ${row.old_version_short || "unknown"} → ${row.new_version_short || "unknown"}`);
+    }
+
+    for (const bit of bits) {
+      const piece = document.createElement("div");
+      const gained = bit.endsWith("+");
+      const loss = bit.endsWith("-");
+      piece.className = gained ? "change-gain" : loss ? "change-loss" : "change-arrow";
+      piece.textContent = bit.replace(/<\/?state>/g, "").replace(/[+-]$/, "");
+      detail.appendChild(piece);
+    }
+
+    const side = document.createElement("div");
+    side.className = "muted";
+    side.textContent = row.side === "host" ? "seen by the host" : "seen by this account";
+    detail.appendChild(side);
+
+    what.appendChild(detail);
+    box.appendChild(what);
+    frag.appendChild(box);
+  }
+
+  body.replaceChildren(frag);
+  $("listDialog").showModal();
+}
+
 /* ----------------------------------------------------------------- polling -- */
 
 function schedule() {
@@ -5911,6 +6277,11 @@ $("range").addEventListener("change", () => {
   state.range = Number($("range").value);
   syncLiveAvailability();
   refreshAll();
+});
+
+window.addEventListener("resize", () => {
+  // The bar chart is laid out in pixels, so it has to be told when they change.
+  if (changeState.data) drawChangeChart();
 });
 
 $("live").addEventListener("click", () => {
@@ -6060,9 +6431,11 @@ $("capCheck").addEventListener("click", async () => {
   button.textContent = "Checking…";
   try {
     const result = await post("check-capabilities");
-    notice(`Checked ${count(result.total, "program")} in ${result.seconds}s.`);
+    notice(`Checked ${count(result.total, "program")} in ${result.seconds}s`
+      + (result.changes ? `, ${count(result.changes, "change")} since last time.` : "."));
     await refreshCapabilities();
     await refreshMounts();
+    await refreshCapabilityChanges();
   } catch (error) {
     notice(String(error.message || error));
   } finally {

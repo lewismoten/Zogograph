@@ -676,6 +676,23 @@ function hostMigrations(): array
             )',
             'CREATE INDEX host_mountinfo_at ON host_mountinfo (taken_at)',
         ],
+
+        // The same history from the host's side. Separate because the two
+        // collectors write to different databases and neither may write to the
+        // other's; the dashboard reads both and interleaves them.
+        14 => [
+            'CREATE TABLE host_capability_changes (
+                at INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                group_name TEXT NOT NULL,
+                side TEXT NOT NULL,
+                old_state TEXT,
+                new_state TEXT,
+                old_version TEXT,
+                new_version TEXT
+            )',
+            'CREATE INDEX host_capability_changes_at ON host_capability_changes (at)',
+        ],
     ];
 }
 

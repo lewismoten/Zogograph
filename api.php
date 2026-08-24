@@ -99,6 +99,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'host-disk' => hostDiskView($config, $signedIn),
         'capabilities' => capabilitiesView($config, $pdo, $signedIn),
         'mounts' => mountsView($config, $signedIn),
+        'capability-changes' => capabilityChangesView($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
         'processes' => processList($config, $pdo, $signedIn),
@@ -693,6 +694,31 @@ function capabilitiesView(array $config, PDO $pdo, bool $signedIn): array
 /**
  * The mount table as the kernel describes it, and the CageFS view of it.
  */
+/**
+ * When programs appeared, vanished or changed version.
+ *
+ * Its own action rather than a field on `capabilities`: that one is a snapshot
+ * the dashboard polls, while this answers to the range selector and would make
+ * every poll re-read a year of history to redraw a table showing now.
+ */
+function capabilityChangesView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see what has changed');
+    }
+
+    $host = null;
+    try {
+        $host = hostDb($config, false);
+    } catch (Throwable) {
+        // Absent host database is normal; the account history stands alone.
+    }
+
+    [$from, $to] = window();
+
+    return capabilityChanges($config, $pdo, $host, $from, $to);
+}
+
 function mountsView(array $config, bool $signedIn): array
 {
     if (!$signedIn) {
@@ -1456,12 +1482,17 @@ function doCheckCapabilities(array $config, PDO $pdo, bool $post): array
 
     $withVersions = ($_POST['versions'] ?? '1') !== '0';
     $probe = probeCapabilities($config, null, $withVersions, true);
-    storeCapabilities($pdo, $probe);
+    $changes = storeCapabilities($pdo, $probe);
 
     logAction($pdo, 'check_capabilities', 'account', 'ok', 0, 0,
         sprintf('%d programs in %ss', count($probe['rows']), $probe['seconds']));
 
-    return ['ok' => true, 'seconds' => $probe['seconds'], 'total' => count($probe['rows'])];
+    return [
+        'ok' => true,
+        'seconds' => $probe['seconds'],
+        'total' => count($probe['rows']),
+        'changes' => $changes,
+    ];
 }
 
 /**

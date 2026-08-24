@@ -200,6 +200,71 @@ function capabilityCatalogue(): array
     );
 }
 
+/**
+ * Where to read about a program.
+ *
+ * man7.org is the default because it is the manual page, it is stable, and it
+ * exists for almost everything in the core and sysadmin groups. The exceptions
+ * are the tools whose real documentation is not a man page - nobody learns jq
+ * or composer from man(1) - and pointing at a thin man page for those would be
+ * technically correct and useless.
+ */
+function capabilityHelpUrl(string $name): string
+{
+    static $specific = [
+        'git' => 'https://git-scm.com/docs/git',
+        'jq' => 'https://jqlang.github.io/jq/manual/',
+        'php' => 'https://www.php.net/manual/en/features.commandline.php',
+        'composer' => 'https://getcomposer.org/doc/03-cli.md',
+        'npm' => 'https://docs.npmjs.com/cli/commands',
+        'node' => 'https://nodejs.org/api/cli.html',
+        'wp' => 'https://developer.wordpress.org/cli/commands/',
+        'python3' => 'https://docs.python.org/3/using/cmdline.html',
+        'mysql' => 'https://mariadb.com/kb/en/mysql-command-line-client/',
+        'mariadb' => 'https://mariadb.com/kb/en/mariadb-command-line-client/',
+        'mysqldump' => 'https://mariadb.com/kb/en/mariadb-dump/',
+        'sqlite3' => 'https://sqlite.org/cli.html',
+        'redis-cli' => 'https://redis.io/docs/latest/develop/tools/cli/',
+        'mongosh' => 'https://www.mongodb.com/docs/mongodb-shell/',
+        'docker' => 'https://docs.docker.com/reference/cli/docker/',
+        'podman' => 'https://docs.podman.io/en/latest/Commands.html',
+        'rclone' => 'https://rclone.org/commands/',
+        'ffmpeg' => 'https://ffmpeg.org/ffmpeg.html',
+        'ffprobe' => 'https://ffmpeg.org/ffprobe.html',
+        'convert' => 'https://imagemagick.org/script/convert.php',
+        'magick' => 'https://imagemagick.org/script/magick.php',
+        'identify' => 'https://imagemagick.org/script/identify.php',
+        'exiftool' => 'https://exiftool.org/exiftool_pod.html',
+        'openssl' => 'https://docs.openssl.org/master/man1/openssl/',
+        'systemctl' => 'https://www.freedesktop.org/software/systemd/man/systemctl.html',
+        'journalctl' => 'https://www.freedesktop.org/software/systemd/man/journalctl.html',
+        'smartctl' => 'https://www.smartmontools.org/browser/trunk/smartmontools/smartctl.8.in',
+        'ncdu' => 'https://dev.yorhel.nl/ncdu/man',
+        'htop' => 'https://man7.org/linux/man-pages/man1/htop.1.html',
+        'supervisord' => 'http://supervisord.org/running.html',
+        'fail2ban-client' => 'https://www.fail2ban.org/wiki/index.php/Commands',
+        'clamdscan' => 'https://docs.clamav.net/manual/Usage/Scanning.html',
+        '7z' => 'https://linux.die.net/man/1/7z',
+        'zstd' => 'https://github.com/facebook/zstd/blob/dev/programs/zstd.1.md',
+        'nc' => 'https://man7.org/linux/man-pages/man1/ncat.1.html',
+        'wp-cli' => 'https://developer.wordpress.org/cli/commands/',
+    ];
+
+    if (isset($specific[$name])) {
+        return $specific[$name];
+    }
+
+    // Section 8 for the ones that live in sbin; section 1 for everything else.
+    static $sectionEight = ['tcpdump', 'traceroute', 'iotop', 'dmesg', 'lsblk', 'findmnt'];
+
+    return sprintf(
+        'https://man7.org/linux/man-pages/man%d/%s.%d.html',
+        in_array($name, $sectionEight, true) ? 8 : 1,
+        rawurlencode($name),
+        in_array($name, $sectionEight, true) ? 8 : 1
+    );
+}
+
 /** Human names for the groups, in the order worth reading them. */
 function capabilityGroups(): array
 {
@@ -250,7 +315,12 @@ function capabilityList(array $config): array
             continue;
         }
         $seen[$name] = true;
-        $out[] = $row + ['package' => null, 'version_arg' => null, 'key' => false];
+        $out[] = $row + [
+            'package' => null,
+            'version_arg' => null,
+            'key' => false,
+            'help' => capabilityHelpUrl($name),
+        ];
     }
 
     return $out;
@@ -855,6 +925,8 @@ function mergeCapabilities(array $account, array $host, array $cagefs = []): arr
             $merged['source'] = (string)($hostRow['source'] ?? '');
         }
 
+        $merged['help'] = (string)($row['help'] ?? '');
+
         $verdict = capabilityState($merged);
         if (!$merged['host_known'] && $verdict['state'] === 'missing') {
             $verdict = [
@@ -864,7 +936,24 @@ function mergeCapabilities(array $account, array $host, array $cagefs = []): arr
             ];
         }
 
-        $out[] = $merged + $verdict;
+        $row = $merged + $verdict;
+
+        /*
+         * The commands travel with the row that needs them.
+         *
+         * Only for host_only, because that is the only state where exposing
+         * something is the fix - and building them for all hundred and fifteen
+         * would put a wall of shell in a payload the dashboard polls.
+         */
+        if ($row['state'] === 'host_only' && $row['host_path'] !== '') {
+            try {
+                $row['expose'] = cagefsExposeSnippet($name, $row['host_path']);
+            } catch (Throwable) {
+                $row['expose'] = null;
+            }
+        }
+
+        $out[] = $row;
     }
 
     return $out;
@@ -896,11 +985,38 @@ function capabilitySummary(array $rows): array
  * ------------------------------------------------------------------ */
 
 /** Writes an account-side probe. */
-function storeCapabilities(PDO $pdo, array $probe): void
+function storeCapabilities(PDO $pdo, array $probe): int
 {
     $pdo->beginTransaction();
     try {
         $at = time();
+
+        /*
+         * Compared before the old rows are thrown away.
+         *
+         * The table holds only the current answer, so the previous one has to
+         * be read here or it is gone. Everything about the change history
+         * depends on doing this in the right order inside the same transaction.
+         */
+        $before = [];
+        foreach ($pdo->query('SELECT * FROM capabilities')->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $before[(string)$row['name']] = $row;
+        }
+
+        $changes = detectCapabilityChanges($before, $probe['rows'], 'account', $before !== []);
+        $log = $pdo->prepare(
+            'INSERT INTO capability_changes (at, name, group_name, side,
+                old_state, new_state, old_version, new_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        foreach ($changes as $change) {
+            $log->execute([
+                $at, $change['name'], $change['group_name'], $change['side'],
+                $change['old_state'], $change['new_state'],
+                $change['old_version'], $change['new_version'],
+            ]);
+        }
+
         $pdo->exec('DELETE FROM capabilities');
 
         $insert = $pdo->prepare(
@@ -910,13 +1026,21 @@ function storeCapabilities(PDO $pdo, array $probe): void
         );
         $found = 0;
         foreach ($probe['rows'] as $row) {
-            if ($row['path'] !== '') {
+            if (($row['path'] ?? '') !== '') {
                 $found++;
             }
+            /*
+             * Optional fields defaulted rather than assumed.
+             *
+             * A row can legitimately arrive without an alternate path or a
+             * source - the cheaper probe skips both - and reaching for a key
+             * that is not there fills the error log with warnings about
+             * something working exactly as intended.
+             */
             $insert->execute([
-                $row['name'], $row['group_name'], $at, $row['path'],
-                $row['executable'] ? 1 : 0, $row['alternate_path'],
-                $row['version'], $row['source'],
+                $row['name'], $row['group_name'], $at, $row['path'] ?? '',
+                ($row['executable'] ?? false) ? 1 : 0, $row['alternate_path'] ?? '',
+                $row['version'] ?? '', $row['source'] ?? '',
             ]);
         }
 
@@ -927,15 +1051,124 @@ function storeCapabilities(PDO $pdo, array $probe): void
         )->execute([
             $at, $probe['seconds'], $found, count($probe['rows']),
             ($probe['cagefs']['installed'] ?? false) ? 1 : 0,
-            $probe['cagefs']['enabled'] === null ? null : (($probe['cagefs']['enabled']) ? 1 : 0),
+            ($probe['cagefs']['enabled'] ?? null) === null
+                ? null : (($probe['cagefs']['enabled']) ? 1 : 0),
             $probe['cagefs']['note'] ?? null,
         ]);
 
         $pdo->commit();
+
+        return count($changes);
     } catch (Throwable $e) {
         $pdo->rollBack();
         throw $e;
     }
+}
+
+/**
+ * What moved between two probes.
+ *
+ * Both halves of a program's answer count as a change: whether it can be run at
+ * all, and which version answers when it is. A version going from 8.7.1 to
+ * 8.9.0 is a package upgrade; a state going from absent to available is
+ * somebody exposing it through CageFS. They are different events and both are
+ * worth a mark on the chart.
+ *
+ * `$hadPrevious` is what stops the first ever probe from reporting a hundred
+ * and fifteen changes. Nothing changed - this is simply the first time anyone
+ * looked, and recording it as an event would put a spike at the beginning of
+ * every history that means nothing at all.
+ *
+ * @param array<string, array> $before keyed by name
+ * @param list<array> $after
+ * @return list<array>
+ */
+function detectCapabilityChanges(array $before, array $after, string $side, bool $hadPrevious): array
+{
+    if (!$hadPrevious) {
+        return [];
+    }
+
+    $changes = [];
+
+    foreach ($after as $row) {
+        $name = (string)$row['name'];
+        $old = $before[$name] ?? null;
+
+        $newState = capabilitySideState($row, $side);
+        $newVersion = (string)($row['version'] ?? '');
+
+        if ($old === null) {
+            /*
+             * A program added to the catalogue since the last probe.
+             *
+             * Its state did not change - it was never being watched. Recorded
+             * only when it is actually present, so adding twenty names to the
+             * config does not produce twenty "changes" on the chart.
+             */
+            if ($newState === 'absent') {
+                continue;
+            }
+            $changes[] = [
+                'name' => $name, 'group_name' => (string)$row['group_name'], 'side' => $side,
+                'old_state' => 'unwatched', 'new_state' => $newState,
+                'old_version' => '', 'new_version' => $newVersion,
+            ];
+            continue;
+        }
+
+        $oldState = capabilitySideState([
+            'path' => (string)($old['path'] ?? ''),
+            'executable' => (bool)($old['executable'] ?? false),
+        ], $side);
+        $oldVersion = (string)($old['version'] ?? '');
+
+        if ($oldState === $newState && $oldVersion === $newVersion) {
+            continue;
+        }
+
+        /*
+         * A version that merely became unknown is not news.
+         *
+         * Version probing is capped and can be skipped entirely, so a run
+         * without it would otherwise report every program as having lost its
+         * version - a hundred fabricated events from a cheaper check.
+         */
+        if ($oldState === $newState && $newVersion === '' && $oldVersion !== '') {
+            continue;
+        }
+
+        $changes[] = [
+            'name' => $name, 'group_name' => (string)$row['group_name'], 'side' => $side,
+            'old_state' => $oldState, 'new_state' => $newState,
+            'old_version' => $oldVersion, 'new_version' => $newVersion,
+        ];
+    }
+
+    // Something dropped from the catalogue is not a change on the machine.
+    return $changes;
+}
+
+/**
+ * The simple state one side can actually observe.
+ *
+ * Deliberately not the merged state from capabilityState(): that one needs both
+ * sides and is about what to do next, while this is a record of what a single
+ * probe saw. Mixing them would make the history depend on data collected later.
+ */
+function capabilitySideState(array $row, string $side): string
+{
+    $path = (string)($row['path'] ?? '');
+
+    if ($side === 'host') {
+        return $path === '' ? 'absent' : 'present';
+    }
+
+    if ($path === '') {
+        return 'absent';
+    }
+
+    return ($row['executable'] ?? false) ? 'available' : 'unusable';
 }
 
 /** Writes a host-side probe. */
@@ -944,6 +1177,26 @@ function storeHostCapabilities(PDO $host, array $probe, array $inCage, ?string $
     $host->beginTransaction();
     try {
         $at = time();
+
+        $before = [];
+        foreach ($host->query('SELECT * FROM host_capabilities')->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $before[(string)$row['name']] = $row;
+        }
+
+        $changes = detectCapabilityChanges($before, $probe['rows'], 'host', $before !== []);
+        $log = $host->prepare(
+            'INSERT INTO host_capability_changes (at, name, group_name, side,
+                old_state, new_state, old_version, new_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        foreach ($changes as $change) {
+            $log->execute([
+                $at, $change['name'], $change['group_name'], $change['side'],
+                $change['old_state'], $change['new_state'],
+                $change['old_version'], $change['new_version'],
+            ]);
+        }
+
         $host->exec('DELETE FROM host_capabilities');
 
         $insert = $host->prepare(
@@ -963,9 +1216,9 @@ function storeHostCapabilities(PDO $host, array $probe, array $inCage, ?string $
                 $seen++;
             }
             $insert->execute([
-                $row['name'], $row['group_name'], $at, $row['path'],
-                $row['executable'] ? 1 : 0, $row['version'], $row['source'],
-                $accountPath, $accountPath !== '' ? 1 : 0,
+                $row['name'], $row['group_name'], $at, $row['path'] ?? '',
+                ($row['executable'] ?? false) ? 1 : 0, $row['version'] ?? '',
+                $row['source'] ?? '', $accountPath, $accountPath !== '' ? 1 : 0,
             ]);
         }
 
@@ -976,7 +1229,8 @@ function storeHostCapabilities(PDO $host, array $probe, array $inCage, ?string $
         )->execute([
             $at, $probe['seconds'], count($probe['rows']), $onHost, $seen, $user,
             ($probe['cagefs']['installed'] ?? false) ? 1 : 0,
-            $probe['cagefs']['enabled'] === null ? null : (($probe['cagefs']['enabled']) ? 1 : 0),
+            ($probe['cagefs']['enabled'] ?? null) === null
+                ? null : (($probe['cagefs']['enabled']) ? 1 : 0),
             $probe['cagefs']['note'] ?? null,
         ]);
 
@@ -1022,6 +1276,7 @@ function capabilityReport(array $config, PDO $pdo, ?PDO $host): array
             'does' => (string)($entry['does'] ?? ''),
             'package' => $entry['package'] ?? null,
             'key' => (bool)($entry['key'] ?? false),
+            'help' => (string)($entry['help'] ?? ''),
             'path' => (string)($row['path'] ?? ''),
             'executable' => (bool)$row['executable'],
             'alternate_path' => (string)($row['alternate_path'] ?? ''),
@@ -1134,5 +1389,154 @@ function cagefsExposeSnippet(string $program, string $path): array
             explode("\n", rtrim($contents, "\n")),
             ['EOF', 'cagefsctl --force-update']
         ),
+    ];
+}
+
+/* ------------------------------------------------------------------ *
+ * The history of what changed
+ * ------------------------------------------------------------------ */
+
+/**
+ * How wide one bar should be, given the range being looked at.
+ *
+ * Four steps rather than the smooth ladder the charts use, because a bar chart
+ * of counts is read as "how many that day" - and a bar covering 43 minutes is
+ * a quantity nobody can hold in their head. Minute, hour, day, week are units
+ * people already think in.
+ */
+function changeBucketSeconds(int $span): array
+{
+    if ($span <= 6 * 3600) {
+        return [60, 'minute'];
+    }
+    if ($span <= 8 * 86400) {
+        return [3600, 'hour'];
+    }
+    if ($span <= 120 * 86400) {
+        return [86400, 'day'];
+    }
+
+    return [604800, 'week'];
+}
+
+/**
+ * Where the bucket containing this moment begins.
+ *
+ * Arithmetic on the epoch aligns to UTC, which is fine for minutes and hours
+ * and wrong for days and weeks: on a machine set to New York, dividing by 86400
+ * puts the day boundary at eight in the evening, so a bar labelled Tuesday
+ * holds most of Monday and the dialog opens with a heading five hours adrift
+ * from the rows beneath it.
+ *
+ * Days and weeks are therefore aligned to local midnight, in the configured
+ * timezone, which is the only definition of "day" anybody reading this has.
+ */
+function changeBucketStart(int $at, int $bucket): int
+{
+    if ($bucket < 86400) {
+        return intdiv($at, $bucket) * $bucket;
+    }
+
+    $midnight = (int)mktime(0, 0, 0, (int)date('n', $at), (int)date('j', $at), (int)date('Y', $at));
+
+    if ($bucket < 604800) {
+        return $midnight;
+    }
+
+    // Weeks begin on Monday: date('N') is 1 for Monday through 7 for Sunday.
+    return $midnight - ((int)date('N', $at) - 1) * 86400;
+}
+
+/**
+ * Every recorded change in a window, from both sides, bucketed for a chart.
+ *
+ * Account and host histories live in different databases - neither collector
+ * may write to the other's - so they are read separately and interleaved here.
+ * A single upgrade can legitimately appear twice, once as the host noticing and
+ * once as the account noticing, and those are genuinely two observations rather
+ * than a duplicate: on a caged box they can be days apart.
+ */
+function capabilityChanges(array $config, PDO $pdo, ?PDO $host, int $from, int $to, int $limit = 800): array
+{
+    $rows = [];
+
+    $read = static function (?PDO $db, string $table) use ($from, $to, &$rows): void {
+        if ($db === null) {
+            return;
+        }
+        try {
+            $stmt = $db->prepare(
+                "SELECT * FROM $table WHERE at BETWEEN ? AND ? ORDER BY at DESC"
+            );
+            $stmt->execute([$from, $to]);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $rows[] = $row;
+            }
+        } catch (Throwable) {
+            // An older database has no such table, which means no history yet.
+        }
+    };
+
+    $read($pdo, 'capability_changes');
+    $read($host, 'host_capability_changes');
+
+    usort($rows, fn(array $a, array $b): int => (int)$b['at'] <=> (int)$a['at']);
+
+    $catalogue = [];
+    foreach (capabilityList($config) as $entry) {
+        $catalogue[$entry['name']] = $entry;
+    }
+
+    [$bucket, $unit] = changeBucketSeconds(max(1, $to - $from));
+
+    $buckets = [];
+    $groups = [];
+
+    foreach ($rows as $row) {
+        $group = (string)$row['group_name'];
+        $groups[$group] = true;
+
+        $key = changeBucketStart((int)$row['at'], $bucket);
+        $buckets[$key] ??= ['at' => $key, 'total' => 0, 'counts' => []];
+        $buckets[$key]['total']++;
+        $buckets[$key]['counts'][$group] = ($buckets[$key]['counts'][$group] ?? 0) + 1;
+    }
+
+    ksort($buckets);
+
+    $detailed = array_map(
+        static function (array $row) use ($catalogue): array {
+            $entry = $catalogue[(string)$row['name']] ?? null;
+            return [
+                'at' => (int)$row['at'],
+                'name' => (string)$row['name'],
+                'group_name' => (string)$row['group_name'],
+                'side' => (string)$row['side'],
+                'does' => (string)($entry['does'] ?? ''),
+                'help' => (string)($entry['help'] ?? ''),
+                'old_state' => (string)($row['old_state'] ?? ''),
+                'new_state' => (string)($row['new_state'] ?? ''),
+                'old_version' => (string)($row['old_version'] ?? ''),
+                'new_version' => (string)($row['new_version'] ?? ''),
+                'old_version_short' => shortVersion((string)($row['old_version'] ?? '')),
+                'new_version_short' => shortVersion((string)($row['new_version'] ?? '')),
+            ];
+        },
+        array_slice($rows, 0, $limit)
+    );
+
+    return [
+        'from' => $from,
+        'to' => $to,
+        'bucket_seconds' => $bucket,
+        'bucket_unit' => $unit,
+        'groups' => array_keys($groups),
+        'group_names' => capabilityGroups(),
+        'buckets' => array_values($buckets),
+        'changes' => $detailed,
+        'total' => count($rows),
+        // Said rather than silently cut: a chart whose bars sum to more than
+        // the list beneath it needs to explain itself.
+        'truncated' => count($rows) > $limit,
     ];
 }
