@@ -31,7 +31,7 @@ $required = [
     'lib/boot.php', 'lib/db.php', 'lib/collect.php', 'lib/alerts.php',
     'lib/auth.php', 'lib/mask.php', 'lib/actions.php', 'lib/logs.php',
     'lib/schedule.php', 'lib/configure.php', 'lib/processes.php',
-    'lib/symlinks.php', 'lib/signals.php', 'lib/host.php',
+    'lib/symlinks.php', 'lib/signals.php', 'lib/host.php', 'lib/uptime.php',
     'lib/hostdb.php', 'host-cron.php', 'lib/config.sample.php',
 ];
 

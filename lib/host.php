@@ -33,6 +33,8 @@ require_once __DIR__ . '/collect.php';
 require_once __DIR__ . '/processes.php';
 // halfRate and median, shared with the disk projection. Required, not assumed.
 require_once __DIR__ . '/alerts.php';
+// bootHistory, for the shutdown reasons only root can read.
+require_once __DIR__ . '/uptime.php';
 
 /** Top slab caches, processes and files kept per reading. */
 const HOST_KEEP_SLAB = 20;
@@ -178,7 +180,7 @@ function hostProcesses(
     }
 
     $users = hostUserNames($passwd);
-    $boot = hostBootTime($procRoot);
+    $boot = bootTime($procRoot);
     $ticks = hostClockTicks();
 
     $procs = [];
@@ -351,12 +353,6 @@ function hostElapsed(string $procRoot, int $pid, int $boot, int $ticks): ?int
 
     $started = $boot + (int)$rest[19] / $ticks;
     return max(0, (int)round(time() - $started));
-}
-
-function hostBootTime(string $procRoot = '/proc'): int
-{
-    $raw = @file_get_contents($procRoot . '/stat');
-    return $raw !== false && preg_match('/^btime\s+(\d+)/m', $raw, $m) ? (int)$m[1] : 0;
 }
 
 /** Kernel clock ticks per second. Practically always 100, but not by standard. */
@@ -731,6 +727,7 @@ function hostTakeReading(
     $load = hostLoad($procRoot);
     $disks = diskStats($procRoot);
     $pressure = pressureIo($procRoot);
+    $history = bootHistory();
 
     $get = fn(string $key): ?int => isset($mem[$key]) ? (int)$mem[$key] : null;
 
@@ -801,6 +798,7 @@ function hostTakeReading(
             // Empty when it is available; otherwise the reason, read from
             // /boot/config and /proc/cmdline, which only root can see.
             'psi_reason' => pressureDiagnosis($procRoot),
+            'boot_at' => bootTime($procRoot) ?: null,
         ];
 
         $names = implode(', ', array_keys($sample));
@@ -849,6 +847,27 @@ function hostTakeReading(
                 $row['rss_bytes'], $row['pss_bytes'], $row['swap_bytes'],
                 $row['read_bytes'], $row['write_bytes'],
             ]);
+        }
+
+        /*
+         * Written with INSERT OR REPLACE keyed on the boot time.
+         *
+         * `last` is re-read every collection and mostly says the same thing, so
+         * this has to be idempotent. Replacing also lets the current session's
+         * row pick up its end time later, once there is one.
+         */
+        if ($history['available']) {
+            $boots = $pdo->prepare(
+                'INSERT OR REPLACE INTO host_boots
+                    (booted_at, kernel, ended, shutdown_at, still_running, seen_at)
+                 VALUES (?, ?, ?, ?, ?, ?)'
+            );
+            foreach ($history['boots'] as $row) {
+                $boots->execute([
+                    $row['booted_at'], $row['kernel'], $row['ended'],
+                    $row['shutdown_at'], $row['still_running'] ? 1 : 0, $takenAt,
+                ]);
+            }
         }
 
         $devices = $pdo->prepare(
@@ -912,6 +931,7 @@ function hostTakeReading(
         'files' => count($files),
         'services' => count(hostByService($processes['procs'])),
         'disks' => count($disks['devices'] ?? []),
+        'boots' => $history['available'] ? count($history['boots']) : null,
         'psi' => $pressure !== null,
         'psi_reason' => $sample['psi_reason'],
         'lve' => $lve['available'] ? count($lve['rows']) : null,

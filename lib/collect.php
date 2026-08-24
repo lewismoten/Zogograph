@@ -42,6 +42,7 @@ function takeVitals(
     $disks = diskStats($procRoot);
     $ownIo = processIoTotals($procRoot);
     $pressure = pressureIo($procRoot);
+    $boot = bootTime($procRoot);
 
     // Busy time since the last reading, whoever took it. Null on the first one,
     // because a rate needs two points and inventing one would be a lie.
@@ -180,6 +181,7 @@ function takeVitals(
 
         'io_pressure_some' => $pressure['some10'] ?? null,
         'io_pressure_full' => $pressure['full10'] ?? null,
+        'boot_at' => $boot > 0 ? $boot : null,
         'cpu_cores' => cpuCores(),
         'source' => $source,
     ];
@@ -971,6 +973,23 @@ function processIoTotals(string $procRoot = '/proc'): ?array
 
     return $any ? ['read' => $read, 'write' => $write,
                    'cancelled' => $cancelled, 'procs' => $seen] : null;
+}
+
+/**
+ * When the kernel started, in epoch seconds.
+ *
+ * A constant for as long as the machine stays up, which is what makes it the
+ * one field that can tell a restart from a collector that stopped. Recorded
+ * with every reading for that reason alone.
+ *
+ * From btime in /proc/stat rather than /proc/uptime: uptime is a duration and
+ * has to be subtracted from a clock that may itself have been adjusted, while
+ * btime is already the answer.
+ */
+function bootTime(string $procRoot = '/proc'): int
+{
+    $raw = @file_get_contents($procRoot . '/stat');
+    return $raw !== false && preg_match('/^btime\s+(\d+)/m', $raw, $m) ? (int)$m[1] : 0;
 }
 
 /* ---------------------------------------------------------- diagnosis -- */

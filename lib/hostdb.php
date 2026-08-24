@@ -457,6 +457,31 @@ function hostMigrations(): array
         6 => [
             'ALTER TABLE host_samples ADD COLUMN psi_reason TEXT',
         ],
+
+        // The same boot column as the account side, for the same reason.
+        7 => [
+            'ALTER TABLE host_samples ADD COLUMN boot_at INTEGER',
+
+            /*
+             * Boot sessions and how the one before each ended.
+             *
+             * Keyed on the boot time, so re-reading `last` on every collection
+             * refreshes what is known without duplicating anything - the
+             * current session's row gains an end time once it has one.
+             *
+             * Kept apart from host_samples and not pruned with them: this is
+             * the record of what happened to the machine, and it is smaller and
+             * longer-lived than any reading.
+             */
+            "CREATE TABLE host_boots (
+                booted_at     INTEGER PRIMARY KEY,
+                kernel        TEXT,
+                ended         TEXT,
+                shutdown_at   INTEGER,
+                still_running INTEGER NOT NULL DEFAULT 0,
+                seen_at       INTEGER NOT NULL
+            )",
+        ],
     ];
 }
 

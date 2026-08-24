@@ -272,3 +272,7 @@ pre.paste {
 /* Taller than a line chart: the slice labels stack down the right, and a short
    canvas crops the ones at the ends. */
 canvas.pie { height: 340px; }
+
+/* The two shadings, named in the prose so the legend is the sentence itself. */
+.band-restart { color: #ff9a9a; font-weight: 600; }
+.band-gap { color: #b9b9b9; font-weight: 600; }

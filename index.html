@@ -44,6 +44,7 @@
 <section id="alertBanner" hidden></section>
 
 <div class="cards">
+  <div class="card" id="cardUptime"><div class="label">Up for</div><div class="value">—</div><div class="sub muted"></div></div>
   <div class="card" id="cardDisk"><div class="label">Disk free</div><div class="value">—</div><div class="sub muted"></div></div>
   <div class="card" id="cardTrend"><div class="label">Projected full</div><div class="value">—</div><div class="sub muted"></div></div>
   <div class="card" id="cardInodes"><div class="label">Inodes free</div><div class="value">—</div><div class="sub muted"></div></div>
@@ -346,6 +347,33 @@
       </p>
       <div id="hostLve"></div>
     </div>
+  </div>
+</section>
+
+<section class="panel" id="uptimePanel" hidden>
+  <div class="panel-head">
+    <h2>Uptime and outages</h2>
+    <span class="muted small" id="uptimeSummary"></span>
+  </div>
+  <p class="muted small sub-note">
+    A hole in the readings is not the same as the machine being off, and the
+    charts shade them differently for that reason — <span class="band-restart">red</span>
+    where the boot time moved, so it really did restart, and
+    <span class="band-gap">grey</span> where the boot time was unchanged either
+    side and the collector simply was not running. Uptime counts only the first
+    kind; a cron job that stops should not look like a server that keeps falling
+    over.
+  </p>
+  <div id="uptimeBody"></div>
+
+  <div id="bootHistoryWrap" hidden>
+    <h3 class="sub-head">Why it restarted</h3>
+    <p class="muted small sub-note">
+      From <code>last</code> on the host, which only root can read. A boot with a
+      shutdown recorded before it was asked to stop; a boot with none means the
+      previous session ended without recording one.
+    </p>
+    <div id="bootHistory"></div>
   </div>
 </section>
 

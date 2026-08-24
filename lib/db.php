@@ -349,6 +349,17 @@ function migrations(): array
             'ALTER TABLE vitals ADD COLUMN io_pressure_some REAL',
             'ALTER TABLE vitals ADD COLUMN io_pressure_full REAL',
         ],
+
+        /*
+         * When the kernel booted, with every reading.
+         *
+         * One column, and it is what separates "the machine was off" from "the
+         * collector was off" - two facts that look identical in a database
+         * otherwise, and which need opposite responses.
+         */
+        7 => [
+            'ALTER TABLE vitals ADD COLUMN boot_at INTEGER',
+        ],
     ];
 }
 

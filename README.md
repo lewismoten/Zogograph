@@ -769,6 +769,76 @@ Counters restart at boot, so a difference that comes out negative means the
 machine rebooted rather than that it un-read four gigabytes. That interval
 reports no rate at all — an unknown, not a guess.
 
+## Uptime and outages
+
+A card at the top says how long the machine has been up, and a panel accounts
+for every hole in the readings.
+
+### A gap is not an outage
+
+This is the whole difficulty. From the database, a machine that was switched off
+and a collector that stopped running look identical: a stretch of time with no
+readings in it. They need opposite responses, and reporting the second as the
+first would put a server outage on the chart every time cron failed — and make
+the uptime figure worthless in the direction that starts a needless
+investigation.
+
+**Boot time tells them apart.** It is a constant for as long as a machine stays
+up, so it is recorded with every reading, on both sides:
+
+- a gap with the **same** boot time either side means the machine ran straight
+  through it and the collector stopped — a monitoring gap;
+- a gap with a **later** boot time after it means the machine restarted inside
+  it — a real outage.
+
+The charts shade them differently: <span style="color:#ff9a9a">red</span> for a
+restart, grey for a stretch nobody was recording. Without the shading a gap is
+invisible, because the line simply joins the reading before to the reading after
+and draws a confident straight edge across hours that were never measured.
+
+### Two percentages, deliberately
+
+    Up 97.74% of the measured window · 93.57% of it was actually recorded
+
+**Uptime** counts only time the machine is known to have been off. **Coverage**
+counts the holes that cannot be accounted for. A fortnight with one reboot in it
+is 99.9% up however often the collector stumbled, and a collector that stopped
+for a day is 100% up with poor coverage. Merged into one number, a broken cron
+job would masquerade as a fragile machine.
+
+### Outages are an upper bound, and say so
+
+If the last reading was at 02:00 and the machine came back at 03:05, it was up
+for some unknown part of that hour before going down. The boot time is the
+moment it *returned*, so the outage is **at most** the gap and probably less.
+The table writes `≤ 65 min` rather than `65 min`; treating the bound as the
+measurement would overstate every outage by however long the machine sat there
+working with nobody watching.
+
+The threshold for "gap" is three times the median interval between readings, and
+the median rather than the mean because the mean is dragged upward by exactly
+the gaps being looked for — using it would raise the bar every time something
+went wrong and hide the next one.
+
+### Why it restarted
+
+From `last -x -F reboot shutdown` on the host, which only root can read. A boot
+with a shutdown record shortly before it was asked to stop; a boot with none
+means the previous session ended without recording one.
+
+The wording is careful about what is actually known. "Crashed" is a strong claim
+to make from the absence of a log record, and the absence has other explanations
+— a rotated wtmp, a shutdown so abrupt the record never reached the disk. So the
+panel says *stopped without recording a shutdown* and lists the possibilities.
+The oldest record has nothing before it, which is reported as unknown rather
+than as a crash.
+
+One trap worth recording: the weekday name in `last`'s output is matched but
+never passed to `strtotime`. Given `Tue Jul 01 2026`, where the 1st is a
+Wednesday, `strtotime` treats the weekday as an instruction and returns the 7th
+without complaint. The month, day, time and year are unambiguous alone, so the
+redundant part is dropped rather than trusted.
+
 ## Reading log files
 
 Signed in, a log file in the offenders table gets a **View** button: the last N

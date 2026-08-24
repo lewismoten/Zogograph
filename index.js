@@ -40,6 +40,7 @@ const state = {
   schedule: null,
   scheduleDirty: false,
   units: "bytes",
+  uptime: null,
   hostMetric: "pss",
   hostCharted: [],
   busy: false,
@@ -571,6 +572,28 @@ function drawLineChart(canvas, rows, series, options = {}) {
     return pad.top + h - ((v - scale.min) / (scale.max - scale.min)) * h;
   };
 
+  /*
+   * Stretches with no readings, shaded before anything is drawn over them.
+   *
+   * Without this a gap is invisible: the line simply joins the reading before
+   * to the reading after, which draws a confident straight edge across hours
+   * that were never measured. Red for a restart, grey for a stretch the
+   * collector missed while the machine kept running - the same distinction the
+   * analysis makes, because they call for different responses.
+   */
+  for (const band of options.outages || []) {
+    const x0 = x(Math.max(band.from, t0));
+    const x1 = x(Math.min(band.to, t1));
+    if (!(x1 > x0)) continue;
+
+    ctx.save();
+    ctx.fillStyle = band.kind === "restart"
+      ? "rgba(220, 60, 60, 0.22)"
+      : "rgba(150, 150, 150, 0.14)";
+    ctx.fillRect(x0, pad.top, Math.max(1.5, x1 - x0), h);
+    ctx.restore();
+  }
+
   // Gridlines follow the left axis; the right one only gets labels, or two
   // sets of lines cross each other and the chart turns into a net.
   const gridding = scales.left || scales.right;
@@ -1038,7 +1061,17 @@ async function refreshAll() {
     // The card reads the trend the server worked out over exactly these rows.
     overview.trend = vitals.trend;
     renderCards(overview, vitals.rows);
-    renderVitalCharts(vitals.rows);
+    /*
+     * The shading comes from the vitals payload, not from the uptime endpoint.
+     *
+     * Both compute the same thing, but the uptime call runs in the parallel
+     * batch below and had not landed when the charts first drew - so the bands
+     * were simply absent on load and appeared only after a later refresh. The
+     * vitals response analyses exactly the rows it returns, which removes the
+     * ordering question rather than working around it.
+     */
+    state.uptime = { analysis: vitals.uptime };
+    renderVitalCharts(vitals.rows, vitals.uptime);
     renderCategoryChart(scans.rows, scans.categories ?? state.categories);
     $("lastSeen").textContent = overview.vitals
       ? `updated ${ago(overview.vitals.taken_at)}`
@@ -1053,7 +1086,7 @@ async function refreshAll() {
     await Promise.all([
       refreshOffenders(), refreshAlerts(), refreshActionLog(),
       refreshSchedule(), refreshHealth(), refreshProblems(), refreshProcesses(),
-      refreshHost(),
+      refreshHost(), refreshUptime(),
     ]);
     if (state.historyPathId) await showHistory(state.historyPathId, true);
     if (state.log.pathId) await showLog(state.log.pathId, true);
@@ -1183,7 +1216,7 @@ function renderRoomChart(rows) {
 
   $("roomNote").textContent = note;
   drawLineChart($("roomChart"), mode === "delta" ? bucketed : prepared,
-    shape.series, shape.options);
+    shape.series, { ...shape.options, outages: outageBands(state.uptime) });
 }
 
 /** The change between two readings, or null when there is nothing to compare. */
@@ -1263,6 +1296,7 @@ function renderCpuChart(rows) {
     : { key: "mem_used_percent", label: "Memory %" });
 
   drawLineChart($("cpuChart"), prepared, series, {
+    outages: outageBands(state.uptime),
     axis: percentAxis,
     rightAxis: absolute ? bytesAxis : undefined,
     zeroBased: true,
@@ -1308,6 +1342,7 @@ function renderIoChart(rows) {
   }
 
   drawLineChart($("ioChart"), rows, series, {
+    outages: outageBands(state.uptime),
     axis: rateAxis,
     rightAxis: percentAxis,
     zeroBased: true,
@@ -1360,7 +1395,7 @@ function renderIoChart(rows) {
   $("ioNote").textContent = parts.join(" ");
 }
 
-function renderVitalCharts(rows) {
+function renderVitalCharts(rows, uptime) {
   renderRoomChart(rows);
   renderCpuChart(rows);
 
@@ -1371,6 +1406,8 @@ function renderVitalCharts(rows) {
    * get wrong about it, so the chart says what it is in the panel subtitle and
    * draws a line at one-per-core - the level above which work is queueing.
    */
+  const bands = outageBands({ analysis: uptime });
+
   drawLineChart($("loadChart"), rows,
     [
       { key: "load1", label: "1 min" },
@@ -1378,11 +1415,11 @@ function renderVitalCharts(rows) {
       { key: "load15", label: "15 min" },
     ],
     { axis: step => ({ scale: 1, unit: "", format: v => v.toFixed(tickPrecision(step)) }),
-      zeroBased: true });
+      zeroBased: true, outages: bands });
 
   drawLineChart($("netChart"), rows,
     [{ key: "net_rx_rate", label: "In" }, { key: "net_tx_rate", label: "Out" }],
-    { axis: rateAxis, zeroBased: true,
+    { axis: rateAxis, zeroBased: true, outages: bands,
       empty: "No network counters here — /proc/net/dev is not readable" });
 }
 
@@ -2779,6 +2816,183 @@ function setHostCard(label, value, sub, level = "", valueClass = "") {
 function num(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
+}
+
+/* ----------------------------------------------------------------- uptime -- */
+
+/** Both kinds of hole, flattened into bands the charts can shade. */
+function outageBands(uptime) {
+  const analysis = uptime?.analysis;
+  if (!analysis) return [];
+
+  return [
+    ...(analysis.outages || []).map(o => ({ from: o.from, to: o.to, kind: "restart" })),
+    ...(analysis.gaps || []).map(g => ({ from: g.from, to: g.to, kind: "gap" })),
+  ];
+}
+
+/**
+ * How long it has been up, and what the window missed.
+ *
+ * Two percentages, kept apart on purpose. Uptime counts only time the machine
+ * is known to have been off; coverage counts holes that cannot be accounted
+ * for. Merging them would let a cron job that stopped running look exactly like
+ * a server that keeps falling over.
+ */
+async function refreshUptime() {
+  const to = Math.floor(Date.now() / 1000);
+
+  let data;
+  try {
+    data = await api("uptime", { from: to - state.range, to });
+  } catch (error) {
+    $("uptimeBody").textContent = String(error.message || error);
+    return;
+  }
+
+  state.uptime = data;
+  const a = data.analysis || {};
+
+  if (data.up_for == null) {
+    setCard("cardUptime", "—", "no boot time recorded yet");
+  } else {
+    setCard(
+      "cardUptime",
+      humanDuration(data.up_for),
+      `since ${humanTime(data.boot_at)}`,
+      // Freshly booted is worth noticing: it means something restarted, and
+      // whatever was wrong before may be about to be wrong again.
+      data.up_for < 3600 ? "warn" : ""
+    );
+  }
+
+  const panel = $("uptimePanel");
+  panel.hidden = false;
+
+  const parts = [];
+  if (a.uptime_percent != null) {
+    parts.push(`Up ${trimPercent(a.uptime_percent)}% of the measured window`);
+  }
+  if (a.coverage_percent != null && a.coverage_percent < 100) {
+    parts.push(`${trimPercent(a.coverage_percent)}% of it was actually recorded`);
+  }
+  if (a.boots) {
+    parts.push(count(a.boots, "restart") + " in this window");
+  }
+  if (a.downtime) {
+    parts.push(`at most ${humanDuration(a.downtime)} down`);
+  }
+  if (a.unmonitored) {
+    parts.push(`${humanDuration(a.unmonitored)} not recorded`);
+  }
+
+  $("uptimeSummary").textContent = parts.length
+    ? parts.join(" · ") + "."
+    : "No readings in this window.";
+
+  const bands = [
+    ...(a.outages || []).map(o => ({
+      kind: "Restarted",
+      from: o.from,
+      to: o.to,
+      seconds: o.seconds_at_most,
+      note: "Boot time moved, so the machine did restart. It came back at "
+        + `${humanTime(o.booted_at)}; it went down at some point after the last `
+        + "reading, so this is an upper bound rather than a measurement.",
+    })),
+    ...(a.gaps || []).map(g => ({
+      kind: g.kind === "not_recorded" ? "Not recorded" : "Unexplained",
+      from: g.from,
+      to: g.to,
+      seconds: g.seconds,
+      note: g.kind === "not_recorded"
+        ? "Boot time was unchanged either side, so the machine ran straight "
+          + "through this. The collector was not running."
+        : "No boot time either side to compare, so whether the machine was up "
+          + "cannot be told from these readings.",
+    })),
+  ].sort((x, y) => y.from - x.from);
+
+  if (!bands.length) {
+    $("uptimeBody").replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: "Every reading in this window is present and the machine never "
+        + "restarted. Nothing to explain.",
+    }));
+  } else {
+    renderTable("uptimeBody", bands, [
+      {
+        label: "What",
+        render: row => {
+          const span = document.createElement("span");
+          span.textContent = row.kind;
+          if (row.kind === "Restarted") span.className = "grew";
+          return span;
+        },
+      },
+      { label: "From", render: row => humanTime(row.from) },
+      { label: "Until", render: row => humanTime(row.to) },
+      {
+        label: "For",
+        className: "size",
+        render: row => (row.kind === "Restarted" ? "≤ " : "") + humanDuration(row.seconds),
+      },
+      { label: "What it means", className: "name", render: row => row.note },
+    ]);
+  }
+
+  renderBootHistory(data.history);
+}
+
+/** Trailing zeros off a percentage: "99.9" beats "99.9000". */
+function trimPercent(value) {
+  const n = Number(value);
+  return n >= 99.95 && n < 100 ? n.toFixed(2) : (n % 1 === 0 ? n.toFixed(0) : n.toFixed(2));
+}
+
+/** Why the machine restarted, where root could find out. */
+function renderBootHistory(history) {
+  const wrap = $("bootHistoryWrap");
+  if (!history) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+
+  if (!history.available) {
+    $("bootHistory").replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: history.reason || "No boot history.",
+    }));
+    return;
+  }
+
+  renderTable("bootHistory", history.boots, [
+    { label: "Came up", render: row => humanTime(row.booted_at) },
+    {
+      label: "Kernel",
+      render: row => row.kernel || "—",
+    },
+    {
+      label: "Previous session ended",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.ended === "shutdown"
+          ? "cleanly"
+          : (row.ended === "unclean" ? "without a shutdown" : "not known");
+        // Only the unclean case is coloured: a clean shutdown is not news, and
+        // an unknown one is an absence of evidence rather than a fault.
+        if (row.ended === "unclean") span.className = "grew";
+        return span;
+      },
+    },
+    {
+      label: "Still running",
+      className: "size",
+      render: row => (Number(row.still_running) ? "yes" : ""),
+    },
+    { label: "What that means", className: "name", render: row => row.reason },
+  ]);
 }
 
 /* ----------------------------------------------------------------- health -- */

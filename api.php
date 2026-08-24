@@ -50,6 +50,7 @@ require_once __DIR__ . '/lib/signals.php';
 require_once __DIR__ . '/lib/hostdb.php';
 // swapPressure and the host collectors live here, not in hostdb.php.
 require_once __DIR__ . '/lib/host.php';
+require_once __DIR__ . '/lib/uptime.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -91,6 +92,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'symlinks' => symlinkCheck($config, $signedIn),
         'host' => hostView($config, $signedIn),
         'host-series' => hostSeries($config, $signedIn),
+        'uptime' => uptimeView($config, $pdo, $signedIn),
         'health' => healthCheck($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
@@ -195,12 +197,22 @@ function vitalsSeries(PDO $pdo): array
      * about the same window, or changing the range moves the line and leaves
      * the projection saying something else.
      */
+    /*
+     * Worked out over exactly the rows being returned, like the trend above.
+     *
+     * The chart shades the gaps, so the shading and the line have to come from
+     * the same set of readings - computed separately they would disagree
+     * whenever the series was thinned.
+     */
+    $uptime = analyseUptime($rows, $from, $to);
+
     return [
         'from' => $from,
         'to' => $to,
         'total' => $total,
         'step' => $step,
         'rows' => $rows,
+        'uptime' => $uptime,
         'trend' => [
             'disk' => seriesTrend($rows, 'disk_free_bytes'),
             'inodes' => seriesTrend($rows, 'inodes_free'),
@@ -625,6 +637,79 @@ function hostSeries(array $config, bool $signedIn): array
         'names' => $names,
         'rows' => hostServiceSeries($pdo, array_slice($names, 0, 8), $from, $to, $metric),
     ];
+}
+
+/**
+ * Uptime: how long it has been up, what it missed, and why it restarted.
+ *
+ * Open, like the other read endpoints - a boot time and an uptime percentage
+ * describe the machine rather than naming anything on it. The boot *history*
+ * is the exception: it comes from the host collector, names kernel versions and
+ * is only there for somebody signed in.
+ */
+function uptimeView(array $config, PDO $pdo, bool $signedIn): array
+{
+    [$from, $to] = window();
+
+    $rows = $pdo->prepare(
+        'SELECT taken_at, boot_at FROM vitals WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
+    );
+    $rows->execute([$from, $to]);
+    $readings = $rows->fetchAll();
+
+    $latest = $pdo->query(
+        'SELECT taken_at, boot_at FROM vitals WHERE boot_at IS NOT NULL
+         ORDER BY taken_at DESC, id DESC LIMIT 1'
+    )->fetch() ?: null;
+
+    $analysis = analyseUptime($readings, $from, $to);
+
+    /*
+     * Uptime measured from the boot clock, not from the readings.
+     *
+     * The last reading may be a minute old, or an hour if cron is unwell, and
+     * "up for 3 days" should not quietly stop advancing because the collector
+     * did. now - boot_at is the machine's own answer.
+     */
+    $bootAt = $latest ? (int)$latest['boot_at'] : null;
+    $upFor = $bootAt !== null ? max(0, time() - $bootAt) : null;
+
+    $out = [
+        'boot_at' => $bootAt,
+        'up_for' => $upFor,
+        // A reading older than a few minutes means this figure is being derived
+        // from a stale boot time, which is worth flagging rather than hiding.
+        'reading_age' => $latest ? max(0, time() - (int)$latest['taken_at']) : null,
+        'analysis' => $analysis,
+    ];
+
+    if (!$signedIn) {
+        return $out;
+    }
+
+    // From the host database, where the collector stored what `last` said.
+    $host = hostDb($config, false);
+    if ($host === null) {
+        return $out + ['history' => ['available' => false,
+            'reason' => 'No host readings yet — the boot history comes from the root collector.',
+            'boots' => []]];
+    }
+
+    try {
+        $stmt = $host->query(
+            'SELECT booted_at, kernel, ended, shutdown_at, still_running
+             FROM host_boots ORDER BY booted_at DESC LIMIT 30'
+        );
+        $boots = array_map(
+            fn(array $row): array => $row + ['reason' => bootReason((string)$row['ended'])],
+            $stmt->fetchAll()
+        );
+        return $out + ['history' => ['available' => true, 'reason' => null, 'boots' => $boots]];
+    } catch (Throwable) {
+        return $out + ['history' => ['available' => false,
+            'reason' => 'The host collector has not recorded a boot history yet.',
+            'boots' => []]];
+    }
 }
 
 /** What is in the crontab. Signed in only: it is a list of what runs as you. */
