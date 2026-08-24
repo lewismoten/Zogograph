@@ -257,10 +257,15 @@
 
     <h3 class="sub-head">Memory by user</h3>
     <p class="muted small sub-note">
-      The column CageFS hides. <strong>Shared</strong> is Pss — each page divided
-      by the number of processes holding it — and it is the one that adds up.
-      Resident counts every shared page once per process, so it always totals
-      more than the machine has.
+      The column CageFS hides. <strong>PSS</strong> is proportional set size:
+      each page of a process's memory divided by the number of processes mapping
+      it, so one copy of libc shared by a hundred workers counts as a hundredth
+      each. It is the figure that adds up. <strong>Resident</strong> counts every
+      shared page once per process, so it always totals more than the machine
+      has. The <em>kernel shared memory</em> card above measures something else again
+      — tmpfs and System V segments — and is not a subtotal of this column:
+      a tmpfs page some process maps is counted in both, and one that nothing
+      maps is counted only there.
     </p>
     <div id="hostUsers"></div>
 

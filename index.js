@@ -1856,7 +1856,17 @@ async function refreshHost() {
     "reclaimable — not a problem");
   setHostCard("Kernel slab", humanBytes(s.slab),
     `${humanBytes(s.sunreclaim)} of it unreclaimable`);
-  setHostCard("Shared / tmpfs", humanBytes(s.shmem),
+  /*
+   * Named for what it is, because "shared" is overloaded here.
+   *
+   * This is Shmem from /proc/meminfo: tmpfs pages and System V segments, memory
+   * the kernel holds on behalf of no particular process. The PSS column in the
+   * tables below is a completely unrelated quantity - one page of one process's
+   * mapping, divided by however many processes map it. Labelling both "shared"
+   * invites the reader to add them together or compare them, and neither is
+   * meaningful.
+   */
+  setHostCard("Kernel shared memory / tmpfs", humanBytes(s.shmem),
     s.devshm_used == null ? "" : `${humanBytes(s.devshm_used)} in /dev/shm`);
   /*
    * Swap is shown large but coloured only under real pressure.
@@ -1906,7 +1916,7 @@ async function refreshHost() {
 
   if (num(s.pss_procs) > 0) {
     parts.push(
-      `The shared figure, which does add up, comes to ${humanBytes(s.pss_sum_bytes)} `
+      `Proportional set size, which does add up, comes to ${humanBytes(s.pss_sum_bytes)} `
       + `across the ${s.pss_procs} biggest`
       + (num(s.pss_procs) < num(s.proc_count) ? ` of them.` : `.`)
     );
@@ -1926,7 +1936,7 @@ async function refreshHost() {
     { label: "Processes", className: "size", render: r => r.procs },
     { label: "Threads", className: "size", render: r => r.threads },
     { label: "Resident", className: "size", render: r => humanBytes(r.rss_bytes) },
-    { label: "Shared (Pss)", className: "size", render: r => hostPss(r.pss_bytes) },
+    { label: "PSS", className: "size", render: r => hostPss(r.pss_bytes) },
     { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
   ]);
 
@@ -1935,7 +1945,7 @@ async function refreshHost() {
     { label: "User", render: r => r.user },
     { label: "Process", render: r => r.name },
     { label: "Resident", className: "size", render: r => humanBytes(r.rss_bytes) },
-    { label: "Shared (Pss)", className: "size", render: r => hostPss(r.pss_bytes) },
+    { label: "PSS", className: "size", render: r => hostPss(r.pss_bytes) },
     { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
     { label: "Threads", className: "size", render: r => r.threads },
     { label: "Running for", className: "size",
@@ -2011,7 +2021,7 @@ function swapVerdict(swap, swapUsed) {
   }
 }
 
-/** Pss is only measured for the biggest processes, so absence is not zero. */
+/** PSS is only measured for the biggest processes, so absence is not zero. */
 function hostPss(value) {
   return value == null || Number(value) === 0 ? "—" : humanBytes(value);
 }

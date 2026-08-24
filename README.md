@@ -447,12 +447,29 @@ actually in use. Nothing is missing. **RSS counts every shared page once per
 process**, so a hundred Apache workers each "own" the same copy of libc, and the
 difference is an artefact of the counting.
 
-Pss — each page divided by the number of processes sharing it — is the figure
-that adds up, and no `ps` can report it. It comes from
+**PSS** — proportional set size, each page divided by the number of processes
+mapping it — is the figure that adds up, and no `ps` can report it. It comes from
 `/proc/<pid>/smaps_rollup`, which the kernel builds by walking the page tables:
 cheap per process, but there can be a thousand of them, so it is read for the
 biggest sixty by RSS and the panel says so rather than presenting a partial sum
 as a whole-machine total.
+
+### Two different things called "shared"
+
+Worth separating, because the word does double duty and the two quantities are
+measured differently, from different files, for different purposes:
+
+| | what it is | where it comes from |
+|---|---|---|
+| **Kernel shared memory / tmpfs** | tmpfs pages and System V segments — memory the kernel holds on behalf of no particular process | `Shmem` in `/proc/meminfo` |
+| **PSS** | one process's share of the pages it maps, divided by how many processes map each one | `/proc/<pid>/smaps_rollup` |
+
+Neither is a subtotal of the other, and adding them together means nothing. They
+are not quite disjoint either — a tmpfs page that some process maps is counted
+in both, and one that nothing maps is counted only in `Shmem` — which is exactly
+why the two need separate names rather than a shared word and a footnote. A
+column headed "Shared" beside a card headed "Shared / tmpfs" invites a
+comparison that does not hold.
 
 ### Swap is a state, not an event
 
