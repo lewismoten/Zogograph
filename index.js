@@ -1342,6 +1342,7 @@ async function refreshProcesses() {
       { label: "CPU", className: "size", render: row => `${row.cpu_percent.toFixed(1)}%` },
       { label: "Memory", className: "size", render: row => humanBytes(row.rss_bytes) },
       { label: "Of RAM", className: "size", render: row => `${row.mem_percent.toFixed(1)}%` },
+      { label: "Running for", className: "size", render: row => processAge(row) },
       // The heaviest of the group, which is the one worth going to look at.
       { label: "Biggest PID", className: "size", render: row => row.pid },
       { label: "Command", className: "cmd", render: row => row.command },
@@ -1349,6 +1350,28 @@ async function refreshProcesses() {
   }
 
   renderBusyMoments(data.recorded ?? []);
+}
+
+/**
+ * How long a group has been up, and whether it is churning.
+ *
+ * One age for a single process. For a group, the oldest with the newest beside
+ * it when they differ sharply - a pool up for forty days whose newest member is
+ * nine seconds old is restarting as fast as it dies, which is a different fault
+ * from one that has simply been running a long time, and the pair of numbers is
+ * the only thing that says so.
+ */
+function processAge(row) {
+  const oldest = row.oldest_seconds;
+  if (oldest == null) return "—";
+
+  const age = humanDuration(oldest);
+  const newest = row.newest_seconds;
+
+  if (row.procs > 1 && newest != null && newest * 8 < oldest && oldest > 600) {
+    return `${age} · newest ${humanDuration(newest)}`;
+  }
+  return age;
 }
 
 /**
@@ -1389,6 +1412,9 @@ function renderBusyMoments(moments) {
       const rss = tr.insertCell();
       rss.className = "size";
       rss.textContent = humanBytes(row.rss_bytes);
+      const age = tr.insertCell();
+      age.className = "size muted";
+      age.textContent = processAge(row);
     }
     section.appendChild(table);
 

@@ -30,7 +30,8 @@ $required = [
     'api.php', 'cron.php', 'index.html', 'index.css', 'index.js',
     'lib/boot.php', 'lib/db.php', 'lib/collect.php', 'lib/alerts.php',
     'lib/auth.php', 'lib/mask.php', 'lib/actions.php', 'lib/logs.php',
-    'lib/schedule.php', 'lib/configure.php', 'lib/config.sample.php',
+    'lib/schedule.php', 'lib/configure.php', 'lib/processes.php',
+    'lib/symlinks.php', 'lib/config.sample.php',
 ];
 
 $files = [];

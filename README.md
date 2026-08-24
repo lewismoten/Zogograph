@@ -238,6 +238,17 @@ between them is one fact; a row apiece is eighty rows, none of which look
 alarming. The totals are sums, and the pid and command line kept are the
 heaviest single process of the group — the one worth going to look at.
 
+**How long it has been running** comes from `ps -eo etime`, which every platform
+writes as `[[DD-]HH:]MM:SS` — readable and useless for arithmetic, so it is
+parsed into seconds. (`etimes`, the seconds form, is procps only and absent on
+BSD.) A group shows the age of its *oldest* member, and the newest beside it
+when the two diverge sharply: a pool up for forty days whose newest member is
+nine seconds old is restarting as fast as it dies, and that is a different fault
+from one that has simply been running a long time. Neither number alone says so.
+An age that cannot be read shows as `—` rather than as zero, which would read as
+"just started" — the opposite of "not known", and exactly the sort of thing
+somebody would act on.
+
 **The recorded half is the point.** A live list is `top` with extra steps: you
 have to be watching. This project exists to answer questions after the fact, so
 whenever a reading crosses `record_when_cpu_above` or

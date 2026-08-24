@@ -35,7 +35,9 @@ const PROCESS_KEEP_DEFAULT = 8;
  */
 function listProcesses(string $by = 'cpu', int $limit = 20, bool $group = true): array
 {
-    $out = shellRead('ps -eo pid,user,pcpu,pmem,rss,args 2>/dev/null');
+    // `etime` rather than `etimes`: the seconds form is procps only, and the
+    // clock form is understood by both. It has no spaces, so it stays a field.
+    $out = shellRead('ps -eo pid,user,pcpu,pmem,rss,etime,args 2>/dev/null');
     if ($out === null) {
         return [
             'available' => false,
@@ -54,14 +56,14 @@ function listProcesses(string $by = 'cpu', int $limit = 20, bool $group = true):
             continue;
         }
 
-        // Six fields, and the last one keeps its spaces because it is the
+        // Seven fields, and the last one keeps its spaces because it is the
         // command line.
-        $parts = preg_split('/\s+/', $line, 6);
-        if (!$parts || count($parts) < 6) {
+        $parts = preg_split('/\s+/', $line, 7);
+        if (!$parts || count($parts) < 7) {
             continue;
         }
 
-        [$pid, $user, $cpu, $mem, $rss, $args] = $parts;
+        [$pid, $user, $cpu, $mem, $rss, $etime, $args] = $parts;
         if (!ctype_digit($pid)) {
             continue;
         }
@@ -73,6 +75,7 @@ function listProcesses(string $by = 'cpu', int $limit = 20, bool $group = true):
             'mem_percent' => (float)$mem,
             // ps reports RSS in kilobytes on both platforms.
             'rss_bytes' => (int)$rss * 1024,
+            'elapsed_seconds' => parseElapsed($etime),
             'name' => processName($args),
             'command' => redactSecrets($args),
         ];
@@ -94,6 +97,26 @@ function listProcesses(string $by = 'cpu', int $limit = 20, bool $group = true):
     usort($rows, fn(array $a, array $b): int => $b[$key] <=> $a[$key]);
 
     return ['available' => true, 'reason' => null, 'rows' => array_slice($rows, 0, $limit)];
+}
+
+/**
+ * How long a process has been running, in seconds.
+ *
+ * `ps` writes elapsed time as `[[DD-]HH:]MM:SS`, which is readable and useless
+ * for arithmetic. Null rather than zero when it cannot be read: zero would mean
+ * "just started", which is the opposite of "not known" and exactly the sort of
+ * thing somebody would act on.
+ */
+function parseElapsed(string $etime): ?int
+{
+    if (!preg_match('/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/', trim($etime), $m)) {
+        return null;
+    }
+
+    return ((int)($m[1] ?: 0)) * 86400
+        + ((int)($m[2] ?: 0)) * 3600
+        + ((int)$m[3]) * 60
+        + (int)$m[4];
 }
 
 /**
@@ -193,8 +216,9 @@ function recordProcesses(array $config, PDO $pdo, array $vitals): array
 
     $insert = $pdo->prepare(
         'INSERT INTO process_samples
-            (taken_at, reason, name, cpu_percent, mem_percent, rss_bytes, procs)
-         VALUES (?, ?, ?, ?, ?, ?, ?)'
+            (taken_at, reason, name, cpu_percent, mem_percent, rss_bytes, procs,
+             oldest_seconds, newest_seconds)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
 
     $written = 0;
@@ -216,6 +240,8 @@ function recordProcesses(array $config, PDO $pdo, array $vitals): array
                 round($row['mem_percent'], 2),
                 $row['rss_bytes'],
                 $row['procs'],
+                $row['oldest_seconds'],
+                $row['newest_seconds'],
             ]);
             $written++;
         }
@@ -249,6 +275,16 @@ function groupByName(array $rows): array
                 'user' => $row['user'],
                 'pid' => $row['pid'],
                 'command' => $row['command'],
+                /*
+                 * The oldest and the youngest of the group.
+                 *
+                 * Both, because together they say something neither says
+                 * alone: a pool up for forty days whose newest member is nine
+                 * seconds old is churning, and that is a different fault from
+                 * one that has simply been running a long time.
+                 */
+                'oldest_seconds' => null,
+                'newest_seconds' => null,
                 'heaviest' => -1,
             ];
         }
@@ -258,6 +294,16 @@ function groupByName(array $rows): array
         $into['mem_percent'] += $row['mem_percent'];
         $into['rss_bytes'] += $row['rss_bytes'];
         $into['procs']++;
+
+        $elapsed = $row['elapsed_seconds'];
+        if ($elapsed !== null) {
+            $into['oldest_seconds'] = $into['oldest_seconds'] === null
+                ? $elapsed
+                : max($into['oldest_seconds'], $elapsed);
+            $into['newest_seconds'] = $into['newest_seconds'] === null
+                ? $elapsed
+                : min($into['newest_seconds'], $elapsed);
+        }
 
         if ($row['rss_bytes'] > $into['heaviest']) {
             $into['heaviest'] = $row['rss_bytes'];
@@ -292,7 +338,8 @@ function recordedProcesses(PDO $pdo, int $limit = 12): array
     $moments->execute();
 
     $rows = $pdo->prepare(
-        'SELECT name, cpu_percent, mem_percent, rss_bytes, procs
+        'SELECT name, cpu_percent, mem_percent, rss_bytes, procs,
+                oldest_seconds, newest_seconds
          FROM process_samples WHERE taken_at = ? AND reason = ?
          ORDER BY ' . '(CASE WHEN ? = \'memory\' THEN rss_bytes ELSE cpu_percent END) DESC'
     );

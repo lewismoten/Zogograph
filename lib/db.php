@@ -290,6 +290,19 @@ function migrations(): array
             )",
             'CREATE INDEX process_samples_taken_at ON process_samples (taken_at)',
         ],
+
+        4 => [
+            /*
+             * How long the group had been running when it was recorded.
+             *
+             * Both ends of it. A pool up for forty days whose newest member is
+             * nine seconds old is churning - restarting as fast as it dies -
+             * and that is a different fault from one merely running a long
+             * time, told apart only by having both numbers.
+             */
+            'ALTER TABLE process_samples ADD COLUMN oldest_seconds INTEGER',
+            'ALTER TABLE process_samples ADD COLUMN newest_seconds INTEGER',
+        ],
     ];
 }
 
