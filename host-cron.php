@@ -384,11 +384,25 @@ try {
         $walk = hostDirectoryUsage($root, $budget, $skip);
 
         $dirs = $pdo->prepare(
-            'INSERT INTO host_dirs (taken_at, path, depth, bytes, files) VALUES (?, ?, ?, ?, ?)'
+            'INSERT INTO host_dirs (taken_at, path, depth, bytes, files, measured)
+             VALUES (?, ?, ?, ?, ?, ?)'
         );
         foreach ($walk['dirs'] as $row) {
-            $dirs->execute([$at, $row['path'], $row['depth'], $row['bytes'], $row['files']]);
+            $dirs->execute([
+                $at, $row['path'], $row['depth'], $row['bytes'], $row['files'],
+                ($row['measured'] ?? true) ? 1 : 0,
+            ]);
         }
+        if (($walk['unmeasured'] ?? 0) > 0) {
+            $say(sprintf(
+                '  %s directories were not finished before the time ran out; the %d '
+                . 'shallowest are recorded with no size rather than dropped, because an '
+                . 'unopened directory is not an empty one.',
+                number_format($walk['unmeasured_total'] ?? $walk['unmeasured']),
+                $walk['unmeasured']
+            ));
+        }
+
         $say(sprintf(
             '  %d directories kept from %s scanned in %ss%s.',
             count($walk['dirs']),

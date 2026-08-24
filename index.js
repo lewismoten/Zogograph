@@ -6245,8 +6245,12 @@ async function refreshBackups() {
     : "share of the disk unknown — no filesystem reading recorded";
   body.appendChild(sub);
 
-  if (!data.complete) {
-    body.appendChild(note("The disk walk ran out of time, so these are lower bounds."));
+  if (!data.complete || data.unmeasured) {
+    body.appendChild(note("The disk walk ran out of time, so this total is a lower bound"
+      + (data.unmeasured
+          ? ` — ${count(data.unmeasured, "directory", "directories")} under the backup roots `
+            + "were never opened."
+          : ".")));
   }
 
   // Growth, when there is more than one walk to compare.
@@ -6310,11 +6314,43 @@ async function refreshBackups() {
 
   for (const root of data.roots) {
     if (!root.children.length) continue;
-    body.appendChild(section(`Inside ${root.path}`, simpleTable(
+
+    const wrap = document.createDocumentFragment();
+    const missed = root.children.filter(c => !c.measured).length;
+    if (missed) {
+      /*
+       * An unopened directory is not an empty one.
+       *
+       * The walk gives every child a share of the time left, but a big enough
+       * tree still runs out - and saying "0 B" for something nobody looked at
+       * is how an entire backup destination came to be missing from this
+       * panel without anybody noticing.
+       */
+      wrap.appendChild(note(`${count(missed, "entry", "entries")} here could not be measured `
+        + "before the walk ran out of time. They are listed with no size rather than omitted. "
+        + "Raise host.walk_seconds and run it again for a complete figure."));
+    }
+
+    wrap.appendChild(simpleTable(
       ["Path", "Size", "Files"],
-      root.children.map(c => [c.name, humanBytes(c.bytes), humanCount(c.files)]),
+      root.children.map(c => [
+        c.name,
+        /*
+         * Three states, not two.
+         *
+         * Incomplete with a size is a partial walk - a genuine lower bound,
+         * and saying "not measured" throws away a real number. Incomplete with
+         * nothing is a directory that was never opened. Collapsing them either
+         * loses information or invents it.
+         */
+        c.measured ? humanBytes(c.bytes)
+          : (c.bytes > 0 ? `at least ${humanBytes(c.bytes)}` : "not measured"),
+        c.measured ? humanCount(c.files) : (c.files > 0 ? `${humanCount(c.files)}+` : "—"),
+      ]),
       ["name", "size", "size"]
-    )));
+    ));
+
+    body.appendChild(section(`Inside ${root.path}`, wrap));
   }
 
   if (data.other.length) {

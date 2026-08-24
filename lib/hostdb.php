@@ -734,6 +734,18 @@ function hostMigrations(): array
             )',
             'CREATE INDEX host_backups_at ON host_backups (taken_at)',
         ],
+
+        /*
+         * Whether a directory's size was actually measured.
+         *
+         * Zero bytes previously meant two incompatible things: empty, or never
+         * opened because the walk ran out of time first. That is how a second
+         * JetBackup destination vanished from the panel entirely - it reported
+         * nothing, sorted last, and fell off the size cut.
+         */
+        17 => [
+            'ALTER TABLE host_dirs ADD COLUMN measured INTEGER NOT NULL DEFAULT 1',
+        ],
     ];
 }
 

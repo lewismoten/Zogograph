@@ -257,7 +257,10 @@ function analyseBackups(PDO $host, array $config): array
 
     $at = (int)$walk['taken_at'];
 
-    $dirs = $host->prepare('SELECT path, bytes, files FROM host_dirs WHERE taken_at = ?');
+    $dirs = $host->prepare(
+        'SELECT path, bytes, files, COALESCE(measured, 1) AS measured
+         FROM host_dirs WHERE taken_at = ?'
+    );
     $dirs->execute([$at]);
     $all = $dirs->fetchAll(PDO::FETCH_ASSOC);
 
@@ -303,6 +306,21 @@ function analyseBackups(PDO $host, array $config): array
     $used = $filesystem ? (int)$filesystem['used_bytes'] : 0;
     $share = $used > 0 ? round($total / $used * 100, 1) : null;
 
+    /*
+     * How much of the backup area was actually measured.
+     *
+     * Without this the total is quietly a lower bound, and a lower bound
+     * presented as a total is the whole reason this section exists.
+     */
+    $unmeasured = 0;
+    foreach ($roots as $root) {
+        foreach ($root['children'] as $child) {
+            if (!$child['measured']) {
+                $unmeasured++;
+            }
+        }
+    }
+
     return [
         'available' => true,
         'reason' => null,
@@ -313,6 +331,7 @@ function analyseBackups(PDO $host, array $config): array
         'share_percent' => $share,
         'mount' => $filesystem ? (string)$filesystem['mount'] : null,
         'roots' => $roots,
+        'unmeasured' => $unmeasured,
         'accounts' => $accounts,
         'jetbackup' => $jet,
         'other' => $other,
@@ -338,10 +357,24 @@ function backupChildren(array $byPath, string $root): array
             'name' => basename($path),
             'bytes' => (int)$row['bytes'],
             'files' => (int)$row['files'],
+            'measured' => (bool)($row['measured'] ?? 1),
         ];
     }
 
-    usort($children, fn(array $a, array $b): int => $b['bytes'] <=> $a['bytes']);
+    /*
+     * Unmeasured children sort to the top, not the bottom.
+     *
+     * They report zero bytes, so sorting purely by size puts the thing nobody
+     * looked at last - underneath twenty directories that were measured and
+     * are genuinely small. The unknown is the more important row.
+     */
+    usort($children, function (array $a, array $b): int {
+        if ($a['measured'] !== $b['measured']) {
+            return $a['measured'] <=> $b['measured'];
+        }
+        return $b['bytes'] <=> $a['bytes'];
+    });
+
     return array_slice($children, 0, 20);
 }
 

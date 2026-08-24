@@ -48,6 +48,33 @@ const HOSTDISK_KEEP_DIRS = 400;
 /** How deep the walk records directories. Deeper ones roll up into these. */
 const HOSTDISK_MAX_DEPTH = 6;
 
+/*
+ * How deep the time budget is shared out between siblings.
+ *
+ * Sharing at every level sounds fair and is useless: each level divides again,
+ * so at depth six a child receives the budget divided by the branching factor
+ * six times over - microseconds - and the walk gives up immediately. A real run
+ * of this machine finished in 9 of its 45 seconds having measured almost
+ * nothing.
+ *
+ * Breadth only matters near the top. Two levels is what the reported case
+ * needs: / is depth 0 and /backup is depth 1, so sharing at both means
+ * /backup's two destinations each get a slice. A third level fragments the
+ * budget further for no benefit - it left 30 of 45 seconds unused on a real
+ * run, because an early sibling could not spend what a later one did not need.
+ */
+const HOSTDISK_FAIR_DEPTH = 2;
+
+/*
+ * How many unopened directories are worth recording.
+ *
+ * They exist so that a missed subtree is visible rather than silently absent.
+ * Keeping all of them is worse than keeping none: the same real walk produced
+ * ten thousand, which filled the entire row budget and pushed out every
+ * directory that had actually been measured.
+ */
+const HOSTDISK_KEEP_UNMEASURED = 60;
+
 /** Filesystem types that are not storage and would only add noise. */
 function pseudoFilesystems(): array
 {
@@ -209,7 +236,7 @@ function hostDirectoryUsage(
 
     $sizes = [];
     $counts = [];
-    $state = ['complete' => true, 'scanned' => 0, 'inodes' => []];
+    $state = ['complete' => true, 'scanned' => 0, 'inodes' => [], 'unmeasured' => []];
 
     hostWalkDir($real, $real, 0, $device, $skip, $deadline, $sizes, $counts, $state);
 
@@ -220,13 +247,44 @@ function hostDirectoryUsage(
             'depth' => $path === '/' ? 0 : substr_count(rtrim($path, '/'), '/'),
             'bytes' => $bytes,
             'files' => $counts[$path] ?? 0,
+            // A size of zero means one of two very different things, and this
+            // is which: measured and empty, or never opened.
+            'measured' => !isset($state['unmeasured'][$path]),
         ];
     }
 
-    usort($dirs, fn(array $a, array $b): int => $b['bytes'] <=> $a['bytes']);
+    /*
+     * Unmeasured directories are kept regardless of the size cut.
+     *
+     * They report zero bytes, so sorting by size buries them at the bottom and
+     * the top-400 cut throws them away - which is exactly how the second
+     * backup destination disappeared. A directory nobody looked at is more
+     * worth reporting than the four-hundredth largest one somebody did.
+     */
+    $unmeasured = array_values(array_filter($dirs, fn(array $d): bool => !$d['measured']));
+    $measured = array_values(array_filter($dirs, fn(array $d): bool => $d['measured']));
+
+    /*
+     * The shallowest unopened directories, and only a handful.
+     *
+     * A missed /backup/something matters; a missed directory six levels inside
+     * one is noise, and there are thousands of those. Sorted by depth so the
+     * ones worth naming survive, then capped so they cannot displace the
+     * measurements this walk exists to produce.
+     */
+    usort($unmeasured, function (array $a, array $b): int {
+        return [$a['depth'], -$a['bytes']] <=> [$b['depth'], -$b['bytes']];
+    });
+    $unmeasured = array_slice($unmeasured, 0, HOSTDISK_KEEP_UNMEASURED);
+
+    usort($measured, fn(array $a, array $b): int => $b['bytes'] <=> $a['bytes']);
+
+    $kept = array_slice($measured, 0, max(0, HOSTDISK_KEEP_DIRS - count($unmeasured)));
 
     return [
-        'dirs' => array_slice($dirs, 0, HOSTDISK_KEEP_DIRS),
+        'dirs' => array_merge($kept, $unmeasured),
+        'unmeasured' => count($unmeasured),
+        'unmeasured_total' => count(array_filter($dirs, fn(array $d): bool => !$d['measured'])),
         'complete' => $state['complete'],
         'scanned' => $state['scanned'],
         'seconds' => round(microtime(true) - $started, 2),
@@ -251,17 +309,32 @@ function hostWalkDir(
 ): array {
     if (microtime(true) > $deadline) {
         $state['complete'] = false;
-        return ['bytes' => 0, 'files' => 0];
+        return ['bytes' => 0, 'files' => 0, 'measured' => false];
     }
 
     $handle = @opendir($dir);
     if ($handle === false) {
-        return ['bytes' => 0, 'files' => 0];
+        return ['bytes' => 0, 'files' => 0, 'measured' => false];
     }
 
     $state['scanned']++;
     $bytes = 0;
     $files = 0;
+    $measured = true;
+
+    /*
+     * Files first, subdirectories collected for a second pass.
+     *
+     * The reason is the whole point of this rewrite. Walking depth-first with
+     * one shared deadline means the first subdirectory can consume the entire
+     * budget, and every sibling after it is never opened - so /backup reported
+     * one destination and silently omitted the other. The panel then showed
+     * that absence as though it were the answer.
+     *
+     * Collecting the children first makes it possible to give each of them a
+     * share of whatever time is left, so breadth survives running out of it.
+     */
+    $subdirs = [];
 
     while (($entry = readdir($handle)) !== false) {
         if ($entry === '.' || $entry === '..') {
@@ -270,6 +343,7 @@ function hostWalkDir(
 
         if (microtime(true) > $deadline) {
             $state['complete'] = false;
+            $measured = false;
             break;
         }
 
@@ -298,10 +372,7 @@ function hostWalkDir(
                 continue;
             }
 
-            $below = hostWalkDir($full, $root, $depth + 1, $device, $skip, $deadline,
-                                 $sizes, $counts, $state);
-            $bytes += $below['bytes'];
-            $files += $below['files'];
+            $subdirs[] = $full;
             continue;
         }
 
@@ -337,12 +408,69 @@ function hostWalkDir(
 
     closedir($handle);
 
+    /*
+     * Each child gets a share of the time that is left when its turn comes.
+     *
+     * Recomputed per child rather than divided once, so a subdirectory that
+     * finishes early hands the rest of its slice to its siblings instead of
+     * wasting it. A directory with two children gets half the remaining budget
+     * each; one with two hundred gets a sliver each, which is the right answer
+     * - better a shallow figure for all of them than a complete one for the
+     * first and nothing at all for the rest.
+     */
+    $remaining = $subdirs;
+    $share = $depth < HOSTDISK_FAIR_DEPTH;
+
+    while ($remaining !== []) {
+        $left = $deadline - microtime(true);
+        if ($left <= 0) {
+            $state['complete'] = false;
+            $measured = false;
+            // The ones never entered are still recorded, marked unmeasured, so
+            // they appear as "not measured" rather than as though absent.
+            foreach ($remaining as $missed) {
+                if ($depth + 1 <= HOSTDISK_MAX_DEPTH && !isset($sizes[$missed])) {
+                    $sizes[$missed] = 0;
+                    $counts[$missed] = 0;
+                    $state['unmeasured'][$missed] = true;
+                }
+            }
+            break;
+        }
+
+        $child = array_shift($remaining);
+
+        /*
+         * Near the top, each child gets an equal slice of what is left so a
+         * huge first sibling cannot starve the rest. Deeper down it inherits
+         * the parent's deadline, because dividing again at every level shrinks
+         * the budget to nothing long before the leaves.
+         */
+        $childDeadline = $share
+            ? min($deadline, microtime(true) + $left / (count($remaining) + 1))
+            : $deadline;
+
+        $below = hostWalkDir(
+            $child, $root, $depth + 1, $device, $skip, $childDeadline,
+            $sizes, $counts, $state
+        );
+
+        $bytes += $below['bytes'];
+        $files += $below['files'];
+        if (!($below['measured'] ?? true)) {
+            $measured = false;
+        }
+    }
+
     if ($depth <= HOSTDISK_MAX_DEPTH) {
         $sizes[$dir] = $bytes;
         $counts[$dir] = $files;
+        if (!$measured) {
+            $state['unmeasured'][$dir] = true;
+        }
     }
 
-    return ['bytes' => $bytes, 'files' => $files];
+    return ['bytes' => $bytes, 'files' => $files, 'measured' => $measured];
 }
 
 /**
