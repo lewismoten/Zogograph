@@ -506,6 +506,40 @@ temporary, and `Empty temp` would offer to delete the lot.
 The monitor's own `data/` directory is excluded, and symlinks are never
 followed.
 
+## Symlink loops
+
+**Check for symlink loops** on the Health panel walks the tree looking for links
+that will send something into a circle.
+
+The scanner steps over every symlink it meets, deliberately — following them
+double counts at best and walks out of the watched directory at worst. The
+consequence is that a bad link is invisible *here* while still being the thing
+that ruins everything else: a link pointing at one of its own ancestors is an
+infinitely deep directory to anything that does follow links, and backup jobs,
+`du`, `tar` and web crawlers all do. That is how a disk fills up with one
+directory copied ten thousand times.
+
+| finding | what it means |
+| --- | --- |
+| **Loop** | the chain of links comes back to one it already passed |
+| **Endless directory** | resolves to a directory containing the link itself, so anything following it descends for ever |
+| **Leaves the tree** | resolves outside the watched directory, so sizes measured here are not what a program following it would see |
+| **Broken** | points at nothing — untidy rather than dangerous |
+
+`photos/all -> ..` is one line in a listing and an infinitely deep tree, which
+is why the endless-directory case is worth a category of its own.
+
+The walk never follows a link. It reads where each one points and reasons about
+the path, which is the only safe way to inspect a loop — and it follows chains
+hop by hop rather than calling `realpath`, which collapses a loop, a broken link
+and a permissions problem into the same `false`.
+
+On a button rather than a schedule: it is a whole extra walk of the tree and the
+answer only changes when somebody makes a link. It is bounded by a clock and
+**says when it stopped early**, because a check that quietly gave up and reported
+"nothing wrong" would be worse than not having one. Signed-in only, since it
+reports paths.
+
 ## When something goes wrong
 
 Open **`health.php`**. It requires nothing, includes nothing and never touches

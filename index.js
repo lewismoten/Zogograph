@@ -1230,6 +1230,90 @@ function highlight(text, needle) {
   return out;
 }
 
+/* --------------------------------------------------------------- symlinks -- */
+
+/** What each finding means, in the order that matters. */
+const SYMLINK_KINDS = {
+  loop: ["Loop", "grew"],
+  ancestor: ["Endless directory", "grew"],
+  outside: ["Leaves the tree", ""],
+  broken: ["Broken", "muted"],
+};
+
+/**
+ * Checks the tree for symlinks that will send something into a loop.
+ *
+ * On a button rather than on the poll: it is a whole extra walk of the tree,
+ * and the answer only changes when somebody makes a link.
+ */
+async function checkSymlinks() {
+  const button = $("symlinkCheck");
+  const holder = $("symlinkBody");
+
+  button.disabled = true;
+  button.textContent = "Checking\u2026";
+  holder.replaceChildren();
+
+  try {
+    const data = await api("symlinks", { budget: 15 });
+
+    const summary = document.createElement("p");
+    summary.className = "muted small";
+    summary.textContent =
+      `${humanCount(data.links)} link${data.links === 1 ? "" : "s"} across `
+      + `${humanCount(data.dirs)} directories in ${data.seconds}s. `
+      + (data.complete
+        ? "The whole tree was checked."
+        : "Stopped before the end of the tree \u2014 there may be more.");
+    holder.appendChild(summary);
+
+    if (!data.problems.length) {
+      holder.appendChild(Object.assign(document.createElement("p"), {
+        className: "shrank",
+        textContent: data.complete
+          ? "No symlink loops, dangling links or escapes found."
+          : "Nothing wrong in the part that was checked.",
+      }));
+      return;
+    }
+
+    const table = document.createElement("table");
+    const head = table.createTHead().insertRow();
+    for (const label of ["", "Link", "Points at", "Why it matters"]) {
+      const th = document.createElement("th");
+      th.textContent = label;
+      head.appendChild(th);
+    }
+
+    const body = table.createTBody();
+    for (const problem of data.problems) {
+      const tr = body.insertRow();
+      const [label, tone] = SYMLINK_KINDS[problem.kind] ?? [problem.kind, ""];
+
+      const kind = tr.insertCell();
+      kind.textContent = label;
+      kind.className = tone;
+
+      tr.insertCell().className = "name";
+      tr.cells[1].textContent = problem.path;
+
+      tr.insertCell().className = "name";
+      tr.cells[2].textContent = problem.target || "—";
+
+      const note = tr.insertCell();
+      note.className = "muted small";
+      note.textContent = problem.note;
+    }
+
+    holder.appendChild(table);
+  } catch (error) {
+    holder.textContent = String(error.message || error);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Check for symlink loops";
+  }
+}
+
 /* -------------------------------------------------------------- processes -- */
 
 async function refreshProcesses() {
@@ -1377,6 +1461,9 @@ async function refreshHealth() {
   facts.textContent = bits.join(" \u00b7 ");
 
   $("healthBody").replaceChildren(table, facts);
+  // The check reports paths, so it is offered only to somebody who may see them.
+  $("symlinkCheck").hidden = !state.signedIn;
+  if (!state.signedIn) $("symlinkBody").replaceChildren();
 }
 
 async function refreshProblems() {
@@ -2113,6 +2200,10 @@ $("procBy").addEventListener("change", () => {
 
 $("procRefresh").addEventListener("click", () => {
   refreshProcesses().catch(e => notice(String(e.message || e)));
+});
+
+$("symlinkCheck").addEventListener("click", () => {
+  checkSymlinks().catch(e => notice(String(e.message || e)));
 });
 
 $("healthRefresh").addEventListener("click", () => {

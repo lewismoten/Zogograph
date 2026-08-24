@@ -215,13 +215,17 @@
 <section class="panel" id="healthPanel">
   <div class="panel-head">
     <h2>Health</h2>
-    <button id="healthRefresh" class="link">Recheck</button>
+    <div class="panel-controls">
+      <button id="symlinkCheck">Check for symlink loops</button>
+      <button id="healthRefresh" class="link">Recheck</button>
+    </div>
   </div>
   <p class="muted small sub-note">
     What this install can and cannot do. The first three are the usual reason a
     fresh deployment returns errors.
   </p>
   <div id="healthBody"></div>
+  <div id="symlinkBody"></div>
 </section>
 
 <section class="panel" id="problemPanel" hidden>

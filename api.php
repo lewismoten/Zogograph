@@ -45,6 +45,7 @@ require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/logs.php';
 require_once __DIR__ . '/lib/schedule.php';
 require_once __DIR__ . '/lib/processes.php';
+require_once __DIR__ . '/lib/symlinks.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -83,6 +84,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'tail' => tailLog($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
         'processes' => processList($pdo, $signedIn),
+        'symlinks' => symlinkCheck($config, $signedIn),
         'health' => healthCheck($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
@@ -413,6 +415,26 @@ function processList(PDO $pdo, bool $signedIn): array
         'rows' => $live['rows'],
         'recorded' => recordedProcesses($pdo, 8),
     ];
+}
+
+/**
+ * Looks for symlinks that will send something into a loop.
+ *
+ * Run on request rather than on a schedule: it is a whole extra walk of the
+ * tree, the answer changes only when somebody creates a link, and nothing about
+ * it is urgent enough to pay for every hour.
+ *
+ * Signed in only, because it reports paths, and bounded by a clock it reports
+ * back - a check that quietly gave up and said "nothing wrong" would be worse
+ * than not having one.
+ */
+function symlinkCheck(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to check symlinks');
+    }
+
+    return findSymlinkProblems($config, (float)clampInt($_GET['budget'] ?? 10, 1, 60));
 }
 
 /** What is in the crontab. Signed in only: it is a list of what runs as you. */
