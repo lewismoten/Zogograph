@@ -84,10 +84,11 @@ try {
         hostHandOver($config, hostDatabasePath($config));
 
         $say(sprintf(
-            'Recorded sample %d: %d processes, %d users, %d slab caches, %d files%s.',
+            'Recorded sample %d: %d processes, %d users, %d services, %d slab caches, %d files%s.',
             $result['sample_id'],
             $result['processes'],
             $result['users'],
+            $result['services'],
             $result['slab'],
             $result['files'],
             $result['lve'] === null ? '' : ", {$result['lve']} LVE rows"
@@ -103,6 +104,15 @@ try {
     if ($want('--prune')) {
         $days = (int)($config['host']['keep_days'] ?? 14);
         $say(sprintf('Pruned %d readings older than %d days.', hostPrune($pdo, $days), $days));
+
+        // The service series keeps its own, much longer clock: those rows are
+        // tiny and their whole value is being older than the detail tables.
+        $serviceDays = (int)($config['host']['keep_service_days'] ?? 90);
+        $say(sprintf(
+            'Pruned %d service readings older than %d days.',
+            hostPruneServices($pdo, $serviceDays),
+            $serviceDays
+        ));
     }
 
     if ($want('--show')) {

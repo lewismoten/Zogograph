@@ -23,8 +23,12 @@ require_once __DIR__ . '/configure.php';
 
 /* ---------------------------------------------------------------- vitals -- */
 
-function takeVitals(array $config, PDO $pdo, string $source = 'cron'): array
-{
+function takeVitals(
+    array $config,
+    PDO $pdo,
+    string $source = 'cron',
+    string $procRoot = '/proc'
+): array {
     $now = time();
 
     $disk = diskUsage($config['scan_root']);
@@ -33,6 +37,11 @@ function takeVitals(array $config, PDO $pdo, string $source = 'cron'): array
     $cpu = cpuTicks();
     $load = loadAverage();
     $net = networkCounters();
+    // Injectable, so the rate arithmetic below can be driven from a fixture
+    // rather than only on the machine it is aimed at.
+    $disks = diskStats($procRoot);
+    $ownIo = processIoTotals($procRoot);
+    $pressure = pressureIo($procRoot);
 
     // Busy time since the last reading, whoever took it. Null on the first one,
     // because a rate needs two points and inventing one would be a lie.
@@ -77,6 +86,60 @@ function takeVitals(array $config, PDO $pdo, string $source = 'cron'): array
         }
     }
 
+    /*
+     * I/O rates, on the same terms as the network ones above.
+     *
+     * Utilisation comes from io_ms, the milliseconds during which the device
+     * had anything in flight: divided by the elapsed wall clock it is the share
+     * of time the disk was doing something. Capped at 100 because with several
+     * devices summed it can exceed a single device's worth, and a disk that is
+     * 340% busy is not a sentence anybody should have to read.
+     */
+    $ioRead = $ioWrite = $ioUtil = null;
+    if ($disks !== null) {
+        $previous = $pdo->query(
+            'SELECT taken_at, io_read_bytes, io_write_bytes, io_ms FROM vitals
+             WHERE io_read_bytes IS NOT NULL ORDER BY taken_at DESC, id DESC LIMIT 1'
+        )->fetch();
+
+        if ($previous) {
+            $seconds = $now - (int)$previous['taken_at'];
+            $readDelta = $disks['total']['read_bytes'] - (int)$previous['io_read_bytes'];
+            $writeDelta = $disks['total']['write_bytes'] - (int)$previous['io_write_bytes'];
+            $busyDelta = $disks['total']['io_ms'] - (int)$previous['io_ms'];
+
+            if ($seconds > 0 && $readDelta >= 0 && $writeDelta >= 0 && $busyDelta >= 0) {
+                $ioRead = round($readDelta / $seconds, 2);
+                $ioWrite = round($writeDelta / $seconds, 2);
+                $ioUtil = round(min(100.0, $busyDelta / ($seconds * 10)), 2);
+            }
+        }
+    }
+
+    $ownRead = $ownWrite = null;
+    if ($ownIo !== null) {
+        $previous = $pdo->query(
+            'SELECT taken_at, own_read_bytes, own_write_bytes FROM vitals
+             WHERE own_read_bytes IS NOT NULL ORDER BY taken_at DESC, id DESC LIMIT 1'
+        )->fetch();
+
+        if ($previous) {
+            $seconds = $now - (int)$previous['taken_at'];
+            $readDelta = $ownIo['read'] - (int)$previous['own_read_bytes'];
+            $writeDelta = $ownIo['write'] - (int)$previous['own_write_bytes'];
+            /*
+             * Negative is normal here, unlike for the device counters: these
+             * are summed over whatever processes exist right now, so a busy
+             * process exiting takes its lifetime total out of the sum. There is
+             * no rate to report for that interval, only an unknown.
+             */
+            if ($seconds > 0 && $readDelta >= 0 && $writeDelta >= 0) {
+                $ownRead = round($readDelta / $seconds, 2);
+                $ownWrite = round($writeDelta / $seconds, 2);
+            }
+        }
+    }
+
     $row = [
         'taken_at' => $now,
         'disk_total_bytes' => $disk['total'],
@@ -102,6 +165,21 @@ function takeVitals(array $config, PDO $pdo, string $source = 'cron'): array
         'net_tx_bytes' => $net['tx'] ?? null,
         'net_rx_rate' => $rxRate,
         'net_tx_rate' => $txRate,
+
+        'io_read_bytes' => $disks['total']['read_bytes'] ?? null,
+        'io_write_bytes' => $disks['total']['write_bytes'] ?? null,
+        'io_ms' => $disks['total']['io_ms'] ?? null,
+        'io_read_rate' => $ioRead,
+        'io_write_rate' => $ioWrite,
+        'io_util_percent' => $ioUtil,
+
+        'own_read_bytes' => $ownIo['read'] ?? null,
+        'own_write_bytes' => $ownIo['write'] ?? null,
+        'own_read_rate' => $ownRead,
+        'own_write_rate' => $ownWrite,
+
+        'io_pressure_some' => $pressure['some10'] ?? null,
+        'io_pressure_full' => $pressure['full10'] ?? null,
         'cpu_cores' => cpuCores(),
         'source' => $source,
     ];
@@ -695,4 +773,202 @@ function isExcludedPath(string $path, array $excluded): bool
         }
     }
     return false;
+}
+
+/* ------------------------------------------------------------- disk i/o -- */
+
+/*
+ * Disk I/O, from two angles that answer different questions.
+ *
+ * /proc/diskstats is the device: how much the disk itself is doing, and how
+ * close to saturated it is. Inside CageFS an account can usually still read it,
+ * but what it reports is the *host's* disk - every account's traffic together -
+ * so it says "the disk is busy" and never "you are the reason".
+ *
+ * /proc/<pid>/io is the other half. Summed across the processes this user can
+ * see it gives that user's own block-layer traffic, and inside a cage the only
+ * processes visible are the account's own - which makes the sum exactly "what
+ * this account is doing to the disk". That is the number an account can act on.
+ *
+ * Both are counters since boot, so both are stored raw and turned into rates
+ * against the previous reading, the same way the network and CPU figures are.
+ */
+
+/** Bytes per sector in /proc/diskstats. Fixed at 512 regardless of the device. */
+const DISKSTAT_SECTOR = 512;
+
+/**
+ * Per-device I/O counters, plus a total across the real devices.
+ *
+ * Partitions are excluded, or every byte is counted twice: /proc/diskstats
+ * lists sda and sda1 side by side and the partition's traffic is already in the
+ * whole disk's. A name is treated as a partition when stripping its trailing
+ * digits - and an optional `p`, for nvme0n1p1 - leaves another name in the same
+ * file.
+ *
+ * @return array{devices: array<string, array>, total: array}|null
+ */
+function diskStats(string $procRoot = '/proc'): ?array
+{
+    $raw = @file_get_contents($procRoot . '/diskstats');
+    if ($raw === false) {
+        return null;
+    }
+
+    $rows = [];
+    foreach (preg_split('/\R/', $raw) ?: [] as $line) {
+        $parts = preg_split('/\s+/', trim($line)) ?: [];
+        // major minor name then at least the eleven classic counters.
+        if (count($parts) < 14) {
+            continue;
+        }
+        $name = $parts[2];
+        $f = array_slice($parts, 3);
+
+        $rows[$name] = [
+            'name' => $name,
+            'read_ios' => (int)$f[0],
+            'read_bytes' => (int)$f[2] * DISKSTAT_SECTOR,
+            'read_ms' => (int)$f[3],
+            'write_ios' => (int)$f[4],
+            'write_bytes' => (int)$f[6] * DISKSTAT_SECTOR,
+            'write_ms' => (int)$f[7],
+            'in_flight' => (int)$f[8],
+            // Milliseconds during which anything at all was in flight. Divided
+            // by elapsed time this is utilisation - the figure that says the
+            // disk itself is the bottleneck rather than merely busy.
+            'io_ms' => (int)$f[9],
+            'queue_ms' => (int)$f[10],
+        ];
+    }
+
+    if (!$rows) {
+        return null;
+    }
+
+    $names = array_keys($rows);
+    $devices = [];
+    foreach ($rows as $name => $row) {
+        if (preg_match('/^(loop|ram|zram|fd|sr)\d/', $name)) {
+            continue;
+        }
+        $parent = preg_replace('/p?\d+$/', '', $name);
+        if ($parent !== $name && in_array($parent, $names, true)) {
+            continue;
+        }
+
+        /*
+         * Stacked devices are listed but kept out of the total.
+         *
+         * LVM and software RAID sit on top of real hardware: a write to dm-0 is
+         * remapped onto sda, and *both* counters advance for the one write.
+         * Adding them together reports twice the traffic that happened - the
+         * same mistake as counting a hard link twice, one layer down. They are
+         * still worth showing individually, because "which volume is busy" is a
+         * real question; they are just not additional bytes.
+         */
+        $row['stacked'] = (bool)preg_match('/^(dm-|md)/', $name);
+        $devices[$name] = $row;
+    }
+
+    $total = ['read_ios' => 0, 'read_bytes' => 0, 'write_ios' => 0,
+              'write_bytes' => 0, 'io_ms' => 0, 'queue_ms' => 0];
+    foreach ($devices as $row) {
+        if ($row['stacked']) {
+            continue;
+        }
+        foreach ($total as $key => $_) {
+            $total[$key] += $row[$key];
+        }
+    }
+
+    return ['devices' => $devices, 'total' => $total];
+}
+
+/**
+ * Pressure stall information for I/O, where the kernel provides it.
+ *
+ * The best single answer to "is the disk actually hurting anything", and better
+ * than utilisation for it. A device can sit at 100% utilised and bother nobody
+ * if the work is asynchronous writeback; PSI measures the opposite thing -
+ * whether tasks are *stalled waiting*, which is what makes a machine feel slow.
+ *
+ * `some` is the share of time at least one task was blocked on I/O, `full` the
+ * share when every runnable task was. Full above a few percent means the
+ * machine is doing nothing but waiting for the disk.
+ *
+ * @return array{some10: float, some60: float, full10: float, full60: float}|null
+ */
+function pressureIo(string $procRoot = '/proc'): ?array
+{
+    $raw = @file_get_contents($procRoot . '/pressure/io');
+    if ($raw === false) {
+        return null;
+    }
+
+    $out = [];
+    foreach (preg_split('/\R/', $raw) ?: [] as $line) {
+        if (preg_match('/^(some|full)\s+avg10=([\d.]+)\s+avg60=([\d.]+)/', trim($line), $m)) {
+            $out[$m[1] . '10'] = (float)$m[2];
+            $out[$m[1] . '60'] = (float)$m[3];
+        }
+    }
+
+    return isset($out['some10']) ? $out + ['full10' => 0.0, 'full60' => 0.0] : null;
+}
+
+/**
+ * Block-layer bytes read and written by the processes this user can see.
+ *
+ * `read_bytes`/`write_bytes` rather than `rchar`/`wchar`: the latter count every
+ * byte passed to read() and write(), including the ones served from page cache
+ * that never touched a disk. A process re-reading the same cached file all day
+ * looks like a heavy reader by rchar and does no I/O at all.
+ *
+ * Inside CageFS this is the account's own traffic and nothing else, which is
+ * exactly what makes it worth collecting there.
+ *
+ * @return array{read: int, write: int, cancelled: int, procs: int}|null
+ */
+function processIoTotals(string $procRoot = '/proc'): ?array
+{
+    $entries = @scandir($procRoot);
+    if ($entries === false) {
+        return null;
+    }
+
+    $read = $write = $cancelled = $seen = 0;
+    $any = false;
+
+    foreach ($entries as $entry) {
+        if (!ctype_digit($entry)) {
+            continue;
+        }
+        // Unreadable for another user's process without privilege, and gone
+        // entirely if it exited mid-scan. Neither is worth a word.
+        $raw = @file_get_contents("$procRoot/$entry/io");
+        if ($raw === false) {
+            continue;
+        }
+
+        $any = true;
+        $seen++;
+        if (preg_match('/^read_bytes:\s+(\d+)/m', $raw, $m)) {
+            $read += (int)$m[1];
+        }
+        if (preg_match('/^write_bytes:\s+(\d+)/m', $raw, $m)) {
+            $write += (int)$m[1];
+        }
+        /*
+         * Writes charged and then withdrawn - a file deleted before its dirty
+         * pages were ever flushed. Subtracting it is what makes "wrote 4 GB"
+         * mean four gigabytes actually went to the platter.
+         */
+        if (preg_match('/^cancelled_write_bytes:\s+(\d+)/m', $raw, $m)) {
+            $cancelled += (int)$m[1];
+        }
+    }
+
+    return $any ? ['read' => $read, 'write' => $write,
+                   'cancelled' => $cancelled, 'procs' => $seen] : null;
 }

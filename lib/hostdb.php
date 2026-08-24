@@ -352,6 +352,84 @@ function hostMigrations(): array
             // Belt and braces: added the same careless way, one release earlier.
             'ALTER TABLE host_samples ADD COLUMN pss_procs INTEGER',
         ],
+
+        /*
+         * The long series: one row per service per reading.
+         *
+         * Deliberately *not* hanging off host_samples with a cascade, unlike
+         * every other detail table here. Those carry a process list and a slab
+         * table and are pruned at a fortnight to keep the file small; this one
+         * is a name and five integers, and its whole value is being older than
+         * that. "Forgejo is using 1.8 GB" is a fact; "Forgejo used 700 MB last
+         * month, 1.2 GB last week and 1.8 GB now" is a diagnosis, and it needs
+         * history the detail tables cannot afford to keep.
+         *
+         * Keyed by service name rather than pid on purpose. A pid is gone the
+         * moment the daemon restarts, and a series that resets to zero every
+         * time something is upgraded cannot show a leak.
+         */
+        3 => [
+            "CREATE TABLE host_services (
+                taken_at    INTEGER NOT NULL,
+                name        TEXT NOT NULL,
+                procs       INTEGER NOT NULL,
+                threads     INTEGER,
+                rss_bytes   INTEGER,
+                pss_bytes   INTEGER,
+                swap_bytes  INTEGER,
+                read_bytes  INTEGER,
+                write_bytes INTEGER
+            )",
+            'CREATE INDEX host_services_at ON host_services (taken_at)',
+            // The index that makes one service's history a range scan rather
+            // than a walk of every reading ever taken.
+            'CREATE INDEX host_services_name ON host_services (name, taken_at)',
+        ],
+
+        /*
+         * Disk I/O: the devices, the pressure, and who caused it.
+         *
+         * The per-service columns are repeated from the CREATE TABLE above for
+         * the reason written at the top of the README's schema section - a step
+         * already recorded is never run again, so a column added only there
+         * would reach new installs and silently skip every existing one.
+         */
+        4 => [
+            'ALTER TABLE host_services ADD COLUMN read_bytes INTEGER',
+            'ALTER TABLE host_services ADD COLUMN write_bytes INTEGER',
+
+            // Pressure stall for I/O: the share of time tasks were blocked
+            // waiting on the disk. `full` is the share when nothing at all
+            // could run, which is what a machine grinding to a halt looks like.
+            'ALTER TABLE host_samples ADD COLUMN io_pressure_some REAL',
+            'ALTER TABLE host_samples ADD COLUMN io_pressure_full REAL',
+            'ALTER TABLE host_samples ADD COLUMN io_read_bytes INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN io_write_bytes INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN io_ms INTEGER',
+
+            /*
+             * Per device, per reading.
+             *
+             * Counters since boot, not rates. A rate is a difference between
+             * two readings and storing it alone would make a gap in collection
+             * indistinguishable from a quiet hour; keeping the counters means
+             * the difference can always be recovered, over whatever interval
+             * actually elapsed.
+             */
+            "CREATE TABLE host_disks (
+                sample_id   INTEGER NOT NULL REFERENCES host_samples(id) ON DELETE CASCADE,
+                name        TEXT NOT NULL,
+                stacked     INTEGER NOT NULL DEFAULT 0,
+                read_bytes  INTEGER,
+                write_bytes INTEGER,
+                read_ios    INTEGER,
+                write_ios   INTEGER,
+                io_ms       INTEGER,
+                queue_ms    INTEGER,
+                in_flight   INTEGER
+            )",
+            'CREATE INDEX host_disks_sample ON host_disks (sample_id)',
+        ],
     ];
 }
 
@@ -366,6 +444,23 @@ function hostPrune(PDO $pdo, int $keepDays): int
 {
     $cutoff = time() - max(1, $keepDays) * 86400;
     $stmt = $pdo->prepare('DELETE FROM host_samples WHERE taken_at < ?');
+    $stmt->execute([$cutoff]);
+    return $stmt->rowCount();
+}
+
+/**
+ * Drops old service readings, on their own much longer clock.
+ *
+ * Separate from the samples because the point of this table is to outlive them.
+ * A service row is a name and five integers - at a reading every five minutes
+ * and forty services, roughly a megabyte a month - so keeping a quarter of a
+ * year costs almost nothing and is what makes "and what was it in June?"
+ * answerable.
+ */
+function hostPruneServices(PDO $pdo, int $keepDays): int
+{
+    $cutoff = time() - max(1, $keepDays) * 86400;
+    $stmt = $pdo->prepare('DELETE FROM host_services WHERE taken_at < ?');
     $stmt->execute([$cutoff]);
     return $stmt->rowCount();
 }

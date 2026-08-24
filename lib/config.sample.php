@@ -213,6 +213,16 @@ return [
         'keep_days' => 14,
 
         /*
+         * How long to keep the per-service memory series.
+         *
+         * Much longer than the rest, because these rows are a name and five
+         * integers - about a megabyte a month - and their entire value is being
+         * older than the detail tables. Answering "was Forgejo this big in
+         * June?" is the difference between a diagnostic and a record.
+         */
+        'keep_service_days' => 90,
+
+        /*
          * Files worth watching that the account cannot stat.
          *
          * Apache writes each domain's logs under /etc/apache2 owned by root.

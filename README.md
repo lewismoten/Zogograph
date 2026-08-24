@@ -488,6 +488,55 @@ why the two need separate names rather than a shared word and a footnote. A
 column headed "Shared" beside a card headed "Shared / tmpfs" invites a
 comparison that does not hold.
 
+### Services over time
+
+The panel's most useful table, and the reason the host collector is worth
+running on a schedule rather than once.
+
+"Forgejo is using 1.8 GiB" cannot be acted on. It might be a leak three days old
+or a working set that has been 1.8 GiB since the day it was installed, and those
+call for opposite responses. The same fact with history attached answers itself:
+
+| Service | Processes | Now | 24h ago | Change 24h | 7d ago | Change 7d |
+|---|---|---|---|---|---|---|
+| forgejo | 1 | 1.78 GiB | 1.73 GiB | +46.8 MiB | 1.52 GiB | **+263 MiB** |
+| mariadbd | 1 | 1.07 GiB | 1.09 GiB | −13.6 MiB | 1.06 GiB | +19.2 MiB |
+| httpd | 120 | 310 MiB | 307 MiB | +3.14 MiB | 293 MiB | +16.9 MiB |
+
+Forgejo is leaking. MariaDB is not, and is nearly as large. Neither is visible
+from a single reading.
+
+**Grouped by executable, not by pid.** A pid is gone the moment a daemon
+restarts, and a series keyed on one resets to zero every time something is
+upgraded — precisely when comparing before and after matters most. The service
+name survives that.
+
+**Grouped first, then ranked.** The order is easy to get backwards and the
+consequence is invisible. Taking the biggest *processes* and grouping whatever
+survives loses every service made of many small workers: a hundred and twenty
+httpd children at 20 MiB each is 2.4 GiB that never enters a top-25-processes
+list, while one Forgejo at 1.8 GiB does. Ranking the groups puts them side by
+side at their real weight.
+
+**Compared on PSS.** Summing resident memory across a hundred workers counts one
+shared copy of the runtime a hundred times, so the total moves with the worker
+count rather than the memory — a service that forks ten more children appears to
+have grown by a gigabyte when nothing was allocated.
+
+**A missing comparison is blank, not zero.** If the collector was off, or the
+service is new, the change column shows `—`. A zero would claim the service had
+been measured and found stable, which on a fresh install would be a lie about
+every row. The lookup also refuses a reading more than twelve hours from the
+moment it wants: a collector switched off for a week would otherwise answer
+"7 days ago" with a reading from three weeks back and report the gap as growth.
+
+**Its own retention.** `host_services` does not hang off `host_samples` with a
+cascade, unlike every other detail table. Those carry a process list and a slab
+table and are pruned at a fortnight to keep the file small; a service row is a
+name and five integers — roughly a megabyte a month — and its entire value is
+being *older* than that. `host.keep_service_days` defaults to 90, so "and what
+was it in June?" stays answerable after the detail behind it has gone.
+
 ### Swap is a state, not an event
 
 The panel shows swap prominently and refuses to alarm about it, because the
@@ -569,6 +618,71 @@ between procps and BSD userland in ways that are easy to miss, and none of them
 can report Pss. It also means every parser takes the root of the tree it reads
 as an argument, so they can be tested against captured fixtures rather than only
 on the machine they are aimed at.
+
+## Disk I/O
+
+Collected on both sides, because the two see genuinely different things and
+neither answer is complete alone.
+
+### What the account can see
+
+**The device**, from `/proc/diskstats`. Inside CageFS an account can usually
+still read it, but what it reports is the *host's* disk — every account's
+traffic together. It says the disk is busy; it never says you are the reason.
+
+**Its own traffic**, summed from `/proc/<pid>/io` across every process the user
+can see. Inside a cage those are its own and nothing else, which makes the sum
+exactly "what this account is doing to the disk" — the number an account can act
+on. Both are drawn on one chart, and the gap between the pair is the point:
+
+    This account, read     ▁▁▃▁▁     0.4–3.5 MiB/s
+    Device read            ▁▆█▆▁     2–28 MiB/s
+    Device busy % (right)  ▁▆█▆▁     6–84%
+
+`read_bytes`/`write_bytes` rather than `rchar`/`wchar`. The latter count every
+byte handed to `read()` and `write()`, including the ones served from page cache
+that never touched a disk — a process looping over a cached file reports
+gigabytes of I/O while the disk sits idle. Writes have `cancelled_write_bytes`
+subtracted, which is the accounting for dirty pages discarded before flush
+(a file written and then deleted), so "wrote 4 GB" means four gigabytes actually
+went to the platter.
+
+### What only root can see
+
+**Per device**: throughput, utilisation, queue depth and requests in flight.
+
+**Stacked devices are listed but never summed.** LVM and software RAID sit on
+top of real hardware: a write to `dm-0` is remapped onto `sda` and *both*
+counters advance for the one write. Adding them together reports twice the
+traffic that happened — the same mistake as counting a hard link twice, one
+layer down. They still get a row, because "which volume is busy" is a real
+question; they are just not additional bytes.
+
+**Per service**: read and write rates alongside the memory columns, so the table
+answers "what is writing" and "what is growing" in one place. A service's
+counters restart when it does, so a negative difference is read as a restart and
+reported as unknown rather than as a large negative rate.
+
+**Pressure**, from `/proc/pressure/io` where the kernel has `CONFIG_PSI`. This is
+the better answer to "is the disk actually hurting anything", and utilisation is
+a poor proxy for it: a device can sit at 100% pushing background writeback and
+bother nobody. PSI measures the opposite thing — time spent *waiting*. `some` is
+the share of time at least one task was blocked on I/O; `full` is the share when
+nothing at all could run, which is what a machine grinding to a halt looks like
+from the inside.
+
+### Counters, not rates
+
+Everything here is stored as the raw counter and turned into a rate against the
+previous reading, the same way the CPU and network figures are. A rate only
+exists as a difference between two moments, and storing it alone would make a
+gap in collection indistinguishable from a quiet hour. Keeping the counters
+means the difference can always be recovered over whatever interval actually
+elapsed.
+
+Counters restart at boot, so a difference that comes out negative means the
+machine rebooted rather than that it un-read four gigabytes. That interval
+reports no rate at all — an unknown, not a guess.
 
 ## Reading log files
 

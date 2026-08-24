@@ -315,6 +315,40 @@ function migrations(): array
              */
             'ALTER TABLE path_sizes ADD COLUMN links INTEGER',
         ],
+
+        /*
+         * Disk I/O, from the device and from this account's own processes.
+         *
+         * Counters since boot are stored alongside the rates worked out from
+         * them, for the reason the CPU columns give: a rate only exists as a
+         * difference between two readings, and keeping the raw numbers means a
+         * gap in collection produces an honest average over the gap rather than
+         * a wrong instant.
+         */
+        6 => [
+            // The device as a whole. Inside CageFS this is the host's disk -
+            // every account's traffic together - so it says the disk is busy,
+            // never that you are the reason.
+            'ALTER TABLE vitals ADD COLUMN io_read_bytes INTEGER',
+            'ALTER TABLE vitals ADD COLUMN io_write_bytes INTEGER',
+            'ALTER TABLE vitals ADD COLUMN io_ms INTEGER',
+            'ALTER TABLE vitals ADD COLUMN io_read_rate REAL',
+            'ALTER TABLE vitals ADD COLUMN io_write_rate REAL',
+            'ALTER TABLE vitals ADD COLUMN io_util_percent REAL',
+
+            // What this account's own processes did. Inside a cage the only
+            // processes visible are its own, which is what makes this the
+            // figure an account can actually act on.
+            'ALTER TABLE vitals ADD COLUMN own_read_bytes INTEGER',
+            'ALTER TABLE vitals ADD COLUMN own_write_bytes INTEGER',
+            'ALTER TABLE vitals ADD COLUMN own_read_rate REAL',
+            'ALTER TABLE vitals ADD COLUMN own_write_rate REAL',
+
+            // Pressure stall: the share of time tasks were blocked waiting on
+            // the disk. Absent on kernels without CONFIG_PSI.
+            'ALTER TABLE vitals ADD COLUMN io_pressure_some REAL',
+            'ALTER TABLE vitals ADD COLUMN io_pressure_full REAL',
+        ],
     ];
 }
 

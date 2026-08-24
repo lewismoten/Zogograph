@@ -531,6 +531,17 @@ function hostView(array $config, bool $signedIn): array
         return $stmt->fetchAll();
     };
 
+    // Once: this walks a query per service, and the array below wants it twice.
+    $services = hostServiceGrowth($pdo, time());
+
+    // Throughput per service, folded onto the growth rows so the table can show
+    // memory and I/O for the same service side by side.
+    $io = hostServiceIoRates($pdo);
+    foreach ($services as $i => $service) {
+        $services[$i]['read_rate'] = $io[$service['name']]['read'] ?? null;
+        $services[$i]['write_rate'] = $io[$service['name']]['write'] ?? null;
+    }
+
     [$from, $to] = window();
     $series = $pdo->prepare(
         'SELECT taken_at, mem_total, mem_available, used_bytes, cache_bytes, unaccounted,
@@ -551,6 +562,19 @@ function hostView(array $config, bool $signedIn): array
         'processes' => $of('SELECT * FROM host_processes WHERE sample_id = ? ORDER BY rss_bytes DESC'),
         'slab' => $of('SELECT * FROM host_slab WHERE sample_id = ? ORDER BY cache_bytes DESC'),
         'files' => $of('SELECT * FROM host_files WHERE sample_id = ? ORDER BY bytes DESC'),
+        // Now, a day ago, a week ago, and the change - the figures that tell a
+        // leak from a large but steady working set.
+        'services' => $services,
+        'disks' => hostDiskRates($pdo),
+        // Charted for the biggest few only: twenty lines on one canvas is a
+        // legend, not a chart.
+        'service_series' => hostServiceSeries(
+            $pdo,
+            array_column(array_slice($services, 0, 5), 'name'),
+            $from,
+            $to
+        ),
+        'service_charted' => array_column(array_slice($services, 0, 5), 'name'),
         // Summed over unique (device, inode), not over paths.
         'file_totals' => hostFileTotals(
             $of('SELECT * FROM host_files WHERE sample_id = ? ORDER BY bytes DESC')

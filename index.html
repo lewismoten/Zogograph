@@ -72,6 +72,14 @@
   </section>
 
   <section class="panel">
+    <h2>Disk I/O</h2>
+    <p class="muted small sub-note" id="ioNote">
+      Bytes actually reaching a disk, not bytes served from cache.
+    </p>
+    <canvas id="ioChart"></canvas>
+  </section>
+
+  <section class="panel">
     <h2>Load average</h2>
     <p class="muted small sub-note">
       Not a percentage: it is how many processes wanted to run at once. Compare
@@ -271,8 +279,30 @@
     </p>
     <div id="hostUsers"></div>
 
+    <h3 class="sub-head">Services over time</h3>
+    <p class="muted small sub-note">
+      Grouped by executable rather than by process, so a row survives a restart —
+      a series keyed on pids resets to zero every time a daemon is upgraded,
+      which is exactly when you want to compare before and after. Compared on
+      PSS: summing resident memory across a hundred workers counts one shared
+      copy of the runtime a hundred times, so it swings with the worker count
+      instead of the memory. <strong>A large steady number is a working set; a
+      rising one is a leak.</strong>
+    </p>
+    <div id="hostServices"></div>
+    <canvas id="hostServiceChart"></canvas>
+
     <h3 class="sub-head">Biggest processes on the host</h3>
     <div id="hostProcesses"></div>
+
+    <h3 class="sub-head">Disks</h3>
+    <p class="muted small sub-note" id="hostDiskNote">
+      Throughput and how close each device is to saturated. LVM and RAID volumes
+      are shown but not added into any total: a write to <code>dm-0</code> is
+      remapped onto the disk underneath and advances both counters, so summing
+      them reports twice the traffic that happened.
+    </p>
+    <div id="hostDisks"></div>
 
     <h3 class="sub-head">Kernel slab caches</h3>
     <p class="muted small sub-note">

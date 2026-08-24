@@ -38,6 +38,16 @@ require_once __DIR__ . '/alerts.php';
 const HOST_KEEP_SLAB = 20;
 const HOST_KEEP_PROCS = 25;
 
+/**
+ * Services tracked in the long series, and the floor for being one.
+ *
+ * More than the process list keeps, because these rows are tiny and a service
+ * that matters at 3am may be nowhere near the top at noon. The floor stops the
+ * table filling with one-off shell commands.
+ */
+const HOST_KEEP_SERVICES = 40;
+const HOST_SERVICE_MIN_BYTES = 8388608;
+
 /** Processes whose Pss is worth the extra read, biggest by RSS first. */
 const HOST_PSS_LIMIT = 60;
 
@@ -216,6 +226,10 @@ function hostProcesses(
             'vsz_bytes' => $kb('VmSize'),
             'threads' => $thr,
             'elapsed_seconds' => hostElapsed($procRoot, (int)$entry, $boot, $ticks),
+            // Block-layer bytes, so a service re-reading its own cache all day
+            // does not look like a heavy reader. Readable for every process
+            // when running as root, which is the point of this collector.
+            'io' => hostProcessIo($procRoot, (int)$entry),
             'command' => hostCommandLine($procRoot, (int)$entry, (string)($fields['Name'] ?? '')),
         ];
     }
@@ -247,6 +261,35 @@ function hostProcesses(
         'swap_sum' => $swapSum,
         'threads' => $threads,
         'available' => true,
+    ];
+}
+
+/**
+ * What one process has actually read from and written to a disk.
+ *
+ * read_bytes/write_bytes rather than rchar/wchar: those count every byte handed
+ * to read() and write() including the ones served from page cache, so a process
+ * looping over a cached file reports gigabytes of I/O while the disk stays
+ * idle. cancelled_write_bytes is subtracted from writes - it is the accounting
+ * for dirty pages discarded before flush, typically a file written and then
+ * deleted, which never reached the platter.
+ *
+ * @return array{read: int, write: int}
+ */
+function hostProcessIo(string $procRoot, int $pid): array
+{
+    $raw = @file_get_contents("$procRoot/$pid/io");
+    if ($raw === false) {
+        return ['read' => 0, 'write' => 0];
+    }
+
+    $get = function (string $key) use ($raw): int {
+        return preg_match('/^' . $key . ':\s+(\d+)/m', $raw, $m) ? (int)$m[1] : 0;
+    };
+
+    return [
+        'read' => $get('read_bytes'),
+        'write' => max(0, $get('write_bytes') - $get('cancelled_write_bytes')),
     ];
 }
 
@@ -392,6 +435,53 @@ function hostByUser(array $procs): array
 
     usort($users, fn(array $a, array $b): int => $b['rss_bytes'] <=> $a['rss_bytes']);
     return array_values($users);
+}
+
+/**
+ * Memory added up per service, biggest first.
+ *
+ * Grouped by the executable, so the row survives a restart. A pid does not: the
+ * daemon comes back with a new one, and a series keyed on pids resets to zero
+ * every time something is upgraded - which is precisely when you most want to
+ * compare before and after.
+ *
+ * **Grouped first, then ranked.** The order matters and is easy to get
+ * backwards. Taking the biggest processes and grouping what survives loses
+ * every service made of many small workers: a hundred and twenty httpd children
+ * at 20 MB each is 2.4 GB that never appears in a top-25-processes list, while
+ * one Forgejo at 1.8 GB does. Ranking the groups instead puts them side by side
+ * at their real weight.
+ *
+ * @return list<array>
+ */
+function hostByService(array $procs): array
+{
+    $services = [];
+
+    foreach ($procs as $proc) {
+        $name = $proc['name'];
+        $services[$name] ??= [
+            'name' => $name, 'procs' => 0, 'threads' => 0,
+            'rss_bytes' => 0, 'pss_bytes' => 0, 'swap_bytes' => 0,
+            'read_bytes' => 0, 'write_bytes' => 0,
+        ];
+
+        $services[$name]['procs']++;
+        $services[$name]['threads'] += (int)$proc['threads'];
+        $services[$name]['rss_bytes'] += (int)$proc['rss_bytes'];
+        $services[$name]['pss_bytes'] += (int)($proc['pss_bytes'] ?? 0);
+        $services[$name]['swap_bytes'] += (int)$proc['swap_bytes'];
+        $services[$name]['read_bytes'] += (int)($proc['io']['read'] ?? 0);
+        $services[$name]['write_bytes'] += (int)($proc['io']['write'] ?? 0);
+    }
+
+    $services = array_values(array_filter(
+        $services,
+        fn(array $row): bool => $row['rss_bytes'] >= HOST_SERVICE_MIN_BYTES
+    ));
+
+    usort($services, fn(array $a, array $b): int => $b['rss_bytes'] <=> $a['rss_bytes']);
+    return array_slice($services, 0, HOST_KEEP_SERVICES);
 }
 
 /**
@@ -639,8 +729,14 @@ function hostTakeReading(
     $files = hostWatchedFiles($config, 40, $passwd);
     $lve = hostLve();
     $load = hostLoad($procRoot);
+    $disks = diskStats($procRoot);
+    $pressure = pressureIo($procRoot);
 
     $get = fn(string $key): ?int => isset($mem[$key]) ? (int)$mem[$key] : null;
+
+    // Taken once and shared, so a sample and the service rows written beside it
+    // carry the same instant even if the insert loop takes a second.
+    $takenAt = time();
 
     $pdo->beginTransaction();
     try {
@@ -651,11 +747,12 @@ function hostTakeReading(
                  kernel_stack, dirty, swap_total, swap_free, used_bytes, cache_bytes,
                  unaccounted, rss_sum_bytes, pss_sum_bytes, pss_procs, swap_sum_bytes, proc_count,
                  thread_count, shm_segments, shm_bytes, devshm_total, devshm_used,
-                 load1, load5, load15, cpu_cores, source)
+                 load1, load5, load15, cpu_cores, source,
+                 io_pressure_some, io_pressure_full, io_read_bytes, io_write_bytes, io_ms)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )->execute([
-            time(),
+            $takenAt,
             $get('MemTotal'), $get('MemFree'), $get('MemAvailable'), $get('Buffers'),
             $get('Cached'), $get('SwapCached'), $get('Shmem'), $get('AnonPages'),
             $get('Mapped'), $get('Slab'), $get('SReclaimable'), $get('SUnreclaim'),
@@ -668,6 +765,10 @@ function hostTakeReading(
             $shm['segments'], $shm['bytes'], $shm['devshm_total'], $shm['devshm_used'],
             $load[0], $load[1], $load[2], cpuCores(),
             $source,
+            $pressure['some10'] ?? null, $pressure['full10'] ?? null,
+            $disks['total']['read_bytes'] ?? null,
+            $disks['total']['write_bytes'] ?? null,
+            $disks['total']['io_ms'] ?? null,
         ]);
 
         $sampleId = (int)$pdo->lastInsertId();
@@ -694,6 +795,36 @@ function hostTakeReading(
                 $sampleId, $row['pid'], $row['user'], $row['name'], $row['rss_bytes'],
                 $row['pss_bytes'], $row['swap_bytes'], $row['vsz_bytes'], $row['threads'],
                 $row['elapsed_seconds'], $row['command'],
+            ]);
+        }
+
+        // Its own timestamp, because this table outlives the sample it was
+        // taken with - see the migration that creates it.
+        $services = $pdo->prepare(
+            'INSERT INTO host_services
+                (taken_at, name, procs, threads, rss_bytes, pss_bytes, swap_bytes,
+                 read_bytes, write_bytes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        foreach (hostByService($processes['procs']) as $row) {
+            $services->execute([
+                $takenAt, $row['name'], $row['procs'], $row['threads'],
+                $row['rss_bytes'], $row['pss_bytes'], $row['swap_bytes'],
+                $row['read_bytes'], $row['write_bytes'],
+            ]);
+        }
+
+        $devices = $pdo->prepare(
+            'INSERT INTO host_disks
+                (sample_id, name, stacked, read_bytes, write_bytes, read_ios, write_ios,
+                 io_ms, queue_ms, in_flight)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        foreach ($disks['devices'] ?? [] as $row) {
+            $devices->execute([
+                $sampleId, $row['name'], $row['stacked'] ? 1 : 0,
+                $row['read_bytes'], $row['write_bytes'], $row['read_ios'],
+                $row['write_ios'], $row['io_ms'], $row['queue_ms'], $row['in_flight'],
             ]);
         }
 
@@ -742,6 +873,8 @@ function hostTakeReading(
         'users' => count(hostByUser($processes['procs'])),
         'slab' => min(count($slab), HOST_KEEP_SLAB),
         'files' => count($files),
+        'services' => count(hostByService($processes['procs'])),
+        'disks' => count($disks['devices'] ?? []),
         'lve' => $lve['available'] ? count($lve['rows']) : null,
         'unaccounted' => $accounting['unaccounted'],
     ];
@@ -953,4 +1086,284 @@ function hostFileTotals(array $rows): array
         'paths' => count($rows),
         'linked' => $linked,
     ];
+}
+
+/* ------------------------------------------------------------- services -- */
+
+/**
+ * Each service now, a day ago and a week ago, with the change between.
+ *
+ * The question this whole table exists for. "Forgejo is using 1.8 GiB" cannot
+ * be acted on: it might be a leak three days old or a working set that has been
+ * 1.8 GiB since it was installed. "1.2 GiB last week, 1.5 GiB yesterday,
+ * 1.8 GiB now" is the same fact with the answer attached.
+ *
+ * Compared on PSS rather than RSS. Summing RSS across a service made of a
+ * hundred workers counts one shared copy of the runtime a hundred times, so the
+ * total swings with the worker count rather than with the memory - a service
+ * that forks ten more children looks like it grew by a gigabyte when nothing
+ * was allocated at all.
+ *
+ * @return list<array>
+ */
+function hostServiceGrowth(PDO $pdo, int $now, int $limit = 20): array
+{
+    $latest = (int)$pdo->query('SELECT COALESCE(MAX(taken_at), 0) FROM host_services')->fetchColumn();
+    if ($latest === 0) {
+        return [];
+    }
+
+    $current = $pdo->prepare(
+        'SELECT name, procs, threads, rss_bytes, pss_bytes, swap_bytes
+         FROM host_services WHERE taken_at = ? ORDER BY pss_bytes DESC, rss_bytes DESC
+         LIMIT :limit'
+    );
+    $current->bindValue(1, $latest, PDO::PARAM_INT);
+    $current->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $current->execute();
+
+    $rows = $current->fetchAll();
+    if (!$rows) {
+        return [];
+    }
+
+    $out = [];
+    foreach ($rows as $row) {
+        $day = hostServiceAt($pdo, $row['name'], $latest - 86400);
+        $week = hostServiceAt($pdo, $row['name'], $latest - 604800);
+
+        $out[] = [
+            'name' => $row['name'],
+            'procs' => (int)$row['procs'],
+            'threads' => (int)$row['threads'],
+            'rss_bytes' => (int)$row['rss_bytes'],
+            'pss_bytes' => (int)$row['pss_bytes'],
+            'swap_bytes' => (int)$row['swap_bytes'],
+            'day_ago' => $day,
+            'week_ago' => $week,
+            // Null rather than zero when there is no reading to compare with.
+            // A change of zero and no history at all are different answers, and
+            // showing the second as the first is how a brand new install
+            // reports every service as perfectly stable.
+            'change_day' => $day === null ? null : (int)$row['pss_bytes'] - $day,
+            'change_week' => $week === null ? null : (int)$row['pss_bytes'] - $week,
+        ];
+    }
+
+    return $out;
+}
+
+/**
+ * What a service was using around a given moment.
+ *
+ * The nearest reading at or before the target, but only if it is close enough
+ * to mean it. A collector that was switched off for three days would otherwise
+ * answer "a week ago" with a reading from three weeks back and report the
+ * difference as growth.
+ */
+function hostServiceAt(PDO $pdo, string $name, int $target, int $tolerance = 43200): ?int
+{
+    $stmt = $pdo->prepare(
+        'SELECT pss_bytes, taken_at FROM host_services
+         WHERE name = ? AND taken_at <= ? ORDER BY taken_at DESC LIMIT 1'
+    );
+    $stmt->execute([$name, $target]);
+    $row = $stmt->fetch();
+
+    if (!$row || abs($target - (int)$row['taken_at']) > $tolerance) {
+        return null;
+    }
+
+    return (int)$row['pss_bytes'];
+}
+
+/**
+ * One service's history, thinned to something a chart can draw.
+ *
+ * Every nth row rather than an average, for the reason the vitals series gives:
+ * averaging is the operation that removes the spike you came to look at.
+ *
+ * @return list<array>
+ */
+function hostServiceSeries(PDO $pdo, array $names, int $from, int $to, int $limit = 400): array
+{
+    if (!$names) {
+        return [];
+    }
+
+    $marks = implode(',', array_fill(0, count($names), '?'));
+
+    $count = $pdo->prepare(
+        "SELECT COUNT(DISTINCT taken_at) FROM host_services
+         WHERE name IN ($marks) AND taken_at BETWEEN ? AND ?"
+    );
+    $count->execute([...$names, $from, $to]);
+    $step = max(1, (int)ceil(((int)$count->fetchColumn()) / $limit));
+
+    $stmt = $pdo->prepare(
+        "SELECT taken_at, name, pss_bytes, rss_bytes FROM (
+             SELECT taken_at, name, pss_bytes, rss_bytes,
+                    DENSE_RANK() OVER (ORDER BY taken_at) AS rn
+             FROM host_services
+             WHERE name IN ($marks) AND taken_at BETWEEN ? AND ?
+         ) WHERE rn % ? = 0 ORDER BY taken_at"
+    );
+    $stmt->execute([...$names, $from, $to, $step]);
+
+    /*
+     * Pivoted into one row per instant with a column per service, because that
+     * is the shape a multi-series chart wants: a flat list would leave the
+     * browser regrouping it, and a missing service at one instant would shift
+     * every later point along by one.
+     */
+    $byTime = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $at = (int)$row['taken_at'];
+        $byTime[$at]['taken_at'] = $at;
+        $byTime[$at][$row['name']] = (int)$row['pss_bytes'];
+    }
+
+    ksort($byTime);
+    return array_values($byTime);
+}
+
+/* ------------------------------------------------------------- disk i/o -- */
+
+/**
+ * Each device's throughput and how busy it was, between the last two readings.
+ *
+ * Rates are worked out here rather than stored, because a rate is a difference
+ * between two moments and the interval between readings is not fixed - a
+ * collector that missed a run should report the honest average over the gap,
+ * not a figure computed against an interval that never happened.
+ *
+ * @return list<array>
+ */
+function hostDiskRates(PDO $pdo): array
+{
+    $samples = $pdo->query(
+        'SELECT id, taken_at FROM host_samples ORDER BY id DESC LIMIT 2'
+    )->fetchAll();
+
+    if (count($samples) < 2) {
+        return [];
+    }
+
+    [$now, $before] = $samples;
+    $seconds = (int)$now['taken_at'] - (int)$before['taken_at'];
+    if ($seconds <= 0) {
+        return [];
+    }
+
+    $rows = $pdo->prepare('SELECT * FROM host_disks WHERE sample_id = ?');
+    $rows->execute([$now['id']]);
+    $current = $rows->fetchAll();
+
+    $rows->execute([$before['id']]);
+    $previous = [];
+    foreach ($rows->fetchAll() as $row) {
+        $previous[$row['name']] = $row;
+    }
+
+    $out = [];
+    foreach ($current as $row) {
+        $was = $previous[$row['name']] ?? null;
+        $readRate = $writeRate = $util = $queue = null;
+
+        if ($was) {
+            $readDelta = (int)$row['read_bytes'] - (int)$was['read_bytes'];
+            $writeDelta = (int)$row['write_bytes'] - (int)$was['write_bytes'];
+            $busyDelta = (int)$row['io_ms'] - (int)$was['io_ms'];
+            $queueDelta = (int)$row['queue_ms'] - (int)$was['queue_ms'];
+
+            // Negative means the machine rebooted and the counters restarted.
+            // No rate exists across that boundary; an unknown is the honest
+            // answer, and dividing anyway would report a spectacular negative.
+            if ($readDelta >= 0 && $writeDelta >= 0 && $busyDelta >= 0) {
+                $readRate = round($readDelta / $seconds, 2);
+                $writeRate = round($writeDelta / $seconds, 2);
+                // io_ms is milliseconds busy; over $seconds of wall clock that
+                // is a percentage once divided by ten.
+                $util = round(min(100.0, $busyDelta / ($seconds * 10)), 2);
+                // Average depth of the request queue: total queued milliseconds
+                // over elapsed milliseconds. Above one means requests are
+                // waiting behind each other rather than being served at once.
+                $queue = round($queueDelta / ($seconds * 1000), 2);
+            }
+        }
+
+        $out[] = [
+            'name' => $row['name'],
+            'stacked' => (bool)$row['stacked'],
+            'read_rate' => $readRate,
+            'write_rate' => $writeRate,
+            'util_percent' => $util,
+            'queue_depth' => $queue,
+            'in_flight' => (int)$row['in_flight'],
+            'seconds' => $seconds,
+        ];
+    }
+
+    usort($out, fn(array $a, array $b): int =>
+        (($b['read_rate'] ?? 0) + ($b['write_rate'] ?? 0))
+        <=> (($a['read_rate'] ?? 0) + ($a['write_rate'] ?? 0)));
+
+    return $out;
+}
+
+/**
+ * Read and write rates per service, between the last two service readings.
+ *
+ * A service's counters restart when it does, so a negative difference is a
+ * restart rather than a fall and reports as unknown. That matters more here
+ * than for devices: daemons are restarted routinely, and treating the reset as
+ * a large negative rate would put a nonsense figure against the one service
+ * somebody had just touched.
+ *
+ * @return array<string, array{read: ?float, write: ?float}>
+ */
+function hostServiceIoRates(PDO $pdo): array
+{
+    $instants = $pdo->query(
+        'SELECT DISTINCT taken_at FROM host_services ORDER BY taken_at DESC LIMIT 2'
+    )->fetchAll(PDO::FETCH_COLUMN);
+
+    if (count($instants) < 2) {
+        return [];
+    }
+
+    $seconds = (int)$instants[0] - (int)$instants[1];
+    if ($seconds <= 0) {
+        return [];
+    }
+
+    $stmt = $pdo->prepare(
+        'SELECT name, read_bytes, write_bytes FROM host_services WHERE taken_at = ?'
+    );
+    $stmt->execute([$instants[0]]);
+    $current = $stmt->fetchAll();
+
+    $stmt->execute([$instants[1]]);
+    $previous = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $previous[$row['name']] = $row;
+    }
+
+    $out = [];
+    foreach ($current as $row) {
+        $was = $previous[$row['name']] ?? null;
+        if (!$was) {
+            $out[$row['name']] = ['read' => null, 'write' => null];
+            continue;
+        }
+
+        $readDelta = (int)$row['read_bytes'] - (int)$was['read_bytes'];
+        $writeDelta = (int)$row['write_bytes'] - (int)$was['write_bytes'];
+
+        $out[$row['name']] = ($readDelta >= 0 && $writeDelta >= 0)
+            ? ['read' => round($readDelta / $seconds, 2), 'write' => round($writeDelta / $seconds, 2)]
+            : ['read' => null, 'write' => null];
+    }
+
+    return $out;
 }

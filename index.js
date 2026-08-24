@@ -1033,9 +1033,69 @@ function renderCpuChart(rows) {
     : "Share of the machine in use, since the previous reading.";
 }
 
+/**
+ * Disk I/O, with the account's own traffic shown against the device's.
+ *
+ * Two lines that answer two different questions, and the gap between them is
+ * the useful part. Inside CageFS the device figures are the *host's* disk -
+ * every account on the machine together - so a busy line there says the disk is
+ * working, never that this account is the reason. The own-traffic lines are
+ * summed from the processes this user can see, which inside a cage is exactly
+ * its own, and that is the number worth acting on.
+ *
+ * Utilisation is drawn on the right in percent, because bytes per second and a
+ * percentage share no scale, and because a disk can move very little data and
+ * still be saturated if the requests are small and scattered.
+ */
+function renderIoChart(rows) {
+  const has = key => rows.some(r => r[key] != null);
+
+  const series = [];
+  if (has("own_read_rate")) series.push({ key: "own_read_rate", label: "This account, read" });
+  if (has("own_write_rate")) series.push({ key: "own_write_rate", label: "This account, written" });
+  if (has("io_read_rate")) series.push({ key: "io_read_rate", label: "Device read" });
+  if (has("io_write_rate")) series.push({ key: "io_write_rate", label: "Device written" });
+  if (has("io_util_percent")) {
+    series.push({ key: "io_util_percent", label: "Device busy % (right)", axis: "right" });
+  }
+
+  drawLineChart($("ioChart"), rows, series, {
+    axis: rateAxis,
+    rightAxis: percentAxis,
+    zeroBased: true,
+    empty: "No disk counters here — /proc/diskstats is not readable",
+  });
+
+  const latest = [...rows].reverse().find(r => r.io_util_percent != null || r.own_read_rate != null);
+  const parts = ["Bytes actually reaching a disk, not bytes served from cache."];
+
+  if (latest && latest.io_util_percent != null) {
+    parts.push(`The device was busy ${Number(latest.io_util_percent).toFixed(0)}% of the `
+      + `last interval.`);
+  }
+  if (latest && latest.io_pressure_full != null) {
+    /*
+     * Pressure, where the kernel offers it, because utilisation alone is a poor
+     * proxy for harm: a disk can sit at 100% pushing background writeback and
+     * bother nobody. This measures the opposite thing - time spent *waiting*.
+     */
+    parts.push(`Tasks were stalled waiting on it ${Number(latest.io_pressure_some).toFixed(1)}% `
+      + `of the time, and nothing at all could run for `
+      + `${Number(latest.io_pressure_full).toFixed(1)}%.`);
+  }
+  if (has("own_read_rate")) {
+    parts.push("The device lines cover every account on the machine; only the "
+      + "\u201cthis account\u201d lines are yours.");
+  }
+
+  $("ioNote").textContent = parts.join(" ");
+}
+
 function renderVitalCharts(rows) {
   renderRoomChart(rows);
   renderCpuChart(rows);
+
+  renderIoChart(rows);
 
   /*
    * Load average is not a percentage, which is the single most common thing to
@@ -1982,6 +2042,8 @@ async function refreshHost() {
     { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
   ]);
 
+  renderServices(data.services ?? [], data.service_series ?? [], data.service_charted ?? []);
+
   renderTable("hostProcesses", data.processes, [
     { label: "PID", className: "size", render: r => r.pid },
     { label: "User", render: r => r.user },
@@ -1994,6 +2056,8 @@ async function refreshHost() {
       render: r => (r.elapsed_seconds == null ? "—" : humanDuration(r.elapsed_seconds)) },
     { label: "Command", className: "cmd", render: r => r.command },
   ]);
+
+  renderHostDisks(data.disks ?? []);
 
   renderTable("hostSlab", data.slab, [
     { label: "Cache", render: r => r.name },
@@ -2146,6 +2210,130 @@ function renderHostFiles(rows, totals) {
       : `${humanBytes(totals.bytes)} across ${count(totals.files, "file")}.`;
     holder.appendChild(note);
   }
+}
+
+/** Per-device throughput, utilisation and queue depth. */
+function renderHostDisks(rows) {
+  if (!rows.length) {
+    $("hostDisks").replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: "Needs two readings before a rate can be worked out.",
+    }));
+    return;
+  }
+
+  const rate = value => (value == null ? "—" : `${humanBytes(value)}/s`);
+
+  renderTable("hostDisks", rows, [
+    {
+      label: "Device",
+      render: row => {
+        if (!row.stacked) return row.name;
+        const box = document.createElement("span");
+        box.appendChild(document.createTextNode(row.name));
+        const note = document.createElement("span");
+        note.className = "muted small";
+        note.textContent = " · stacked";
+        note.title = "A volume mapped onto another device. Its traffic is already "
+          + "counted there, so it is not added into any total.";
+        box.appendChild(note);
+        return box;
+      },
+    },
+    { label: "Read", className: "size", render: row => rate(row.read_rate) },
+    { label: "Written", className: "size", render: row => rate(row.write_rate) },
+    {
+      label: "Busy",
+      className: "size",
+      render: row => {
+        if (row.util_percent == null) return "—";
+        const span = document.createElement("span");
+        span.textContent = `${Number(row.util_percent).toFixed(0)}%`;
+        // Saturated is worth a colour; merely busy is not.
+        if (row.util_percent >= 90) span.className = "grew";
+        return span;
+      },
+    },
+    {
+      label: "Queue",
+      className: "size",
+      render: row => (row.queue_depth == null ? "—" : Number(row.queue_depth).toFixed(2)),
+    },
+    { label: "In flight", className: "size", render: row => row.in_flight },
+  ]);
+}
+
+/**
+ * Each service now, a day ago and a week ago.
+ *
+ * The table that answers the question a single number cannot. "Forgejo is using
+ * 1.8 GiB" might be a leak or might have been true since it was installed;
+ * "1.2 GiB last week, 1.5 GiB yesterday, 1.8 GiB now" carries its own diagnosis.
+ */
+function renderServices(rows, series, charted) {
+  if (!rows.length) {
+    $("hostServices").replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: "No service history yet — this needs a few readings to build up.",
+    }));
+    $("hostServiceChart").hidden = true;
+    return;
+  }
+  $("hostServiceChart").hidden = false;
+
+  const change = value => {
+    // No reading to compare against is not the same as no change. A blank
+    // says "unknown"; a zero would claim the service had been measured and
+    // found stable, which on a fresh install is a lie about every row.
+    if (value == null) return Object.assign(document.createElement("span"), {
+      className: "muted", textContent: "—",
+    });
+
+    const span = document.createElement("span");
+    span.textContent = (value > 0 ? "+" : value < 0 ? "−" : "") + humanBytes(Math.abs(value));
+    span.className = value > 0 ? "grew" : value < 0 ? "shrank" : "muted";
+    return span;
+  };
+
+  renderTable("hostServices", rows, [
+    { label: "Service", render: r => r.name },
+    { label: "Processes", className: "size", render: r => r.procs },
+    { label: "Now", className: "size", render: r => humanBytes(r.pss_bytes) },
+    {
+      label: "24h ago",
+      className: "size",
+      render: r => (r.day_ago == null ? "—" : humanBytes(r.day_ago)),
+    },
+    { label: "Change 24h", className: "size", render: r => change(r.change_day) },
+    {
+      label: "7d ago",
+      className: "size",
+      render: r => (r.week_ago == null ? "—" : humanBytes(r.week_ago)),
+    },
+    { label: "Change 7d", className: "size", render: r => change(r.change_week) },
+    { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
+    {
+      label: "Reading",
+      className: "size",
+      render: r => (r.read_rate == null ? "—" : `${humanBytes(r.read_rate)}/s`),
+    },
+    {
+      label: "Writing",
+      className: "size",
+      render: r => (r.write_rate == null ? "—" : `${humanBytes(r.write_rate)}/s`),
+    },
+  ]);
+
+  drawLineChart(
+    $("hostServiceChart"),
+    series,
+    charted.map(name => ({ key: name, label: name })),
+    {
+      axis: bytesAxis,
+      zeroBased: true,
+      empty: "Not enough service history to draw yet",
+    }
+  );
 }
 
 /**
