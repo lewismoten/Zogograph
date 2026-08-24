@@ -342,6 +342,14 @@
     <p class="muted small sub-note" id="hostSeesNote"></p>
     <div id="hostDisks"></div>
 
+    <h3 class="sub-head">Processes touching the disk</h3>
+    <p class="muted small sub-note">
+      Which processes the throughput above is actually coming from. CPU can sit
+      low while one job makes everything else feel slow by keeping a disk busy,
+      and that job is invisible in every other panel on this page.
+    </p>
+    <div id="hostIoProcs"></div>
+
     <h3 class="sub-head">Kernel slab caches</h3>
     <p class="muted small sub-note">
       Memory the kernel holds for itself. It belongs to no process and no

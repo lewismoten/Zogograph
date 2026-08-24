@@ -40,6 +40,15 @@ require_once __DIR__ . '/uptime.php';
 const HOST_KEEP_SLAB = 20;
 const HOST_KEEP_PROCS = 25;
 
+/*
+ * How many processes are kept for their disk I/O regardless of their size.
+ *
+ * A separate ranking rather than a bigger HOST_KEEP_PROCS: raising the memory
+ * cut-off to reach a 20 MiB process would store most of the process table to
+ * catch one of them.
+ */
+const HOST_KEEP_IO_PROCS = 15;
+
 /**
  * Services tracked in the long series, and the floor for being one.
  *
@@ -282,7 +291,17 @@ function hostProcessIo(string $procRoot, int $pid): array
 {
     $raw = @file_get_contents("$procRoot/$pid/io");
     if ($raw === false) {
-        return ['read' => 0, 'write' => 0];
+        /*
+         * Not readable is not the same as no I/O, and this used to say zero for
+         * both.
+         *
+         * /proc/<pid>/io is readable by root and by the process's own owner,
+         * and by nobody else - so the account collector sees zero for every
+         * process it does not own, and a kernel thread has no io file at all.
+         * Reporting that as "this process did no disk I/O" is a confident wrong
+         * answer, and it is wrong in the direction that hides the culprit.
+         */
+        return ['read' => 0, 'write' => 0, 'readable' => false];
     }
 
     $get = function (string $key) use ($raw): int {
@@ -292,7 +311,51 @@ function hostProcessIo(string $procRoot, int $pid): array
     return [
         'read' => $get('read_bytes'),
         'write' => max(0, $get('write_bytes') - $get('cancelled_write_bytes')),
+        'readable' => true,
     ];
+}
+
+/**
+ * Which processes are worth writing down.
+ *
+ * Sorting by memory and taking the top twenty-five is the obvious rule and it
+ * loses exactly the process this feature exists to find. Webalizer holds about
+ * twenty megabytes while it works; on a machine also running MariaDB, Forgejo
+ * and JetBackup it is nowhere near the top of a list ordered by RSS, so its
+ * I/O was never recorded and no amount of querying afterwards could recover it.
+ *
+ * So the kept set is the union of two rankings: the heaviest on memory, and
+ * the heaviest on disk. A process qualifies by being remarkable in either
+ * dimension rather than having to be remarkable in the one that happens to be
+ * the sort key. The union is typically well under the sum, because on a busy
+ * machine the same few processes tend to top both.
+ *
+ * @param list<array> $procs sorted by rss_bytes, descending
+ * @return list<array>
+ */
+function hostKeepProcesses(array $procs): array
+{
+    $keep = [];
+    foreach (array_slice($procs, 0, HOST_KEEP_PROCS) as $row) {
+        $keep[(int)$row['pid']] = $row;
+    }
+
+    $byIo = array_filter($procs, fn(array $r): bool => ($r['io']['readable'] ?? false));
+    usort($byIo, function (array $a, array $b): int {
+        $total = fn(array $r): int => (int)$r['io']['read'] + (int)$r['io']['write'];
+        return $total($b) <=> $total($a);
+    });
+
+    foreach (array_slice($byIo, 0, HOST_KEEP_IO_PROCS) as $row) {
+        // A process that has never touched a disk is not an I/O finding, and
+        // including it would just pad the table with zeroes.
+        if ((int)$row['io']['read'] + (int)$row['io']['write'] <= 0) {
+            break;
+        }
+        $keep[(int)$row['pid']] = $row;
+    }
+
+    return array_values($keep);
 }
 
 /** Proportional set size for one process, or null where the kernel will not say. */
@@ -834,14 +897,16 @@ function hostTakeReading(
         $procs = $pdo->prepare(
             'INSERT INTO host_processes
                 (sample_id, pid, user, name, rss_bytes, pss_bytes, swap_bytes, vsz_bytes,
-                 threads, elapsed_seconds, command)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                 threads, elapsed_seconds, command, read_bytes, write_bytes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
-        foreach (array_slice($processes['procs'], 0, HOST_KEEP_PROCS) as $row) {
+        foreach (hostKeepProcesses($processes['procs']) as $row) {
             $procs->execute([
                 $sampleId, $row['pid'], $row['user'], $row['name'], $row['rss_bytes'],
                 $row['pss_bytes'], $row['swap_bytes'], $row['vsz_bytes'], $row['threads'],
                 $row['elapsed_seconds'], $row['command'],
+                ($row['io']['readable'] ?? false) ? (int)$row['io']['read'] : null,
+                ($row['io']['readable'] ?? false) ? (int)$row['io']['write'] : null,
             ]);
         }
 
@@ -1519,4 +1584,155 @@ function hostServiceIoRates(PDO $pdo): array
     }
 
     return $out;
+}
+
+/**
+ * Which processes are actually touching a disk, and how hard.
+ *
+ * The whole-host throughput chart says the machine is writing 40 MB/s; the
+ * per-service one says MariaDB is. Neither names a pid, and for the cases this
+ * exists to catch - eleven webalizer processes, a JetBackup run, a Forgejo
+ * package import - the pid is what you need to go and look at, kill, or renice.
+ *
+ * Two kinds of rate, because processes come and go between samples and only
+ * reporting the one that needs two sightings would leave every short-lived job
+ * blank - which is most of the interesting ones:
+ *
+ *   "current"  the process was in both samples, so the counters can be
+ *              subtracted and divided by the wall clock between them. This is
+ *              a real instantaneous rate and it is what you want.
+ *
+ *   "average"  the process has only been seen once, so the rate is its total
+ *              I/O over its own lifetime. A backup that started thirty seconds
+ *              ago and has written 2 GB reports 66 MB/s, which is true and
+ *              useful; a daemon up for nine days reports a lifetime average
+ *              that is nearly meaningless. Both are labelled, and the caller
+ *              is told which it is looking at rather than being left to guess.
+ *
+ * Matching is on pid *and* command. Pids are recycled, and a recycled one would
+ * otherwise subtract a fresh process's counters from a dead one's and report a
+ * spectacular negative - or worse, a plausible positive.
+ *
+ * @return array{available: bool, reason: ?string, seconds: int, rows: list<array>}
+ */
+function hostProcessIoRates(PDO $pdo): array
+{
+    $samples = $pdo->query(
+        'SELECT id, taken_at FROM host_samples ORDER BY id DESC LIMIT 2'
+    )->fetchAll();
+
+    if ($samples === []) {
+        return ['available' => false, 'reason' => 'The host collector has not run yet.',
+                'seconds' => 0, 'rows' => []];
+    }
+
+    $now = $samples[0];
+    $before = $samples[1] ?? null;
+    $seconds = $before ? (int)$now['taken_at'] - (int)$before['taken_at'] : 0;
+
+    $stmt = $pdo->prepare(
+        'SELECT pid, user, name, command, rss_bytes, elapsed_seconds, read_bytes, write_bytes
+         FROM host_processes WHERE sample_id = ?'
+    );
+    $stmt->execute([$now['id']]);
+    $current = $stmt->fetchAll();
+
+    if ($current === []) {
+        return ['available' => false, 'reason' => 'No processes were recorded in the last reading.',
+                'seconds' => $seconds, 'rows' => []];
+    }
+
+    /*
+     * Whether the collector could read the counters at all.
+     *
+     * All-null means it ran without root: /proc/<pid>/io is readable by the
+     * process's owner and by root, and by nobody else. That is a different
+     * situation from "nothing was doing any I/O" and gets a different message.
+     */
+    $readable = array_filter($current, fn(array $r): bool => $r['read_bytes'] !== null);
+    if ($readable === []) {
+        return [
+            'available' => false,
+            'reason' => 'Per-process disk I/O was not readable. /proc/<pid>/io is readable '
+                . 'only by root and by each process\'s own owner, so the collector needs to '
+                . 'run as root to see this for the whole machine.',
+            'seconds' => $seconds,
+            'rows' => [],
+        ];
+    }
+
+    $previous = [];
+    if ($before) {
+        $stmt->execute([$before['id']]);
+        foreach ($stmt->fetchAll() as $row) {
+            $previous[$row['pid'] . "\x01" . $row['command']] = $row;
+        }
+    }
+
+    $out = [];
+    foreach ($readable as $row) {
+        $read = (int)$row['read_bytes'];
+        $write = (int)$row['write_bytes'];
+        $was = $previous[$row['pid'] . "\x01" . $row['command']] ?? null;
+
+        $readRate = $writeRate = null;
+        $basis = 'unknown';
+
+        if ($was && $seconds > 0 && $was['read_bytes'] !== null) {
+            $readDelta = $read - (int)$was['read_bytes'];
+            $writeDelta = $write - (int)$was['write_bytes'];
+
+            // Backwards means this is not the process we think it is, whatever
+            // the pid and command say. No rate exists across that.
+            if ($readDelta >= 0 && $writeDelta >= 0) {
+                $readRate = round($readDelta / $seconds, 2);
+                $writeRate = round($writeDelta / $seconds, 2);
+                $basis = 'current';
+            }
+        }
+
+        if ($basis === 'unknown') {
+            $life = (int)($row['elapsed_seconds'] ?? 0);
+            if ($life > 0) {
+                $readRate = round($read / $life, 2);
+                $writeRate = round($write / $life, 2);
+                $basis = 'average';
+            }
+        }
+
+        $out[] = [
+            'pid' => (int)$row['pid'],
+            'user' => (string)$row['user'],
+            'name' => (string)$row['name'],
+            'command' => (string)$row['command'],
+            'rss_bytes' => (int)$row['rss_bytes'],
+            'elapsed_seconds' => $row['elapsed_seconds'] === null ? null : (int)$row['elapsed_seconds'],
+            'read_bytes' => $read,
+            'write_bytes' => $write,
+            'read_rate' => $readRate,
+            'write_rate' => $writeRate,
+            // 'current' from two sightings, 'average' over the process's life.
+            'basis' => $basis,
+        ];
+    }
+
+    /*
+     * Ranked by rate where there is one, and by total where there is not.
+     *
+     * Sorting a mixed list on rate alone would bury a process that has written
+     * 40 GB since it started under one averaging a few kilobytes a second, and
+     * the 40 GB is the thing worth seeing.
+     */
+    usort($out, function (array $a, array $b): int {
+        $rate = fn(array $r): float => (float)($r['read_rate'] ?? 0) + (float)($r['write_rate'] ?? 0);
+        $total = fn(array $r): int => $r['read_bytes'] + $r['write_bytes'];
+        return [$rate($b), $total($b)] <=> [$rate($a), $total($a)];
+    });
+
+    return [
+        'available' => true,
+        'reason' => null,
+        'seconds' => $seconds,
+        'rows' => array_slice($out, 0, HOST_KEEP_IO_PROCS),
+    ];
 }

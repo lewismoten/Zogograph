@@ -2640,6 +2640,7 @@ async function refreshHost() {
     : "";
 
   renderHostDisks(data.disks ?? [], s, Number(data.sample_count ?? 0));
+  renderHostIoProcs(data.io_processes ?? null);
 
   renderTable("hostSlab", data.slab, [
     { label: "Cache", render: r => r.name },
@@ -2795,6 +2796,76 @@ function renderHostFiles(rows, totals) {
 }
 
 /** Per-device throughput, utilisation and queue depth. */
+/*
+ * The processes doing the I/O, as against the devices carrying it.
+ *
+ * Two kinds of rate arrive mixed together and the difference matters enough to
+ * label every row. A process seen in two consecutive readings has a real
+ * instantaneous rate; one seen only once has its total spread over its own
+ * lifetime, which is exactly right for a backup that started a minute ago and
+ * close to meaningless for a daemon up for nine days. Presenting them as the
+ * same number would be the more comfortable choice and the wrong one.
+ */
+function renderHostIoProcs(io) {
+  const holder = $("hostIoProcs");
+  if (!holder) return;
+
+  if (!io || !io.available || !io.rows?.length) {
+    holder.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: io?.reason
+        || "No per-process disk I/O recorded yet. It needs the host collector, running as root.",
+    }));
+    return;
+  }
+
+  const rate = value => (value == null ? "—" : `${humanBytes(value)}/s`);
+
+  renderTable("hostIoProcs", io.rows, [
+    {
+      label: "Process",
+      className: "name",
+      render: row => {
+        const box = document.createElement("span");
+        box.appendChild(document.createTextNode(row.name));
+        const note = document.createElement("span");
+        note.className = "muted small";
+        note.textContent = ` · pid ${row.pid} · ${row.user}`;
+        box.appendChild(note);
+        box.title = row.command;
+        return box;
+      },
+    },
+    { label: "Reading", className: "size", render: row => rate(row.read_rate) },
+    { label: "Writing", className: "size", render: row => rate(row.write_rate) },
+    {
+      label: "Since it started",
+      className: "size",
+      render: row => `${humanBytes(row.read_bytes + row.write_bytes)}`,
+    },
+    {
+      label: "Rate is",
+      render: row => {
+        const span = document.createElement("span");
+        if (row.basis === "current") {
+          span.textContent = `now (over ${io.seconds}s)`;
+          span.title = "Measured between the last two host readings.";
+        } else if (row.basis === "average") {
+          span.textContent = "lifetime average";
+          span.className = "muted";
+          span.title = "This process has only been seen once, so its total I/O is spread "
+            + "over how long it has been running. Accurate for a job that just started, "
+            + "much less so for a long-running daemon.";
+        } else {
+          span.textContent = "—";
+          span.className = "muted";
+        }
+        return span;
+      },
+    },
+  ]);
+}
+
 function renderHostDisks(rows, sample, sampleCount) {
   const holder = $("hostDisks");
   if (!holder) return;

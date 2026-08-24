@@ -514,6 +514,25 @@ function hostMigrations(): array
             'ALTER TABLE host_services ADD COLUMN oldest_seconds INTEGER',
             'ALTER TABLE host_services ADD COLUMN newest_seconds INTEGER',
         ],
+
+        /*
+         * What each process has actually read from and written to a disk.
+         *
+         * Per service was already recorded and is the right unit for a chart -
+         * "MariaDB is writing 40 MB/s" is the sentence somebody wants. It is
+         * the wrong unit for finding the culprit: eleven webalizer processes
+         * sum into one row, and the backup that runs as a shell script shows up
+         * under whatever it last exec'd.
+         *
+         * Nullable, deliberately. /proc/<pid>/io is readable by root and by the
+         * process's owner and by nobody else, so a collector without root gets
+         * nothing for other people's processes - and NULL says that, where 0
+         * would claim the process sat idle.
+         */
+        10 => [
+            'ALTER TABLE host_processes ADD COLUMN read_bytes INTEGER',
+            'ALTER TABLE host_processes ADD COLUMN write_bytes INTEGER',
+        ],
     ];
 }
 

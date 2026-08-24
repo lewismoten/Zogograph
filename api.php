@@ -743,6 +743,12 @@ function hostView(array $config, bool $signedIn): array
         // leak from a large but steady working set.
         'services' => $services,
         'disks' => hostDiskRates($pdo),
+        /*
+         * Which processes are doing the I/O, as against which devices are
+         * carrying it. The device totals say the machine is busy; this says
+         * what to go and look at.
+         */
+        'io_processes' => hostProcessIoRates($pdo),
         // So an empty disk table can tell "not enough readings yet" apart from
         // "read them and found nothing".
         'sample_count' => (int)$pdo->query('SELECT COUNT(*) FROM host_samples')->fetchColumn(),
