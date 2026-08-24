@@ -1910,8 +1910,19 @@ async function refreshHost() {
     swapPercent == null ? "" : `${swapPercent}% allocated`,
     swap.state === "pressure" ? "warn" : "",
     "pair");
-  setHostCard("Unaccounted", humanBytes(s.unaccounted),
-    "not in any process, cache or slab");
+  /*
+   * Named for what it is rather than for what is missing.
+   *
+   * "Unaccounted" reads as a leak or a broken sum, and it is neither. A few
+   * hundred megabytes here is ordinary: vmalloc regions, DMA and driver
+   * buffers, hugepages, per-cpu areas the summary lines do not break out, and
+   * plain accounting differences between counters sampled at slightly
+   * different moments. Linux does not reconcile exactly from a handful of
+   * /proc figures and never claimed to. What is worth watching is the number
+   * *growing* over days, not the number existing.
+   */
+  setHostCard("Other kernel/system memory", humanBytes(s.unaccounted),
+    "not represented by the categories above");
 
   $("hostSwapNote").textContent = swapVerdict(swap, swapUsed);
 
@@ -1959,7 +1970,7 @@ async function refreshHost() {
     { key: "used_bytes", label: "In use" },
     { key: "cache_bytes", label: "Cache" },
     { key: "slab", label: "Slab" },
-    { key: "unaccounted", label: "Unaccounted" },
+    { key: "unaccounted", label: "Other kernel/system" },
   ], { axis: bytesAxis, zeroBased: true, empty: "Only one host reading so far" });
 
   renderTable("hostUsers", data.users, [

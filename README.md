@@ -515,12 +515,25 @@ reclaimable cache as used and makes every healthy machine look full.
 
 ### What it collects
 
-- **The memory breakdown** — in use, reclaimable cache, slab, tmpfs, swap, and
-  what is left over. `unaccounted` is `used` minus everything nameable
-  (anonymous pages, swap-cached, unreclaimable slab, page tables, kernel stacks,
-  per-cpu areas). It should be small. When it is not, the memory has gone
-  somewhere no per-process view will ever show — a driver, a balloon, a kernel
-  leak — and knowing *that* is worth more than another process list.
+- **The memory breakdown** — in use, available, reclaimable cache, slab, kernel
+  shared memory, swap, and **other kernel/system memory**: `used` minus
+  everything nameable (anonymous pages, swap-cached, unreclaimable slab, page
+  tables, kernel stacks, per-cpu areas).
+
+  That last one is shown deliberately rather than hidden or forced to zero,
+  because **Linux does not reconcile exactly from a handful of `/proc` summary
+  lines and never claimed to.** Vmalloc regions, DMA and driver buffers,
+  hugepages and per-cpu areas are real allocations those lines do not break out,
+  and the counters are not all sampled at the same instant either. A few hundred
+  megabytes there is this machine's kernel, not a fault.
+
+  It is called *other kernel/system memory* on the dashboard and `unaccounted`
+  in the database. The internal name is the honest description of the
+  arithmetic; the displayed one avoids implying a leak or a broken sum, which is
+  what people read into "unaccounted". What is worth watching is the figure
+  *growing* across days while nothing else does — then the memory has gone
+  somewhere no per-process view will ever show, and knowing *that* is worth more
+  than another process list.
 - **Memory per user**, which is the column CageFS hides and usually the answer.
 - **The biggest processes on the host**, with Pss, swap, threads and age.
 - **Kernel slab caches**, sized the way `slabtop` does it — slabs × pages per

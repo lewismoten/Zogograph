@@ -93,7 +93,10 @@ try {
             $result['lve'] === null ? '' : ", {$result['lve']} LVE rows"
         ));
         if ($result['unaccounted'] !== null) {
-            $say(sprintf('Memory unaccounted for: %s.', humanBytes((int)$result['unaccounted'])));
+            $say(sprintf(
+                'Other kernel/system memory: %s (not in any process, cache or slab).',
+                humanBytes((int)$result['unaccounted'])
+            ));
         }
     }
 

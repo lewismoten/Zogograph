@@ -87,12 +87,20 @@ function hostMeminfo(string $procRoot = '/proc'): array
  * number of processes sharing it - is the figure that adds up, so it is
  * collected too and shown beside RSS.
  *
- * `unaccounted` is what is left after everything nameable is subtracted:
- * process anonymous memory, page cache, tmpfs, slab, page tables and kernel
- * stacks. It should be small. When it is not, the memory has gone somewhere
- * that does not appear in any per-process view - a driver, a hypervisor
- * balloon, or a kernel leak - and knowing that is worth more than another
- * process list.
+ * The `unaccounted` column - shown as *other kernel/system memory*, because the
+ * internal name reads like an accusation - is what is left after everything
+ * nameable is subtracted: process anonymous memory, page cache, tmpfs, slab,
+ * page tables and kernel stacks.
+ *
+ * A few hundred megabytes there is normal and not a fault. Linux does not
+ * reconcile exactly from a handful of summary lines, and never claimed to:
+ * vmalloc regions, DMA and driver buffers, hugepages and per-cpu areas are real
+ * allocations that those lines do not break out, and the counters are not even
+ * all sampled at the same instant. The figure is worth having because it is
+ * bounded - if it *grows* across days while nothing else does, the memory has
+ * gone somewhere no per-process view will ever show, and knowing that is worth
+ * more than another process list. A large but steady value is just this
+ * machine's kernel.
  *
  * @return array<string, int|null>
  */
