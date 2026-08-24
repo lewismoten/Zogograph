@@ -959,17 +959,24 @@ pressing it a second time answered *path does not exist*, which reads as a fault
 rather than as "already done".
 
 So a row whose path has been deleted since the scan that found it shows
-**deleted** where the button was, with its size struck through: the size was true
-when the scan ran and is not now. Worked out on the server from the audit log
+**deleted** where its controls were, with its size struck through: the size was
+true when the scan ran and is not now. That covers **View** as well as Delete —
+View had exactly the same fault, staying live and answering *no such file* — and
+it is decided once, for the whole cell, rather than per button, so a control
+added later cannot forget.
+
+Clicking the row still works: the size history comes from the database, and does
+not need the file to exist. That is the point of keeping the row at all. Worked out on the server from the audit log
 rather than remembered in the browser, so it survives a reload — and only deletes
 recorded at or after the scan count, because a file removed before the scan
 cannot be the one the scan found, and a name since recreated is genuinely
 deletable again. Emptying a category writes one summary row rather than one per
 file, so that case is matched on the category instead.
 
-If a request does slip through — a stale tab, a second click in flight — the
-refusal now says what happened: *"that file was already deleted. It is still
-listed because the last scan found it."* A path this tool removed itself is not
+If a request does slip through — a stale tab, a second click in flight, or a log
+viewer left open on a file that has since gone — the refusal says what happened:
+*"that file was deleted. It is still listed because the last scan found it."* The
+log panel shows it in place of the lines rather than as an error. A path this tool removed itself is not
 something to investigate.
 
 **And the confirmation now survives.** Every action that changes something

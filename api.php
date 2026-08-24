@@ -459,7 +459,24 @@ function tailLog(array $config, PDO $pdo, bool $signedIn): array
         throw new ActionRefused('unknown path');
     }
 
-    $real = resolveViewable($config, (string)$row['path']);
+    try {
+        $real = resolveViewable($config, (string)$row['path']);
+    } catch (ActionRefused $e) {
+        /*
+         * "Already deleted" beats "no such file" when we did the deleting.
+         *
+         * A stale tab, or an open log panel refreshed after the file went: the
+         * path is genuinely missing and the reason is on record, so there is no
+         * need to make it sound like a fault.
+         */
+        if (!file_exists((string)$row['path']) && alreadyDeleted($pdo, (string)$row['path'])) {
+            throw new ActionRefused(
+                'that file was deleted. It is still listed because the last scan found '
+                . 'it; the next scan will drop it.'
+            );
+        }
+        throw $e;
+    }
     $result = tailFile(
         $real,
         clampInt($_GET['lines'] ?? 200, 1, 2000),

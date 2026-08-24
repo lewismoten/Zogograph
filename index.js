@@ -1615,6 +1615,27 @@ async function refreshOffenders() {
 
 /** The buttons for one row: view a log, delete a file, or neither. */
 function rowButtons(row) {
+  /*
+   * Nothing to offer on a path that is gone.
+   *
+   * Handled here rather than in each button so there is one marker rather than
+   * two, and so a control added later cannot forget: View had the same problem
+   * as Delete - it stayed live, and pressing it answered "no such file" from a
+   * row the table was still showing.
+   *
+   * The row itself stays, because the table is what the last scan saw and that
+   * remains true. Clicking it still opens the size history, which is a record
+   * and does not need the file to exist.
+   */
+  if (row.kind === "file" && row.deleted_at) {
+    const gone = document.createElement("span");
+    gone.className = "muted small";
+    gone.textContent = "deleted";
+    gone.title = `Deleted ${humanTime(row.deleted_at)}. Still listed because the last `
+      + `scan found it; the next scan will drop it.`;
+    return gone;
+  }
+
   const holder = document.createElement("span");
   holder.style.display = "inline-flex";
   holder.style.gap = "6px";
@@ -1644,21 +1665,9 @@ function deleteButton(row) {
     return "";
   }
 
-  /*
-   * Already gone, so there is nothing to offer.
-   *
-   * The row stays in the table because the table is what the last scan saw, and
-   * that remains true. The button does not, and leaving it there meant a second
-   * press answered "path does not exist" - which is accurate and reads as a
-   * fault. Saying "deleted" instead is the same fact without the alarm.
-   */
+  // The deleted case is handled by rowButtons, which owns the whole cell.
   if (row.deleted_at) {
-    const gone = document.createElement("span");
-    gone.className = "muted small";
-    gone.textContent = "deleted";
-    gone.title = `Deleted ${humanTime(row.deleted_at)}. Still listed because the last `
-      + `scan found it; the next scan will drop it.`;
-    return gone;
+    return "";
   }
 
   const button = document.createElement("button");
