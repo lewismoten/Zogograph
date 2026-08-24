@@ -39,6 +39,97 @@ $files = [];
 $missing = 0;
 $broken = 0;
 
+/*
+ * Whether the files agree with each other.
+ *
+ * A file present, readable and parsing perfectly can still be the wrong
+ * version. Uploading by hand over FTP or File Manager means uploading one file
+ * at a time, and the moment one lands without another that it needs, the site
+ * dies with "Call to undefined function" - which reads like a code bug and is
+ * actually half a deployment.
+ *
+ * Checked statically, by reading. Every file is already being tokenised for the
+ * parse check above, so collecting the functions each one defines and the
+ * functions each one calls costs almost nothing extra, and nothing has to be
+ * executed or loaded to do it. That matters: this page has to work on the
+ * install that is too broken to run.
+ */
+$defined = [];
+$called = [];
+$optional = [];
+
+$scan = function (string $source, string $where) use (&$defined, &$called, &$optional): void {
+    try {
+        $tokens = token_get_all($source, TOKEN_PARSE);
+    } catch (Throwable) {
+        return;
+    }
+
+    $simple = [];
+    foreach ($tokens as $token) {
+        // Whitespace and comments never matter to what follows what.
+        if (is_array($token) && in_array($token[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
+            continue;
+        }
+        $simple[] = $token;
+    }
+
+    foreach ($simple as $i => $token) {
+        if (!is_array($token) || $token[0] !== T_STRING) {
+            continue;
+        }
+
+        $name = $token[1];
+        $before = $simple[$i - 1] ?? null;
+        $after = $simple[$i + 1] ?? null;
+
+        // A definition: `function name(`.
+        if (is_array($before) && $before[0] === T_FUNCTION) {
+            $defined[strtolower($name)] = true;
+            continue;
+        }
+
+        // Only a call if a bracket follows it.
+        if ($after !== '(') {
+            continue;
+        }
+
+        /*
+         * Not a plain function call if it is a method, a static call or a
+         * constructor - those resolve against a class, not the global function
+         * table, and flagging them would bury the real answer in noise.
+         */
+        if (is_array($before) && in_array(
+            $before[0],
+            [T_OBJECT_OPERATOR, T_NULLSAFE_OBJECT_OPERATOR, T_DOUBLE_COLON, T_NEW, T_FUNCTION],
+            true
+        )) {
+            continue;
+        }
+
+        /*
+         * `function_exists('posix_kill')` marks a name as allowed to be absent.
+         *
+         * Half this codebase is written to survive a host without posix, or
+         * without shell_exec. Those guarded calls are deliberate, and reporting
+         * them as broken would make this check worthless on exactly the
+         * restricted hosting it is written for.
+         */
+        if (strtolower($name) === 'function_exists') {
+            $argument = $simple[$i + 2] ?? null;
+            if (is_array($argument) && $argument[0] === T_CONSTANT_ENCAPSED_STRING) {
+                $optional[strtolower(trim($argument[1], "'\""))] = true;
+            }
+            continue;
+        }
+
+        // Keyed lowercase because PHP resolves function names case-insensitively,
+        // but the original spelling is kept for display - a report that renames
+        // the thing it is complaining about is harder to act on.
+        $called[strtolower($name)] ??= ['name' => $name, 'where' => $where];
+    }
+};
+
 foreach ($required as $name) {
     $path = $root . '/' . $name;
     $state = 'ok';
@@ -62,8 +153,10 @@ foreach ($required as $name) {
          * this, the page died on exactly the broken file it was written to
          * find - which is the least useful moment for a diagnostic to fail.
          */
+        $source = file_get_contents($path) ?: '';
         try {
-            token_get_all(file_get_contents($path) ?: '', TOKEN_PARSE);
+            token_get_all($source, TOKEN_PARSE);
+            $scan($source, $name);
         } catch (Throwable) {
             $state = 'will not parse';
             $broken++;
@@ -71,6 +164,23 @@ foreach ($required as $name) {
     }
 
     $files[$name] = $state;
+}
+
+/*
+ * Anything called but defined nowhere, and not a PHP built-in.
+ *
+ * The built-in list comes from this PHP, which is the right one to ask: a call
+ * to an extension function the server does not have is a genuine problem, and
+ * the ones this code knowingly probes for are excluded by the function_exists
+ * rule above.
+ */
+$internal = array_flip(array_map('strtolower', get_defined_functions()['internal']));
+$undefined = [];
+foreach ($called as $key => $call) {
+    if (isset($defined[$key]) || isset($internal[$key]) || isset($optional[$key])) {
+        continue;
+    }
+    $undefined[$call['name']] = $call['where'];
 }
 
 $configured = is_file($root . '/lib/config.php');
@@ -94,9 +204,12 @@ $verdict = $missing > 0
     ? "$missing file(s) missing — the upload is incomplete."
     : ($broken > 0
         ? "$broken file(s) present but unreadable or truncated — upload them again."
+        : ($undefined
+        ? count($undefined) . ' function(s) are called but defined nowhere — some '
+            . 'files are older than the ones calling them. Upload the whole set again.'
         : (!$configured
             ? 'The code is fine. Nothing is configured yet — open setup.php.'
-            : 'Everything this page can check looks right.'));
+            : 'Everything this page can check looks right.')));
 
 function mark(bool $ok): string
 {
@@ -157,6 +270,24 @@ code { background: #000; padding: 1px 5px; border-radius: 4px; }
 <?php endforeach; ?>
 </table>
 
+<?php if ($undefined): ?>
+<h2>Files that disagree</h2>
+<p class="muted">
+  These are called but defined nowhere in the install. That almost always means
+  a partial upload: the file doing the calling is newer than the file that
+  should define it. Uploading everything again fixes it.
+</p>
+<table>
+<?php foreach ($undefined as $name => $where): ?>
+  <tr>
+    <td><?= mark(false) ?></td>
+    <td><code><?= esc($name) ?>()</code></td>
+    <td class="muted">called in <?= esc($where) ?></td>
+  </tr>
+<?php endforeach; ?>
+</table>
+<?php endif; ?>
+
 <h2>Files</h2>
 <table>
 <?php foreach ($files as $name => $state): ?>
@@ -171,6 +302,9 @@ code { background: #000; padding: 1px 5px; border-radius: 4px; }
 <h2>If the dashboard is returning errors</h2>
 <ol class="muted">
   <li>Any red mark above is the cause. Fix that first.</li>
+  <li><strong>Files that disagree</strong> means a partial upload — one file is
+      newer than another it depends on. This is the usual cause of
+      <code>Call to undefined function</code>. Upload everything again.</li>
   <li>If everything here is green, the failure is at runtime. The dashboard
       shows a reference when a request fails; find that reference in
       <code>data/error.log</code>, or under <strong>Recent problems</strong> on

@@ -787,6 +787,22 @@ file until PHP compiles it), that PHP is new enough, that SQLite is there, and
 that `data/` is writable. It reports states and never paths, because it answers
 to anyone who can reach it.
 
+It also checks that **the files agree with each other**. A file can be present,
+readable and parse perfectly and still be the wrong version: uploading by hand
+means uploading one file at a time, and the moment one lands without another it
+needs, the site dies with `Call to undefined function` — which reads like a bug
+in the code and is actually half a deployment. So it reads every file, collects
+what each one defines and what each one calls, and lists anything called but
+defined nowhere:
+
+    ✗ hostCronLine()      called in api.php
+    ✗ hostCronCommand()   called in api.php
+
+Statically, by reading — nothing is loaded or executed, because this page has to
+work on the install that is too broken to run. Names the code deliberately probes
+for with `function_exists` are excluded, so a host without the posix extension
+does not light the whole list up.
+
 If everything there is green, the fault is at runtime. Every failed request now
 returns a **reference** instead of a blank page:
 
