@@ -90,6 +90,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'processes' => processList($config, $pdo, $signedIn),
         'symlinks' => symlinkCheck($config, $signedIn),
         'host' => hostView($config, $signedIn),
+        'host-series' => hostSeries($config, $signedIn),
         'health' => healthCheck($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
@@ -576,15 +577,53 @@ function hostView(array $config, bool $signedIn): array
             $pdo,
             array_column(array_slice($services, 0, 5), 'name'),
             $from,
-            $to
+            $to,
+            'pss'
         ),
         'service_charted' => array_column(array_slice($services, 0, 5), 'name'),
+        'service_metrics' => array_map(
+            fn(array $m): string => $m['label'],
+            hostServiceMetrics()
+        ),
         // Summed over unique (device, inode), not over paths.
         'file_totals' => hostFileTotals(
             $of('SELECT * FROM host_files WHERE sample_id = ? ORDER BY bytes DESC')
         ),
         'lve' => $of('SELECT * FROM host_lve WHERE sample_id = ? ORDER BY faults_mem DESC, user'),
         'rows' => $rows,
+    ];
+}
+
+/**
+ * One metric of the service series, on its own.
+ *
+ * A separate action so changing which figure is charted does not refetch the
+ * process list, the slab table, the file list and everything else in the host
+ * payload to redraw one canvas.
+ */
+function hostSeries(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see host readings');
+    }
+
+    $pdo = hostDb($config, false);
+    if ($pdo === null) {
+        return ['rows' => [], 'names' => [], 'metric' => 'pss'];
+    }
+
+    $metric = (string)($_GET['metric'] ?? 'pss');
+    $names = array_values(array_filter(
+        array_map('strval', (array)($_GET['names'] ?? [])),
+        fn(string $name): bool => $name !== ''
+    ));
+
+    [$from, $to] = window();
+
+    return [
+        'metric' => $metric,
+        'names' => $names,
+        'rows' => hostServiceSeries($pdo, array_slice($names, 0, 8), $from, $to, $metric),
     ];
 }
 

@@ -40,6 +40,8 @@ const state = {
   schedule: null,
   scheduleDirty: false,
   units: "bytes",
+  hostMetric: "pss",
+  hostCharted: [],
   busy: false,
 };
 
@@ -85,7 +87,18 @@ function ago(epoch) {
 /* -------------------------------------------------------------------- api -- */
 
 async function api(action, params = {}) {
-  const query = new URLSearchParams({ action, ...params });
+  /*
+   * Accepts a plain object or a URLSearchParams.
+   *
+   * Spreading URLSearchParams into an object literal yields nothing - it has no
+   * own enumerable properties - so a caller passing one would silently send a
+   * bare action and get an answer to a different question. Repeated keys, which
+   * `names[]` needs, are only expressible the second way.
+   */
+  const query = params instanceof URLSearchParams
+    ? params
+    : new URLSearchParams(params);
+  query.set("action", action);
   const response = await fetch(`${API}?${query}`, {
     cache: "no-store",
     credentials: "same-origin",
@@ -675,6 +688,154 @@ function drawLineChart(canvas, rows, series, options = {}) {
   });
 
   ctx.restore();
+}
+
+/* -------------------------------------------------------------------- pie -- */
+
+/**
+ * A pie of memory by service, with the long tail as one slice.
+ *
+ * **Drawn from PSS, and it has to be.** A pie asserts that its slices make up a
+ * whole, and resident memory cannot: a page shared by ten processes is counted
+ * ten times, so the parts add up to more than the machine has and every
+ * percentage is inflated by an amount that varies per slice. Proportional set
+ * size divides shared pages among their holders, which is exactly the property
+ * a pie needs.
+ *
+ * Anything below the threshold becomes one "everything else" slice rather than
+ * forty slivers. The remainder is taken from the measured total rather than by
+ * adding up what was left out, so services too small to be recorded at all are
+ * still inside it — the slice means "all the rest", not "the rest of the rows
+ * you can see".
+ */
+function drawPieChart(canvas, slices, options = {}) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = Math.max(240, canvas.clientWidth);
+  const cssH = canvas.clientHeight || 260;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, cssW, cssH);
+  ctx.font = "12px system-ui";
+
+  const total = slices.reduce((sum, s) => sum + Math.max(0, s.value), 0);
+  if (!slices.length || total <= 0) {
+    ctx.fillStyle = "#9a9a9a";
+    ctx.fillText(options.empty || "Nothing to show yet", 12, 24);
+    drawLegend(canvas, []);
+    return;
+  }
+
+  /*
+   * The circle and its labels are centred as one block.
+   *
+   * Sizing the circle against half the canvas and then starting at the left
+   * edge leaves the whole right side empty on a wide panel, which reads as a
+   * chart that failed to fill its space. Measuring the longest label first
+   * gives the true width of the group, so it can be placed as a unit.
+   */
+  const radius = Math.max(40, Math.min(cssW / 3, cssH) / 2 - 8);
+  const labelGap = 18;
+  const widest = slices.reduce((wide, slice, i) => {
+    const share = (Math.max(0, slice.value) / total) * 100;
+    const shown = share >= 1 ? share.toFixed(0) : share.toFixed(1);
+    const text = `${slice.label} — ${humanBytes(slice.value)} (${shown}%)`;
+    return Math.max(wide, ctx.measureText(text).width + 15);
+  }, 0);
+
+  const groupWidth = radius * 2 + labelGap + widest;
+  const left = Math.max(0, (cssW - groupWidth) / 2);
+  const cx = left + radius;
+  const cy = cssH / 2;
+
+  let angle = -Math.PI / 2;
+  slices.forEach((slice, i) => {
+    const share = Math.max(0, slice.value) / total;
+    const sweep = share * Math.PI * 2;
+
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, radius, angle, angle + sweep);
+    ctx.closePath();
+    ctx.fillStyle = slice.color || seriesColor(i);
+    ctx.fill();
+
+    /*
+     * A hairline between slices, in the panel's own background.
+     *
+     * Two adjacent colours of similar lightness read as one wedge without it,
+     * which is how a pie quietly under-reports the number of things in it.
+     */
+    ctx.strokeStyle = "#161616";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    angle += sweep;
+  });
+
+  // Labels down the right, in the same order as the slices, so the eye can
+  // follow them round without a separate key.
+  const labelX = cx + radius + labelGap;
+  const lineHeight = 17;
+  const startY = cy - ((slices.length - 1) * lineHeight) / 2;
+
+  slices.forEach((slice, i) => {
+    const y = startY + i * lineHeight;
+    if (y < 10 || y > cssH - 4) return;
+
+    ctx.fillStyle = slice.color || seriesColor(i);
+    ctx.fillRect(labelX, y - 7, 9, 9);
+
+    ctx.fillStyle = "#ddd";
+    const share = (Math.max(0, slice.value) / total) * 100;
+    const shown = share >= 1 ? share.toFixed(0) : share.toFixed(1);
+    ctx.fillText(`${slice.label} — ${humanBytes(slice.value)} (${shown}%)`, labelX + 15, y + 1);
+  });
+
+  // The canvas carries its own labels, so the shared legend would repeat them.
+  drawLegend(canvas, []);
+}
+
+/**
+ * Slices for the memory pie: everything at or above the threshold, then one
+ * slice for all the rest.
+ */
+function memorySlices(services, measuredTotal, threshold = 0.01) {
+  const rows = services
+    .map(s => ({ label: s.name, value: Number(s.pss_bytes) || 0 }))
+    .filter(s => s.value > 0)
+    .sort((a, b) => b.value - a.value);
+
+  /*
+   * The denominator is the measured total, not the sum of these rows.
+   *
+   * Only the biggest services are recorded, and PSS itself is measured for the
+   * biggest processes, so summing the visible rows would quietly rescale every
+   * percentage to make the visible part look like the whole machine.
+   */
+  const total = measuredTotal > 0 ? measuredTotal : rows.reduce((sum, r) => sum + r.value, 0);
+  if (total <= 0) return [];
+
+  const big = rows.filter(r => r.value / total >= threshold);
+  const rest = total - big.reduce((sum, r) => sum + r.value, 0);
+
+  const slices = big.slice();
+  if (rest > 0) {
+    const hidden = rows.length - big.length;
+    slices.push({
+      label: hidden > 0
+        ? `Everything else (${count(hidden, "service")} and smaller)`
+        : "Everything else",
+      value: rest,
+      // Deliberately grey: it is the part with no answer in it, and colouring
+      // it like a service invites reading it as one.
+      color: "#4a4a4a",
+    });
+  }
+
+  return slices;
 }
 
 /* ------------------------------------------------------------------ table -- */
@@ -2063,7 +2224,13 @@ async function refreshHost() {
     { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
   ]);
 
-  renderServices(data.services ?? [], data.service_series ?? [], data.service_charted ?? []);
+  renderServices(
+    data.services ?? [],
+    data.service_series ?? [],
+    data.service_charted ?? [],
+    data.service_metrics ?? {}
+  );
+  renderMemoryPie(data.services ?? [], s);
 
   renderTable("hostProcesses", data.processes, [
     { label: "PID", className: "size", render: r => r.pid },
@@ -2342,7 +2509,12 @@ function renderHostDisks(rows, sample, sampleCount) {
  * 1.8 GiB" might be a leak or might have been true since it was installed;
  * "1.2 GiB last week, 1.5 GiB yesterday, 1.8 GiB now" carries its own diagnosis.
  */
-function renderServices(rows, series, charted) {
+function renderServices(rows, series, charted, metrics) {
+  // Remembered so a redraw - a poll, a range change - does not snap the chart
+  // back to memory while somebody is reading the write rates.
+  state.hostCharted = charted;
+  syncMetricOptions(metrics);
+
   if (!rows.length) {
     $("hostServices").replaceChildren(Object.assign(document.createElement("p"), {
       className: "muted",
@@ -2396,16 +2568,96 @@ function renderServices(rows, series, charted) {
     },
   ]);
 
+  drawServiceChart(series, charted, state.hostMetric || "pss");
+}
+
+/** The metric picker, built from whatever the server says it can chart. */
+function syncMetricOptions(metrics) {
+  const select = $("hostMetric");
+  const names = Object.keys(metrics);
+  if (!names.length || select.dataset.built === names.join(",")) return;
+
+  select.replaceChildren(...names.map(key => {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = metrics[key];
+    return option;
+  }));
+  select.dataset.built = names.join(",");
+  select.value = state.hostMetric || "pss";
+}
+
+/**
+ * The service chart, on whichever metric is chosen.
+ *
+ * The axis follows the metric rather than being fixed: bytes for memory, bytes
+ * per second for the counters, and a plain count for processes and threads. A
+ * process count rendered on a byte axis reads as "4 B", which is worse than no
+ * label at all.
+ */
+function drawServiceChart(series, charted, metric) {
+  const axis = metric === "procs" || metric === "threads"
+    ? countAxis
+    : (metric === "read" || metric === "write" ? rateAxis : bytesAxis);
+
   drawLineChart(
     $("hostServiceChart"),
     series,
     charted.map(name => ({ key: name, label: name })),
     {
-      axis: bytesAxis,
+      axis,
       zeroBased: true,
       empty: "Not enough service history to draw yet",
     }
   );
+
+  $("hostMetricNote").textContent = (metric === "read" || metric === "write")
+    // Worth saying, because the stored column is cumulative and somebody
+    // reading the database directly will see a number that only ever climbs.
+    ? "Counters differentiated into a rate; a gap means the service restarted."
+    : "";
+}
+
+/** Redraws the chart on a different metric without refetching the whole panel. */
+async function refreshServiceChart() {
+  const charted = state.hostCharted || [];
+  if (!charted.length) return;
+
+  const to = Math.floor(Date.now() / 1000);
+  const params = new URLSearchParams({
+    metric: state.hostMetric || "pss",
+    from: String(to - state.range),
+    to: String(to),
+  });
+  for (const name of charted) params.append("names[]", name);
+
+  const data = await api("host-series", params);
+  drawServiceChart(data.rows ?? [], charted, data.metric || "pss");
+}
+
+/**
+ * The memory pie, over the services from the latest reading.
+ *
+ * The total comes from the sample rather than from adding the slices up, so the
+ * "everything else" wedge covers services too small to have been recorded at
+ * all - not merely the ones below the threshold that were.
+ */
+function renderMemoryPie(services, sample) {
+  const measured = Number(sample?.pss_sum_bytes) || 0;
+  const slices = memorySlices(services, measured);
+
+  drawPieChart($("hostPie"), slices, {
+    empty: "No measured process memory in the latest reading",
+  });
+
+  $("hostPieNote").textContent =
+    "Share of measured process memory. Drawn from PSS because a pie claims its "
+    + "slices make a whole, and resident memory cannot — a page shared by ten "
+    + "processes would be counted ten times and every slice inflated."
+    + (measured
+      ? ` Total ${humanBytes(measured)} across the ${sample.pss_procs} biggest processes;`
+        + " anything under 1% is folded into one slice."
+      : "");
 }
 
 /**
@@ -3289,6 +3541,11 @@ $("procBy").addEventListener("change", () => {
 
 $("procRefresh").addEventListener("click", () => {
   refreshProcesses().catch(e => notice(String(e.message || e)));
+});
+
+$("hostMetric").addEventListener("change", () => {
+  state.hostMetric = $("hostMetric").value;
+  refreshServiceChart().catch(e => notice(String(e.message || e)));
 });
 
 $("problemClear").addEventListener("click", async () => {

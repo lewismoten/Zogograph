@@ -537,6 +537,48 @@ name and five integers — roughly a megabyte a month — and its entire value i
 being *older* than that. `host.keep_service_days` defaults to 90, so "and what
 was it in June?" stays answerable after the detail behind it has gone.
 
+### Charting a service
+
+The chart under the table takes a metric: proportional or resident memory,
+swap, reading, writing, processes, threads.
+
+Reading and writing are **counters**, not levels. The database stores the total
+bytes a service has moved since it started, which only ever climbs — plotted raw
+it is a diagonal line that says nothing. They are differentiated into a
+per-second rate before charting, over whatever interval the thinned series
+actually used. A counter that goes backwards means the service restarted and
+began again from zero, so that point is a gap rather than a large negative
+spike against the one service somebody has just touched.
+
+The axis follows the metric: bytes for memory, bytes per second for the
+counters, a plain count for processes and threads. A process count on a byte
+axis reads as `4 B`, which is worse than no label.
+
+Switching metric hits a small dedicated endpoint rather than refetching the
+whole host payload — there is no reason to reload the process list, the slab
+table and the file list to redraw one canvas.
+
+### Where the memory goes
+
+A pie of the services, anything under 1% folded into a single slice.
+
+**It is drawn from PSS, and it has to be.** A pie asserts that its slices make
+up a whole, and resident memory cannot: a page shared by ten processes is
+counted ten times, so the parts sum to more than the machine has and every
+percentage is inflated by a different amount. Proportional set size divides
+shared pages among their holders, which is exactly the property a pie needs. A
+pie of RSS is not a rough version of this one — it is arithmetic that does not
+close.
+
+The denominator is the **measured total from the sample**, not the sum of the
+visible rows. Only the biggest services are recorded, and PSS itself is measured
+for the biggest processes, so adding up the slices would quietly rescale the
+visible part to look like the whole machine. Taking the remainder from the
+measured total instead means *Everything else* covers services too small to have
+been recorded at all — the slice means "all the rest", not "the rest of the rows
+you can see". It is grey on purpose: it is the part with no answer in it, and
+colouring it like a service invites reading it as one.
+
 ### Swap is a state, not an event
 
 The panel shows swap prominently and refuses to alarm about it, because the

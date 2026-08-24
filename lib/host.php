@@ -1217,18 +1217,54 @@ function hostServiceAt(PDO $pdo, string $name, int $target, int $tolerance = 432
 }
 
 /**
- * One service's history, thinned to something a chart can draw.
+ * What each service may be charted on, and how the column behaves.
  *
- * Every nth row rather than an average, for the reason the vitals series gives:
- * averaging is the operation that removes the spike you came to look at.
+ * The distinction that matters is level against counter. Memory is a level -
+ * whatever it is right now - and plots directly. Bytes read and written are
+ * counters that only ever climb, so plotted raw they produce a diagonal line
+ * that says nothing; they have to be differentiated into a rate first, exactly
+ * as the device figures are.
+ */
+function hostServiceMetrics(): array
+{
+    return [
+        'pss' => ['column' => 'pss_bytes', 'counter' => false, 'label' => 'Proportional memory'],
+        'rss' => ['column' => 'rss_bytes', 'counter' => false, 'label' => 'Resident memory'],
+        'swap' => ['column' => 'swap_bytes', 'counter' => false, 'label' => 'Swapped'],
+        'read' => ['column' => 'read_bytes', 'counter' => true, 'label' => 'Reading'],
+        'write' => ['column' => 'write_bytes', 'counter' => true, 'label' => 'Writing'],
+        'procs' => ['column' => 'procs', 'counter' => false, 'label' => 'Processes'],
+        'threads' => ['column' => 'threads', 'counter' => false, 'label' => 'Threads'],
+    ];
+}
+
+/**
+ * One metric for several services over time, thinned to something a chart can
+ * draw.
+ *
+ * Every nth reading rather than an average, for the reason the vitals series
+ * gives: averaging is the operation that removes the spike you came to look at.
  *
  * @return list<array>
  */
-function hostServiceSeries(PDO $pdo, array $names, int $from, int $to, int $limit = 400): array
-{
+function hostServiceSeries(
+    PDO $pdo,
+    array $names,
+    int $from,
+    int $to,
+    string $metric = 'pss',
+    int $limit = 400
+): array {
     if (!$names) {
         return [];
     }
+
+    $metrics = hostServiceMetrics();
+    // The column name is interpolated into SQL, so it comes from this list and
+    // never from the request - a caller asking for something unknown gets the
+    // default rather than a chance to write the query.
+    $spec = $metrics[$metric] ?? $metrics['pss'];
+    $column = $spec['column'];
 
     $marks = implode(',', array_fill(0, count($names), '?'));
 
@@ -1240,14 +1276,20 @@ function hostServiceSeries(PDO $pdo, array $names, int $from, int $to, int $limi
     $step = max(1, (int)ceil(((int)$count->fetchColumn()) / $limit));
 
     $stmt = $pdo->prepare(
-        "SELECT taken_at, name, pss_bytes, rss_bytes FROM (
-             SELECT taken_at, name, pss_bytes, rss_bytes,
+        "SELECT taken_at, name, $column AS value FROM (
+             SELECT taken_at, name, $column,
                     DENSE_RANK() OVER (ORDER BY taken_at) AS rn
              FROM host_services
              WHERE name IN ($marks) AND taken_at BETWEEN ? AND ?
          ) WHERE rn % ? = 0 ORDER BY taken_at"
     );
     $stmt->execute([...$names, $from, $to, $step]);
+
+    $rows = $stmt->fetchAll();
+
+    if ($spec['counter']) {
+        $rows = hostDifferentiate($rows);
+    }
 
     /*
      * Pivoted into one row per instant with a column per service, because that
@@ -1256,14 +1298,53 @@ function hostServiceSeries(PDO $pdo, array $names, int $from, int $to, int $limi
      * every later point along by one.
      */
     $byTime = [];
-    foreach ($stmt->fetchAll() as $row) {
+    foreach ($rows as $row) {
         $at = (int)$row['taken_at'];
         $byTime[$at]['taken_at'] = $at;
-        $byTime[$at][$row['name']] = (int)$row['pss_bytes'];
+        if ($row['value'] !== null) {
+            $byTime[$at][$row['name']] = $row['value'];
+        }
     }
 
     ksort($byTime);
     return array_values($byTime);
+}
+
+/**
+ * Turns a cumulative counter into a per-second rate, per service.
+ *
+ * The first reading of each service has nothing to subtract from and becomes a
+ * gap rather than a zero. A counter that went backwards means the service
+ * restarted and began counting again - also a gap, because there is no rate
+ * across that boundary and the difference would be a large negative number
+ * against the one service somebody had just touched.
+ *
+ * @return list<array>
+ */
+function hostDifferentiate(array $rows): array
+{
+    $previous = [];
+    $out = [];
+
+    foreach ($rows as $row) {
+        $name = $row['name'];
+        $at = (int)$row['taken_at'];
+        $value = (int)$row['value'];
+
+        $rate = null;
+        if (isset($previous[$name])) {
+            [$wasAt, $wasValue] = $previous[$name];
+            $seconds = $at - $wasAt;
+            if ($seconds > 0 && $value >= $wasValue) {
+                $rate = round(($value - $wasValue) / $seconds, 2);
+            }
+        }
+
+        $previous[$name] = [$at, $value];
+        $out[] = ['taken_at' => $at, 'name' => $name, 'value' => $rate];
+    }
+
+    return $out;
 }
 
 /* ------------------------------------------------------------- disk i/o -- */

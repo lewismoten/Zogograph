@@ -290,7 +290,23 @@
       rising one is a leak.</strong>
     </p>
     <div id="hostServices"></div>
+
+    <div class="panel-controls" style="margin-top:12px">
+      <label class="inline">
+        Chart
+        <select id="hostMetric"></select>
+      </label>
+      <span class="muted small" id="hostMetricNote"></span>
+    </div>
     <canvas id="hostServiceChart"></canvas>
+
+    <h3 class="sub-head">Where the memory goes</h3>
+    <p class="muted small sub-note" id="hostPieNote">
+      Share of measured process memory. Drawn from PSS because a pie claims its
+      slices make a whole, and resident memory cannot — a page shared by ten
+      processes would be counted ten times and every slice inflated.
+    </p>
+    <canvas id="hostPie" style="height:300px"></canvas>
 
     <h3 class="sub-head">Biggest processes on the host</h3>
     <div id="hostProcesses"></div>
