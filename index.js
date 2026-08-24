@@ -608,7 +608,19 @@ function drawLineChart(canvas, rows, series, options = {}) {
    * cannot show - including any that happened before boot times were being
    * recorded at all.
    */
-  for (const at of options.marks || []) {
+  /*
+   * Restart marks default to whatever the page knows about, deliberately.
+   *
+   * Passing them per call meant five charts had them and four did not, which is
+   * not a decision anybody made - it is the list nobody finished. A chart that
+   * plots time against anything should say when the machine restarted, so the
+   * default is "yes" and a caller that genuinely does not want them can pass an
+   * empty array. This couples a drawing function to page state, which is a real
+   * cost; the alternative is every future chart starting out wrong.
+   */
+  const restartsAt = options.marks ?? state.restarts ?? [];
+
+  for (const at of restartsAt) {
     if (at < t0 || at > t1) continue;
     const mx = x(at);
 
@@ -1265,8 +1277,7 @@ function renderRoomChart(rows) {
 
   $("roomNote").textContent = note;
   drawLineChart($("roomChart"), mode === "delta" ? bucketed : prepared,
-    shape.series,
-    { ...shape.options, outages: outageBands(state.uptime), marks: state.restarts || [] });
+    shape.series, { ...shape.options, outages: outageBands(state.uptime) });
 }
 
 /** The change between two readings, or null when there is nothing to compare. */
@@ -1347,7 +1358,6 @@ function renderCpuChart(rows) {
 
   drawLineChart($("cpuChart"), prepared, series, {
     outages: outageBands(state.uptime),
-    marks: state.restarts || [],
     axis: percentAxis,
     rightAxis: absolute ? bytesAxis : undefined,
     zeroBased: true,
@@ -1394,7 +1404,6 @@ function renderIoChart(rows) {
 
   drawLineChart($("ioChart"), rows, series, {
     outages: outageBands(state.uptime),
-    marks: state.restarts || [],
     axis: rateAxis,
     rightAxis: percentAxis,
     zeroBased: true,
@@ -1459,7 +1468,6 @@ function renderVitalCharts(rows, uptime) {
    * draws a line at one-per-core - the level above which work is queueing.
    */
   const bands = outageBands({ analysis: uptime });
-  const marks = state.restarts || [];
 
   drawLineChart($("loadChart"), rows,
     [
@@ -1468,11 +1476,11 @@ function renderVitalCharts(rows, uptime) {
       { key: "load15", label: "15 min" },
     ],
     { axis: step => ({ scale: 1, unit: "", format: v => v.toFixed(tickPrecision(step)) }),
-      zeroBased: true, outages: bands, marks });
+      zeroBased: true, outages: bands });
 
   drawLineChart($("netChart"), rows,
     [{ key: "net_rx_rate", label: "In" }, { key: "net_tx_rate", label: "Out" }],
-    { axis: rateAxis, zeroBased: true, outages: bands, marks,
+    { axis: rateAxis, zeroBased: true, outages: bands,
       empty: "No network counters here — /proc/net/dev is not readable" });
 }
 

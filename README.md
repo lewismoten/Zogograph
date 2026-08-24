@@ -803,6 +803,15 @@ is nothing to shade, yet the machine did restart and that is exactly the moment
 somebody scanning a chart wants marked. A band of near-zero width would be
 invisible, so the marker is a line at the instant itself.
 
+**Every time chart carries them**, and that is arranged by defaulting the option
+inside the drawing function rather than passing it at each call. Passing it per
+chart gave five that had marks and four that did not — which was not a decision
+anybody made, it was the list nobody finished. A chart plotting anything against
+time should say when the machine restarted, so the default is yes and a caller
+can opt out with an empty array. That couples a drawing primitive to page state,
+which is a real cost, accepted because the alternative is every future chart
+starting out wrong.
+
 The marks come from `last` on the host, which knows about restarts the readings
 cannot show — including any from **before boot times were being recorded**. That
 case is not hypothetical: the first machine this ran on had a real reboot that
