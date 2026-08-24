@@ -184,6 +184,49 @@ foreach ($called as $key => $call) {
     $undefined[$call['name']] = $call['where'];
 }
 
+/*
+ * Whether the dashboard and the API agree about what exists.
+ *
+ * The function check above catches PHP that is out of step with other PHP. It
+ * cannot see across the language boundary, and that is where the other half of
+ * a partial upload shows up: index.js asks for an action that this api.php has
+ * never heard of, and the only symptom is a 403 and "unknown action" in a
+ * console the person diagnosing it may never open.
+ *
+ * Read as text rather than executed, like everything else on this page, so it
+ * still works on the install that is too broken to run.
+ *
+ * Deliberately one-directional. Actions the API serves but nothing calls are
+ * not reported: an endpoint can exist for a cron job, for a bookmark, or for a
+ * future page, and flagging those would fill this list with things that are
+ * fine. Only the calls that cannot be answered are faults.
+ */
+$actionsWanted = [];
+$actionsServed = [];
+
+$apiSource = @file_get_contents($root . '/api.php') ?: '';
+if ($apiSource !== '') {
+    // Over-collects: any 'key' => in the file, not only the dispatch arms.
+    // That is the safe direction - a stray key can only mask a fault that is
+    // not there, never invent one.
+    preg_match_all("/'([a-z0-9][a-z0-9-]*)'\s*=>/", $apiSource, $found);
+    $actionsServed = array_flip($found[1]);
+}
+
+$jsSource = @file_get_contents($root . '/index.js') ?: '';
+if ($jsSource !== '') {
+    preg_match_all('/\b(?:api|post)\(\s*"([a-z0-9][a-z0-9-]*)"/', $jsSource, $found);
+    foreach ($found[1] as $name) {
+        $actionsWanted[$name] = true;
+    }
+}
+
+$actionsMissing = [];
+if ($actionsServed && $actionsWanted) {
+    $actionsMissing = array_keys(array_diff_key($actionsWanted, $actionsServed));
+    sort($actionsMissing);
+}
+
 $configured = is_file($root . '/lib/config.php');
 $dataDir = $root . '/data';
 
@@ -208,9 +251,12 @@ $verdict = $missing > 0
         : ($undefined
         ? count($undefined) . ' function(s) are called but defined nowhere — some '
             . 'files are older than the ones calling them. Upload the whole set again.'
+        : ($actionsMissing
+        ? count($actionsMissing) . ' action(s) the dashboard calls do not exist in '
+            . 'api.php — index.js is newer than api.php. Upload the whole set again.'
         : (!$configured
             ? 'The code is fine. Nothing is configured yet — open setup.php.'
-            : 'Everything this page can check looks right.')));
+            : 'Everything this page can check looks right.'))));
 
 function mark(bool $ok): string
 {
@@ -284,6 +330,26 @@ code { background: #000; padding: 1px 5px; border-radius: 4px; }
     <td><?= mark(false) ?></td>
     <td><code><?= esc($name) ?>()</code></td>
     <td class="muted">called in <?= esc($where) ?></td>
+  </tr>
+<?php endforeach; ?>
+</table>
+<?php endif; ?>
+
+<?php if ($actionsMissing): ?>
+<h2>Actions the dashboard cannot reach</h2>
+<p class="muted">
+  <code>index.js</code> asks for these and <code>api.php</code> does not define
+  them, which means the two files are from different versions. In the browser
+  this looks like <code>403</code> and <code>unknown action</code> in the
+  console, and like a panel that never fills in on the page. Uploading
+  everything again fixes it.
+</p>
+<table>
+<?php foreach ($actionsMissing as $name): ?>
+  <tr>
+    <td><?= mark(false) ?></td>
+    <td><code>action=<?= esc($name) ?></code></td>
+    <td class="muted">called in index.js</td>
   </tr>
 <?php endforeach; ?>
 </table>
