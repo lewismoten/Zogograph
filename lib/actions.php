@@ -26,6 +26,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/collect.php';
+// humanBytes, for the audit note when a link survives a delete.
+require_once __DIR__ . '/alerts.php';
 
 final class ActionRefused extends RuntimeException
 {
@@ -104,14 +106,38 @@ function deleteFile(array $config, PDO $pdo, string $requested): array
         throw new ActionRefused('that is a directory; use empty instead');
     }
 
-    $size = (int)(@filesize($real) ?: 0);
+    /*
+     * What removing this actually gives back.
+     *
+     * Nothing, if another directory entry points at the same inode: a hard link
+     * is a name, and the allocation survives until the last name is gone. The
+     * audit log is meant to answer "where did the space come from", so
+     * recording the file's size as freed when the disk did not move would make
+     * every total in it wrong, and wrong in the flattering direction.
+     */
+    $stat = @stat($real);
+    $size = $stat === false ? 0 : (int)$stat['size'];
+    $links = $stat === false ? 1 : (int)($stat['nlink'] ?? 1);
+    $freed = $links > 1 ? 0 : $size;
+
     if (!@unlink($real)) {
         logAction($pdo, 'delete_file', $real, 'failed', 0, 0, 'unlink returned false');
         throw new ActionRefused('could not delete the file');
     }
 
-    logAction($pdo, 'delete_file', $real, 'ok', $size, 1);
-    return ['bytes_freed' => $size, 'files_removed' => 1];
+    logAction(
+        $pdo,
+        'delete_file',
+        $real,
+        'ok',
+        $freed,
+        1,
+        $links > 1
+            ? sprintf('one of %d links; %s stays on disk until the rest go', $links, humanBytes($size))
+            : null
+    );
+
+    return ['bytes_freed' => $freed, 'files_removed' => 1, 'links' => $links, 'bytes' => $size];
 }
 
 /**
@@ -138,6 +164,7 @@ function emptyCategory(array $config, PDO $pdo, string $category): array
     $freed = 0;
     $removed = 0;
     $failed = 0;
+    $linked = 0;
 
     $files = [];
     collectCategoryFiles($root, $config['scan'], $category, $excluded, $root, $files);
@@ -152,8 +179,25 @@ function emptyCategory(array $config, PDO $pdo, string $category): array
             $failed++;
             continue;
         }
+        /*
+         * Counted only when this was the last name for the file.
+         *
+         * Checked immediately before the unlink rather than with a set of
+         * inodes, and that ordering does the bookkeeping for free: if both
+         * links are in this category, the first delete sees two links and
+         * counts nothing, the second sees one and counts the whole file. The
+         * total comes out right however many names there were and whichever
+         * order they were reached in.
+         */
+        $stat = @stat($real);
+        $last = $stat === false || (int)($stat['nlink'] ?? 1) <= 1;
+
         if (@unlink($real)) {
-            $freed += $size;
+            if ($last) {
+                $freed += $size;
+            } else {
+                $linked++;
+            }
             $removed++;
         } else {
             $failed++;
@@ -167,10 +211,18 @@ function emptyCategory(array $config, PDO $pdo, string $category): array
         $failed > 0 ? 'partial' : 'ok',
         $freed,
         $removed,
-        $failed > 0 ? "$failed could not be removed" : null
+        implode('; ', array_filter([
+            $failed > 0 ? "$failed could not be removed" : null,
+            $linked > 0 ? "$linked still had another link, so freed nothing" : null,
+        ])) ?: null
     );
 
-    return ['bytes_freed' => $freed, 'files_removed' => $removed, 'failed' => $failed];
+    return [
+        'bytes_freed' => $freed,
+        'files_removed' => $removed,
+        'failed' => $failed,
+        'still_linked' => $linked,
+    ];
 }
 
 /** Every file under $dir that counts against $category, with its size. */

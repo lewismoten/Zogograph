@@ -289,12 +289,25 @@ function hostMigrations(): array
              * A 763 MB rotated log there costs the same disk as one in the home
              * directory and is invisible to every tool the account can run.
              */
+            /*
+             * Device, inode and link count, not just size.
+             *
+             * Apache publishes the same log twice - once flat and once under a
+             * per-account directory - as two names for one inode. They are not
+             * two files and they do not cost two allocations, and a collector
+             * that reports the sum of their sizes invents disk that does not
+             * exist. The identity of a file is (device, inode); the path is
+             * only a name for it.
+             */
             "CREATE TABLE host_files (
                 sample_id INTEGER NOT NULL REFERENCES host_samples(id) ON DELETE CASCADE,
                 path      TEXT NOT NULL,
                 bytes     INTEGER,
                 owner     TEXT,
-                mtime     INTEGER
+                mtime     INTEGER,
+                device    INTEGER,
+                inode     INTEGER,
+                links     INTEGER
             )",
             'CREATE INDEX host_files_sample ON host_files (sample_id)',
 

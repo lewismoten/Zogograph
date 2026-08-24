@@ -504,17 +504,29 @@ function hostWatchedFiles(array $config, int $limit = 40, string $passwd = '/etc
             if (!is_file($path)) {
                 continue;
             }
-            $size = @filesize($path);
-            if ($size === false || $size < $minimum) {
+            /*
+             * One stat, for the identity as well as the size.
+             *
+             * The watch list deliberately covers both /etc/apache2/logs/domlogs/*
+             * and the per-account directory below it, which is how the same log
+             * shows up twice. Without the inode there is no way to tell that
+             * apart from two genuinely large files, and the difference is 199 MB
+             * against 398 MB.
+             */
+            $stat = @stat($path);
+            if ($stat === false || (int)$stat['size'] < $minimum) {
                 continue;
             }
 
-            $uid = @fileowner($path);
+            $uid = $stat['uid'] ?? false;
             $found[$path] = [
                 'path' => $path,
-                'bytes' => (int)$size,
+                'bytes' => (int)$stat['size'],
                 'owner' => $uid === false ? null : (hostUserNames($passwd)[$uid] ?? (string)$uid),
-                'mtime' => (int)(@filemtime($path) ?: 0),
+                'mtime' => (int)($stat['mtime'] ?? 0),
+                'device' => (int)($stat['dev'] ?? 0),
+                'inode' => (int)($stat['ino'] ?? 0),
+                'links' => (int)($stat['nlink'] ?? 1),
             ];
         }
     }
@@ -686,10 +698,14 @@ function hostTakeReading(
         }
 
         $watched = $pdo->prepare(
-            'INSERT INTO host_files (sample_id, path, bytes, owner, mtime) VALUES (?, ?, ?, ?, ?)'
+            'INSERT INTO host_files (sample_id, path, bytes, owner, mtime, device, inode, links)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
         );
         foreach ($files as $row) {
-            $watched->execute([$sampleId, $row['path'], $row['bytes'], $row['owner'], $row['mtime']]);
+            $watched->execute([
+                $sampleId, $row['path'], $row['bytes'], $row['owner'], $row['mtime'],
+                $row['device'], $row['inode'], $row['links'],
+            ]);
         }
 
         if ($lve['available']) {
@@ -877,4 +893,46 @@ function seriesDirection(array $points): ?array
             || ($first < 0 && $second < 0 && $overall < 0));
 
     return ['median' => median($steps), 'overall' => $overall, 'sustained' => $sustained];
+}
+
+/**
+ * Adds watched files up without counting one inode twice.
+ *
+ * The rule everywhere else in this program too: a file's identity is
+ * (device, inode), and a path is only a name for it. Summing the size column of
+ * a list that happens to contain two names for one log reports disk that was
+ * never allocated.
+ *
+ * @return array{bytes: int, files: int, paths: int, linked: int}
+ */
+function hostFileTotals(array $rows): array
+{
+    $seen = [];
+    $bytes = 0;
+    $linked = 0;
+
+    foreach ($rows as $row) {
+        $key = ($row['device'] ?? 0) . ':' . ($row['inode'] ?? 0);
+
+        // No inode recorded - an older reading - so it can only be taken at
+        // face value. Better a possible overcount than silently dropping a file.
+        if (($row['inode'] ?? 0) === 0) {
+            $bytes += (int)$row['bytes'];
+            continue;
+        }
+
+        if (isset($seen[$key])) {
+            $linked++;
+            continue;
+        }
+        $seen[$key] = true;
+        $bytes += (int)$row['bytes'];
+    }
+
+    return [
+        'bytes' => $bytes,
+        'files' => count($seen),
+        'paths' => count($rows),
+        'linked' => $linked,
+    ];
 }

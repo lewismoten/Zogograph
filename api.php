@@ -291,7 +291,7 @@ function offenders(array $config, PDO $pdo, bool $signedIn): array
 
     $stmt = $pdo->prepare(
         'SELECT p.id AS path_id, p.path, p.kind, p.category,
-                now.bytes, now.files,
+                now.bytes, now.files, now.links,
                 COALESCE(now.bytes - before.bytes, 0) AS growth,
                 COALESCE(now.files - before.files, 0) AS growth_files
          FROM path_sizes now
@@ -551,6 +551,10 @@ function hostView(array $config, bool $signedIn): array
         'processes' => $of('SELECT * FROM host_processes WHERE sample_id = ? ORDER BY rss_bytes DESC'),
         'slab' => $of('SELECT * FROM host_slab WHERE sample_id = ? ORDER BY cache_bytes DESC'),
         'files' => $of('SELECT * FROM host_files WHERE sample_id = ? ORDER BY bytes DESC'),
+        // Summed over unique (device, inode), not over paths.
+        'file_totals' => hostFileTotals(
+            $of('SELECT * FROM host_files WHERE sample_id = ? ORDER BY bytes DESC')
+        ),
         'lve' => $of('SELECT * FROM host_lve WHERE sample_id = ? ORDER BY faults_mem DESC, user'),
         'rows' => $rows,
     ];

@@ -338,9 +338,12 @@ function runScan(array $config, PDO $pdo): array
     $seenBytes = 0;
     $error = null;
 
+    $seenInodes = [];
+    $linkCounts = [];
+
     try {
         walk($root, $root, $rules, $excluded, $dirBytes, $dirFiles, $fileBytes,
-             $totals, $seenFiles, $seenDirs, $seenBytes);
+             $totals, $seenFiles, $seenDirs, $seenBytes, $seenInodes, $linkCounts);
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
@@ -380,7 +383,8 @@ function runScan(array $config, PDO $pdo): array
     $pdo->beginTransaction();
     try {
         $insertSize = $pdo->prepare(
-            'INSERT INTO path_sizes (scan_id, path_id, bytes, files) VALUES (?, ?, ?, ?)'
+            'INSERT INTO path_sizes (scan_id, path_id, bytes, files, links)
+             VALUES (?, ?, ?, ?, ?)'
         );
         foreach ($keep as $path => $info) {
             $id = pathId(
@@ -395,6 +399,7 @@ function runScan(array $config, PDO $pdo): array
                 $id,
                 (int)$info['bytes'],
                 (int)($dirFiles[$path] ?? ($info['kind'] === 'file' ? 1 : 0)),
+                $linkCounts[$path] ?? null,
             ]);
         }
 
@@ -447,6 +452,31 @@ function runScan(array $config, PDO $pdo): array
  *
  * @return array{0:int,1:int} bytes and file count under this directory
  */
+/*
+ * One file can live at several paths.
+ *
+ * A hard link is not a copy: two directory entries pointing at one inode share
+ * a single allocation on disk. Apache does this routinely - the same log is
+ * published at /etc/apache2/logs/domlogs/site and again under a per-account
+ * directory - and `ls -l` gives it away with a link count of 2:
+ *
+ *     -rw-r----- 2 root regaldra 199M ... git.lewismoten.com-ssl_log
+ *
+ * Adding both paths up reports 398 MB of disk that does not exist, and the
+ * error compounds: the totals are wrong, the category is wrong, the growth
+ * figures are wrong, and the projection built on them is wrong. So bytes are
+ * counted once per unique (device, inode), not once per path.
+ *
+ * Which path gets the bytes is whichever the walk reaches first, so directory
+ * subtotals are order-dependent. That is exactly what `du` does, and for the
+ * same reason: any other choice makes the subtotals stop adding up to the
+ * total. The alternative - counting it in both and once in the grand total -
+ * produces a table whose column does not sum to its own footer.
+ *
+ * The set only holds files with more than one link. Almost every file has
+ * exactly one, and remembering every inode in a home directory would cost more
+ * memory than the scan is allowed to use.
+ */
 function walk(
     string $dir,
     string $root,
@@ -459,6 +489,8 @@ function walk(
     int &$seenFiles,
     int &$seenDirs,
     int &$seenBytes,
+    array &$seenInodes = [],
+    array &$linkCounts = [],
     int $depth = 0
 ): array {
     if ($depth > 40 || isExcludedPath($dir, $excluded)) {
@@ -489,15 +521,49 @@ function walk(
         if (is_dir($full)) {
             [$childBytes, $childFiles] = walk(
                 $full, $root, $rules, $excluded, $dirBytes, $dirFiles, $fileBytes,
-                $totals, $seenFiles, $seenDirs, $seenBytes, $depth + 1
+                $totals, $seenFiles, $seenDirs, $seenBytes, $seenInodes, $linkCounts,
+                $depth + 1
             );
             $bytes += $childBytes;
             $files += $childFiles;
             continue;
         }
 
-        $size = @filesize($full);
-        if ($size === false) {
+        /*
+         * stat rather than filesize, for the link count and the inode.
+         *
+         * One syscall gives size, device, inode and links together; filesize()
+         * is that same stat with everything but the size thrown away.
+         */
+        $stat = @stat($full);
+        if ($stat === false) {
+            continue;
+        }
+
+        $size = (int)$stat['size'];
+        $links = (int)($stat['nlink'] ?? 1);
+
+        /*
+         * A second path onto an inode already counted contributes nothing.
+         *
+         * It is still recorded and still shown - you need to see that the path
+         * exists, and which of them to remove - but its bytes are already in
+         * the totals under the first path that reached them.
+         */
+        $duplicate = false;
+        if ($links > 1) {
+            $key = $stat['dev'] . ':' . $stat['ino'];
+            $duplicate = isset($seenInodes[$key]);
+            $seenInodes[$key] = true;
+            $linkCounts[$full] = $links;
+        }
+
+        $fileBytes[$full] = $size;
+
+        if ($duplicate) {
+            // Counted as a file, because it is one, but not as bytes.
+            $files++;
+            $seenFiles++;
             continue;
         }
 
@@ -505,7 +571,6 @@ function walk(
         $files++;
         $seenFiles++;
         $seenBytes += $size;
-        $fileBytes[$full] = $size;
 
         $category = categoryOf($full, $rules, $root);
         if ($category !== null) {

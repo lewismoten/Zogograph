@@ -772,6 +772,63 @@ sqlite3 data/stats.db "
   GROUP BY p.id ORDER BY grew DESC LIMIT 10;"
 ```
 
+## One file, several names
+
+A hard link is not a copy. Two directory entries can point at one inode, sharing
+a single allocation on disk, and `ls -l` gives it away only in the link count:
+
+    -rw-r----- 2 root regaldra 199M ... domlogs/git.lewismoten.com-ssl_log
+    -rw-r----- 2 root regaldra 199M ... domlogs/regaldra/git.lewismoten.com-ssl_log
+
+Apache does exactly this — the same log published flat and again under a
+per-account directory. Both names report 199 MiB because both describe the same
+199 MiB. **Added up as two files, that is 398 MiB of disk that does not exist.**
+
+The error is worse than a wrong number in one column. Category totals, growth
+figures between scans, and the projection built on those growth figures are all
+downstream of it, and it is wrong in the flattering direction — it invents space
+that is already free, and sends you looking for it.
+
+So the rule is: **a file's identity is `(device, inode)`; a path is only a name
+for it.** Bytes are counted once per unique inode, never once per path. The
+collector reads all four values in one `stat` — the same syscall `filesize()`
+already makes, with everything but the size thrown away.
+
+Which path gets the bytes is whichever the walk reaches first, so directory
+subtotals are order-dependent. That is what `du` does, for the same reason: any
+other choice makes the subtotals stop adding up to the total. Counting it under
+both and once in the grand total gives a table whose column does not sum to its
+own footer.
+
+Only files with more than one link are tracked. Almost every file has exactly
+one, and remembering every inode under a home directory would cost more memory
+than a scan is allowed to use.
+
+The dashboard shows the consequence rather than hiding it. In the host panel one
+row per physical file, with the other names beneath it:
+
+| Path | Size | Names |
+|---|---|---|
+| `…/domlogs/git.lewismoten.com-ssl_log`<br>*also at `…/domlogs/regaldra/git.lewismoten.com-ssl_log`* | 199 MiB | 2 paths, 1 file |
+
+and under the table, `250 MiB across 2 files, reached by 3 paths.` Where a file
+has more links than the watch list can see, it says so — `2 here of 5` — because
+removing every path shown would still not free the space.
+
+In **What is taking the space**, a linked file carries `· 2 links` beside its
+size, since the number there is not what you would get back.
+
+**Deleting follows the same rule.** Removing one of two names frees nothing, so
+the audit log records nothing freed and says why:
+
+    delete_file  ok  freed 0  one of 2 links; 5.00 MiB stays on disk until the rest go
+
+Emptying a category checks the link count immediately before each unlink, which
+does the bookkeeping for free: if both names are in the category, the first
+delete sees two links and counts nothing, the second sees one and counts the
+whole file. The total comes out right however many names there were, and in
+whatever order they were reached.
+
 ## What is counted
 
 A file is assigned to at most one category, so the totals mean something next to

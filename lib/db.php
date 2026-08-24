@@ -303,6 +303,18 @@ function migrations(): array
             'ALTER TABLE process_samples ADD COLUMN oldest_seconds INTEGER',
             'ALTER TABLE process_samples ADD COLUMN newest_seconds INTEGER',
         ],
+
+        5 => [
+            /*
+             * How many directory entries point at this file.
+             *
+             * Above one, the path shares its bytes with another path: deleting
+             * this one frees nothing until the last link goes. Per scan rather
+             * than on `paths`, because a link count changes over time and the
+             * interesting moment is when it does.
+             */
+            'ALTER TABLE path_sizes ADD COLUMN links INTEGER',
+        ],
     ];
 }
 

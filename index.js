@@ -1089,7 +1089,32 @@ async function refreshOffenders() {
     { label: "Kind", render: row => (row.kind === "dir" ? "directory" : "file") },
     { label: "Category", render: row => row.category ?? "—" },
     { label: "Files", className: "size", render: row => (row.kind === "dir" ? humanCount(row.files) : "") },
-    { label: "Size", className: "size", render: row => humanBytes(row.bytes) },
+    {
+      /*
+       * Size, and a warning when the size is shared.
+       *
+       * A file with two directory entries occupies its bytes once. Deleting
+       * this path frees nothing while the other link survives, so the number
+       * beside it is not the number you would get back - and that is worth
+       * knowing before pressing Delete rather than after.
+       */
+      label: "Size",
+      className: "size",
+      render: row => {
+        const links = Number(row.links ?? 1);
+        if (links <= 1) return humanBytes(row.bytes);
+
+        const box = document.createElement("span");
+        box.appendChild(document.createTextNode(humanBytes(row.bytes)));
+        const note = document.createElement("span");
+        note.className = "muted small";
+        note.textContent = ` · ${links} links`;
+        note.title = `This file has ${links} names. Removing one frees nothing `
+          + `until the last one goes.`;
+        box.appendChild(note);
+        return box;
+      },
+    },
     {
       label: "Change",
       className: "size",
@@ -1528,7 +1553,7 @@ function stopButtons(row, grouped) {
 function confirmStop(row, grouped, force) {
   const many = grouped && row.procs > 1;
   const what = many
-    ? `all ${count(row.procs, "process")} named “${row.name}”`
+    ? `all ${count(row.procs, "process", "processes")} named “${row.name}”`
     : `“${row.name}” (pid ${row.pid})`;
 
   return confirm(
@@ -1577,9 +1602,15 @@ function processAge(row) {
   return age;
 }
 
-/** "1 process", "3 processes" — said often enough here to be worth a helper. */
-function count(n, thing) {
-  return `${n} ${thing}${n === 1 ? "" : "es"}`;
+/**
+ * "1 process", "3 processes", "2 files".
+ *
+ * The plural is a parameter rather than a rule. An earlier version appended
+ * "es", which is right for exactly the word it was written for and gives
+ * "2 filees" for the next one.
+ */
+function count(n, singular, plural = `${singular}s`) {
+  return `${n} ${n === 1 ? singular : plural}`;
 }
 
 /**
@@ -1681,12 +1712,12 @@ async function previewPattern() {
   for (const force of [false, true]) {
     const button = document.createElement("button");
     button.className = force ? "danger" : "";
-    button.textContent = `${force ? "Force" : "Ask"} ${count(eligible.length, "process")} to stop`;
+    button.textContent = `${force ? "Force" : "Ask"} ${count(eligible.length, "process", "processes")} to stop`;
 
     button.addEventListener("click", async () => {
       const verb = force ? "Force" : "Ask";
       if (!confirm(
-        `${verb} ${count(eligible.length, "process")} to stop?\n\n`
+        `${verb} ${count(eligible.length, "process", "processes")} to stop?\n\n`
         + `Pattern: ${pattern}\n\n`
         + (force
           ? "SIGKILL cannot be caught or ignored. Anything part-way through "
@@ -1960,12 +1991,7 @@ async function refreshHost() {
     { label: "Each", className: "size", render: r => humanBytes(r.obj_bytes) },
   ]);
 
-  renderTable("hostFiles", data.files, [
-    { label: "Path", className: "name", render: r => r.path },
-    { label: "Size", className: "size", render: r => humanBytes(r.bytes) },
-    { label: "Owner", render: r => r.owner ?? "—" },
-    { label: "Last written", className: "size", render: r => humanTime(r.mtime) },
-  ]);
+  renderHostFiles(data.files ?? [], data.file_totals ?? null);
 
   $("hostLveWrap").hidden = !data.lve.length;
   if (data.lve.length) {
@@ -2018,6 +2044,96 @@ function swapVerdict(swap, swapUsed) {
     default:
       return "Not enough readings yet to say whether this is left over or still "
         + "growing — that needs about half an hour of history.";
+  }
+}
+
+/**
+ * Watched files, with several names for one file shown as one file.
+ *
+ * A hard link is not a copy. Apache publishes the same log flat and again under
+ * a per-account directory, and both names report 199 MiB because both describe
+ * the same 199 MiB. Listed as two rows and added up, that is 398 MiB of disk
+ * that was never allocated — and the number is wrong in the direction that
+ * makes somebody go looking for space that is already free.
+ *
+ * So rows are grouped by (device, inode): one row per physical file, with the
+ * other names for it underneath. The size is stated once, because it exists
+ * once.
+ */
+function renderHostFiles(rows, totals) {
+  const holder = $("hostFiles");
+
+  if (!rows.length) {
+    holder.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: "Nothing over the size threshold.",
+    }));
+    return;
+  }
+
+  // Grouped in order, so the biggest physical file stays first.
+  const byInode = new Map();
+  for (const row of rows) {
+    const key = row.inode ? `${row.device}:${row.inode}` : `path:${row.path}`;
+    if (!byInode.has(key)) byInode.set(key, []);
+    byInode.get(key).push(row);
+  }
+
+  const groups = [...byInode.values()];
+
+  renderTable("hostFiles", groups, [
+    {
+      label: "Path",
+      className: "name",
+      render: group => {
+        const box = document.createElement("div");
+        box.appendChild(Object.assign(document.createElement("div"), {
+          textContent: group[0].path,
+        }));
+        // The other names for the same file, marked as such rather than
+        // listed as if they were more files.
+        for (const other of group.slice(1)) {
+          box.appendChild(Object.assign(document.createElement("div"), {
+            className: "muted small",
+            textContent: `also at ${other.path}`,
+          }));
+        }
+        return box;
+      },
+    },
+    { label: "Size", className: "size", render: group => humanBytes(group[0].bytes) },
+    {
+      label: "Names",
+      className: "size",
+      render: group => {
+        const links = Number(group[0].links ?? 1);
+        if (group.length === 1 && links <= 1) return "1";
+        /*
+         * Two counts, because they answer different questions. `group.length`
+         * is how many of the names are inside the watch list; `links` is how
+         * many exist anywhere on the filesystem. When links is higher, deleting
+         * every path shown here still would not free the space.
+         */
+        return group.length === links
+          ? `${group.length} paths, 1 file`
+          : `${group.length} here of ${links}, 1 file`;
+      },
+    },
+    { label: "Owner", render: group => group[0].owner ?? "—" },
+    { label: "Last written", className: "size", render: group => humanTime(group[0].mtime) },
+  ]);
+
+  if (totals) {
+    const note = document.createElement("p");
+    note.className = "muted small";
+    note.textContent = totals.linked > 0
+      ? `${humanBytes(totals.bytes)} across ${count(totals.files, "file")}, `
+        + `reached by ${totals.paths} paths. The ${totals.linked} extra `
+        + `${totals.linked === 1 ? "path is a hard link" : "paths are hard links"} `
+        + `to a file already counted, so ${totals.linked === 1 ? "it costs" : "they cost"} `
+        + `no additional disk.`
+      : `${humanBytes(totals.bytes)} across ${count(totals.files, "file")}.`;
+    holder.appendChild(note);
   }
 }
 
