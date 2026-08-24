@@ -1212,6 +1212,26 @@ async function refreshAll() {
     ]);
     if (state.historyPathId) await showHistory(state.historyPathId, true);
     if (state.log.pathId) await showLog(state.log.pathId, true);
+
+    /*
+     * The treemap is loaded once, never polled.
+     *
+     * Every other panel here re-reads a database. This one walks the disk, and
+     * doing that every ten seconds because a chart wanted refreshing would
+     * make the monitor the heaviest thing on the machine. It loads when there
+     * is a session to load it for, and after that only when asked - a click, a
+     * source change, or signing in.
+     */
+    if (state.signedIn && !treeState.level) {
+      refreshTreemap().catch(() => {});
+    } else if (!state.signedIn && treeState.level) {
+      treeState.level = null;
+      treeState.boxes = [];
+      drawTreemap();
+      $("treeCrumbs").replaceChildren();
+      $("treeNote").textContent = "Sign in to explore the disk.";
+    }
+
     clearStaleNotice();
   } catch (error) {
     notice(String(error.message || error));
@@ -4798,6 +4818,396 @@ function renderLastSeen() {
 }
 
 setInterval(renderLastSeen, 1000);
+
+
+/* ------------------------------------------------------------------ treemap -- */
+
+/*
+ * Where the space is, drawn as area.
+ *
+ * Nothing about this is stored: each view is one request for the immediate
+ * children of one directory, measured when asked. See lib/treemap.php for why
+ * that is the right trade rather than a nightly job that records the tree.
+ */
+const treeState = { path: "", source: "account", level: null, boxes: [], hover: null };
+
+async function refreshTreemap(path = treeState.path) {
+  if (!state.signedIn) {
+    treeState.level = null;
+    treeState.boxes = [];
+    drawTreemap();
+    $("treeNote").textContent = "Sign in to explore the disk.";
+    $("treeCrumbs").replaceChildren();
+    return;
+  }
+
+  $("treeNote").textContent = "Measuring…";
+
+  try {
+    const level = await api("treemap", { path, source: treeState.source });
+    treeState.level = level;
+    treeState.path = level.path;
+    drawTreemap();
+    renderCrumbs();
+    renderTreeNote();
+  } catch (error) {
+    treeState.level = null;
+    treeState.boxes = [];
+    drawTreemap();
+    $("treeNote").textContent = String(error.message || error);
+  }
+}
+
+function renderTreeNote() {
+  const level = treeState.level;
+  if (!level) return;
+
+  const parts = [
+    `${humanBytes(level.bytes)} in ${count(level.files, "file")}`
+    + (level.children.length ? ` across ${count(level.children.length, "entry", "entries")}` : "")
+    + ".",
+  ];
+
+  if (level.reason) parts.push(level.reason);
+
+  /*
+   * An incomplete measurement is said out loud, every time.
+   *
+   * A directory whose walk ran out of time reports a lower bound, and a lower
+   * bound that looks like a measurement is how somebody dismisses the 12 GB
+   * they were looking for as 400 MB.
+   */
+  if (!level.complete && !level.reason) {
+    parts.push("Some directories were still being measured when the time budget ran out — "
+      + "those are marked and their sizes are at least what is shown, not exactly.");
+  }
+  if (level.pooled) {
+    parts.push(`${count(level.pooled, "small entry", "small entries")} are pooled into one `
+      + "rectangle; its area is still their true total.");
+  }
+  if (level.seconds) parts.push(`Measured in ${level.seconds}s.`);
+
+  $("treeNote").textContent = parts.join(" ");
+}
+
+function renderCrumbs() {
+  const holder = $("treeCrumbs");
+  const level = treeState.level;
+  if (!level) { holder.replaceChildren(); return; }
+
+  const root = level.root || "/";
+  const rest = level.path.startsWith(root) ? level.path.slice(root.length) : level.path;
+  const names = rest.split("/").filter(Boolean);
+
+  const frag = document.createDocumentFragment();
+  const add = (label, target, current) => {
+    if (current) {
+      const span = document.createElement("span");
+      span.textContent = label;
+      frag.appendChild(span);
+      return;
+    }
+    const button = document.createElement("button");
+    button.className = "link";
+    button.textContent = label;
+    button.addEventListener("click", () => refreshTreemap(target));
+    frag.appendChild(button);
+  };
+
+  add(treeState.source === "host" ? "/" : "watched directory", root, names.length === 0);
+
+  let walk = root;
+  names.forEach((name, i) => {
+    walk = walk.replace(/\/$/, "") + "/" + name;
+    const sep = document.createElement("span");
+    sep.className = "sep";
+    sep.textContent = "/";
+    frag.appendChild(sep);
+    add(name, walk, i === names.length - 1);
+  });
+
+  holder.replaceChildren(frag);
+  $("treeUp").disabled = !level.parent;
+}
+
+/*
+ * Squarified layout.
+ *
+ * Slicing the rectangle straight down the list is far simpler and produces
+ * slivers - a 4000-pixel by 2-pixel shape is impossible to hover, impossible
+ * to label, and gives no sense of its area. Squarifying keeps each rectangle
+ * near square by laying out a run of items at a time and stopping the run when
+ * adding another would make the worst aspect ratio worse.
+ */
+function squarify(items, x, y, width, height) {
+  const out = [];
+  const total = items.reduce((sum, item) => sum + Math.max(0, item.bytes), 0);
+  if (total <= 0 || width <= 0 || height <= 0) return out;
+
+  const scale = (width * height) / total;
+  const queue = items.map(item => ({ item, area: Math.max(0, item.bytes) * scale }));
+
+  let cx = x, cy = y, cw = width, ch = height;
+
+  const worst = (row, side) => {
+    if (!row.length) return Infinity;
+    const sum = row.reduce((s, r) => s + r.area, 0);
+    const max = Math.max(...row.map(r => r.area));
+    const min = Math.min(...row.map(r => r.area));
+    const side2 = side * side;
+    const sum2 = sum * sum;
+    return Math.max((side2 * max) / sum2, sum2 / (side2 * min));
+  };
+
+  while (queue.length) {
+    const side = Math.min(cw, ch);
+    const row = [];
+
+    while (queue.length) {
+      const next = [...row, queue[0]];
+      if (row.length && worst(next, side) > worst(row, side)) break;
+      row.push(queue.shift());
+      if (side <= 0) break;
+    }
+
+    const sum = row.reduce((s, r) => s + r.area, 0);
+    const thickness = sum / side || 0;
+
+    let offset = 0;
+    for (const entry of row) {
+      const length = entry.area / thickness || 0;
+      if (cw >= ch) {
+        out.push({ ...entry.item, x: cx, y: cy + offset, w: thickness, h: length });
+      } else {
+        out.push({ ...entry.item, x: cx + offset, y: cy, w: length, h: thickness });
+      }
+      offset += length;
+    }
+
+    if (cw >= ch) { cx += thickness; cw -= thickness; } else { cy += thickness; ch -= thickness; }
+    if (cw < 0.5 || ch < 0.5) break;
+  }
+
+  return out;
+}
+
+/** Colour by kind, and by age within files, so old and cold stands out. */
+function treeColour(node) {
+  if (node.kind === "dir") return "#2f6f8f";
+  if (node.kind === "link") return "#4a4a4a";
+  if (node.kind === "pool") return "#3a3a3a";
+
+  const days = node.modified_at ? (Date.now() / 1000 - node.modified_at) / 86400 : null;
+  if (days === null) return "#6b7f3a";
+  if (days < 1) return "#c9603f";      // touched today
+  if (days < 7) return "#b08040";
+  if (days < 90) return "#6b7f3a";
+  return "#41603f";                     // cold
+}
+
+function drawTreemap() {
+  const canvas = $("treemap");
+  if (!canvas) return;
+
+  const holder = canvas.parentElement;
+  const ratio = window.devicePixelRatio || 1;
+  const width = holder.clientWidth;
+  const height = 460;
+
+  canvas.width = Math.max(1, Math.floor(width * ratio));
+  canvas.height = Math.max(1, Math.floor(height * ratio));
+  canvas.style.height = height + "px";
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const level = treeState.level;
+  if (!level || !level.children.length) {
+    ctx.fillStyle = "#9a9a9a";
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(
+      level ? "Nothing to show in this directory" : "Nothing measured yet",
+      width / 2, height / 2);
+    treeState.boxes = [];
+    return;
+  }
+
+  treeState.boxes = squarify(level.children, 0, 0, width, height);
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+
+  for (const box of treeState.boxes) {
+    if (box.w < 1 || box.h < 1) continue;
+
+    ctx.fillStyle = treeColour(box);
+    ctx.fillRect(box.x, box.y, box.w, box.h);
+
+    ctx.strokeStyle = "rgba(0,0,0,.55)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(box.x + .5, box.y + .5, box.w - 1, box.h - 1);
+
+    /*
+     * A measurement that ran out of time is hatched.
+     *
+     * The number under it is a lower bound, and a lower bound drawn exactly
+     * like a measurement is how the thing you are hunting gets dismissed.
+     */
+    if (box.complete === false) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(box.x, box.y, box.w, box.h);
+      ctx.clip();
+      ctx.strokeStyle = "rgba(255,255,255,.22)";
+      for (let i = -box.h; i < box.w; i += 8) {
+        ctx.beginPath();
+        ctx.moveTo(box.x + i, box.y);
+        ctx.lineTo(box.x + i + box.h, box.y + box.h);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // Labels only where one genuinely fits; a clipped name is worse than none.
+    if (box.w > 54 && box.h > 26) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(box.x + 3, box.y + 2, box.w - 6, box.h - 4);
+      ctx.clip();
+      ctx.fillStyle = "rgba(255,255,255,.95)";
+      ctx.font = "600 11px system-ui, sans-serif";
+      ctx.fillText(box.name, box.x + 5, box.y + 4);
+      ctx.fillStyle = "rgba(255,255,255,.72)";
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.fillText(humanBytes(box.bytes), box.x + 5, box.y + 18);
+      ctx.restore();
+    }
+  }
+
+  if (treeState.hover) highlight(ctx, treeState.hover);
+}
+
+function highlight(ctx, box) {
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(box.x + 1, box.y + 1, box.w - 2, box.h - 2);
+}
+
+function boxAt(x, y) {
+  // Reversed: later rectangles are drawn on top, so they win a tie.
+  for (let i = treeState.boxes.length - 1; i >= 0; i--) {
+    const box = treeState.boxes[i];
+    if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) return box;
+  }
+  return null;
+}
+
+/*
+ * The tooltip is built from data already in hand.
+ *
+ * Every fact here arrived with the level, from the same stat that measured the
+ * entry. Fetching on hover would mean the tooltip appears after the pointer has
+ * moved on, which is the difference between a tooltip and an annoyance.
+ */
+function showTip(box, px, py) {
+  const tip = $("treeTip");
+  tip.hidden = false;
+
+  const rows = [];
+  const add = (label, value) => { if (value !== null && value !== undefined && value !== "") rows.push([label, value]); };
+
+  add("Kind", box.kind === "dir" ? "directory" : box.kind === "link" ? "symlink" : box.kind === "pool" ? "pooled entries" : "file");
+  if (box.kind === "dir" || box.kind === "pool") add("Contains", count(box.files, "file"));
+  add("Modified", box.modified_at ? `${humanTime(box.modified_at)} (${ago(box.modified_at)})` : null);
+  add("Inode changed", box.changed_at ? humanTime(box.changed_at) : null);
+  add("Last read", box.accessed_at ? humanTime(box.accessed_at) : null);
+  add("Owner", box.owner);
+  add("Mode", box.mode);
+  /*
+   * Files only, and the distinction is not pedantic.
+   *
+   * A directory's link count is 2 plus the number of subdirectories it holds -
+   * nothing to do with hard links to the same data. Printing "22 names,
+   * deleting one frees nothing" against a directory is confidently wrong about
+   * something somebody might act on.
+   */
+  if (box.kind === "file" && Number(box.links) > 1) {
+    add("Links", `${box.links} names — deleting one frees nothing`);
+  }
+  if (box.complete === false) {
+    add("Measured", "incomplete — at least this size");
+  }
+
+  const frag = document.createDocumentFragment();
+  const name = document.createElement("div");
+  name.className = "tip-name";
+  name.textContent = box.name;
+  frag.appendChild(name);
+
+  const size = document.createElement("div");
+  size.className = "tip-size";
+  size.textContent = (box.complete === false ? "at least " : "") + humanBytes(box.bytes);
+  frag.appendChild(size);
+
+  const dl = document.createElement("dl");
+  for (const [label, value] of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = String(value);
+    dl.append(dt, dd);
+  }
+  frag.appendChild(dl);
+  tip.replaceChildren(frag);
+
+  // Kept inside the panel: a tooltip half off the right edge is unreadable.
+  const holder = tip.parentElement;
+  const maxX = holder.clientWidth - tip.offsetWidth - 8;
+  const maxY = holder.clientHeight - tip.offsetHeight - 8;
+  tip.style.left = Math.max(4, Math.min(px + 14, maxX)) + "px";
+  tip.style.top = Math.max(4, Math.min(py + 14, maxY)) + "px";
+}
+
+$("treemap").addEventListener("mousemove", event => {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const box = boxAt(x, y);
+
+  if (box !== treeState.hover) {
+    treeState.hover = box;
+    drawTreemap();
+  }
+
+  if (box) showTip(box, x, y);
+  else $("treeTip").hidden = true;
+});
+
+$("treemap").addEventListener("mouseleave", () => {
+  treeState.hover = null;
+  $("treeTip").hidden = true;
+  drawTreemap();
+});
+
+$("treemap").addEventListener("click", event => {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const box = boxAt(event.clientX - rect.left, event.clientY - rect.top);
+  // Only directories go anywhere. A file is a leaf and a symlink is not
+  // followed, here or anywhere else in this tool.
+  if (box && box.kind === "dir") refreshTreemap(box.path);
+});
+
+$("treeUp").addEventListener("click", () => {
+  if (treeState.level?.parent) refreshTreemap(treeState.level.parent);
+});
+
+$("treeSource").addEventListener("change", () => {
+  treeState.source = $("treeSource").value;
+  treeState.path = "";
+  refreshTreemap("");
+});
 
 /* ----------------------------------------------------------------- polling -- */
 

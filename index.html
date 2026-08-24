@@ -190,6 +190,34 @@
   <canvas id="historyChart"></canvas>
 </section>
 
+<section class="panel" id="treemapPanel">
+  <div class="panel-head">
+    <h2>Where the space is</h2>
+    <div class="panel-controls">
+      <label class="inline">
+        Source
+        <select id="treeSource">
+          <option value="account">This account</option>
+          <option value="host">Host (root only)</option>
+        </select>
+      </label>
+      <button id="treeUp" class="link">Up one level</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    Area is size. A directory full of small files is invisible in a list of the
+    biggest paths and obvious here, because forty thousand session files add up
+    to a large rectangle even though not one of them is large. Click to go in,
+    hover for the details.
+  </p>
+  <div id="treeCrumbs" class="crumbs"></div>
+  <div id="treemapHolder" class="treemap-holder">
+    <canvas id="treemap"></canvas>
+    <div id="treeTip" class="treemap-tip" hidden></div>
+  </div>
+  <p class="muted small chart-note" id="treeNote"></p>
+</section>
+
 <section class="panel" id="incidentPanel" hidden>
   <div class="panel-head">
     <h2 id="incidentTitle">Why this fired</h2>

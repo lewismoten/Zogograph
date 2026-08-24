@@ -44,6 +44,7 @@ require_once __DIR__ . '/lib/incident.php';
 require_once __DIR__ . '/lib/daemons.php';
 require_once __DIR__ . '/lib/growth.php';
 require_once __DIR__ . '/lib/retention.php';
+require_once __DIR__ . '/lib/treemap.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/logs.php';
@@ -91,6 +92,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'alerts' => alertList($config, $pdo, $signedIn),
         'actions' => actionLog($config, $pdo, $signedIn),
         'incident' => incidentView($config, $pdo, $signedIn),
+        'treemap' => treemapView($config, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
         'processes' => processList($config, $pdo, $signedIn),
@@ -635,6 +637,38 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
  * the password arguments it recognises, "the ones it recognises" is not a
  * promise worth making to the open internet.
  */
+/**
+ * One level of the treemap, measured now rather than remembered.
+ *
+ * Signed-in only, and refused rather than masked. Everywhere else a signed-out
+ * visitor sees shapes with the names removed, which works because the sizes are
+ * the interesting part. It does not work here: this walks the filesystem on
+ * demand at a path the caller chooses, and an anonymous visitor able to map a
+ * private directory - or to ask for an expensive walk over and over - is not
+ * something masking fixes.
+ */
+function treemapView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to explore the disk');
+    }
+
+    $path = (string)($_GET['path'] ?? '');
+
+    if (($_GET['source'] ?? 'account') === 'host') {
+        if (!($config['host']['enabled'] ?? true)) {
+            throw new ActionRefused('host collection is turned off');
+        }
+        $host = hostDb($config, false);
+        if ($host === null) {
+            throw new ActionRefused('the host collector is not installed');
+        }
+        return hostTreemapLevel($host, $path) + ['source' => 'host'];
+    }
+
+    return treemapLevel($config, $path) + ['source' => 'account'];
+}
+
 function incidentView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
