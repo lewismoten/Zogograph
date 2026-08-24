@@ -1736,3 +1736,136 @@ function hostProcessIoRates(PDO $pdo): array
         'rows' => array_slice($out, 0, HOST_KEEP_IO_PROCS),
     ];
 }
+
+/**
+ * Total disk throughput on the host, over time.
+ *
+ * The table beside this chart says what the disks are doing now, which answers
+ * "is it busy" and not "when did it start" or "is this every night at half past
+ * two". A backup that saturates the array for forty minutes is invisible in a
+ * snapshot taken at any other moment, and it is the shape over time that tells
+ * a runaway from a scheduled job.
+ *
+ * Totalled across devices, with two rules that are easy to get wrong:
+ *
+ * Stacked devices are excluded, as everywhere else. A write to dm-0 is remapped
+ * onto the disk underneath and advances both counters, so adding them reports
+ * twice the traffic that happened.
+ *
+ * Utilisation is the busiest single device, never the sum. Two disks each 60%
+ * busy is not a machine at 120% - it is a machine with a disk at 60%, twice
+ * over. Summing a percentage that is already a proportion of wall-clock time
+ * produces a number that means nothing and looks alarming.
+ *
+ * @return list<array{taken_at:int, read_rate:?float, write_rate:?float,
+ *                    util_percent:?float, queue_depth:?float}>
+ */
+function hostDiskSeries(PDO $pdo, int $from, int $to): array
+{
+    /*
+     * One sample before the window, deliberately.
+     *
+     * These are cumulative counters, so the first point inside the range has
+     * nothing to subtract from and would be a gap - leaving every chart to
+     * begin with a hole that moves as the range changes.
+     */
+    $start = $pdo->prepare('SELECT MAX(id) FROM host_samples WHERE taken_at < ?');
+    $start->execute([$from]);
+    $startId = (int)$start->fetchColumn();
+
+    $stmt = $pdo->prepare(
+        'SELECT s.id, s.taken_at, d.name, d.stacked, d.read_bytes, d.write_bytes,
+                d.io_ms, d.queue_ms
+         FROM host_disks d
+         JOIN host_samples s ON s.id = d.sample_id
+         WHERE s.id >= ? AND s.taken_at <= ?
+           AND d.stacked = 0
+         ORDER BY s.id'
+    );
+    $stmt->execute([$startId, $to]);
+
+    $samples = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $id = (int)$row['id'];
+        $samples[$id]['taken_at'] = (int)$row['taken_at'];
+        $samples[$id]['disks'][(string)$row['name']] = $row;
+    }
+
+    $out = [];
+    $previous = null;
+
+    foreach ($samples as $sample) {
+        if ($previous === null) {
+            $previous = $sample;
+            continue;
+        }
+
+        $seconds = $sample['taken_at'] - $previous['taken_at'];
+        if ($seconds <= 0) {
+            $previous = $sample;
+            continue;
+        }
+
+        $read = 0;
+        $write = 0;
+        $util = null;
+        $queue = null;
+        $reset = false;
+        $matched = 0;
+
+        foreach ($sample['disks'] as $name => $now) {
+            $was = $previous['disks'][$name] ?? null;
+            if ($was === null) {
+                // A device that was not in the previous reading cannot be
+                // differentiated. Skipping it understates this one point,
+                // which is better than inventing its whole counter as traffic.
+                continue;
+            }
+
+            $readDelta = (int)$now['read_bytes'] - (int)$was['read_bytes'];
+            $writeDelta = (int)$now['write_bytes'] - (int)$was['write_bytes'];
+            $busyDelta = (int)$now['io_ms'] - (int)$was['io_ms'];
+
+            /*
+             * Backwards means the machine rebooted and the counters restarted.
+             *
+             * The whole point is dropped rather than that one device, because a
+             * reboot resets all of them at once - reporting the others as if
+             * they were fine would put a plausible number on an interval that
+             * did not happen.
+             */
+            if ($readDelta < 0 || $writeDelta < 0 || $busyDelta < 0) {
+                $reset = true;
+                break;
+            }
+
+            $matched++;
+            $read += $readDelta;
+            $write += $writeDelta;
+
+            $deviceUtil = min(100.0, $busyDelta / ($seconds * 10));
+            $util = $util === null ? $deviceUtil : max($util, $deviceUtil);
+
+            $queueDelta = (int)$now['queue_ms'] - (int)$was['queue_ms'];
+            if ($queueDelta >= 0) {
+                $deviceQueue = $queueDelta / ($seconds * 1000);
+                $queue = $queue === null ? $deviceQueue : max($queue, $deviceQueue);
+            }
+        }
+
+        $usable = !$reset && $matched > 0;
+
+        $out[] = [
+            'taken_at' => $sample['taken_at'],
+            'read_rate' => $usable ? round($read / $seconds, 2) : null,
+            'write_rate' => $usable ? round($write / $seconds, 2) : null,
+            // The busiest device, not the sum. See the note above.
+            'util_percent' => $usable && $util !== null ? round($util, 2) : null,
+            'queue_depth' => $usable && $queue !== null ? round($queue, 2) : null,
+        ];
+
+        $previous = $sample;
+    }
+
+    return $out;
+}

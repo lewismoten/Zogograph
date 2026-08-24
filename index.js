@@ -2640,6 +2640,7 @@ async function refreshHost() {
     : "";
 
   renderHostDisks(data.disks ?? [], s, Number(data.sample_count ?? 0));
+  refreshHostIoChart();
   renderHostIoProcs(data.io_processes ?? null);
 
   renderTable("hostSlab", data.slab, [
@@ -2796,6 +2797,77 @@ function renderHostFiles(rows, totals) {
 }
 
 /** Per-device throughput, utilisation and queue depth. */
+/*
+ * Total host throughput over the selected range.
+ *
+ * The table below says what the disks are doing now, which cannot distinguish a
+ * runaway from the nightly backup - both look identical in a snapshot taken
+ * while they run, and neither is visible in one taken at any other moment.
+ *
+ * Its own request rather than a field on the host payload: this one answers to
+ * the range selector, and folding it in would mean re-reading a week of device
+ * counters on every poll to refresh a table that only ever shows the latest
+ * reading.
+ */
+async function refreshHostIoChart() {
+  const to = Math.floor(Date.now() / 1000);
+  const data = await api("host-io", { from: to - state.range, to });
+  const rows = data.rows ?? [];
+
+  drawLineChart($("hostIoChart"), rows,
+    [
+      { key: "read_rate", label: "Read" },
+      { key: "write_rate", label: "Written" },
+      { key: "util_percent", label: "Busiest device % (right)", axis: "right" },
+    ],
+    {
+      xKey: "taken_at",
+      // Restart marks come from state.restarts inside drawLineChart, which is
+      // the only place that knows the window they were computed for.
+      outages: outageBands(state.uptime),
+      axis: rateAxis,
+      rightAxis: percentAxis,
+      zeroBased: true,
+      empty: data.available === false
+        ? (data.reason || "The host collector is not installed.")
+        : (Number(data.sample_count ?? 0) < 2
+            ? "Needs two host readings before a rate can be worked out."
+            : "No device counters recorded for this range."),
+    });
+
+  const note = $("hostIoChartNote");
+  if (!note) return;
+
+  if (!rows.length) {
+    note.textContent = "";
+    return;
+  }
+
+  /*
+   * The peak, because the average of a range containing one backup is a small
+   * number that describes no moment that actually happened.
+   */
+  const peak = rows.reduce((worst, row) => {
+    const total = (row.read_rate ?? 0) + (row.write_rate ?? 0);
+    return total > worst.total ? { total, row } : worst;
+  }, { total: -1, row: null });
+
+  const gaps = rows.filter(r => r.read_rate == null).length;
+
+  const parts = [];
+  if (peak.row) {
+    parts.push(`Busiest moment: ${humanBytes(peak.total)}/s at ${humanTime(peak.row.taken_at)}`
+      + (peak.row.util_percent != null ? ` — the busiest device was ${peak.row.util_percent}% saturated.` : "."));
+  }
+  if (gaps) {
+    // Said out loud: a gap here is a reboot, and a chart that silently drew
+    // through one would invent traffic across an interval that did not happen.
+    parts.push(`${count(gaps, "reading")} could not be turned into a rate, `
+      + "because the counters restarted — that is a reboot.");
+  }
+  note.textContent = parts.join(" ");
+}
+
 /*
  * The processes doing the I/O, as against the devices carrying it.
  *

@@ -153,6 +153,14 @@ button:disabled { opacity: .5; cursor: default; }
 /* A line of prose under a chart title, saying what the numbers are. Cheaper
    than a tooltip and it survives a screenshot. */
 .sub-note { margin: -6px 0 10px; max-width: 60ch; }
+/*
+ * A note that follows a chart rather than a heading.
+ *
+ * .sub-note pulls itself up by 6px so it tucks under a title. Below a chart
+ * that lands it on top of the legend, which drawLineChart inserts directly
+ * after the canvas - so this is the same note with the margin the other way up.
+ */
+.chart-note { margin: 10px 0 14px; max-width: 70ch; }
 .sub-head { font-size: .95rem; margin: 22px 0 4px; color: #cfcfcf; }
 /* A command line is long and must not push the numbers off the screen. */
 td.cmd {

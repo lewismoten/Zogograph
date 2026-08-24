@@ -94,6 +94,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'symlinks' => symlinkCheck($config, $signedIn),
         'host' => hostView($config, $signedIn),
         'host-series' => hostSeries($config, $signedIn),
+        'host-io' => hostIoSeries($config, $signedIn),
         'uptime' => uptimeView($config, $pdo, $signedIn),
         'health' => healthCheck($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
@@ -793,6 +794,37 @@ function hostView(array $config, bool $signedIn): array
  * process list, the slab table, the file list and everything else in the host
  * payload to redraw one canvas.
  */
+/**
+ * Host disk throughput over the selected range.
+ *
+ * Its own action rather than a field on `host`, because it answers to the range
+ * selector while the rest of that panel is a snapshot of the latest reading -
+ * bundling them would make every poll re-read a week of device counters to
+ * refresh a table that only ever shows now.
+ */
+function hostIoSeries(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see host readings');
+    }
+
+    $pdo = hostDb($config, false);
+    if ($pdo === null) {
+        return ['rows' => [], 'available' => false,
+                'reason' => 'The host collector is not installed.'];
+    }
+
+    [$from, $to] = window();
+
+    return [
+        'available' => true,
+        'reason' => null,
+        'rows' => hostDiskSeries($pdo, $from, $to),
+        // So an empty chart can say which kind of empty it is.
+        'sample_count' => (int)$pdo->query('SELECT COUNT(*) FROM host_samples')->fetchColumn(),
+    ];
+}
+
 function hostSeries(array $config, bool $signedIn): array
 {
     if (!$signedIn) {
