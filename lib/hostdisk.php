@@ -180,7 +180,8 @@ function hostDirectoryUsage(
     string $root = '/',
     ?float $budget = null,
     array $skip = [],
-    ?int $device = null
+    ?int $device = null,
+    array $keepChildrenOf = []
 ): array {
     $started = microtime(true);
     $deadline = $started + ($budget ?? HOSTDISK_WALK_SECONDS);
@@ -226,13 +227,27 @@ function hostDirectoryUsage(
      *
      * Trailing slashes go too, for the same reason from the other direction.
      */
-    $skip = array_values(array_filter(array_map(
-        static function (string $path): ?string {
-            $resolved = realpath($path);
-            return $resolved === false ? rtrim($path, '/') ?: null : $resolved;
-        },
-        $skip
-    )));
+    $resolve = static function (array $paths): array {
+        return array_values(array_filter(array_map(
+            static function (string $path): ?string {
+                $resolved = realpath($path);
+                return $resolved === false ? (rtrim($path, '/') ?: null) : $resolved;
+            },
+            $paths
+        )));
+    };
+
+    $skip = $resolve($skip);
+
+    /*
+     * Resolved too, for the same reason and it was missed the first time.
+     *
+     * The walk works in resolved paths, so a protected root of "/tmp/backup"
+     * never matches a row under "/private/tmp/backup" and the protection
+     * silently does nothing - which is exactly the failure this protection
+     * exists to prevent, arriving by a different route.
+     */
+    $keepChildrenOf = $resolve($keepChildrenOf);
 
     $sizes = [];
     $counts = [];
@@ -277,9 +292,35 @@ function hostDirectoryUsage(
     });
     $unmeasured = array_slice($unmeasured, 0, HOSTDISK_KEEP_UNMEASURED);
 
-    usort($measured, fn(array $a, array $b): int => $b['bytes'] <=> $a['bytes']);
+    /*
+     * Some directories are kept whatever their size.
+     *
+     * The row budget is a top-400-by-size cut, which is right for "what is
+     * using the disk" and quietly wrong for anything that has a section of its
+     * own. A second JetBackup destination holding a few hundred megabytes is
+     * not in the top four hundred, so it vanished from the backup panel -
+     * which then showed one destination and looked like the whole answer.
+     *
+     * Only the immediate children of the named paths, so this stays a handful
+     * of rows rather than a second walk.
+     */
+    $always = [];
+    $rest = [];
+    foreach ($measured as $row) {
+        $parent = dirname((string)$row['path']);
+        if (in_array($parent, $keepChildrenOf, true) || in_array((string)$row['path'], $keepChildrenOf, true)) {
+            $always[] = $row;
+        } else {
+            $rest[] = $row;
+        }
+    }
 
-    $kept = array_slice($measured, 0, max(0, HOSTDISK_KEEP_DIRS - count($unmeasured)));
+    usort($rest, fn(array $a, array $b): int => $b['bytes'] <=> $a['bytes']);
+
+    $kept = array_merge(
+        $always,
+        array_slice($rest, 0, max(0, HOSTDISK_KEEP_DIRS - count($unmeasured) - count($always)))
+    );
 
     return [
         'dirs' => array_merge($kept, $unmeasured),

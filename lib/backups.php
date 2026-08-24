@@ -573,16 +573,20 @@ function otherProbableBackups(array $byPath, array $roots): array
     }
 
     /*
-     * Parents drop out when a child matched too.
+     * The outermost match wins, and its contents are dropped.
      *
-     * /root/backups and /root/backups/forgejo-2026-08-18 are one finding, and
-     * listing both doubles the apparent total of a section whose whole purpose
-     * is to report a total.
+     * This had it the wrong way round and kept the deepest, so one manual
+     * backup was reported as four rows of its own internals -
+     * .../indexers/repos.bleve, .../log, .../data - which is both noise and a
+     * total that adds up to more than the thing it describes.
+     *
+     * The outermost directory is also the unit somebody would act on: nobody
+     * moves the log subdirectory of an old backup, they move the backup.
      */
     $out = array_values(array_filter($out, static function (array $row) use ($out): bool {
         foreach ($out as $other) {
             if ($other['path'] !== $row['path']
-                && str_starts_with($other['path'] . '/', $row['path'] . '/')) {
+                && str_starts_with($row['path'] . '/', $other['path'] . '/')) {
                 return false;
             }
         }

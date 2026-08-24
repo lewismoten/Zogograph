@@ -380,8 +380,18 @@ try {
         $skip = array_map('strval', $config['host']['walk_skip'] ?? []);
         $budget = (float)($config['host']['walk_seconds'] ?? HOSTDISK_WALK_SECONDS);
 
+        /*
+         * Backup roots keep all of their children, however small.
+         *
+         * They have a panel of their own, and a destination that holds a few
+         * hundred megabytes is not in the top four hundred directories on the
+         * machine - so without this it is dropped and the panel shows one
+         * destination as though it were all of them.
+         */
+        $keepChildrenOf = backupRoots($config);
+
         $say(sprintf('Walking %s (up to %.0fs)...', $root, $budget));
-        $walk = hostDirectoryUsage($root, $budget, $skip);
+        $walk = hostDirectoryUsage($root, $budget, $skip, null, $keepChildrenOf);
 
         $dirs = $pdo->prepare(
             'INSERT INTO host_dirs (taken_at, path, depth, bytes, files, measured)
