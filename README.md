@@ -663,7 +663,14 @@ answers "what is writing" and "what is growing" in one place. A service's
 counters restart when it does, so a negative difference is read as a restart and
 reported as unknown rather than as a large negative rate.
 
-**Pressure**, from `/proc/pressure/io` where the kernel has `CONFIG_PSI`. This is
+**Pressure**, from `/proc/pressure/io` where the kernel has `CONFIG_PSI`. The
+Health panel says whether it is there and, when it is not, *which* of the three
+possible reasons applies — a kernel without it, a kernel with it disabled at
+boot, or a `/proc` filtered by CageFS so the account cannot see a kernel feature
+the machine does have. Note that the version is reported and never concluded
+from: RHEL and therefore CloudLinux backported PSI into their 4.18 kernels, so
+"4.18 is below 4.20" is exactly the wrong inference on the hosts this is aimed
+at. This is
 the better answer to "is the disk actually hurting anything", and utilisation is
 a poor proxy for it: a device can sit at 100% pushing background writeback and
 bother nobody. PSI measures the opposite thing — time spent *waiting*. `some` is

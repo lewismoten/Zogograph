@@ -2382,11 +2382,7 @@ const HEALTH_LABELS = {
   shell_available: ["shell_exec available", "Inodes and the crontab editor are unavailable."],
   proc_readable: ["/proc readable", "CPU, memory and network stay empty."],
   diskstats_readable: ["Disk counters readable", "Disk I/O throughput and utilisation stay empty."],
-  io_pressure_available: [
-    "I/O pressure available",
-    "Needs kernel 4.20+ with CONFIG_PSI. Everything else about disk I/O still works; "
-      + "only the stall percentages are missing.",
-  ],
+  io_pressure_available: ["I/O pressure available", "Stall percentages stay empty."],
 };
 
 async function refreshHealth() {
@@ -2405,6 +2401,12 @@ async function refreshHealth() {
       label,
       ok: Boolean(checks[key]),
       consequence,
+      /*
+       * Some checks can say why, not merely that. "Needs kernel 4.20+ with
+       * CONFIG_PSI" leaves the reader to go and find out which of those they
+       * are missing, which is the work this panel exists to save.
+       */
+      reason: checks[`${key.replace(/_available$|_readable$/, "")}_reason`] || "",
       /*
        * A host with no /proc and no mail() is limited, not broken.
        *
@@ -2428,13 +2430,14 @@ async function refreshHealth() {
     tr.insertCell().textContent = row.label;
     const note = tr.insertCell();
     note.className = "muted small";
-    note.textContent = row.ok ? "" : row.consequence;
+    note.textContent = row.ok ? "" : (row.reason || row.consequence);
   }
 
   const facts = document.createElement("p");
   facts.className = "muted small";
   const bits = [
     `PHP ${checks.php_version}`,
+    ...(checks.kernel ? [`kernel ${checks.kernel}`] : []),
     `schema v${checks.schema_version}`,
     `${checks.problem_log_entries} problem${checks.problem_log_entries === 1 ? "" : "s"} logged`,
   ];
