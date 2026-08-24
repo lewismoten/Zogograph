@@ -1076,6 +1076,56 @@ about the one that matters. It always goes to the address in the config and
 never to one in the request: a monitor that emails its file listing to whoever
 asks is an open relay with a disk inventory attached.
 
+### CPU pegged, not CPU spiking
+
+A single reading at 100% is not worth an email. A backup starts, a scan runs, a
+page renders, and it is over before anybody could read about it. What matters is
+the CPU *staying* there, because that is the shape of a runaway process — and for
+the first minute it is indistinguishable from a spike.
+
+So the rule is defined by duration, not height. All three settings work together:
+at least `cpu_share` of the readings across the last `cpu_minutes` must be at or
+above `cpu_percent`. Defaults are 90% of readings, 15 minutes, 95%. Set
+`cpu_percent` to 0 to turn it off.
+
+**A share rather than every reading**, because "every" is brittle: one dip to 94%
+in a quarter of an hour would reset a rule that should have fired, and the dip
+changes nothing about what is happening. **A share rather than the median**, for
+the opposite reason: a median tolerates a machine pegged only half the time, and
+that is a different condition. Tested against both:
+
+| | fires |
+|---|---|
+| 15 minutes at 98% | yes |
+| pegged, with one dip to 60% | yes |
+| one reading at 100%, otherwise quiet | no |
+| half the window pegged, half idle | no |
+| steady 88% | no |
+| alternating 100% / 40% | no |
+| four readings, all 100% | no — too thin to judge |
+| three readings at 100% spread across the window | no — that is a collection gap |
+
+That last row is the one worth having. Three readings at 100% inside a window
+whose other twelve minutes are missing is not evidence of a pegged CPU; it is
+evidence of a collector that stopped. Without the check, an outage would raise a
+CPU alert, which is the wrong thing to be told at the wrong moment. The window
+has to be *covered*: the reading count is compared against what the median
+interval implies it should be.
+
+The alert names what was running, taken from the process records inside the same
+window, so the message can be acted on without opening the dashboard:
+
+    CPU has been at 95% or above for 15 minutes
+    15 of the last 15 readings were at or above 95% (median 99%, peak 99%,
+    lowest 99%). This is sustained, not a spike: a burst would not hold across
+    the whole window. Busiest processes recorded in that window: php-cgi (92%),
+    mysqld (41%), httpd (6%).
+
+On CloudLinux, mind what the percentage measures. Inside CageFS `/proc/stat` is
+virtualised to the account's own CPU allowance, so 95 is 95% of what this account
+may use — worth knowing about, and not the same as the server being at 95%. The
+host collector reports the machine's real load separately.
+
 ## Signed in and signed out
 
 The dashboard is readable without a password. Sizes, counts, growth, trends and

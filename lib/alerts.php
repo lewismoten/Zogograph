@@ -43,6 +43,7 @@ function evaluateAlerts(array $config, PDO $pdo): array
         [
             ...diskAlerts($pdo, $rules),
             ...trendAlerts($pdo, $rules),
+            ...cpuAlerts($pdo, $rules),
             ...categoryAlerts($pdo, $rules),
             ...pathAlerts($pdo, $rules),
         ] as $alert
@@ -65,6 +66,150 @@ function latestVitals(PDO $pdo): ?array
 {
     $row = $pdo->query('SELECT * FROM vitals ORDER BY taken_at DESC, id DESC LIMIT 1')->fetch();
     return $row ?: null;
+}
+
+/** Below this many readings, a window is too thin to judge either way. */
+const CPU_ALERT_MIN_READINGS = 5;
+
+/**
+ * CPU held at the ceiling, rather than a moment of it.
+ *
+ * A single reading at 100% is not worth waking anyone: a backup starts, a scan
+ * runs, a page renders, and it is over. What matters is the CPU *staying* there,
+ * because that is the shape of a runaway process or a machine that has stopped
+ * coping - and the two look identical for the first minute.
+ *
+ * So this rule is defined by duration and not by height alone. It needs most of
+ * the readings across a whole window to be at or above the threshold, which a
+ * spike cannot satisfy however tall it is.
+ *
+ * A share rather than every reading, because "every" is brittle: one dip to 94%
+ * in fifteen minutes would reset a rule that should have fired, and the dip
+ * changes nothing about what is happening. A share rather than the median for
+ * the opposite reason - a median tolerates a machine that is pegged only half
+ * the time, and that is not the same condition.
+ *
+ * @return list<array>
+ */
+function cpuAlerts(PDO $pdo, array $rules): array
+{
+    $threshold = (float)($rules['cpu_percent'] ?? 0);
+    $minutes = (int)($rules['cpu_minutes'] ?? 15);
+    $share = (float)($rules['cpu_share'] ?? 0.9);
+
+    // Off by default: a percentage that means different things on a dedicated
+    // box and inside a CageFS allowance should be set deliberately.
+    if ($threshold <= 0 || $minutes <= 0) {
+        return [];
+    }
+
+    $window = $minutes * 60;
+
+    $stmt = $pdo->prepare(
+        'SELECT taken_at, cpu_percent FROM vitals
+         WHERE taken_at >= ? AND cpu_percent IS NOT NULL ORDER BY taken_at'
+    );
+    $stmt->execute([time() - $window]);
+    $readings = $stmt->fetchAll();
+
+    $count = count($readings);
+    if ($count < CPU_ALERT_MIN_READINGS) {
+        return [];
+    }
+
+    /*
+     * The window has to be covered, not merely touched.
+     *
+     * Three readings at 100% inside a fifteen-minute window whose other twelve
+     * minutes are missing is not evidence of fifteen minutes pegged - it is
+     * evidence of a collector that stopped. Left unchecked, an outage would
+     * raise a CPU alert, which is the wrong thing to be told.
+     */
+    $steps = [];
+    foreach (range(1, $count - 1) as $i) {
+        $step = (int)$readings[$i]['taken_at'] - (int)$readings[$i - 1]['taken_at'];
+        if ($step > 0) {
+            $steps[] = $step;
+        }
+    }
+    if (!$steps) {
+        return [];
+    }
+    sort($steps);
+    $interval = $steps[intdiv(count($steps), 2)];
+    $expected = max(1, (int)floor($window / $interval));
+
+    if ($count < $expected * 0.8) {
+        return [];
+    }
+
+    $values = array_map(fn(array $r): float => (float)$r['cpu_percent'], $readings);
+    $over = count(array_filter($values, fn(float $v): bool => $v >= $threshold));
+
+    if ($over / $count < $share) {
+        return [];
+    }
+
+    sort($values);
+    $median = $values[intdiv(count($values), 2)];
+    $peak = $values[count($values) - 1];
+    $lowest = $values[0];
+
+    $blame = cpuAlertCulprits($pdo, time() - $window);
+
+    return [[
+        'rule' => 'cpu_sustained',
+        'severity' => 'critical',
+        'subject' => sprintf(
+            'CPU has been at %.0f%% or above for %s',
+            $threshold,
+            humanDuration((float)$window)
+        ),
+        'detail' => sprintf(
+            '%d of the last %d readings were at or above %.0f%% (median %.0f%%, peak %.0f%%, '
+            . 'lowest %.0f%%). This is sustained, not a spike: a burst would not hold across '
+            . 'the whole window.%s',
+            $over,
+            $count,
+            $threshold,
+            $median,
+            $peak,
+            $lowest,
+            $blame === '' ? '' : ' ' . $blame
+        ),
+    ]];
+}
+
+/**
+ * What was running while the CPU was pegged, if anything was recorded.
+ *
+ * An alert that says the CPU is busy and nothing else leaves the reader to go
+ * and look; naming the processes turns it into something that can be acted on
+ * from the message itself. Silent when nothing was captured, which happens when
+ * the process threshold is set above the CPU one.
+ */
+function cpuAlertCulprits(PDO $pdo, int $since): string
+{
+    $stmt = $pdo->prepare(
+        'SELECT name, MAX(cpu_percent) AS cpu FROM process_samples
+         WHERE taken_at >= ? AND reason = \'cpu\'
+         GROUP BY name ORDER BY cpu DESC LIMIT 3'
+    );
+    $stmt->execute([$since]);
+    $rows = $stmt->fetchAll();
+
+    if (!$rows) {
+        return '';
+    }
+
+    $named = [];
+    foreach ($rows as $row) {
+        $named[] = sprintf('%s (%.0f%%)', $row['name'], (float)$row['cpu']);
+    }
+
+    return 'Busiest processes recorded in that window: ' . implode(', ', $named)
+        . '. Those figures are a per-core lifetime average from ps, so they will not '
+        . 'add up to the reading.';
 }
 
 function diskAlerts(PDO $pdo, array $rules): array

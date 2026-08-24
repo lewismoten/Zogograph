@@ -41,6 +41,28 @@ return [
         'from' => '',
         // No more than one message per rule per this many seconds, however bad
         // things get. An alert that arrives every minute is a filter rule.
+        /*
+         * CPU held at the ceiling, not a moment of it.
+         *
+         * A single reading at 100% is a backup starting or a page rendering and
+         * is over before anybody could read about it. What matters is the CPU
+         * *staying* there, which is what a runaway process looks like.
+         *
+         * So all three of these define the rule together: at least `cpu_share`
+         * of the readings across the last `cpu_minutes` must be at or above
+         * `cpu_percent`. A spike cannot satisfy that however tall it is.
+         *
+         * Mind what the percentage means on CloudLinux: inside CageFS
+         * /proc/stat is virtualised to the account's own CPU allowance, so 95
+         * here is 95% of what this account may use - which is a real thing to
+         * know about, and not the same as the server being at 95%.
+         *
+         * Set cpu_percent to 0 to turn the rule off.
+         */
+        'cpu_percent' => 95.0,
+        'cpu_minutes' => 15,
+        'cpu_share' => 0.9,
+
         'cooldown_seconds' => 21600,
 
         // Fire when free space drops below this, in bytes, or below this

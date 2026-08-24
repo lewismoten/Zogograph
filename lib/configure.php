@@ -146,6 +146,33 @@ function configFields(array $sample): array
             'when' => 'alerts_enabled',
         ],
         [
+            'key' => 'cpu_percent',
+            'path' => ['alerts', 'cpu_percent'],
+            'type' => 'number',
+            'label' => 'Warn when CPU stays at or above (%)',
+            'help' => 'Sustained, not a spike: it has to hold across the whole window '
+                . 'below. Zero turns it off. On CloudLinux this is a share of what the '
+                . 'account may use, not of the machine.',
+            'default' => (float)($sample['alerts']['cpu_percent'] ?? 95),
+            'when' => 'alerts_enabled',
+            'validate' => fn(string $v): ?string => is_numeric($v) && (float)$v >= 0 && (float)$v <= 100
+                ? null
+                : 'Enter a percentage between 0 and 100.',
+        ],
+        [
+            'key' => 'cpu_minutes',
+            'path' => ['alerts', 'cpu_minutes'],
+            'type' => 'int',
+            'label' => 'How long it must stay there (minutes)',
+            'help' => 'A burst cannot hold across a long window, which is the whole point '
+                . 'of measuring duration rather than height.',
+            'default' => (int)($sample['alerts']['cpu_minutes'] ?? 15),
+            'when' => 'alerts_enabled',
+            'validate' => fn(string $v): ?string => is_numeric($v) && (int)$v >= 1
+                ? null
+                : 'Enter a number of minutes, at least 1.',
+        ],
+        [
             'key' => 'cooldown_seconds',
             'path' => ['alerts', 'cooldown_seconds'],
             'type' => 'seconds',
