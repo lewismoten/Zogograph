@@ -1,9 +1,10 @@
 :root {
   color-scheme: dark;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #111;
+  background: #111;   /* literal: --bg is declared below and cannot be used here */
   color: #eee;
 
+  --bg: #111;
   --panel: #181818;
   --line: #333;
   --muted: #9a9a9a;
@@ -16,14 +17,68 @@ body { margin: 0; padding: 24px; max-width: 1600px; margin-inline: auto; }
 h1 { font-size: 1.35rem; margin: 0; }
 h2 { margin: 0 0 12px; font-size: 1.05rem; }
 
+/* The header follows the page down.
+
+   The range and view pickers change what every chart below shows, and the Live
+   toggle changes whether they move at all - so having to scroll back up to
+   reach them, having just scrolled down to read the effect, is the wrong way
+   round. Sign out belongs with them because it is the control that changes the
+   most on screen at once.
+
+   The negative margins pull the bar out to the body's padding edges so its
+   background covers the full width and the strip above it; the padding puts
+   the contents back where they were. Without that, content scrolls up into the
+   24px gap above the bar and shows through. */
 .bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  /* Enough shadow to separate the bar from a chart passing under it, not
+     enough to look like a raised card. */
+  box-shadow: 0 6px 14px rgba(0, 0, 0, .45);
+
+  margin: -24px -24px 16px;
+  padding: 16px 24px 14px;
+
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
 }
+
+/* A sticky bar on a short viewport can cover most of the screen, and a phone in
+   landscape is exactly that. Below this height it goes back to scrolling away. */
+@media (max-height: 460px) {
+  .bar {
+    position: static;
+    box-shadow: none;
+  }
+}
+
+/* Narrow screens wrap the controls onto three or four rows, and a fifth of the
+   viewport is too much to give a toolbar. Tightened rather than thinned out:
+   everything in there is still reachable, which is the whole point of making it
+   follow the page. */
+@media (max-width: 760px) {
+  .bar {
+    margin: -24px -24px 12px;
+    padding: 10px 16px;
+    gap: 8px;
+    row-gap: 6px;
+  }
+  .bar h1 { font-size: 1.05rem; }
+  .bar-controls { gap: 8px; row-gap: 6px; }
+  .bar select,
+  .bar button { padding: 4px 8px; font-size: .85rem; }
+  .bar label.inline { font-size: .8rem; gap: 4px; }
+}
+
+/* Anything scrolled to deliberately - a log, a panel - would otherwise land
+   underneath the bar. */
+.panel, #logPanel, #historyPanel { scroll-margin-top: 96px; }
 .bar-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 
 label { display: grid; gap: 6px; font-size: .9rem; color: var(--muted); }

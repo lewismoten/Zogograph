@@ -1082,6 +1082,26 @@ that table is the only place it would show.
 `Empty trash` and `Empty temp` remove the files in a category and leave the
 directories alone.
 
+## The header follows the page
+
+Title, range, view, Live and Sign out stay at the top while the page scrolls.
+Those controls change what every chart below shows — and Live changes whether
+they move at all — so having to scroll back up to reach one, having just
+scrolled down to read its effect, is the wrong way round.
+
+Two details it needs to not look broken. The bar is pulled out to the body's
+padding edges with negative margins and given its padding back, because
+otherwise content scrolls up into the 24px gap above it and shows through. And
+panels carry `scroll-margin-top`, or anything scrolled to deliberately — a log,
+a path's history — lands underneath the bar rather than below it.
+
+Two places it gets out of the way. On a viewport under 460px tall, which is a
+phone held sideways, it goes back to scrolling away: a toolbar that covers a
+quarter of the screen is worse than one you have to scroll to. And under 760px
+wide the controls wrap onto three rows, so the padding, gaps and type tighten —
+193px down to 111px — rather than anything being hidden, since being reachable
+is the whole point of it following the page.
+
 ## Reading the charts
 
 **Room left** puts disk space and inodes together, because they are the same
