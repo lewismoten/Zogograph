@@ -498,11 +498,40 @@ function drawLineChart(canvas, rows, series, options = {}) {
 
     if (hi === lo) hi = lo + Math.max(1, Math.abs(lo) * 0.01);
 
-    const nice = niceTicks(lo, hi, 5, Boolean(options.zeroBased));
     const axisFor = (side === "right" ? options.rightAxis : options.axis) || bytesAxis;
+    const magnitude = Math.max(Math.abs(lo), Math.abs(hi));
+
+    /*
+     * Ticks picked in the unit they will be printed in.
+     *
+     * niceTicks rounds to 1, 2 or 5 times a power of ten, which is only nice if
+     * the label is written in tens. Bytes are not: five billion is a perfectly
+     * round decimal step and prints as "4.7 GiB", and a column of 0.0 / 4.7 /
+     * 9.3 / 14.0 GiB is the kind of axis you have to decode rather than read.
+     *
+     * So the axis is asked what unit these numbers will be shown in, the range
+     * is divided by it, and the ticks are chosen among those - 0, 5, 10, 15 GiB
+     * rather than the same positions rendered awkwardly. Two passes because the
+     * unit depends on a step and the step depends on the unit; the first guess
+     * is only used to ask the question, and when the unit turns out to be 1 -
+     * percentages, load averages - the guess was already the answer.
+     */
+    const guess = niceTicks(lo, hi, 5, Boolean(options.zeroBased));
+    const unit = axisFor(guess.step, magnitude).scale || 1;
+    const nice = unit === 1
+      ? guess
+      : niceTicks(lo / unit, hi / unit, 5, Boolean(options.zeroBased));
+
+    const step = nice.step * unit;
     // The axis is told how big the numbers are as well as how far apart the
     // ticks are: the first picks the unit, the second picks the decimals.
-    scales[side] = { ...nice, ...axisFor(nice.step, Math.max(Math.abs(lo), Math.abs(hi))) };
+    scales[side] = {
+      ticks: nice.ticks.map(tick => tick * unit),
+      step,
+      min: nice.min * unit,
+      max: nice.max * unit,
+      ...axisFor(step, magnitude),
+    };
   }
 
   if (!scales.left && !scales.right) {
@@ -949,12 +978,63 @@ function bucketDeltas(rows, seconds) {
   return [...buckets.values()].sort((a, b) => a.taken_at - b.taken_at);
 }
 
+/**
+ * CPU and memory, where only one of the two has an absolute form.
+ *
+ * A percentage is the only way to say "CPU", so switching the page to Absolute
+ * cannot do anything to that line. Memory has both, and the byte figure is the
+ * one worth having: "83%" is a number you have to already know the machine to
+ * act on, and "13.3 GiB of 16 GiB" is not. So in Absolute the memory series
+ * becomes bytes consumed and moves to the right-hand axis, for the same reason
+ * inodes sit opposite disk space on the chart above - two quantities in
+ * different units forced onto one scale leave whichever is smaller as a flat
+ * line along the bottom.
+ *
+ * Consumed rather than available, because that is the direction the question
+ * runs: memory is *used up* by something, and a chart that climbs when things
+ * get worse needs no explaining. It is derived here rather than stored, since
+ * the collector already keeps total and available and a third column would be
+ * a way for the three to disagree.
+ */
+function renderCpuChart(rows) {
+  const absolute = state.units === "bytes";
+
+  const prepared = absolute
+    ? rows.map(row => ({
+        ...row,
+        mem_used_bytes: row.mem_total_bytes == null || row.mem_available_bytes == null
+          ? null
+          : Number(row.mem_total_bytes) - Number(row.mem_available_bytes),
+      }))
+    : rows;
+
+  const series = [{ key: "cpu_percent", label: "CPU %" }];
+  series.push(absolute
+    ? { key: "mem_used_bytes", label: "Memory used (right)", axis: "right" }
+    : { key: "mem_used_percent", label: "Memory %" });
+
+  drawLineChart($("cpuChart"), prepared, series, {
+    axis: percentAxis,
+    rightAxis: absolute ? bytesAxis : undefined,
+    zeroBased: true,
+    // Caps the percentage axis. Harmless on the byte axis beside it, which is
+    // already orders of magnitude past a hundred.
+    max: 100,
+  });
+
+  // The last reading that actually had a memory figure, so the note can say how
+  // much of the machine that is. A host with no /proc/meminfo has none at all.
+  const latest = [...prepared].reverse().find(row => row.mem_total_bytes != null);
+
+  $("cpuNote").textContent = absolute && latest
+    ? `Share of the machine in use, since the previous reading. Memory is bytes `
+      + `consumed on the right, out of ${humanBytes(latest.mem_total_bytes)} total.`
+    : "Share of the machine in use, since the previous reading.";
+}
+
 function renderVitalCharts(rows) {
   renderRoomChart(rows);
-
-  drawLineChart($("cpuChart"), rows,
-    [{ key: "cpu_percent", label: "CPU %" }, { key: "mem_used_percent", label: "Memory %" }],
-    { axis: percentAxis, zeroBased: true, max: 100 });
+  renderCpuChart(rows);
 
   /*
    * Load average is not a percentage, which is the single most common thing to

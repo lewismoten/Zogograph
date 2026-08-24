@@ -522,6 +522,16 @@ Absolute is the mode that shows a slope; percent is the mode that shows how
 close to the edge you are. A nearly-full disk looks flat in percent and
 obviously falling in bytes, which is why both exist.
 
+**CPU and memory** follows the same switch, with one asymmetry: a percentage is
+the only way to say "CPU", so that line never changes. Memory has both forms, so
+in **Absolute** it becomes bytes consumed on the right-hand axis, with the total
+installed named in the subtitle. `83%` is a number you have to already know the
+machine to act on; `13.3 GiB of 16 GiB` is not. Consumed rather than available,
+because that is the direction the question runs — memory is used *up* by
+something, and a line that climbs as things get worse needs no explaining. It is
+derived from the stored total and available rather than stored a third time,
+which is one fewer way for the three to disagree.
+
 **Load average is not a percentage.** It is how many processes wanted to run at
 once, so it only means something against the core count: 4.00 is half busy on
 eight cores and twice oversubscribed on two. The card shows it as a share of the
@@ -532,6 +542,13 @@ enough decimals for neighbouring labels to differ. The unit is chosen by how big
 the numbers are and the decimals by how far apart they are, which are two
 different questions: 72 GiB of space moving by 50 MiB an hour reads as
 `71.94 GiB`, not as `73671 MiB`.
+
+Round **in the unit the label is printed in**, which is not the same as round in
+tens. Five billion bytes is a perfectly tidy decimal step and renders as
+`4.7 GiB`, so a byte axis chosen that way climbs 0.0, 4.7, 9.3, 14.0 GiB — an
+axis you decode rather than read. The unit is therefore settled first and the
+ticks are chosen within it, giving 0, 5, 10, 15 GiB. Percentages and load
+averages are already their own unit, so nothing changes for them.
 
 ## Live updates
 
