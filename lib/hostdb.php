@@ -693,6 +693,25 @@ function hostMigrations(): array
             )',
             'CREATE INDEX host_capability_changes_at ON host_capability_changes (at)',
         ],
+
+        /*
+         * What a process count cannot say on its own.
+         *
+         * "18 copies of git" is a number, and the alert built on it asserted a
+         * cause it had no evidence for. These columns are the evidence: age
+         * spread, scheduler state, how many distinct parents, and what the
+         * command lines actually are. Eighteen sleeping processes with eighteen
+         * parents and a one-minute median is a busy Git server; eighteen in
+         * uninterruptible sleep under one parent, four hours old, is a fault.
+         */
+        15 => [
+            'ALTER TABLE host_services ADD COLUMN median_seconds INTEGER',
+            'ALTER TABLE host_services ADD COLUMN distinct_parents INTEGER',
+            'ALTER TABLE host_services ADD COLUMN state_summary TEXT',
+            'ALTER TABLE host_services ADD COLUMN command_summary TEXT',
+            'ALTER TABLE host_processes ADD COLUMN state TEXT',
+            'ALTER TABLE host_processes ADD COLUMN ppid INTEGER',
+        ],
     ];
 }
 

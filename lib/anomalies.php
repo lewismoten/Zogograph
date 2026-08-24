@@ -104,9 +104,19 @@ function anomalyRules(array $config): array
         // Swap filling while free memory falls - the two together, never apart.
         'swap_floor_bytes' => 32 * 1024 * 1024,
 
-        // Many more copies of something than there usually are.
+        /*
+         * Many more copies of something than there usually are.
+         *
+         * process_readings is how many consecutive readings must show the pile
+         * before it counts as persistent rather than a spike, and
+         * process_age_seconds is how old the median has to be before "piling
+         * up" is a fair description. Services that fan out by design get a
+         * higher multiple than this - see fansOutByDesign().
+         */
         'process_multiple' => 3.0,
         'process_floor' => 4,
+        'process_readings' => 3,
+        'process_age_seconds' => 600,
 
         // Something still running long after that thing normally finishes.
         'age_multiple' => 3.0,
@@ -297,15 +307,56 @@ function serviceMemoryAnomaly(string $name, float $current, array $history, arra
 }
 
 /**
- * Many more copies of something than there normally are.
+ * Services that fan out by design.
  *
- * Both tests matter and they catch different faults. The multiple alone would
- * fire on one process becoming three, which is a web server handling traffic.
- * The floor alone would fire on a service that legitimately runs forty
- * workers. Together they mean: a lot more than usual, and a lot in absolute
- * terms.
+ * A web server, a Git server and an SSH daemon all answer concurrency by
+ * spawning, so their process count tracks how busy they are rather than whether
+ * anything is wrong. Eighteen copies of git during a clone storm is the system
+ * working; eighteen copies of a singleton daemon is never that.
+ *
+ * The list exists because a rule that treats those two the same has to pick one
+ * threshold, and either choice is wrong half the time: low enough to catch a
+ * stuck daemon means crying wolf at every busy afternoon.
  */
-function serviceCountAnomaly(string $name, int $current, array $history, array $rules): ?array
+function fansOutByDesign(string $name): bool
+{
+    static $known = [
+        'git', 'git-upload-pack', 'git-receive-pack', 'git-http-backend',
+        'php-cgi', 'php-fpm', 'php', 'httpd', 'apache2', 'nginx', 'lsphp',
+        'sshd', 'dovecot', 'imap-login', 'pop3-login', 'exim', 'smtpd',
+        'postfix', 'qmgr', 'proxyexec', 'cpsrvd', 'cpanellogd',
+    ];
+
+    return in_array($name, $known, true) || str_starts_with($name, 'ea-php');
+}
+
+/**
+ * Many more copies of something than there normally are - with the evidence.
+ *
+ * The first version of this reported the count and asserted a cause:
+ *
+ *   "Processes multiplying rather than finishing is what a job that has stopped
+ *    completing looks like from outside."
+ *
+ * That is a reasonable hypothesis and it was stated as a finding. For git it
+ * was very likely wrong: a Git server spawns a process per client operation, so
+ * a jump from six to eighteen is a busy morning. The alert was confident about
+ * something it had not measured.
+ *
+ * What actually separates the two is not the count. It is the count *together
+ * with* how old those processes are and whether the pile persists:
+ *
+ *   many, young, many parents, sleeping    a busy server
+ *   many, old, one parent, uninterruptible a job that has stopped finishing
+ *
+ * So the rule is count x age x persistence, the severity depends on all three,
+ * and the text says which of them it actually has evidence for.
+ *
+ * @param array $now     the latest reading for this service
+ * @param list<float> $history past counts
+ * @param array $context load and core count at this moment
+ */
+function serviceCountAnomaly(string $name, array $now, array $history, array $rules, array $context = []): ?array
 {
     if (count($history) < (int)$rules['min_readings']) {
         return null;
@@ -316,25 +367,128 @@ function serviceCountAnomaly(string $name, int $current, array $history, array $
         return null;
     }
 
-    if ($current < $usual * (float)$rules['process_multiple']
-        || $current - $usual < (float)$rules['process_floor']) {
+    $count = (int)($now['procs'] ?? 0);
+    $ratio = $count / $usual;
+
+    /*
+     * A higher bar for the services that fan out on purpose.
+     *
+     * Two times a quiet baseline is one extra visitor on a Git server, and an
+     * alert that fires for that will be muted within a week - taking the real
+     * ones with it.
+     */
+    $multiple = fansOutByDesign($name)
+        ? max(3.0, (float)$rules['process_multiple'])
+        : (float)$rules['process_multiple'];
+
+    if ($ratio < $multiple || $count - $usual < (float)$rules['process_floor']) {
         return null;
+    }
+
+    // How long the pile has been there, from the readings themselves.
+    $recent = array_slice($history, -max(1, (int)($rules['process_readings'] ?? 3)));
+    $persistent = count($recent) >= (int)($rules['process_readings'] ?? 3)
+        && count(array_filter($recent, fn(float $n): bool => $n >= $usual * 2)) === count($recent);
+
+    $median = $now['median_seconds'] === null ? null : (int)$now['median_seconds'];
+    $oldMedian = $median !== null && $median >= (int)($rules['process_age_seconds'] ?? 600);
+
+    $cores = (int)($context['cores'] ?? 0);
+    $load = (float)($context['load'] ?? 0);
+    $loaded = $cores > 0 && $load > $cores;
+
+    $parents = $now['distinct_parents'] === null ? null : (int)$now['distinct_parents'];
+    $states = (string)($now['state_summary'] ?? '');
+    $commands = (string)($now['command_summary'] ?? '');
+
+    /*
+     * Critical needs all three, exactly as asked for: many, old, and the
+     * machine actually suffering. Any one of them alone is a Tuesday.
+     */
+    $critical = $oldMedian && $loaded;
+
+    $evidence = [];
+    if ($median !== null) {
+        $evidence[] = sprintf(
+            'oldest %s, median %s, newest %s',
+            $now['oldest_seconds'] === null ? '?' : humanDuration((float)$now['oldest_seconds']),
+            humanDuration((float)$median),
+            $now['newest_seconds'] === null ? '?' : humanDuration((float)$now['newest_seconds'])
+        );
+    }
+    if ($parents !== null) {
+        $evidence[] = $parents === 1
+            ? 'all of them share one parent process'
+            : sprintf('%d distinct parent processes', $parents);
+    }
+    if ($states !== '') {
+        $evidence[] = 'states ' . $states;
+    }
+    if ($commands !== '') {
+        $evidence[] = 'commands ' . $commands;
+    }
+
+    /*
+     * The reading of the evidence, offered as a reading.
+     *
+     * Short-lived, many-parented, sleeping processes on a service that fans out
+     * is the ordinary shape of being busy, and saying so is more useful than
+     * repeating the alarming interpretation.
+     */
+    $young = $median !== null && $median < (int)($rules['process_age_seconds'] ?? 600);
+    $spread = $parents !== null && $parents > 1;
+    $stuck = str_contains($states, 'D:') || $parents === 1;
+
+    if (fansOutByDesign($name) && $young && $spread) {
+        $reading = sprintf(
+            'These are short-lived and started by %d different parents, which is what %s '
+            . 'looks like when it is simply busy. Worth a glance rather than an intervention.',
+            $parents,
+            $name
+        );
+    } elseif ($stuck && $oldMedian) {
+        $reading = 'They are old and share a parent, which is what a job that has stopped '
+            . 'finishing looks like: each run starts another and none of the old ones leave.';
+    } else {
+        $reading = sprintf(
+            'The count is %.1f times its recent median. That can mean work is piling up '
+            . 'unfinished, and on a service that spawns per request it can equally mean a '
+            . 'busy period - the ages and parents above are what tell them apart.',
+            $ratio
+        );
     }
 
     return [
         'rule' => 'anomaly:process_count:' . $name,
-        'severity' => 'warning',
-        'subject' => sprintf('%d copies of %s are running', $current, $name),
+        'severity' => $critical ? 'critical' : 'warning',
+        'subject' => sprintf(
+            '%d copies of %s are running%s',
+            $count,
+            $name,
+            $critical ? ', and the machine is struggling' : ''
+        ),
         'detail' => sprintf(
-            "There are %d %s processes. The usual number is %s, taken as the median of %d "
-            . "readings.\n\n"
-            . "Processes multiplying rather than finishing is what a job that has stopped "
-            . "completing looks like from outside: each run starts a new one and none of the old "
-            . "ones go away.",
-            $current,
+            "There are %d %s processes against a usual %s, the median of %d readings.\n\n"
+            . "%s\n\n%s%s",
+            $count,
             $name,
             rtrim(rtrim(number_format($usual, 1), '0'), '.'),
-            count($history)
+            count($history),
+            $evidence === [] ? 'No age or parent detail was recorded for this reading.'
+                : 'At this reading: ' . implode('; ', $evidence) . '.',
+            $reading,
+            $critical
+                ? sprintf(
+                    "\n\nRaised as critical because the pile is old and load is %.2f on %d core%s "
+                    . '- the machine is behind, not merely busy.',
+                    $load,
+                    $cores,
+                    $cores === 1 ? '' : 's'
+                )
+                : ($persistent
+                    ? "\n\nIt has been at least double its baseline for the last "
+                      . (int)($rules['process_readings'] ?? 3) . ' readings, so this is not a spike.'
+                    : '')
         ),
     ];
 }
@@ -921,7 +1075,8 @@ function hostAnomalies(PDO $host, array $rules): array
     $recent = $latest - (int)$rules['baseline_hours'] * 3600;
 
     $stmt = $host->prepare(
-        'SELECT name, taken_at, pss_bytes, procs, oldest_seconds
+        'SELECT name, taken_at, pss_bytes, procs, oldest_seconds, newest_seconds,
+                median_seconds, distinct_parents, state_summary, command_summary
          FROM host_services WHERE taken_at >= ? ORDER BY taken_at ASC'
     );
     $stmt->execute([$since]);
@@ -952,12 +1107,34 @@ function hostAnomalies(PDO $host, array $rules): array
         }
     }
 
+    /*
+     * Load at the moment of the reading, from the host's own sample.
+     *
+     * The count rule needs it: a pile of processes on an idle machine is a
+     * curiosity, and the same pile with load above the core count is the
+     * machine failing to keep up. Absent, the rule simply never escalates.
+     */
+    $context = [];
+    try {
+        $sample = $host->query(
+            'SELECT load1, cpu_cores FROM host_samples ORDER BY id DESC LIMIT 1'
+        )->fetch(PDO::FETCH_ASSOC);
+        if ($sample) {
+            $context = [
+                'load' => (float)($sample['load1'] ?? 0),
+                'cores' => (int)($sample['cpu_cores'] ?? 0),
+            ];
+        }
+    } catch (Throwable) {
+        $context = [];
+    }
+
     foreach ($current as $name => $row) {
         $past = $series[$name] ?? [];
 
         $checks = [
             serviceMemoryAnomaly($name, (float)$row['pss_bytes'], $past['pss'] ?? [], $rules),
-            serviceCountAnomaly($name, (int)$row['procs'], $past['procs'] ?? [], $rules),
+            serviceCountAnomaly($name, $row, $past['procs'] ?? [], $rules, $context),
             $row['oldest_seconds'] === null
                 ? null
                 : serviceAgeAnomaly($name, (float)$row['oldest_seconds'], $past['age'] ?? [], $rules),

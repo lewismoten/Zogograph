@@ -238,6 +238,8 @@ function hostProcesses(
             'vsz_bytes' => $kb('VmSize'),
             'threads' => $thr,
             'elapsed_seconds' => hostElapsed($procRoot, (int)$entry, $boot, $ticks),
+            'state' => hostProcState($procRoot, (int)$entry),
+            'ppid' => hostParentPid($procRoot, (int)$entry),
             // Block-layer bytes, so a service re-reading its own cache all day
             // does not look like a heavy reader. Readable for every process
             // when running as root, which is the point of this collector.
@@ -389,6 +391,64 @@ function hostCommandLine(string $procRoot, int $pid, string $name): string
 }
 
 /** Seconds since a process started, from its start time and the boot clock. */
+/**
+ * The parent process id.
+ *
+ * Eighteen processes sharing one parent are one job fanning out - or one job
+ * that has stopped collecting its children. Eighteen with eighteen different
+ * parents are eighteen unrelated arrivals, which for a Git server is simply
+ * traffic. The distinction is invisible in a count.
+ */
+function hostParentPid(string $procRoot, int $pid): ?int
+{
+    $raw = @file_get_contents("$procRoot/$pid/stat");
+    if ($raw === false) {
+        return null;
+    }
+
+    $close = strrpos($raw, ')');
+    if ($close === false) {
+        return null;
+    }
+
+    $rest = preg_split('/\s+/', trim(substr($raw, $close + 1))) ?: [];
+
+    // ppid is field 4 overall, so [1] after the bracketed name.
+    return isset($rest[1]) && ctype_digit($rest[1]) ? (int)$rest[1] : null;
+}
+
+function hostProcState(string $procRoot, int $pid): ?string
+{
+    $raw = @file_get_contents("$procRoot/$pid/stat");
+    if ($raw === false) {
+        return null;
+    }
+
+    $close = strrpos($raw, ')');
+    if ($close === false) {
+        return null;
+    }
+
+    $rest = preg_split('/\s+/', trim(substr($raw, $close + 1))) ?: [];
+
+    /*
+     * The scheduler state, which is the difference between eighteen busy
+     * processes and eighteen stuck ones.
+     *
+     *   R running or runnable      doing work
+     *   S sleeping                 waiting for something, normally
+     *   D uninterruptible sleep    waiting on I/O and cannot be killed - a
+     *                              pile of these is a stuck disk or a hung
+     *                              network filesystem
+     *   Z zombie                   finished, and nobody collected the result
+     *   T stopped
+     *
+     * Without it "18 copies of git" is a count. With it, eighteen in S with
+     * short ages is a busy Git server and eighteen in D is a problem.
+     */
+    return isset($rest[0]) && $rest[0] !== '' ? substr($rest[0], 0, 1) : null;
+}
+
 function hostElapsed(string $procRoot, int $pid, int $boot, int $ticks): ?int
 {
     $raw = @file_get_contents("$procRoot/$pid/stat");
@@ -514,6 +574,44 @@ function hostByUser(array $procs): array
  *
  * @return list<array>
  */
+/**
+ * The distinguishing part of a command line.
+ *
+ * Everything after the subcommand is usually a path, and paths are what make
+ * eighteen identical jobs look like eighteen different ones. Two tokens is
+ * enough to tell `git upload-pack` from `git gc` while collapsing the repos.
+ */
+function commandShape(string $command, string $name): string
+{
+    $command = trim($command);
+    if ($command === '') {
+        return '';
+    }
+
+    $parts = preg_split('/\s+/', $command) ?: [];
+    $first = basename($parts[0] ?? $name);
+    $second = $parts[1] ?? '';
+
+    // A second token that is a path says nothing; one that is a subcommand
+    // says everything.
+    if ($second === '' || str_starts_with($second, '/') || str_starts_with($second, '-')) {
+        return $first;
+    }
+
+    return $first . ' ' . $second;
+}
+
+/** "S:16 R:2" - a distribution small enough to store on every row. */
+function summariseCounts(array $counts, int $keep): string
+{
+    $parts = [];
+    foreach (array_slice($counts, 0, $keep, true) as $key => $n) {
+        $parts[] = $key . ':' . $n;
+    }
+
+    return implode(' ', $parts);
+}
+
 function hostByService(array $procs): array
 {
     $services = [];
@@ -528,6 +626,16 @@ function hostByService(array $procs): array
             // group whose oldest is hours and whose newest is seconds is
             // churning, not merely long-lived.
             'oldest_seconds' => null, 'newest_seconds' => null,
+            /*
+             * The evidence a count on its own cannot supply.
+             *
+             * Eighteen copies of git is a number. Eighteen sharing one parent,
+             * all in D, all four hours old is a diagnosis; eighteen with
+             * eighteen parents, all in S, all under a minute is a busy Git
+             * server. Collected here because it is nearly free while the
+             * process list is already in hand, and impossible afterwards.
+             */
+            'ages' => [], 'states' => [], 'parents' => [], 'commands' => [],
         ];
 
         $services[$name]['procs']++;
@@ -538,13 +646,60 @@ function hostByService(array $procs): array
         $services[$name]['read_bytes'] += (int)($proc['io']['read'] ?? 0);
         $services[$name]['write_bytes'] += (int)($proc['io']['write'] ?? 0);
 
+        if (($proc['state'] ?? null) !== null) {
+            $services[$name]['states'][$proc['state']] =
+                ($services[$name]['states'][$proc['state']] ?? 0) + 1;
+        }
+
+        if (($proc['ppid'] ?? null) !== null) {
+            $services[$name]['parents'][(int)$proc['ppid']] =
+                ($services[$name]['parents'][(int)$proc['ppid']] ?? 0) + 1;
+        }
+
+        /*
+         * Command lines grouped by shape, not counted verbatim.
+         *
+         * Eighteen `git upload-pack /repos/a.git` through `.../r.git` are
+         * eighteen different strings and one kind of work. Keeping the first
+         * couple of tokens turns them into one row saying "upload-pack x18",
+         * which is the thing worth reading.
+         */
+        $shape = commandShape((string)($proc['command'] ?? ''), $name);
+        if ($shape !== '') {
+            $services[$name]['commands'][$shape] =
+                ($services[$name]['commands'][$shape] ?? 0) + 1;
+        }
+
         $age = $proc['elapsed_seconds'] ?? null;
+        if ($age !== null) {
+            $services[$name]['ages'][] = $age;
+        }
         if ($age !== null) {
             $services[$name]['oldest_seconds'] = $services[$name]['oldest_seconds'] === null
                 ? $age : max($services[$name]['oldest_seconds'], $age);
             $services[$name]['newest_seconds'] = $services[$name]['newest_seconds'] === null
                 ? $age : min($services[$name]['newest_seconds'], $age);
         }
+    }
+
+    foreach ($services as $name => $row) {
+        $ages = $row['ages'];
+        sort($ages);
+        $services[$name]['median_seconds'] = $ages === []
+            ? null
+            : (int)$ages[intdiv(count($ages), 2)];
+
+        arsort($services[$name]['states']);
+        arsort($services[$name]['parents']);
+        arsort($services[$name]['commands']);
+
+        $services[$name]['distinct_parents'] = count($row['parents']);
+        $services[$name]['state_summary'] = summariseCounts($services[$name]['states'], 4);
+        $services[$name]['command_summary'] = summariseCounts($services[$name]['commands'], 3);
+
+        // The raw arrays have done their job and would bloat every row.
+        unset($services[$name]['ages'], $services[$name]['states'],
+              $services[$name]['parents'], $services[$name]['commands']);
     }
 
     $services = array_values(array_filter(
@@ -898,8 +1053,8 @@ function hostTakeReading(
         $procs = $pdo->prepare(
             'INSERT INTO host_processes
                 (sample_id, pid, user, name, rss_bytes, pss_bytes, swap_bytes, vsz_bytes,
-                 threads, elapsed_seconds, command, read_bytes, write_bytes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                 threads, elapsed_seconds, command, read_bytes, write_bytes, state, ppid)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         foreach (hostKeepProcesses($processes['procs']) as $row) {
             $procs->execute([
@@ -908,6 +1063,7 @@ function hostTakeReading(
                 $row['elapsed_seconds'], $row['command'],
                 ($row['io']['readable'] ?? false) ? (int)$row['io']['read'] : null,
                 ($row['io']['readable'] ?? false) ? (int)$row['io']['write'] : null,
+                $row['state'] ?? null, $row['ppid'] ?? null,
             ]);
         }
 
@@ -916,8 +1072,9 @@ function hostTakeReading(
         $services = $pdo->prepare(
             'INSERT INTO host_services
                 (taken_at, name, procs, threads, rss_bytes, pss_bytes, swap_bytes,
-                 read_bytes, write_bytes, oldest_seconds, newest_seconds)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                 read_bytes, write_bytes, oldest_seconds, newest_seconds,
+                 median_seconds, distinct_parents, state_summary, command_summary)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         foreach (hostByService($processes['procs']) as $row) {
             $services->execute([
@@ -925,6 +1082,8 @@ function hostTakeReading(
                 $row['rss_bytes'], $row['pss_bytes'], $row['swap_bytes'],
                 $row['read_bytes'], $row['write_bytes'],
                 $row['oldest_seconds'], $row['newest_seconds'],
+                $row['median_seconds'] ?? null, $row['distinct_parents'] ?? null,
+                $row['state_summary'] ?? null, $row['command_summary'] ?? null,
             ]);
         }
 
