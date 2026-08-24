@@ -234,6 +234,66 @@
   <div id="processHistory"></div>
 </section>
 
+<section class="panel" id="hostPanel" hidden>
+  <div class="panel-head">
+    <h2>The whole machine</h2>
+    <div class="panel-controls">
+      <button id="hostRefresh" class="link">Refresh</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    From <code>host-cron.php</code>, run by root. Inside CageFS this account gets
+    its own <code>/proc</code> holding only its own processes, so everything
+    below is invisible to every other panel on this page.
+  </p>
+  <div id="hostBody"></div>
+
+  <div id="hostMemory" hidden>
+    <h3 class="sub-head">Where the memory went</h3>
+    <p class="muted small sub-note" id="hostMemNote"></p>
+    <div class="cards" id="hostCards"></div>
+    <canvas id="hostChart"></canvas>
+
+    <h3 class="sub-head">Memory by user</h3>
+    <p class="muted small sub-note">
+      The column CageFS hides. <strong>Shared</strong> is Pss — each page divided
+      by the number of processes holding it — and it is the one that adds up.
+      Resident counts every shared page once per process, so it always totals
+      more than the machine has.
+    </p>
+    <div id="hostUsers"></div>
+
+    <h3 class="sub-head">Biggest processes on the host</h3>
+    <div id="hostProcesses"></div>
+
+    <h3 class="sub-head">Kernel slab caches</h3>
+    <p class="muted small sub-note">
+      Memory the kernel holds for itself. It belongs to no process and no
+      account, and it is the first place to look when the numbers do not add up
+      — a quarter of a gigabyte of <code>xfs_inode</code> appears in nothing else
+      on this page.
+    </p>
+    <div id="hostSlab"></div>
+
+    <h3 class="sub-head">Files only root can see</h3>
+    <p class="muted small sub-note">
+      Apache writes each domain's logs under <code>/etc</code> owned by root. A
+      rotated log there costs exactly as much disk as one in the home directory
+      and is invisible to everything the account can run.
+    </p>
+    <div id="hostFiles"></div>
+
+    <div id="hostLveWrap" hidden>
+      <h3 class="sub-head">CloudLinux limits</h3>
+      <p class="muted small sub-note">
+        A process killed for hitting an LVE limit leaves no other trace. A rising
+        fault count is the evidence.
+      </p>
+      <div id="hostLve"></div>
+    </div>
+  </div>
+</section>
+
 <section class="panel" id="healthPanel">
   <div class="panel-head">
     <h2>Health</h2>

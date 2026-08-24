@@ -805,6 +805,7 @@ async function refreshAll() {
     await Promise.all([
       refreshOffenders(), refreshAlerts(), refreshActionLog(),
       refreshSchedule(), refreshHealth(), refreshProblems(), refreshProcesses(),
+      refreshHost(),
     ]);
     if (state.historyPathId) await showHistory(state.historyPathId, true);
     if (state.log.pathId) await showLog(state.log.pathId, true);
@@ -1765,6 +1766,181 @@ function renderBusyMoments(moments) {
   }));
 }
 
+/* ------------------------------------------------------------------- host -- */
+
+/**
+ * What root can see and this account cannot.
+ *
+ * Kept in its own panel rather than folded into the others because it comes
+ * from a different database, written by a different user, on a different
+ * schedule - and because it is either entirely present or entirely absent.
+ * Merging it would leave every other panel having to explain which half of its
+ * numbers were missing.
+ */
+async function refreshHost() {
+  const panel = $("hostPanel");
+  if (!state.signedIn) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  let data;
+  try {
+    const to = Math.floor(Date.now() / 1000);
+    data = await api("host", { from: to - state.range, to });
+  } catch (error) {
+    $("hostBody").textContent = String(error.message || error);
+    $("hostMemory").hidden = true;
+    return;
+  }
+
+  if (!data.available) {
+    $("hostBody").textContent = data.reason || "No host readings.";
+    $("hostMemory").hidden = true;
+    return;
+  }
+
+  $("hostBody").textContent = "";
+  $("hostMemory").hidden = false;
+
+  const s = data.sample;
+  const swapUsed = num(s.swap_total) - num(s.swap_free);
+
+  $("hostCards").replaceChildren();
+  setHostCard("Memory in use", humanBytes(s.used_bytes),
+    `of ${humanBytes(s.mem_total)}`);
+  setHostCard("Cache and buffers", humanBytes(s.cache_bytes),
+    "reclaimable — not a problem");
+  setHostCard("Kernel slab", humanBytes(s.slab),
+    `${humanBytes(s.sunreclaim)} of it unreclaimable`);
+  setHostCard("Shared / tmpfs", humanBytes(s.shmem),
+    s.devshm_used == null ? "" : `${humanBytes(s.devshm_used)} in /dev/shm`);
+  setHostCard("Swapped out", humanBytes(swapUsed),
+    `of ${humanBytes(s.swap_total)}`);
+  setHostCard("Unaccounted", humanBytes(s.unaccounted),
+    "not in any process, cache or slab");
+
+  /*
+   * The sentence that stops a wild goose chase.
+   *
+   * Somebody reading `ps --sort=-rss` adds the column up, gets five gigabytes
+   * on a machine using three, and goes looking for the missing two — which were
+   * never there. Resident size counts a shared page once per process holding
+   * it, so the total is an overcount by construction.
+   *
+   * Only said when it is true, though. On a quiet machine the sum can genuinely
+   * come in under what is in use, and a hardcoded "that is more than the
+   * machine has" would then be simply wrong in a panel whose whole job is to be
+   * trusted about memory.
+   */
+  const parts = [
+    `${s.proc_count} processes across ${data.users.length} users, `
+      + `${s.thread_count} threads.`,
+  ];
+
+  const rssSum = num(s.rss_sum_bytes);
+  const inUse = num(s.used_bytes);
+  parts.push(
+    rssSum > inUse
+      ? `Their resident sizes add up to ${humanBytes(rssSum)}, more than the `
+        + `${humanBytes(inUse)} actually in use — a page shared by ten processes is `
+        + `counted ten times, so that total is an overcount and the difference is `
+        + `not missing memory.`
+      : `Their resident sizes add up to ${humanBytes(rssSum)}. Resident size counts `
+        + `shared pages once per process, so it is an upper bound rather than a total.`
+  );
+
+  if (num(s.pss_procs) > 0) {
+    parts.push(
+      `The shared figure, which does add up, comes to ${humanBytes(s.pss_sum_bytes)} `
+      + `across the ${s.pss_procs} biggest`
+      + (num(s.pss_procs) < num(s.proc_count) ? ` of them.` : `.`)
+    );
+  }
+
+  $("hostMemNote").textContent = parts.join(" ");
+
+  drawLineChart($("hostChart"), data.rows, [
+    { key: "used_bytes", label: "In use" },
+    { key: "cache_bytes", label: "Cache" },
+    { key: "slab", label: "Slab" },
+    { key: "unaccounted", label: "Unaccounted" },
+  ], { axis: bytesAxis, zeroBased: true, empty: "Only one host reading so far" });
+
+  renderTable("hostUsers", data.users, [
+    { label: "User", render: r => r.user },
+    { label: "Processes", className: "size", render: r => r.procs },
+    { label: "Threads", className: "size", render: r => r.threads },
+    { label: "Resident", className: "size", render: r => humanBytes(r.rss_bytes) },
+    { label: "Shared (Pss)", className: "size", render: r => hostPss(r.pss_bytes) },
+    { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
+  ]);
+
+  renderTable("hostProcesses", data.processes, [
+    { label: "PID", className: "size", render: r => r.pid },
+    { label: "User", render: r => r.user },
+    { label: "Process", render: r => r.name },
+    { label: "Resident", className: "size", render: r => humanBytes(r.rss_bytes) },
+    { label: "Shared (Pss)", className: "size", render: r => hostPss(r.pss_bytes) },
+    { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
+    { label: "Threads", className: "size", render: r => r.threads },
+    { label: "Running for", className: "size",
+      render: r => (r.elapsed_seconds == null ? "—" : humanDuration(r.elapsed_seconds)) },
+    { label: "Command", className: "cmd", render: r => r.command },
+  ]);
+
+  renderTable("hostSlab", data.slab, [
+    { label: "Cache", render: r => r.name },
+    { label: "Holding", className: "size", render: r => humanBytes(r.cache_bytes) },
+    { label: "Objects", className: "size", render: r => Number(r.objs).toLocaleString() },
+    { label: "Each", className: "size", render: r => humanBytes(r.obj_bytes) },
+  ]);
+
+  renderTable("hostFiles", data.files, [
+    { label: "Path", className: "name", render: r => r.path },
+    { label: "Size", className: "size", render: r => humanBytes(r.bytes) },
+    { label: "Owner", render: r => r.owner ?? "—" },
+    { label: "Last written", className: "size", render: r => humanTime(r.mtime) },
+  ]);
+
+  $("hostLveWrap").hidden = !data.lve.length;
+  if (data.lve.length) {
+    renderTable("hostLve", data.lve, [
+      { label: "Account", render: r => r.user },
+      { label: "CPU faults", className: "size", render: r => r.faults_cpu },
+      { label: "Memory faults", className: "size", render: r => r.faults_mem },
+      { label: "Process faults", className: "size", render: r => r.faults_procs },
+    ]);
+  }
+}
+
+/** Pss is only measured for the biggest processes, so absence is not zero. */
+function hostPss(value) {
+  return value == null || Number(value) === 0 ? "—" : humanBytes(value);
+}
+
+function setHostCard(label, value, sub) {
+  const card = document.createElement("div");
+  card.className = "card";
+  const l = document.createElement("div");
+  l.className = "label";
+  l.textContent = label;
+  const v = document.createElement("div");
+  v.className = "value";
+  v.textContent = value;
+  const s = document.createElement("div");
+  s.className = "sub muted";
+  s.textContent = sub;
+  card.append(l, v, s);
+  $("hostCards").appendChild(card);
+}
+
+function num(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
 /* ----------------------------------------------------------------- health -- */
 
 /** Plain-language names for the checks, and what a false one means. */
@@ -2569,6 +2745,10 @@ $("procBy").addEventListener("change", () => {
 
 $("procRefresh").addEventListener("click", () => {
   refreshProcesses().catch(e => notice(String(e.message || e)));
+});
+
+$("hostRefresh").addEventListener("click", () => {
+  refreshHost().catch(e => notice(String(e.message || e)));
 });
 
 $("procGroup").addEventListener("change", () => {

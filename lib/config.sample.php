@@ -165,4 +165,52 @@ return [
          */
         'max_group' => 40,
     ],
+
+    /*
+     * The host-side collector, run by root out of WHM's crontab.
+     *
+     * Only relevant if you have root on the machine. Inside CageFS a cPanel
+     * account gets its own /proc holding only its own processes, so the account
+     * collector can watch memory vanish and have nothing to blame - the process
+     * holding two gigabytes belongs to another user and, from inside the cage,
+     * does not exist. Neither do the kernel's slab caches, nor a 763 MB Apache
+     * log under /etc that costs exactly as much disk as one in the home
+     * directory.
+     *
+     * host-cron.php fills that gap. It writes to its own database so that two
+     * writers of different privilege never share a write-ahead log.
+     */
+    'host' => [
+        // Defaults to host.db beside the account database, which .htaccess
+        // already denies over HTTP.
+        'database' => null,
+
+        /*
+         * Who the dashboard runs as.
+         *
+         * Root creates the database, so without this only root can read it and
+         * the dashboard shows an empty panel with no clue why. It is set rather
+         * than guessed because guessing wrong gives either an unreadable file
+         * or a world-readable one - and the second is worse, since this
+         * database lists every process on the machine with its command line.
+         */
+        'owner' => 'regaldra',
+
+        'keep_days' => 14,
+
+        /*
+         * Files worth watching that the account cannot stat.
+         *
+         * Apache writes each domain's logs under /etc/apache2 owned by root.
+         * Anything smaller than watch_min_bytes is ignored, or this becomes a
+         * list of several hundred empty logs.
+         */
+        'watch' => [
+            '/etc/apache2/logs/domlogs/*',
+            '/etc/apache2/logs/domlogs/*/*',
+            '/usr/local/apache/logs/*log',
+            '/var/log/messages*',
+        ],
+        'watch_min_bytes' => 1048576,
+    ],
 ];

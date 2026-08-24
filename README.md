@@ -9,7 +9,10 @@ monitor you have to remember to look at is a monitor that tells you afterwards.
 
 ## Files
 
-- `cron.php` — the collector. Command line only; `.htaccess` denies it over HTTP.
+- `cron.php` — the account collector. Command line only; `.htaccess` denies it
+  over HTTP.
+- `host-cron.php` — the host collector, run by root out of WHM's crontab. Sees
+  what CageFS hides from the account. Command line only.
 - `setup.php` — the config wizard, in a browser or at a prompt.
 - `health.php` — a diagnostic page that depends on nothing and works when the
   rest does not.
@@ -17,7 +20,8 @@ monitor you have to remember to look at is a monitor that tells you afterwards.
 - `index.html` / `index.css` / `index.js` — the dashboard.
 - `lib/` — config, database, collection, alerting, auth, masking, actions,
   log tailing, scheduling, processes, symlinks, and signalling.
-- `data/` — the SQLite database. Created automatically, never served.
+- `data/` — the SQLite databases: `stats.db` from the account collector and
+  `host.db` from the root one. Created automatically, never served.
 
 ## What it records
 
@@ -360,6 +364,88 @@ them to go stale in.
 Every attempt is written to the actions table, refusals included. A run of
 refusals is what somebody probing the guards looks like, and it is the only
 place that would ever show up.
+
+## The host half
+
+Everything above runs as the cPanel account. On a CloudLinux box that account is
+inside CageFS, which gives it **its own `/proc` containing only its own
+processes** — so the account collector can watch memory disappear and have
+nothing to blame. The process holding two gigabytes belongs to another user and,
+from inside the cage, does not exist. Neither do the kernel's slab caches,
+another account's swap, or a 763 MB Apache log under `/etc` that costs exactly
+as much disk as one in the home directory.
+
+`host-cron.php` is the other half. It runs as root out of WHM's crontab:
+
+    * * * * * /usr/local/bin/php /home/USER/public_html/stats/host-cron.php --collect --prune --quiet
+
+It is refused over HTTP twice — by `.htaccess` and by the file itself, which
+exits unless `PHP_SAPI` is `cli`. A root-privileged entry point reachable from a
+browser is not something to leave to one layer. Run as a non-root user it still
+works and says so, which matters because "I ran it and it found nothing
+interesting" is otherwise hard to explain.
+
+**A second database.** `data/host.db`, not the account's `stats.db`. Two writers
+of different privilege sharing one write-ahead log is a trap: the first time
+root creates a WAL the account cannot write, collection stops with a lock error
+nobody thinks to look for. Separate files means the only thing they share is a
+directory. Root is the single writer; the dashboard only ever reads, and never
+migrates — a schema half-created by the web user in a file root expects to own
+has no clean way out.
+
+Set `host.owner` to the account the dashboard runs as. Root creates the file, so
+without that only root can read it and the panel stays empty with no clue why.
+It is set rather than guessed because guessing wrong gives either an unreadable
+file or a world-readable one, and the second is worse: this database lists every
+process on the machine with its command line. Ownership is re-applied on every
+run, because SQLite recreates the `-wal` and `-shm` files as root and a WAL
+database cannot be read without them.
+
+The dashboard's schedule editor cannot manage this job — it edits the account's
+crontab, and this one belongs to root.
+
+### Why sum-of-RSS is a wild goose chase
+
+The panel leads with this because it is the mistake the numbers invite. Adding
+up the RSS column across processes gives a number bigger than the machine is
+using — on the box this was written for, 4.96 GiB of RSS against 3.38 GiB
+actually in use. Nothing is missing. **RSS counts every shared page once per
+process**, so a hundred Apache workers each "own" the same copy of libc, and the
+difference is an artefact of the counting.
+
+Pss — each page divided by the number of processes sharing it — is the figure
+that adds up, and no `ps` can report it. It comes from
+`/proc/<pid>/smaps_rollup`, which the kernel builds by walking the page tables:
+cheap per process, but there can be a thousand of them, so it is read for the
+biggest sixty by RSS and the panel says so rather than presenting a partial sum
+as a whole-machine total.
+
+### What it collects
+
+- **The memory breakdown** — in use, reclaimable cache, slab, tmpfs, swap, and
+  what is left over. `unaccounted` is `used` minus everything nameable
+  (anonymous pages, swap-cached, unreclaimable slab, page tables, kernel stacks,
+  per-cpu areas). It should be small. When it is not, the memory has gone
+  somewhere no per-process view will ever show — a driver, a balloon, a kernel
+  leak — and knowing *that* is worth more than another process list.
+- **Memory per user**, which is the column CageFS hides and usually the answer.
+- **The biggest processes on the host**, with Pss, swap, threads and age.
+- **Kernel slab caches**, sized the way `slabtop` does it — slabs × pages per
+  slab × page size, not objects × object size. The two disagree, because a slab
+  is whole pages and objects rarely divide evenly into them.
+- **Shared memory** — System V segments and `/dev/shm`. A segment whose creator
+  has exited still holds RAM, which is a leak with no owner to point at.
+- **Files only root can stat**, from the `host.watch` globs. Defaults cover
+  Apache's domlogs.
+- **CloudLinux LVE faults**, where `lveinfo` exists. A process killed for hitting
+  a limit leaves no other trace; a rising fault count is the evidence.
+
+Everything is read from `/proc` directly rather than by shelling out to `ps`,
+`free` or `slabtop` — those are not installed everywhere, their output differs
+between procps and BSD userland in ways that are easy to miss, and none of them
+can report Pss. It also means every parser takes the root of the tree it reads
+as an argument, so they can be tested against captured fixtures rather than only
+on the machine they are aimed at.
 
 ## Reading log files
 
@@ -705,6 +791,9 @@ the right status code.
   sends a password; never over plain HTTP.
 - Even masked, the sizes describe a private machine, so nothing here is
   cacheable by a shared proxy.
+- `host.db` lists every process on the machine with its command line, so it is
+  created 0640 and handed to one named account rather than left world-readable.
+  The host panel has no signed-out form: there is no sensible way to mask it.
 - A signed-in session can stop processes, so it is a kill switch as well as a
   dashboard. `processes.may_stop = false` removes that; pid 1, this dashboard's
   own ancestry and other users' processes are refused regardless. Patterns from

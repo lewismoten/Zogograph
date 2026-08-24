@@ -26,6 +26,13 @@ DirectoryIndex index.html
   Require all denied
 </Files>
 
+# The host collector runs as root. It refuses to run under a web server on its
+# own as well, but a root-privileged entry point reachable from a browser is not
+# something to leave to one layer.
+<Files "host-cron.php">
+  Require all denied
+</Files>
+
 # setup.php is deliberately reachable: it is how the thing gets configured
 # without an ssh session. It guards itself instead - it writes lib/config.php
 # freely only while that file does not exist, and once it does, replacing it

@@ -47,6 +47,7 @@ require_once __DIR__ . '/lib/schedule.php';
 require_once __DIR__ . '/lib/processes.php';
 require_once __DIR__ . '/lib/symlinks.php';
 require_once __DIR__ . '/lib/signals.php';
+require_once __DIR__ . '/lib/hostdb.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -86,6 +87,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'schedule' => scheduleRead($signedIn),
         'processes' => processList($config, $pdo, $signedIn),
         'symlinks' => symlinkCheck($config, $signedIn),
+        'host' => hostView($config, $signedIn),
         'health' => healthCheck($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
@@ -450,6 +452,84 @@ function symlinkCheck(array $config, bool $signedIn): array
     }
 
     return findSymlinkProblems($config, (float)clampInt($_GET['budget'] ?? 10, 1, 60));
+}
+
+/**
+ * What the host collector saw, which is everything the account cannot.
+ *
+ * Signed in only, and not negotiable: this lists every process on the machine
+ * with its command line, every user's memory, and the paths of root-owned log
+ * files. The account dashboard masks its own paths for a signed-out visitor;
+ * there is no masked version of this, so there is no signed-out version.
+ *
+ * Read-only. The root cron is the single writer, and the dashboard never
+ * migrates this database - a schema half-created by the web user in a file root
+ * expects to own is a mess with no clean way out.
+ */
+function hostView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see host readings');
+    }
+
+    $path = hostDatabasePath($config);
+    $pdo = hostDb($config, false);
+
+    if ($pdo === null) {
+        return [
+            'available' => false,
+            // Told apart, because they need opposite fixes: one means the cron
+            // has not run, the other means it ran as root and the dashboard
+            // cannot read what it wrote.
+            'reason' => is_file($path)
+                ? 'The host database exists but this account cannot read it. Set '
+                    . 'host.owner in the config to the account the dashboard runs as, '
+                    . 'then run host-cron.php once as root.'
+                : 'No host readings yet. Add host-cron.php to root\'s crontab.',
+            'sample' => null,
+        ];
+    }
+
+    try {
+        $sample = $pdo->query('SELECT * FROM host_samples ORDER BY id DESC LIMIT 1')->fetch() ?: null;
+    } catch (Throwable) {
+        return [
+            'available' => false,
+            'reason' => 'The host database is unreadable or not yet initialised.',
+            'sample' => null,
+        ];
+    }
+
+    if (!$sample) {
+        return ['available' => false, 'reason' => 'No host readings recorded yet.', 'sample' => null];
+    }
+
+    $id = (int)$sample['id'];
+    $of = function (string $sql) use ($pdo, $id): array {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([$id]);
+        return $stmt->fetchAll();
+    };
+
+    [$from, $to] = window();
+    $series = $pdo->prepare(
+        'SELECT taken_at, mem_total, used_bytes, cache_bytes, unaccounted, slab,
+                shmem, swap_total, swap_free, pss_sum_bytes, proc_count
+         FROM host_samples WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
+    );
+    $series->execute([$from, $to]);
+
+    return [
+        'available' => true,
+        'reason' => null,
+        'sample' => $sample,
+        'users' => $of('SELECT * FROM host_users WHERE sample_id = ? ORDER BY rss_bytes DESC'),
+        'processes' => $of('SELECT * FROM host_processes WHERE sample_id = ? ORDER BY rss_bytes DESC'),
+        'slab' => $of('SELECT * FROM host_slab WHERE sample_id = ? ORDER BY cache_bytes DESC'),
+        'files' => $of('SELECT * FROM host_files WHERE sample_id = ? ORDER BY bytes DESC'),
+        'lve' => $of('SELECT * FROM host_lve WHERE sample_id = ? ORDER BY faults_mem DESC, user'),
+        'rows' => $series->fetchAll(),
+    ];
 }
 
 /** What is in the crontab. Signed in only: it is a list of what runs as you. */
