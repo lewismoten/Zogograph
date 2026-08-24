@@ -46,6 +46,7 @@ require_once __DIR__ . '/lib/logs.php';
 require_once __DIR__ . '/lib/schedule.php';
 require_once __DIR__ . '/lib/processes.php';
 require_once __DIR__ . '/lib/symlinks.php';
+require_once __DIR__ . '/lib/signals.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -83,7 +84,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'actions' => actionLog($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
-        'processes' => processList($pdo, $signedIn),
+        'processes' => processList($config, $pdo, $signedIn),
         'symlinks' => symlinkCheck($config, $signedIn),
         'health' => healthCheck($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
@@ -95,6 +96,10 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'schedule-save' => doScheduleSave($post),
         'scan-now' => doScanNow($pdo, $post),
         'test-email' => doTestEmail($config, $pdo, $post),
+        'match-processes' => doMatchProcesses($config, $post),
+        'stop-process' => doStopProcess($config, $pdo, $post),
+        'stop-group' => doStopGroup($config, $pdo, $post),
+        'stop-matching' => doStopMatching($config, $pdo, $post),
         default => throw new ActionRefused('unknown action'),
     };
 }
@@ -399,21 +404,31 @@ function tailLog(array $config, PDO $pdo, bool $signedIn): array
  * sometimes a password somebody put where they should not have, which is also
  * why the arguments are redacted before they get this far.
  */
-function processList(PDO $pdo, bool $signedIn): array
+function processList(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
         throw new ActionRefused('sign in to see the process list');
     }
 
     $by = ($_GET['by'] ?? 'cpu') === 'memory' ? 'memory' : 'cpu';
-    $live = listProcesses($by, clampInt($_GET['limit'] ?? 15, 1, 100));
+    // Ungrouped is how you reach one process of a pool to stop it on its own;
+    // grouped is how you read the list. Both, rather than a choice.
+    $group = ($_GET['group'] ?? '1') !== '0';
+    $live = listProcesses($by, clampInt($_GET['limit'] ?? 15, 1, 100), $group);
+    $stopping = signalsAvailable($config);
 
     return [
         'by' => $by,
+        'grouped' => $group,
         'available' => $live['available'],
         'reason' => $live['reason'],
-        'rows' => $live['rows'],
+        'rows' => $stopping['available']
+            ? annotateEligibility($config, $live['rows'])
+            : $live['rows'],
         'recorded' => recordedProcesses($pdo, 8),
+        // So the Stop buttons are only drawn where they could actually work.
+        'can_stop' => $stopping['available'],
+        'stop_reason' => $stopping['reason'],
     ];
 }
 
@@ -645,6 +660,67 @@ function doEmpty(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
     $result = emptyCategory($config, $pdo, (string)($_POST['category'] ?? ''));
+    return ['ok' => true] + $result;
+}
+
+/**
+ * Which processes a command-line pattern would hit.
+ *
+ * Changes nothing, but goes through the same door as the things that do: a POST
+ * so a regular expression does not end up in the access log of every proxy
+ * between here and the browser, and signed in because it returns command lines.
+ */
+function doMatchProcesses(array $config, bool $post): array
+{
+    requireWrite($post);
+    return matchProcesses($config, (string)($_POST['pattern'] ?? ''));
+}
+
+function doStopProcess(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    /*
+     * The name and age are what the caller had on screen, and they are required.
+     *
+     * Without them this is "signal whatever holds pid 8214 right now", which is
+     * a different and much worse thing - see the top of lib/signals.php.
+     */
+    $result = stopProcess(
+        $config,
+        $pdo,
+        clampInt($_POST['pid'] ?? 0, 0, PHP_INT_MAX),
+        (string)($_POST['name'] ?? ''),
+        isset($_POST['elapsed']) && $_POST['elapsed'] !== ''
+            ? clampInt($_POST['elapsed'], 0, PHP_INT_MAX)
+            : null,
+        ($_POST['force'] ?? '') === '1'
+    );
+
+    return ['ok' => true] + $result;
+}
+
+function doStopGroup(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $result = stopGroup(
+        $config,
+        $pdo,
+        (string)($_POST['name'] ?? ''),
+        ($_POST['force'] ?? '') === '1'
+    );
+    return ['ok' => true] + $result;
+}
+
+function doStopMatching(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $result = stopMatching(
+        $config,
+        $pdo,
+        (string)($_POST['pattern'] ?? ''),
+        ($_POST['force'] ?? '') === '1'
+    );
     return ['ok' => true] + $result;
 }
 

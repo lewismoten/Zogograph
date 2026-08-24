@@ -195,6 +195,10 @@
           <option value="memory">Memory</option>
         </select>
       </label>
+      <label class="inline">
+        <input type="checkbox" id="procGroup" checked>
+        Group by name
+      </label>
       <button id="procRefresh" class="link">Refresh</button>
     </div>
   </div>
@@ -205,6 +209,22 @@
     passwords are hidden.
   </p>
   <div id="processBody"></div>
+  <p class="muted small" id="procStopNote"></p>
+
+  <h3 class="sub-head">Stop by command line</h3>
+  <p class="muted small sub-note">
+    For when the name is not specific enough to aim with — twelve
+    <code>webalizer</code> processes where one of them is chewing through one
+    particular log. This is <code>pkill -f</code>, with the two differences that
+    matter: the pattern is matched here rather than handed to a shell, and it
+    shows you what it would hit before it hits anything.
+  </p>
+  <form id="patternForm" class="pattern-row">
+    <input type="text" id="patternText" spellcheck="false" autocomplete="off"
+           placeholder="webalizer/bin/english.*ssl_log\.bkup">
+    <button type="submit" id="patternPreview">Show matches</button>
+  </form>
+  <div id="patternBody"></div>
 
   <h3 class="sub-head">When it was last busy</h3>
   <p class="muted small sub-note">

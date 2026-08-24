@@ -1326,7 +1326,11 @@ async function refreshProcesses() {
 
   let data;
   try {
-    data = await api("processes", { by: $("procBy").value, limit: 15 });
+    data = await api("processes", {
+      by: $("procBy").value,
+      limit: 15,
+      group: $("procGroup").checked ? 1 : 0,
+    });
   } catch (error) {
     $("processBody").textContent = String(error.message || error);
     return;
@@ -1335,7 +1339,8 @@ async function refreshProcesses() {
   if (!data.available) {
     $("processBody").textContent = data.reason || "Cannot read the process list here.";
   } else {
-    renderTable("processBody", data.rows, [
+    const grouped = data.grouped;
+    const columns = [
       { label: "Process", render: row => row.name },
       { label: "How many", className: "size", render: row => (row.procs > 1 ? row.procs : "") },
       { label: "User", render: row => row.user },
@@ -1344,12 +1349,127 @@ async function refreshProcesses() {
       { label: "Of RAM", className: "size", render: row => `${row.mem_percent.toFixed(1)}%` },
       { label: "Running for", className: "size", render: row => processAge(row) },
       // The heaviest of the group, which is the one worth going to look at.
-      { label: "Biggest PID", className: "size", render: row => row.pid },
+      { label: grouped ? "Biggest PID" : "PID", className: "size", render: row => row.pid },
       { label: "Command", className: "cmd", render: row => row.command },
-    ]);
+    ];
+
+    if (data.can_stop) {
+      columns.push({
+        label: "Stop",
+        className: "stop-cell",
+        render: row => stopButtons(row, grouped),
+      });
+    }
+
+    renderTable("processBody", data.rows, columns);
+    $("procStopNote").textContent = data.can_stop ? "" : (data.stop_reason || "");
   }
 
   renderBusyMoments(data.recorded ?? []);
+}
+
+/**
+ * The two buttons, which are two genuinely different acts.
+ *
+ * Ask sends SIGTERM: the process is told to go and gets to close its files
+ * first. Force sends SIGKILL, which it cannot catch, cannot decline and cannot
+ * tidy up before - anything it was part-way through writing stays part-way
+ * written. They are not two strengths of the same button, so they do not look
+ * like one; Force is styled as damage and confirmed in its own words.
+ */
+function stopButtons(row, grouped) {
+  const holder = document.createElement("span");
+  holder.className = "stop-buttons";
+
+  const many = grouped && row.procs > 1;
+
+  for (const force of [false, true]) {
+    const button = document.createElement("button");
+    button.className = force ? "danger small" : "small";
+    button.textContent = force ? "Force" : "Ask";
+
+    /*
+     * Root's processes, and the account's own plumbing, are dead buttons
+     * carrying the reason. Drawing a live one that always refuses is how a
+     * control stops being believed.
+     */
+    if (row.eligible === false) {
+      button.disabled = true;
+      button.title = row.reason || "This one cannot be stopped from here.";
+      holder.appendChild(button);
+      continue;
+    }
+
+    button.title = force
+      ? `SIGKILL — ${many ? "all " + row.procs + " are" : "it is"} killed outright, `
+        + "with no chance to finish writing anything"
+      : `SIGTERM — ${many ? "each is" : "it is"} asked to exit and can tidy up first`;
+
+    button.addEventListener("click", async () => {
+      if (!confirmStop(row, grouped, force)) return;
+
+      button.disabled = true;
+      try {
+        const result = many
+          ? await post("stop-group", { name: row.name, force: force ? "1" : "0" })
+          : await post("stop-process", {
+              pid: row.pid,
+              // What was on screen, so the server can refuse if the number has
+              // since been handed to something else. Grouped rows carry the
+              // age under one name and ungrouped rows under another; sending
+              // the wrong one sends nothing, and silently turns the guard off.
+              name: row.name,
+              elapsed: row.oldest_seconds ?? row.elapsed_seconds ?? "",
+              force: force ? "1" : "0",
+            });
+        notice(describeStop(result, row, many), true);
+      } catch (error) {
+        notice(String(error.message || error));
+      } finally {
+        button.disabled = false;
+        refreshProcesses().catch(() => {});
+      }
+    });
+
+    holder.appendChild(button);
+  }
+
+  return holder;
+}
+
+/**
+ * The confirmation, which says what will actually happen.
+ *
+ * "Are you sure?" teaches people to click yes. The count, the name and the
+ * difference between the two signals are the whole content of the decision, so
+ * they are the whole content of the box.
+ */
+function confirmStop(row, grouped, force) {
+  const many = grouped && row.procs > 1;
+  const what = many
+    ? `all ${count(row.procs, "process")} named “${row.name}”`
+    : `“${row.name}” (pid ${row.pid})`;
+
+  return confirm(
+    force
+      ? `Force ${what} to stop?\n\nSIGKILL cannot be caught or ignored. `
+        + `Anything part-way through being written stays part-way written.`
+      : `Ask ${what} to stop?\n\nSIGTERM lets it close its files and exit cleanly. `
+        + `It can also ignore this.`
+  );
+}
+
+/** What came back, in the terms somebody watching a process cares about. */
+function describeStop(result, row, many) {
+  if (!many) {
+    return result.note || (result.stopped ? "Stopped." : "Signalled.");
+  }
+
+  const parts = [`${result.stopped} of ${row.procs} stopped`];
+  if (result.remaining) parts.push(`${result.remaining} still running`);
+  if (result.refused) parts.push(`${result.refused} refused`);
+  if (result.failed) parts.push(`${result.failed} failed`);
+  return parts.join(", ") + ".";
 }
 
 /**
@@ -1362,7 +1482,9 @@ async function refreshProcesses() {
  * the only thing that says so.
  */
 function processAge(row) {
-  const oldest = row.oldest_seconds;
+  // Grouped rows carry the span of the group; a single process carries its own
+  // age under a different name, and the ungrouped table is made of those.
+  const oldest = row.oldest_seconds ?? row.elapsed_seconds;
   if (oldest == null) return "—";
 
   const age = humanDuration(oldest);
@@ -1372,6 +1494,147 @@ function processAge(row) {
     return `${age} · newest ${humanDuration(newest)}`;
   }
   return age;
+}
+
+/** "1 process", "3 processes" — said often enough here to be worth a helper. */
+function count(n, thing) {
+  return `${n} ${thing}${n === 1 ? "" : "es"}`;
+}
+
+/**
+ * Shows what a command-line pattern would hit, before it hits anything.
+ *
+ * The preview is the feature. `pkill -9 -f` fails in exactly one way - the
+ * pattern was broader than the person writing it believed - and it fails
+ * silently, after the fact, on processes that are already gone. Reading the
+ * list first turns that into a decision instead of a discovery.
+ */
+async function previewPattern() {
+  const pattern = $("patternText").value.trim();
+  const holder = $("patternBody");
+
+  if (!pattern) {
+    holder.replaceChildren();
+    return;
+  }
+
+  let data;
+  try {
+    data = await post("match-processes", { pattern });
+  } catch (error) {
+    holder.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "error small",
+      textContent: String(error.message || error),
+    }));
+    return;
+  }
+
+  if (!data.available) {
+    holder.textContent = data.reason || "Cannot read the process list here.";
+    return;
+  }
+
+  const eligible = data.matched.filter(row => row.eligible);
+  const blocked = data.matched.filter(row => !row.eligible);
+
+  holder.replaceChildren();
+
+  const summary = document.createElement("p");
+  summary.className = data.matched.length ? "small" : "muted small";
+  summary.textContent = data.matched.length
+    ? `Matches ${data.matched.length} of the ${data.scanned} running processes`
+      + (blocked.length
+        ? `, ${blocked.length === data.matched.length ? "all" : blocked.length} of which `
+          + `${blocked.length === 1 ? "is" : "are"} protected.`
+        : ".")
+    : `Nothing among the ${data.scanned} running processes matches that.`;
+  holder.appendChild(summary);
+
+  if (!data.matched.length) return;
+
+  const table = document.createElement("table");
+  const head = table.createTHead().insertRow();
+  for (const label of ["PID", "User", "Running for", "CPU", "Command"]) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    if (label !== "Command" && label !== "User") th.className = "size";
+    head.appendChild(th);
+  }
+
+  const body = table.createTBody();
+  for (const row of data.matched) {
+    const tr = body.insertRow();
+    // Protected matches are shown struck through rather than hidden: a pattern
+    // that reaches sshd is a pattern about to be run again with one more
+    // character on the end, and that is worth seeing now.
+    if (!row.eligible) tr.className = "struck";
+    tr.insertCell().textContent = row.pid;
+    tr.insertCell().textContent = row.user;
+    Object.assign(tr.insertCell(), {
+      className: "size",
+      textContent: row.elapsed_seconds == null ? "—" : humanDuration(row.elapsed_seconds),
+    });
+    Object.assign(tr.insertCell(), {
+      className: "size",
+      textContent: `${row.cpu_percent.toFixed(1)}%`,
+    });
+    Object.assign(tr.insertCell(), {
+      className: "cmd",
+      textContent: row.command,
+      title: row.eligible ? "" : row.reason,
+    });
+  }
+  holder.appendChild(table);
+
+  if (!eligible.length) {
+    holder.appendChild(Object.assign(document.createElement("p"), {
+      className: "muted small",
+      textContent: "Every match is protected, so there is nothing here to stop.",
+    }));
+    return;
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "pattern-actions";
+
+  for (const force of [false, true]) {
+    const button = document.createElement("button");
+    button.className = force ? "danger" : "";
+    button.textContent = `${force ? "Force" : "Ask"} ${count(eligible.length, "process")} to stop`;
+
+    button.addEventListener("click", async () => {
+      const verb = force ? "Force" : "Ask";
+      if (!confirm(
+        `${verb} ${count(eligible.length, "process")} to stop?\n\n`
+        + `Pattern: ${pattern}\n\n`
+        + (force
+          ? "SIGKILL cannot be caught or ignored. Anything part-way through "
+            + "being written stays part-way written."
+          : "SIGTERM lets each one close its files and exit cleanly.")
+      )) return;
+
+      button.disabled = true;
+      try {
+        const result = await post("stop-matching", { pattern, force: force ? "1" : "0" });
+        const parts = [`${result.stopped} stopped`];
+        if (result.remaining) parts.push(`${result.remaining} still running`);
+        if (result.refused) parts.push(`${result.refused} protected`);
+        if (result.failed) parts.push(`${result.failed} failed`);
+        notice(parts.join(", ") + ".", true);
+      } catch (error) {
+        notice(String(error.message || error));
+      } finally {
+        button.disabled = false;
+        // Re-run the match so the table reflects what is actually left.
+        previewPattern().catch(() => {});
+        refreshProcesses().catch(() => {});
+      }
+    });
+
+    actions.appendChild(button);
+  }
+
+  holder.appendChild(actions);
 }
 
 /**
@@ -2226,6 +2489,15 @@ $("procBy").addEventListener("change", () => {
 
 $("procRefresh").addEventListener("click", () => {
   refreshProcesses().catch(e => notice(String(e.message || e)));
+});
+
+$("procGroup").addEventListener("change", () => {
+  refreshProcesses().catch(e => notice(String(e.message || e)));
+});
+
+$("patternForm").addEventListener("submit", event => {
+  event.preventDefault();
+  previewPattern().catch(e => notice(String(e.message || e)));
 });
 
 $("symlinkCheck").addEventListener("click", () => {

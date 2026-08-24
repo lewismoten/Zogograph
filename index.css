@@ -206,3 +206,45 @@ dialog form { display: grid; gap: 12px; }
   .grid { grid-template-columns: 1fr; }
   canvas { height: 220px; }
 }
+
+/* Stopping processes.
+
+   Ask and Force sit side by side and do very different things, so they are
+   allowed to look different: Force carries the danger border every other
+   irreversible control on this page uses. Small, because a table row of them
+   at normal size reads as the point of the table, and reading the table is. */
+button.small {
+  font-size: .78rem;
+  padding: 2px 7px;
+}
+.stop-buttons {
+  display: inline-flex;
+  gap: 5px;
+  white-space: nowrap;
+}
+td.stop-cell, th.stop-cell { text-align: right; width: 1%; }
+
+.pattern-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.pattern-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .85rem;
+}
+.pattern-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* A matched process that is protected. Struck through rather than dropped:
+   seeing that a pattern reaches sshd is the reason to look at the preview. */
+tr.struck td {
+  text-decoration: line-through;
+  color: var(--muted);
+}

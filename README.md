@@ -15,7 +15,8 @@ monitor you have to remember to look at is a monitor that tells you afterwards.
   rest does not.
 - `api.php` — the only thing the dashboard talks to.
 - `index.html` / `index.css` / `index.js` — the dashboard.
-- `lib/` — config, database, collection, alerting, auth, masking, actions.
+- `lib/` — config, database, collection, alerting, auth, masking, actions,
+  log tailing, scheduling, processes, symlinks, and signalling.
 - `data/` — the SQLite database. Created automatically, never served.
 
 ## What it records
@@ -271,6 +272,94 @@ One wrinkle: names come from the command line's first word, because `ps`'s
 reliably. An executable whose *path* contains a space therefore shows only the
 part before it — vanishingly rare on a server, common in macOS application
 bundles, so it looks worse on a laptop than where it will run.
+
+## Stopping something
+
+Signed in, every row of the live list carries **Ask** and **Force**, and they
+are not two strengths of one button:
+
+| | signal | what it means |
+|---|---|---|
+| Ask | SIGTERM | the process is told to go, and closes its files first |
+| Force | SIGKILL | the kernel removes it; it cannot catch, decline or tidy up |
+
+Force is the one that loses data, so it is styled as damage and says so in its
+own confirmation. Ask reports honestly when a process ignored it — the normal
+case for anything with a signal handler, and the reason both buttons exist.
+
+**Grouped or one at a time.** The list is grouped by name by default, and a
+group's buttons stop the whole group. Untick *Group by name* and every process
+becomes its own row with its own buttons, which is how you stop one worker of a
+pool and leave the rest running.
+
+**Buttons that cannot work are dead before you press them.** Root's processes
+and the account's own plumbing are drawn disabled with the reason as the
+tooltip. A live-looking control that always answers with a refusal teaches
+people to distrust the ones that work.
+
+### Stopping by command line
+
+`pkill -f`, for when the name is not specific enough to aim with — twelve
+`webalizer` processes and one of them is chewing through one particular log:
+
+    webalizer/bin/english.*git\.lewismoten\.com-ssl_log\.bkup
+
+Two deliberate differences from the real `pkill`:
+
+- **The pattern never reaches a shell.** It is matched in PHP against a process
+  list this code read itself. Passing a string from a browser into
+  `pkill -f '...'` is one metacharacter away from remote code execution, and no
+  amount of quoting is worth betting the account on.
+- **It previews first.** `pkill -9 -f` fails in exactly one way — the pattern was
+  broader than the person writing it believed — and it fails silently, after the
+  fact, on processes that are already gone. *Show matches* turns that into a
+  decision. Protected matches appear struck through rather than hidden: a
+  pattern that reaches `sshd` is a pattern about to be run again with one more
+  character on the end, and that is worth seeing now.
+
+### What it refuses, always
+
+- **pid 1**, which is the machine.
+- **Anything in the dashboard's own ancestry** — the web server, the shell above
+  it, everything in between. Found by walking the parent chain rather than by
+  matching names, so it holds whatever the server is called. Killing one of
+  these would take down the request answering the click.
+- **Other users' processes.**
+- **Anything in `processes.protect`** — sshd, the shells, the mail and database
+  daemons. Killing `sshd` from a web page locks you out of the machine you are
+  trying to fix. Override that list freely; the three above are not opinions and
+  cannot be overridden.
+- **More than `processes.max_group` at once** (40), and any pattern matching over
+  half of everything running. A regex one character broader than intended is the
+  classic way to empty an account, and it always looks correct until it runs.
+
+Set `processes.may_stop` to `false` to remove the capability entirely — worth
+doing if the dashboard is reachable from anywhere a stolen session should not
+have a kill switch.
+
+### Why a pid is not a path
+
+Deleting a file names the file: `/home/x/big.log` still means that file a minute
+later. **A pid is a recycled number.** The browser shows one it read seconds ago,
+and between the reading and the click that process can exit and the kernel can
+hand its number to something else. Signalling a pid because of what a stale
+table says is sitting on it is how a monitoring tool kills a database.
+
+So stopping *one* process sends what the screen believed it was — the name, and
+how long it had been running — and the server re-reads the process and refuses
+if either has changed. A recycled pid always fails the age test, because the new
+occupant is younger than the reading:
+
+    pid 8214 has only been running 4 seconds, less than the 11.6 days on
+    screen. The number was reused; refresh and look again.
+
+Stopping a *group* or a *pattern* sends no pids at all — the name or the regex is
+resolved to pids at the instant they are signalled, so there is no window for
+them to go stale in.
+
+Every attempt is written to the actions table, refusals included. A run of
+refusals is what somebody probing the guards looks like, and it is the only
+place that would ever show up.
 
 ## Reading log files
 
@@ -599,13 +688,19 @@ the right status code.
   sends a password; never over plain HTTP.
 - Even masked, the sizes describe a private machine, so nothing here is
   cacheable by a shared proxy.
+- A signed-in session can stop processes, so it is a kill switch as well as a
+  dashboard. `processes.may_stop = false` removes that; pid 1, this dashboard's
+  own ancestry and other users' processes are refused regardless. Patterns from
+  the browser are matched in PHP and never handed to a shell.
 
 ## Configuration
 
 Everything lives in the array returned by `lib/config.php`: scan root, timezone,
 database path, the two secrets, session lifetime, all the alert thresholds and
 the recipient, the category rules, the excluded paths, how many offenders to
-keep per scan, and which categories may be deleted.
+keep per scan, which categories may be deleted, and — under `processes` —
+whether processes may be stopped, which names are protected from it, and how
+many may be signalled at once.
 
 ## Upgrading from the JSON version
 

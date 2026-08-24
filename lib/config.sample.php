@@ -125,5 +125,44 @@ return [
         'record_when_cpu_above' => 70.0,
         'record_when_memory_above' => 85.0,
         'keep' => 8,
+
+        /*
+         * Whether a signed-in session may stop processes.
+         *
+         * Set it to false and the buttons are not drawn and the endpoints
+         * refuse - worth doing if the dashboard is reachable from anywhere you
+         * would not want a stolen session to have a kill switch.
+         */
+        'may_stop' => true,
+
+        /*
+         * Names that are never signalled, however they are asked for.
+         *
+         * The account's own plumbing. Killing sshd from a web page locks you
+         * out of the machine you are trying to fix; killing the shell you are
+         * sitting in is a support ticket. Note that this is matched against the
+         * bare executable name, so 'php' here would also protect 'php cron.php'.
+         *
+         * Omit the key entirely to use the built-in list in lib/signals.php,
+         * which is this and a few more. Set it to an empty array to protect
+         * nothing by name - pid 1, this dashboard's own ancestry and other
+         * users' processes are still refused, because those are not opinions.
+         */
+        'protect' => [
+            'init', 'systemd', 'launchd',
+            'sshd', 'bash', 'sh', 'zsh', 'login', 'tmux', 'screen',
+            'cron', 'crond', 'cpsrvd', 'cpanel',
+            'httpd', 'nginx', 'apache2', 'php-fpm', 'lsphp', 'litespeed',
+            'mysqld', 'mariadbd', 'exim', 'dovecot', 'named',
+        ],
+
+        /*
+         * Most processes one stop may signal at once.
+         *
+         * A brake on the pattern matcher rather than on you. A regular
+         * expression that is one character broader than intended is the classic
+         * way to empty an account, and it always looks correct until it runs.
+         */
+        'max_group' => 40,
     ],
 ];

@@ -750,10 +750,26 @@ function humanBytes(?int $bytes): string
     return sprintf($i === 0 ? '%d %s' : '%.2f %s', $value, $units[$i]);
 }
 
+/*
+ * A span of time, in the coarsest unit that still says something.
+ *
+ * Seconds are a real branch rather than being rounded up into "1 minutes".
+ * This started life writing projections - "full in 3.5 days" - where nothing
+ * under an hour was worth a word. It is now also used to say how long a process
+ * has been running, and there the small end is the whole message: a pid that
+ * has been alive four seconds when the screen claims eleven days is the
+ * evidence that the number was recycled, and rounding it to a minute throws
+ * away exactly the fact being reported.
+ */
 function humanDuration(float $seconds): string
 {
+    if ($seconds < 60) {
+        $whole = max(0, (int)round($seconds));
+        return $whole . ($whole === 1 ? ' second' : ' seconds');
+    }
     if ($seconds < 3600) {
-        return max(1, (int)round($seconds / 60)) . ' minutes';
+        $whole = (int)round($seconds / 60);
+        return $whole . ($whole === 1 ? ' minute' : ' minutes');
     }
     if ($seconds < 172800) {
         return sprintf('%.1f hours', $seconds / 3600);
