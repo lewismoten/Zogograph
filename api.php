@@ -48,6 +48,8 @@ require_once __DIR__ . '/lib/processes.php';
 require_once __DIR__ . '/lib/symlinks.php';
 require_once __DIR__ . '/lib/signals.php';
 require_once __DIR__ . '/lib/hostdb.php';
+// swapPressure and the host collectors live here, not in hostdb.php.
+require_once __DIR__ . '/lib/host.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -531,22 +533,26 @@ function hostView(array $config, bool $signedIn): array
 
     [$from, $to] = window();
     $series = $pdo->prepare(
-        'SELECT taken_at, mem_total, used_bytes, cache_bytes, unaccounted, slab,
-                shmem, swap_total, swap_free, pss_sum_bytes, proc_count
+        'SELECT taken_at, mem_total, mem_available, used_bytes, cache_bytes, unaccounted,
+                slab, shmem, swap_total, swap_free, pss_sum_bytes, proc_count
          FROM host_samples WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
     );
     $series->execute([$from, $to]);
+    $rows = $series->fetchAll();
 
     return [
         'available' => true,
         'reason' => null,
         'sample' => $sample,
+        // Worked out here, over exactly the rows being returned, so the card and
+        // the chart cannot end up describing different windows.
+        'swap' => swapPressure($rows),
         'users' => $of('SELECT * FROM host_users WHERE sample_id = ? ORDER BY rss_bytes DESC'),
         'processes' => $of('SELECT * FROM host_processes WHERE sample_id = ? ORDER BY rss_bytes DESC'),
         'slab' => $of('SELECT * FROM host_slab WHERE sample_id = ? ORDER BY cache_bytes DESC'),
         'files' => $of('SELECT * FROM host_files WHERE sample_id = ? ORDER BY bytes DESC'),
         'lve' => $of('SELECT * FROM host_lve WHERE sample_id = ? ORDER BY faults_mem DESC, user'),
-        'rows' => $series->fetchAll(),
+        'rows' => $rows,
     ];
 }
 

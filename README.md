@@ -454,6 +454,48 @@ cheap per process, but there can be a thousand of them, so it is read for the
 biggest sixty by RSS and the panel says so rather than presenting a partial sum
 as a whole-machine total.
 
+### Swap is a state, not an event
+
+The panel shows swap prominently and refuses to alarm about it, because the
+number on its own means very little:
+
+    Swap
+    696 MiB / 1024 MiB
+    68% allocated
+
+**Linux does not pull pages back out of swap merely because RAM became free
+again.** A page evicted during a busy hour last Tuesday stays evicted until
+something touches it. So the figure is a high-water mark with no expiry, not a
+measure of present distress — and a machine reporting two thirds of its swap
+allocated is very often perfectly healthy. Colouring that red would train you to
+ignore the colour, so the card stays neutral and says what it is:
+
+> Old or cold pages left over from an earlier squeeze… a high-water mark, not a
+> measure of now. No current shortage.
+
+What *is* worth acting on is two things happening together: **swap climbing while
+available memory falls.** Either alone is ordinary. Swap rising while
+MemAvailable holds steady is the kernel moving cold pages out of the way, which
+is it doing its job. MemAvailable falling while swap holds steady is cache being
+claimed, also its job. Both at once means the machine has run out of cheap
+options and is paying for memory with disk. Only then does the card turn amber:
+
+> Swap is climbing (168 MiB/h) while available memory falls (1.23 GiB/h). Those
+> two together are real pressure rather than leftover cold pages.
+
+The estimate is the same shape as the disk projection — median of the steps,
+gated on both halves of the window agreeing — because the failure mode is the
+same: one burst of swapping during a nightly backup would otherwise read as a
+trend for as long as it stayed in the window. There is one addition. A *direction*
+is not a trend until it is big enough to matter: available memory wanders by tens
+of megabytes on any busy machine, and on sign alone a drift of 27 MiB an hour
+across 7.5 GiB counts as falling and pairs with any swap growth to report
+pressure that is not there. Half a percent of RAM per hour is the bar.
+
+The **Available** card beside it is `MemAvailable`, the kernel's own estimate of
+what a new process could actually get. That rather than `MemFree`, which counts
+reclaimable cache as used and makes every healthy machine look full.
+
 ### What it collects
 
 - **The memory breakdown** — in use, reclaimable cache, slab, tmpfs, swap, and

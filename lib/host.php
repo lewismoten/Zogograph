@@ -31,6 +31,8 @@ require_once __DIR__ . '/hostdb.php';
 // explicitly rather than left to whatever the caller happened to load first.
 require_once __DIR__ . '/collect.php';
 require_once __DIR__ . '/processes.php';
+// halfRate and median, shared with the disk projection. Required, not assumed.
+require_once __DIR__ . '/alerts.php';
 
 /** Top slab caches, processes and files kept per reading. */
 const HOST_KEEP_SLAB = 20;
@@ -731,4 +733,148 @@ function hostLoad(string $procRoot = '/proc'): array
 
     $load = @sys_getloadavg();
     return is_array($load) ? [$load[0], $load[1], $load[2]] : [null, null, null];
+}
+
+/**
+ * Whether swap use means anything.
+ *
+ * It usually does not, and that is the point of this function. A machine
+ * reporting 696 MiB of 1 GiB swapped looks alarming and is very often fine:
+ * **Linux does not pull pages back out of swap just because RAM became free
+ * again.** A page evicted during a busy hour last Tuesday stays evicted until
+ * something touches it, so the figure is a high-water mark with no expiry, not
+ * a measure of present distress. Alarming on the level alone trains people to
+ * ignore the one time it matters.
+ *
+ * What matters is two things happening together: **swap climbing while
+ * available memory falls**. Either alone is ordinary. Swap rising while
+ * MemAvailable holds steady is the kernel tidying cold pages away, which is it
+ * doing its job. MemAvailable falling while swap holds steady is cache being
+ * claimed, which is also its job. Both at once means the machine has run out of
+ * cheap options and is paying for memory with disk, and that is worth saying.
+ *
+ * Uses the same shape of estimate as the disk projection - median of the steps,
+ * gated on both halves of the window agreeing - because the failure mode is
+ * identical. One burst of swapping during a nightly backup would otherwise read
+ * as a trend for as long as it stayed in the window.
+ *
+ * @return array{state: string, swap_rate: ?float, available_rate: ?float,
+ *               samples: int, span_seconds: int}
+ */
+function swapPressure(array $rows): array
+{
+    $unknown = ['state' => 'unknown', 'swap_rate' => null, 'available_rate' => null,
+                'samples' => count($rows), 'span_seconds' => 0];
+
+    $swap = [];
+    $available = [];
+    foreach ($rows as $row) {
+        $at = (int)($row['taken_at'] ?? 0);
+        if (($row['swap_total'] ?? null) !== null && ($row['swap_free'] ?? null) !== null) {
+            $swap[] = [$at, (float)$row['swap_total'] - (float)$row['swap_free']];
+        }
+        if (($row['mem_available'] ?? null) !== null) {
+            $available[] = [$at, (float)$row['mem_available']];
+        }
+    }
+
+    $count = count($swap);
+    $span = $count > 1 ? $swap[$count - 1][0] - $swap[0][0] : 0;
+
+    // Nothing swapped is the easy case, and worth answering even without enough
+    // history to judge a direction.
+    $latest = $count > 0 ? $swap[$count - 1][1] : null;
+    if ($latest !== null && $latest <= 0) {
+        return ['state' => 'clear', 'swap_rate' => 0.0, 'available_rate' => null,
+                'samples' => $count, 'span_seconds' => $span];
+    }
+
+    // Same thresholds as the disk trend, for the same reason: below them any
+    // answer is noise wearing a confident face.
+    if ($count < 8 || $span < 1800 || count($available) < 8) {
+        return $latest === null
+            ? $unknown
+            : ['state' => 'cold', 'swap_rate' => null, 'available_rate' => null,
+               'samples' => $count, 'span_seconds' => $span];
+    }
+
+    $swapRate = seriesDirection($swap);
+    $availableRate = seriesDirection($available);
+
+    /*
+     * A floor under "falling", because a direction is not yet a trend.
+     *
+     * Available memory wanders by tens of megabytes on any busy machine. Left
+     * on sign alone, a drift of 27 MiB an hour across 7.5 GiB - four tenths of
+     * one percent - counts as falling, and pairs with any swap growth to report
+     * pressure that is not there. Half a percent of RAM an hour is the bar:
+     * enough to exclude wander, small enough that anything genuinely running
+     * out clears it easily.
+     */
+    $memTotal = (float)($rows[count($rows) - 1]['mem_total'] ?? 0);
+    $floor = $memTotal > 0 ? $memTotal * 0.005 / 3600 : 0.0;
+
+    $swapRising = $swapRate !== null && $swapRate['sustained'] && $swapRate['median'] > 0;
+    $availableFalling = $availableRate !== null && $availableRate['sustained']
+        && $availableRate['median'] < -$floor;
+
+    $state = match (true) {
+        $swapRising && $availableFalling => 'pressure',
+        $swapRising => 'filling',
+        default => 'cold',
+    };
+
+    return [
+        'state' => $state,
+        'swap_rate' => $swapRate['median'] ?? null,
+        'available_rate' => $availableRate['median'] ?? null,
+        'samples' => $count,
+        'span_seconds' => $span,
+    ];
+}
+
+/**
+ * Which way a series is going, and whether it means it.
+ *
+ * `sustained` is the spike filter: both halves of the window must move the same
+ * way as the whole. The median step is the size, because it is the one figure a
+ * single outlier cannot drag.
+ *
+ * @param list<array{0:int,1:float}> $points
+ * @return array{median: float, overall: float, sustained: bool}|null
+ */
+function seriesDirection(array $points): ?array
+{
+    $n = count($points);
+    if ($n < 2) {
+        return null;
+    }
+
+    $span = $points[$n - 1][0] - $points[0][0];
+    if ($span <= 0) {
+        return null;
+    }
+
+    $overall = ($points[$n - 1][1] - $points[0][1]) / $span;
+
+    $steps = [];
+    foreach (range(1, $n - 1) as $i) {
+        $dt = $points[$i][0] - $points[$i - 1][0];
+        if ($dt > 0) {
+            $steps[] = ($points[$i][1] - $points[$i - 1][1]) / $dt;
+        }
+    }
+    if (!$steps) {
+        return null;
+    }
+
+    $middle = (int)floor($n / 2);
+    $first = halfRate(array_slice($points, 0, $middle + 1));
+    $second = halfRate(array_slice($points, $middle));
+
+    $sustained = $first !== null && $second !== null
+        && (($first > 0 && $second > 0 && $overall > 0)
+            || ($first < 0 && $second < 0 && $overall < 0));
+
+    return ['median' => median($steps), 'overall' => $overall, 'sustained' => $sustained];
 }

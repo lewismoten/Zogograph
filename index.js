@@ -1838,18 +1838,41 @@ async function refreshHost() {
   const swapUsed = num(s.swap_total) - num(s.swap_free);
 
   $("hostCards").replaceChildren();
+  const swap = data.swap ?? { state: "unknown" };
+  const swapPercent = num(s.swap_total) > 0
+    ? Math.round((swapUsed / num(s.swap_total)) * 100)
+    : null;
+
   setHostCard("Memory in use", humanBytes(s.used_bytes),
     `of ${humanBytes(s.mem_total)}`);
+  /*
+   * MemAvailable, not free. The kernel's own estimate of what a new process
+   * could actually get, which counts reclaimable cache as available - `free` is
+   * the number that makes a healthy machine look full.
+   */
+  setHostCard("Available", humanBytes(s.mem_available),
+    `the kernel's estimate of what is left`);
   setHostCard("Cache and buffers", humanBytes(s.cache_bytes),
     "reclaimable — not a problem");
   setHostCard("Kernel slab", humanBytes(s.slab),
     `${humanBytes(s.sunreclaim)} of it unreclaimable`);
   setHostCard("Shared / tmpfs", humanBytes(s.shmem),
     s.devshm_used == null ? "" : `${humanBytes(s.devshm_used)} in /dev/shm`);
-  setHostCard("Swapped out", humanBytes(swapUsed),
-    `of ${humanBytes(s.swap_total)}`);
+  /*
+   * Swap is shown large but coloured only under real pressure.
+   *
+   * A number in warning colours that is usually nothing teaches people to
+   * ignore the colour, and this one is usually nothing.
+   */
+  setHostCard("Swap",
+    `${humanBytes(swapUsed)} / ${humanBytes(s.swap_total)}`,
+    swapPercent == null ? "" : `${swapPercent}% allocated`,
+    swap.state === "pressure" ? "warn" : "",
+    "pair");
   setHostCard("Unaccounted", humanBytes(s.unaccounted),
     "not in any process, cache or slab");
+
+  $("hostSwapNote").textContent = swapVerdict(swap, swapUsed);
 
   /*
    * The sentence that stops a wild goose chase.
@@ -1945,19 +1968,62 @@ async function refreshHost() {
   }
 }
 
+/**
+ * What the swap figure actually means, which is usually "nothing".
+ *
+ * Linux never pulls pages back out of swap merely because RAM became free
+ * again, so a machine that was squeezed last Tuesday still reads as heavily
+ * swapped today. Presented bare, that number sends people hunting for a
+ * shortage that ended a week ago. Only the combination of swap climbing *and*
+ * available memory falling is worth acting on, and only that case gets said in
+ * those terms.
+ */
+function swapVerdict(swap, swapUsed) {
+  const perHour = rate => `${humanBytes(Math.abs(rate) * 3600)}/h`;
+
+  switch (swap.state) {
+    case "clear":
+      return "Nothing is swapped.";
+
+    case "pressure":
+      return `Swap is climbing (${perHour(swap.swap_rate)}) while available memory `
+        + `falls (${perHour(swap.available_rate)}). Those two together are real `
+        + `pressure rather than leftover cold pages — the machine is paying for `
+        + `memory with disk. This is the one worth acting on.`;
+
+    case "filling":
+      return `Swap is growing (${perHour(swap.swap_rate)}), but available memory is `
+        + `holding steady. That is the kernel moving cold pages out of the way, not `
+        + `the machine running short.`;
+
+    case "cold":
+      return swapUsed > 0
+        ? "Old or cold pages left over from an earlier squeeze. Linux does not pull "
+          + "pages back out of swap just because RAM frees up, so this figure stays "
+          + "where it is until something touches them — a high-water mark, not a "
+          + "measure of now. No current shortage: watch for swap rising while "
+          + "available memory falls, which is a different thing entirely."
+        : "Nothing is swapped.";
+
+    default:
+      return "Not enough readings yet to say whether this is left over or still "
+        + "growing — that needs about half an hour of history.";
+  }
+}
+
 /** Pss is only measured for the biggest processes, so absence is not zero. */
 function hostPss(value) {
   return value == null || Number(value) === 0 ? "—" : humanBytes(value);
 }
 
-function setHostCard(label, value, sub) {
+function setHostCard(label, value, sub, level = "", valueClass = "") {
   const card = document.createElement("div");
-  card.className = "card";
+  card.className = `card ${level}`.trim();
   const l = document.createElement("div");
   l.className = "label";
   l.textContent = label;
   const v = document.createElement("div");
-  v.className = "value";
+  v.className = `value ${valueClass}`.trim();
   v.textContent = value;
   const s = document.createElement("div");
   s.className = "sub muted";

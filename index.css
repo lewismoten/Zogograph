@@ -80,6 +80,9 @@ button:disabled { opacity: .5; cursor: default; }
 .card .label { color: var(--muted); font-size: .85rem; }
 .card .value { margin-top: 6px; font-size: 1.35rem; font-weight: 700; }
 .card .sub { margin-top: 3px; font-size: .78rem; }
+/* A value carrying two numbers ("696 MiB / 1024 MiB") needs the room. At the
+   full size it wraps and leaves that one card taller than the row. */
+.card .value.pair { font-size: 1.1rem; }
 .card.warn .value { color: var(--warn); }
 .card.crit .value { color: var(--crit); }
 
