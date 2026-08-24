@@ -100,6 +100,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'schedule-save' => doScheduleSave($post),
         'scan-now' => doScanNow($pdo, $post),
         'test-email' => doTestEmail($config, $pdo, $post),
+        'clear-problems' => doClearProblems($config, $pdo, $post),
         'match-processes' => doMatchProcesses($config, $post),
         'stop-process' => doStopProcess($config, $pdo, $post),
         'stop-group' => doStopGroup($config, $pdo, $post),
@@ -744,10 +745,33 @@ function problemLog(array $config, bool $signedIn): array
         throw new ActionRefused('sign in to read the problem log');
     }
 
+    $grouped = groupedProblems(problemLogPath($config));
+
     return [
-        'path' => problemLogPath($config),
-        'rows' => recentProblems(problemLogPath($config), 80),
+        // realpath, so it is not shown once as data/error.log and again as
+        // lib/../data/error.log and read as two different files.
+        'path' => realpath(problemLogPath($config)) ?: problemLogPath($config),
+        'rows' => $grouped['rows'],
+        'lines' => $grouped['lines'],
     ];
+}
+
+/**
+ * Empties the problem log.
+ *
+ * Destructive, so it goes through the same door as everything else that is:
+ * POST, signed in, CSRF checked. Recorded in the audit log, because "the errors
+ * disappeared" should have an explanation somewhere that is not the errors.
+ */
+function doClearProblems(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $path = problemLogPath($config);
+    $removed = clearProblems($path);
+    logAction($pdo, 'clear_problems', $path, 'ok', 0, $removed, "$removed entries");
+
+    return ['ok' => true, 'removed' => $removed];
 }
 
 function sessionState(array $config): array

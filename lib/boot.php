@@ -205,3 +205,92 @@ function recentProblems(string $path, int $limit = 60): array
 
     return $out;
 }
+
+/**
+ * The same problem, once, with a count.
+ *
+ * A failing endpoint is not one problem: the dashboard polls, every poll calls
+ * the API, and one broken function becomes forty identical lines within a
+ * minute. Listed flat that reads as forty faults and buries the three others
+ * that are actually different.
+ *
+ * The grouping key has to ignore the reference. Every entry carries its own
+ * `[bd94dc4b]` so a failed request on screen can be matched to its cause here -
+ * which means two records of the identical fault never match as text. Stripping
+ * it is the whole trick; one sample reference is kept so the link back still
+ * works.
+ *
+ * @return array{rows: list<array>, lines: int}
+ */
+function groupedProblems(string $path, int $scan = 4000): array
+{
+    if (!is_file($path)) {
+        return ['rows' => [], 'lines' => 0];
+    }
+
+    $lines = @file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+    $total = count($lines);
+
+    $groups = [];
+    foreach (array_slice($lines, -$scan) as $line) {
+        $parts = explode("\t", $line, 4);
+        if (count($parts) < 4) {
+            $parts = ['', 'note', '', $line];
+        }
+        [$at, $level, $where, $message] = $parts;
+
+        $reference = preg_match('/\[([0-9a-f]{8})\]/', $message, $m) ? $m[1] : null;
+        $canonical = trim((string)preg_replace('/\[[0-9a-f]{8}\]\s*/', '', $message));
+
+        $key = $level . "\0" . $where . "\0" . $canonical;
+        if (!isset($groups[$key])) {
+            $groups[$key] = [
+                'level' => $level,
+                'where' => $where,
+                'message' => $canonical,
+                'reference' => $reference,
+                'count' => 0,
+                'first' => $at,
+                'last' => $at,
+            ];
+        }
+
+        $groups[$key]['count']++;
+        $groups[$key]['last'] = $at;
+        $groups[$key]['reference'] ??= $reference;
+    }
+
+    // Most recent first: what broke last is what somebody is looking for.
+    $rows = array_values($groups);
+    usort($rows, fn(array $a, array $b): int => strcmp((string)$b['last'], (string)$a['last']));
+
+    return ['rows' => $rows, 'lines' => $total];
+}
+
+/**
+ * Empties the problem log.
+ *
+ * Truncated rather than deleted, so the file keeps whatever ownership and
+ * permissions it already had - recreating it later as a different user is how a
+ * log silently stops being written to.
+ *
+ * There is no per-entry delete. Entries are lines in a text file with no
+ * identity beyond their position, so "dismiss this one" would mean rewriting
+ * the file around a line number that shifts every time anything is appended.
+ * Grouping made the list readable; clearing it is the honest way to reset it.
+ */
+function clearProblems(string $path): int
+{
+    if (!is_file($path)) {
+        return 0;
+    }
+
+    $lines = @file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+    $handle = @fopen($path, 'w');
+    if ($handle === false) {
+        throw new RuntimeException('the problem log is not writable');
+    }
+    fclose($handle);
+
+    return count($lines);
+}

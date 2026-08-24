@@ -1063,11 +1063,37 @@ function renderIoChart(rows) {
     axis: rateAxis,
     rightAxis: percentAxis,
     zeroBased: true,
-    empty: "No disk counters here — /proc/diskstats is not readable",
+    empty: series.length
+      ? "Nothing collected for this range yet"
+      : "No disk I/O readings — neither /proc/diskstats nor /proc/<pid>/io could be read",
   });
 
   const latest = [...rows].reverse().find(r => r.io_util_percent != null || r.own_read_rate != null);
   const parts = ["Bytes actually reaching a disk, not bytes served from cache."];
+
+  /*
+   * Which halves are here and which are not, said plainly.
+   *
+   * On a caged account the device lines are simply absent, and a chart with two
+   * lines where the text describes four leaves the reader wondering whether
+   * something is broken. Nothing is: /proc/diskstats is filtered out, and the
+   * host collector has it.
+   */
+  if (!has("io_read_rate")) {
+    parts.push("The device lines are missing because /proc/diskstats is not readable "
+      + "from this account — see the host panel, which reads it as root.");
+  }
+  if (!has("own_read_rate")) {
+    parts.push("This account's own traffic is missing too: /proc/<pid>/io could not be "
+      + "read for any process here.");
+  }
+  // Only worth saying when those lines are actually on the chart. Explaining
+  // what the device lines cover, immediately after saying there are none, reads
+  // as a contradiction.
+  if (has("io_read_rate") && has("own_read_rate")) {
+    parts.push("The device lines cover every account on the machine; only the "
+      + "\u201cthis account\u201d lines are yours.");
+  }
 
   if (latest && latest.io_util_percent != null) {
     parts.push(`The device was busy ${Number(latest.io_util_percent).toFixed(0)}% of the `
@@ -1079,15 +1105,10 @@ function renderIoChart(rows) {
      * proxy for harm: a disk can sit at 100% pushing background writeback and
      * bother nobody. This measures the opposite thing - time spent *waiting*.
      */
-    parts.push(`Tasks were stalled waiting on it ${Number(latest.io_pressure_some).toFixed(1)}% `
-      + `of the time, and nothing at all could run for `
-      + `${Number(latest.io_pressure_full).toFixed(1)}%.`);
+    parts.push(`Tasks were stalled waiting on the disk `
+      + `${Number(latest.io_pressure_some).toFixed(1)}% of the time, and nothing at all `
+      + `could run for ${Number(latest.io_pressure_full).toFixed(1)}%.`);
   }
-  if (has("own_read_rate")) {
-    parts.push("The device lines cover every account on the machine; only the "
-      + "\u201cthis account\u201d lines are yours.");
-  }
-
   $("ioNote").textContent = parts.join(" ");
 }
 
@@ -2518,7 +2539,10 @@ async function refreshProblems() {
     return;
   }
 
-  $("problemPath").textContent = data.path;
+  $("problemPath").textContent = data.lines
+    ? `${count(data.lines, "entry", "entries")} in ${data.path}`
+    : data.path;
+  $("problemClear").hidden = !data.lines;
 
   if (!data.rows.length) {
     $("problemBody").replaceChildren(Object.assign(document.createElement("p"), {
@@ -2529,10 +2553,26 @@ async function refreshProblems() {
   }
 
   renderTable("problemBody", data.rows, [
-    { label: "When", render: row => (row.at ? new Date(row.at).toLocaleString() : "") },
+    {
+      label: "Last seen",
+      render: row => (row.last ? new Date(row.last).toLocaleString() : ""),
+    },
+    {
+      // One row per distinct fault, so a number here is repetition rather than
+      // separate problems - which is the difference between "89 things are
+      // broken" and "three things are broken, one of them noisily".
+      label: "Times",
+      className: "size",
+      render: row => (row.count > 1 ? row.count : ""),
+    },
     { label: "Level", render: row => row.level },
     { label: "Where", render: row => row.where },
     { label: "What happened", className: "name", render: row => row.message },
+    {
+      label: "Reference",
+      className: "size",
+      render: row => (row.reference ? row.reference : ""),
+    },
   ]);
 }
 
@@ -3236,6 +3276,20 @@ $("procBy").addEventListener("change", () => {
 
 $("procRefresh").addEventListener("click", () => {
   refreshProcesses().catch(e => notice(String(e.message || e)));
+});
+
+$("problemClear").addEventListener("click", async () => {
+  if (!confirm("Clear the problem log?\n\nThe entries are removed for good. Anything "
+      + "still broken will write a fresh one on its next failure, which is the point: "
+      + "what is left afterwards is what is still wrong.")) return;
+
+  try {
+    const result = await post("clear-problems");
+    notice(`Cleared ${count(result.removed, "entry", "entries")}.`, true);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+  refreshProblems().catch(() => {});
 });
 
 $("hostRefresh").addEventListener("click", () => {

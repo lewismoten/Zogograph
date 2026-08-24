@@ -352,11 +352,16 @@
 <section class="panel" id="problemPanel" hidden>
   <div class="panel-head">
     <h2>Recent problems</h2>
-    <span class="muted small" id="problemPath"></span>
+    <div class="panel-controls">
+      <span class="muted small" id="problemPath"></span>
+      <button id="problemClear" class="danger small">Clear the log</button>
+    </div>
   </div>
   <p class="muted small sub-note">
     This dashboard's own log. When a request fails it shows you a reference —
-    find the same reference here for what actually happened.
+    find the same reference here for what actually happened. Identical faults are
+    counted together rather than listed each time: the dashboard polls, every
+    poll calls the API, and one broken function becomes forty lines in a minute.
   </p>
   <div id="problemBody"></div>
 </section>

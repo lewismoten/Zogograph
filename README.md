@@ -1103,6 +1103,24 @@ work on the install that is too broken to run. Names the code deliberately probe
 for with `function_exists` are excluded, so a host without the posix extension
 does not light the whole list up.
 
+**Identical faults are counted, not repeated.** A failing endpoint is not one
+problem: the dashboard polls, every poll calls the API, and one broken function
+becomes forty lines within a minute. Listed flat that reads as forty faults and
+buries the two others that are genuinely different. The grouping has to ignore
+the reference — every entry carries its own so a failure on screen can be traced
+here, which means two records of the same fault never match as text — so it is
+stripped for comparison and one sample kept for the link back. Seventy-three
+lines from a bad afternoon collapse to three rows.
+
+**Clear the log** removes the entries for good, once you have fixed what caused
+them. There is no per-entry dismissal: entries are lines in a text file with no
+identity beyond their position, so "dismiss this one" would mean rewriting the
+file around a line number that shifts every time anything is appended. Clearing
+is recorded in the audit log, because "the errors disappeared" should have an
+explanation somewhere that is not the errors. Anything still broken writes a
+fresh entry on its next failure, which is the point — what is left afterwards is
+what is still wrong.
+
 If everything there is green, the fault is at runtime. Every failed request now
 returns a **reference** instead of a blank page:
 
