@@ -2057,7 +2057,25 @@ async function refreshHost() {
     { label: "Command", className: "cmd", render: r => r.command },
   ]);
 
-  renderHostDisks(data.disks ?? []);
+  /*
+   * What the collector could see, which is a different machine from the one the
+   * dashboard runs on. The account is inside a cage with a filtered /proc; this
+   * line reports the host's view, which is the only one that answers "does this
+   * machine have PSI".
+   */
+  const seen = [];
+  if (s.kernel) seen.push(`Kernel ${s.kernel}`);
+  if (s.diskstats_available != null) {
+    seen.push(`device counters ${Number(s.diskstats_available) ? "readable" : "unreadable"}`);
+  }
+  if (s.psi_available != null) {
+    seen.push(`pressure stall info ${Number(s.psi_available) ? "available" : "unavailable"}`);
+  }
+  $("hostSeesNote").textContent = seen.length
+    ? `As root, the collector sees: ${seen.join(", ")}.`
+    : "";
+
+  renderHostDisks(data.disks ?? [], s, Number(data.sample_count ?? 0));
 
   renderTable("hostSlab", data.slab, [
     { label: "Cache", render: r => r.name },
@@ -2213,11 +2231,41 @@ function renderHostFiles(rows, totals) {
 }
 
 /** Per-device throughput, utilisation and queue depth. */
-function renderHostDisks(rows) {
+function renderHostDisks(rows, sample, sampleCount) {
+  const holder = $("hostDisks");
+  if (!holder) return;
+
   if (!rows.length) {
-    $("hostDisks").replaceChildren(Object.assign(document.createElement("p"), {
+    /*
+     * Why it is empty, not just that it is.
+     *
+     * Three different reasons land here and need three different responses:
+     * the collector has not run twice yet, it ran but could not read the
+     * device counters, or it is an older build that does not collect them.
+     * "Needs two readings" was printed for all three, which is wrong twice.
+     */
+    let why;
+    /*
+     * "Not recorded" is tested before "recorded as zero", because Number(null)
+     * is 0 and the looser test swallows the other case entirely — reporting a
+     * stale deployment as a kernel that will not answer, which sends the reader
+     * to the wrong machine.
+     */
+    if (sample && sample.diskstats_available == null) {
+      why = "The reading was written by an older build of the collector that did not "
+        + "record disk counters. Upload host-cron.php and lib/, then let it run twice.";
+    } else if (sample && Number(sample.diskstats_available) === 0) {
+      why = "The host collector ran but could not read /proc/diskstats, even as root.";
+    } else if (sampleCount < 2) {
+      why = "Needs two host readings before a rate can be worked out — "
+        + `there ${sampleCount === 1 ? "is 1" : `are ${sampleCount}`} so far.`;
+    } else {
+      why = "No devices were recorded in the latest reading.";
+    }
+
+    holder.replaceChildren(Object.assign(document.createElement("p"), {
       className: "muted",
-      textContent: "Needs two readings before a rate can be worked out.",
+      textContent: why,
     }));
     return;
   }

@@ -566,6 +566,9 @@ function hostView(array $config, bool $signedIn): array
         // leak from a large but steady working set.
         'services' => $services,
         'disks' => hostDiskRates($pdo),
+        // So an empty disk table can tell "not enough readings yet" apart from
+        // "read them and found nothing".
+        'sample_count' => (int)$pdo->query('SELECT COUNT(*) FROM host_samples')->fetchColumn(),
         // Charted for the biggest few only: twenty lines on one canvas is a
         // legend, not a chart.
         'service_series' => hostServiceSeries(

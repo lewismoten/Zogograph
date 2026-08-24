@@ -740,36 +740,70 @@ function hostTakeReading(
 
     $pdo->beginTransaction();
     try {
-        $pdo->prepare(
-            'INSERT INTO host_samples
-                (taken_at, mem_total, mem_free, mem_available, buffers, cached, swap_cached,
-                 shmem, anon_pages, mapped, slab, sreclaimable, sunreclaim, page_tables,
-                 kernel_stack, dirty, swap_total, swap_free, used_bytes, cache_bytes,
-                 unaccounted, rss_sum_bytes, pss_sum_bytes, pss_procs, swap_sum_bytes, proc_count,
-                 thread_count, shm_segments, shm_bytes, devshm_total, devshm_used,
-                 load1, load5, load15, cpu_cores, source,
-                 io_pressure_some, io_pressure_full, io_read_bytes, io_write_bytes, io_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-        )->execute([
-            $takenAt,
-            $get('MemTotal'), $get('MemFree'), $get('MemAvailable'), $get('Buffers'),
-            $get('Cached'), $get('SwapCached'), $get('Shmem'), $get('AnonPages'),
-            $get('Mapped'), $get('Slab'), $get('SReclaimable'), $get('SUnreclaim'),
-            $get('PageTables'), $get('KernelStack'), $get('Dirty'),
-            $get('SwapTotal'), $get('SwapFree'),
-            $accounting['used_bytes'], $accounting['cache_bytes'], $accounting['unaccounted'],
-            $processes['rss_sum'], $processes['pss_sum'], $processes['pss_procs'],
-            $processes['swap_sum'],
-            count($processes['procs']), $processes['threads'],
-            $shm['segments'], $shm['bytes'], $shm['devshm_total'], $shm['devshm_used'],
-            $load[0], $load[1], $load[2], cpuCores(),
-            $source,
-            $pressure['some10'] ?? null, $pressure['full10'] ?? null,
-            $disks['total']['read_bytes'] ?? null,
-            $disks['total']['write_bytes'] ?? null,
-            $disks['total']['io_ms'] ?? null,
-        ]);
+        /*
+         * Column names and values from one array, never two lists.
+         *
+         * The pair used to be written out separately - a column list and a row
+         * of question marks - and adding three columns without adding three
+         * placeholders produced "41 values for 44 columns" at the moment a
+         * fixture exercised it. Deriving both from the same keys makes that
+         * impossible rather than merely unlikely, and it is how takeVitals()
+         * has always built its insert.
+         */
+        $sample = [
+            'taken_at' => $takenAt,
+            'mem_total' => $get('MemTotal'),
+            'mem_free' => $get('MemFree'),
+            'mem_available' => $get('MemAvailable'),
+            'buffers' => $get('Buffers'),
+            'cached' => $get('Cached'),
+            'swap_cached' => $get('SwapCached'),
+            'shmem' => $get('Shmem'),
+            'anon_pages' => $get('AnonPages'),
+            'mapped' => $get('Mapped'),
+            'slab' => $get('Slab'),
+            'sreclaimable' => $get('SReclaimable'),
+            'sunreclaim' => $get('SUnreclaim'),
+            'page_tables' => $get('PageTables'),
+            'kernel_stack' => $get('KernelStack'),
+            'dirty' => $get('Dirty'),
+            'swap_total' => $get('SwapTotal'),
+            'swap_free' => $get('SwapFree'),
+            'used_bytes' => $accounting['used_bytes'],
+            'cache_bytes' => $accounting['cache_bytes'],
+            'unaccounted' => $accounting['unaccounted'],
+            'rss_sum_bytes' => $processes['rss_sum'],
+            'pss_sum_bytes' => $processes['pss_sum'],
+            'pss_procs' => $processes['pss_procs'],
+            'swap_sum_bytes' => $processes['swap_sum'],
+            'proc_count' => count($processes['procs']),
+            'thread_count' => $processes['threads'],
+            'shm_segments' => $shm['segments'],
+            'shm_bytes' => $shm['bytes'],
+            'devshm_total' => $shm['devshm_total'],
+            'devshm_used' => $shm['devshm_used'],
+            'load1' => $load[0],
+            'load5' => $load[1],
+            'load15' => $load[2],
+            'cpu_cores' => cpuCores(),
+            'source' => $source,
+            'io_pressure_some' => $pressure['some10'] ?? null,
+            'io_pressure_full' => $pressure['full10'] ?? null,
+            'io_read_bytes' => $disks['total']['read_bytes'] ?? null,
+            'io_write_bytes' => $disks['total']['write_bytes'] ?? null,
+            'io_ms' => $disks['total']['io_ms'] ?? null,
+            // What this run could actually see, so the dashboard - which runs
+            // as the account, inside a filtered /proc - can report the host's
+            // capabilities rather than the cage's.
+            'kernel' => php_uname('r'),
+            'diskstats_available' => $disks === null ? 0 : 1,
+            'psi_available' => $pressure === null ? 0 : 1,
+        ];
+
+        $names = implode(', ', array_keys($sample));
+        $holders = implode(', ', array_fill(0, count($sample), '?'));
+        $pdo->prepare("INSERT INTO host_samples ($names) VALUES ($holders)")
+            ->execute(array_values($sample));
 
         $sampleId = (int)$pdo->lastInsertId();
 
@@ -875,6 +909,7 @@ function hostTakeReading(
         'files' => count($files),
         'services' => count(hostByService($processes['procs'])),
         'disks' => count($disks['devices'] ?? []),
+        'psi' => $pressure !== null,
         'lve' => $lve['available'] ? count($lve['rows']) : null,
         'unaccounted' => $accounting['unaccounted'],
     ];

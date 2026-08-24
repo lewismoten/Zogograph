@@ -84,14 +84,31 @@ try {
         hostHandOver($config, hostDatabasePath($config));
 
         $say(sprintf(
-            'Recorded sample %d: %d processes, %d users, %d services, %d slab caches, %d files%s.',
+            'Recorded sample %d: %d processes, %d users, %d services, %d slab caches, '
+            . '%d files, %d disks%s.',
             $result['sample_id'],
             $result['processes'],
             $result['users'],
             $result['services'],
             $result['slab'],
             $result['files'],
+            $result['disks'],
             $result['lve'] === null ? '' : ", {$result['lve']} LVE rows"
+        ));
+
+        /*
+         * Said out loud when a source is missing, rather than left as a zero in
+         * a count nobody reads. Running the collector and seeing nothing appear
+         * on the dashboard is the situation this line exists to explain.
+         */
+        if ($result['disks'] === 0) {
+            $say('  No disk devices: /proc/diskstats could not be read, even as root.');
+        }
+        $say(sprintf(
+            '  Kernel %s. Device counters %s, pressure stall info %s.',
+            php_uname('r'),
+            $result['disks'] > 0 ? 'readable' : 'NOT readable',
+            $result['psi'] ? 'available' : 'NOT available'
         ));
         if ($result['unaccounted'] !== null) {
             $say(sprintf(

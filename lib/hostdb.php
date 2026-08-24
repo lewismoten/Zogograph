@@ -430,6 +430,21 @@ function hostMigrations(): array
             )",
             'CREATE INDEX host_disks_sample ON host_disks (sample_id)',
         ],
+
+        /*
+         * What the collector could see when it ran.
+         *
+         * Recorded because the dashboard runs as the account and the collector
+         * runs as root, and the two see different machines. Without this the
+         * panel can only report the account's view - which on CloudLinux is a
+         * filtered /proc that says nothing about the host - and a reader asking
+         * "does this machine have PSI?" gets an answer about the cage instead.
+         */
+        5 => [
+            'ALTER TABLE host_samples ADD COLUMN kernel TEXT',
+            'ALTER TABLE host_samples ADD COLUMN diskstats_available INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN psi_available INTEGER',
+        ],
     ];
 }
 
