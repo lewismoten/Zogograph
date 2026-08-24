@@ -2246,7 +2246,9 @@ async function refreshHost() {
   let data;
   try {
     const to = Math.floor(Date.now() / 1000);
-    data = await api("host", { from: to - state.range, to });
+    // The selected metric goes with the request, so a background refresh comes
+    // back with the series the user is looking at rather than the default.
+    data = await api("host", { from: to - state.range, to, metric: state.hostMetric || "pss" });
   } catch (error) {
     $("hostBody").textContent = String(error.message || error);
     $("hostMemory").hidden = true;
@@ -2413,7 +2415,8 @@ async function refreshHost() {
     data.services ?? [],
     data.service_series ?? [],
     data.service_charted ?? [],
-    data.service_metrics ?? {}
+    data.service_metrics ?? {},
+    data.service_metric ?? "pss"
   );
   renderMemoryPie(data.services ?? [], s);
 
@@ -2694,7 +2697,7 @@ function renderHostDisks(rows, sample, sampleCount) {
  * 1.8 GiB" might be a leak or might have been true since it was installed;
  * "1.2 GiB last week, 1.5 GiB yesterday, 1.8 GiB now" carries its own diagnosis.
  */
-function renderServices(rows, series, charted, metrics) {
+function renderServices(rows, series, charted, metrics, metric) {
   // Remembered so a redraw - a poll, a range change - does not snap the chart
   // back to memory while somebody is reading the write rates.
   state.hostCharted = charted;
@@ -2753,7 +2756,15 @@ function renderServices(rows, series, charted, metrics) {
     },
   ]);
 
-  drawServiceChart(series, charted, state.hostMetric || "pss");
+  /*
+   * The axis follows the data, not the selector.
+   *
+   * Those are normally the same thing - the request carries the selection - but
+   * if they ever diverge, drawing a byte series against a per-second scale is
+   * worse than drawing it against the right one under a stale heading. So the
+   * metric the server says it returned is what picks the axis.
+   */
+  drawServiceChart(series, charted, metric);
 }
 
 /** The metric picker, built from whatever the server says it can chart. */

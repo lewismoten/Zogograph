@@ -548,6 +548,10 @@ function hostView(array $config, bool $signedIn): array
     // Once: this walks a query per service, and the array below wants it twice.
     $services = hostServiceGrowth($pdo, time());
 
+    // Validated against the known list inside hostServiceSeries, so an unknown
+    // name falls back to the default rather than reaching the query.
+    $metric = (string)($_GET['metric'] ?? 'pss');
+
     // Throughput per service, folded onto the growth rows so the table can show
     // memory and I/O for the same service side by side.
     $io = hostServiceIoRates($pdo);
@@ -585,13 +589,24 @@ function hostView(array $config, bool $signedIn): array
         'sample_count' => (int)$pdo->query('SELECT COUNT(*) FROM host_samples')->fetchColumn(),
         // Charted for the biggest few only: twenty lines on one canvas is a
         // legend, not a chart.
+        /*
+         * The metric the caller asked for, not a fixed one.
+         *
+         * This used to return PSS regardless while the dashboard chose its axis
+         * from the selector, so picking "Writing" drew memory sizes against a
+         * bytes-per-second scale - and every background refresh quietly put the
+         * memory data back under a label that still said Writing. Echoing the
+         * metric back lets the chart take its axis from what the data actually
+         * is rather than from what was requested.
+         */
         'service_series' => hostServiceSeries(
             $pdo,
             array_column(array_slice($services, 0, 5), 'name'),
             $from,
             $to,
-            'pss'
+            $metric
         ),
+        'service_metric' => $metric,
         'service_charted' => array_column(array_slice($services, 0, 5), 'name'),
         'service_metrics' => array_map(
             fn(array $m): string => $m['label'],

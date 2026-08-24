@@ -558,6 +558,19 @@ Switching metric hits a small dedicated endpoint rather than refetching the
 whole host payload — there is no reason to reload the process list, the slab
 table and the file list to redraw one canvas.
 
+**The selection survives a background refresh**, which took a fix. The host
+payload returned proportional memory regardless of what was chosen, while the
+chart took its axis from the selector — so picking *Writing* drew memory sizes
+against a bytes-per-second scale, and every poll quietly put memory data back
+under a heading that still said Writing. Two failures from one cause: a reset
+that looked like a glitch, and a chart that was simply wrong.
+
+The metric now travels with the request and the server echoes back which one it
+answered, so the axis is chosen from **what the data is** rather than from what
+was asked for. Those are normally the same; if they ever diverge, a series
+plotted against the right scale under a stale heading is far better than the
+reverse.
+
 ### Where the memory goes
 
 A pie of the ten largest services; everything under 1%, and everything past the
