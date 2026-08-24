@@ -1958,8 +1958,8 @@ async function refreshHost() {
 
   if (num(s.pss_procs) > 0) {
     parts.push(
-      `Proportional set size, which does add up, comes to ${humanBytes(s.pss_sum_bytes)} `
-      + `across the ${s.pss_procs} biggest`
+      `Proportional set size — private memory in full plus a share of whatever is `
+      + `shared — comes to ${humanBytes(s.pss_sum_bytes)} across the ${s.pss_procs} biggest`
       + (num(s.pss_procs) < num(s.proc_count) ? ` of them.` : `.`)
     );
   }
@@ -1978,7 +1978,7 @@ async function refreshHost() {
     { label: "Processes", className: "size", render: r => r.procs },
     { label: "Threads", className: "size", render: r => r.threads },
     { label: "Resident", className: "size", render: r => humanBytes(r.rss_bytes) },
-    { label: "PSS", className: "size", render: r => hostPss(r.pss_bytes) },
+    { label: "Proportional (PSS)", className: "size", render: r => hostPss(r.pss_bytes) },
     { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
   ]);
 
@@ -1987,7 +1987,7 @@ async function refreshHost() {
     { label: "User", render: r => r.user },
     { label: "Process", render: r => r.name },
     { label: "Resident", className: "size", render: r => humanBytes(r.rss_bytes) },
-    { label: "PSS", className: "size", render: r => hostPss(r.pss_bytes) },
+    { label: "Proportional (PSS)", className: "size", render: r => hostPss(r.pss_bytes) },
     { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
     { label: "Threads", className: "size", render: r => r.threads },
     { label: "Running for", className: "size",
@@ -2148,7 +2148,14 @@ function renderHostFiles(rows, totals) {
   }
 }
 
-/** PSS is only measured for the biggest processes, so absence is not zero. */
+/**
+ * PSS is only measured for the biggest processes, so absence is not zero.
+ *
+ * Proportional set size: a process's private pages counted in full, plus its
+ * share of each page it maps alongside others. It is the effective physical
+ * memory attributable to that process, and the only per-process figure that
+ * can be added up without inventing memory.
+ */
 function hostPss(value) {
   return value == null || Number(value) === 0 ? "—" : humanBytes(value);
 }

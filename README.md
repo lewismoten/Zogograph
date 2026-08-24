@@ -447,12 +447,29 @@ actually in use. Nothing is missing. **RSS counts every shared page once per
 process**, so a hundred Apache workers each "own" the same copy of libc, and the
 difference is an artefact of the counting.
 
-**PSS** — proportional set size, each page divided by the number of processes
-mapping it — is the figure that adds up, and no `ps` can report it. It comes from
-`/proc/<pid>/smaps_rollup`, which the kernel builds by walking the page tables:
-cheap per process, but there can be a thousand of them, so it is read for the
-biggest sixty by RSS and the panel says so rather than presenting a partial sum
-as a whole-machine total.
+**PSS** — proportional set size — is the figure that adds up, and no `ps` can
+report it. It counts a process's **private pages in full** and **divides each
+shared page** among the processes mapping it: one copy of libc shared by a
+hundred workers contributes a hundredth to each, while everything that process
+alone holds counts whole.
+
+That distinction is worth stating carefully, because "proportional" invites the
+idea that PSS is a measure of *sharing*. It is not. It is the effective physical
+memory **attributable** to a process: shared pages are apportioned so that
+summing PSS across every process gives the memory those processes actually
+occupy, counted once. That is the whole reason it can be summed at all.
+
+Attributable is not the same as reclaimable. Killing one of ten processes
+sharing a page frees nothing of it — the page stays, and the other nine each see
+their PSS *rise* as it is divided nine ways instead of ten. What a single exit
+returns is only that process's private pages, which is a different figure again
+(USS, which this does not collect). PSS answers "whose memory is this", not
+"what would I get back".
+
+It comes from `/proc/<pid>/smaps_rollup`, which the kernel builds by walking the
+page tables: cheap per process, but there can be a thousand of them, so it is
+read for the biggest sixty by RSS and the panel says so rather than presenting a
+partial sum as a whole-machine total.
 
 ### Two different things called "shared"
 
@@ -462,7 +479,7 @@ measured differently, from different files, for different purposes:
 | | what it is | where it comes from |
 |---|---|---|
 | **Kernel shared memory / tmpfs** | tmpfs pages and System V segments — memory the kernel holds on behalf of no particular process | `Shmem` in `/proc/meminfo` |
-| **PSS** | one process's share of the pages it maps, divided by how many processes map each one | `/proc/<pid>/smaps_rollup` |
+| **Proportional (PSS)** | a process's private pages in full, plus its share of each page it maps alongside others | `/proc/<pid>/smaps_rollup` |
 
 Neither is a subtotal of the other, and adding them together means nothing. They
 are not quite disjoint either — a tmpfs page that some process maps is counted
