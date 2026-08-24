@@ -165,7 +165,85 @@ function configFields(array $sample): array
             // shows up here instead of being quietly undeletable.
             'options' => categoryNames($sample['scan']),
         ],
+
+        /*
+         * The host half.
+         *
+         * Only useful with root on the machine, so it is asked last and can be
+         * turned off in one click. Everything under it is hidden until it is on.
+         */
+        [
+            'key' => 'host_enabled',
+            'path' => ['host', 'enabled'],
+            'type' => 'bool',
+            'label' => 'Also collect host-wide readings (needs root)',
+            'help' => 'Adds a second collector, run by root from WHM, that sees what this '
+                . 'account cannot: other users\' processes and memory, kernel slab caches, '
+                . 'and root-owned logs under /etc. On CloudLinux this is the only way to find '
+                . 'out what is using the machine.',
+            'default' => (bool)($sample['host']['enabled'] ?? true),
+        ],
+        [
+            'key' => 'host_owner',
+            'path' => ['host', 'owner'],
+            'type' => 'text',
+            'label' => 'Account the dashboard runs as',
+            'help' => 'Root creates the host database, so without this only root can read it '
+                . 'and the panel stays empty. Almost always the cPanel username.',
+            // Detected rather than guessed: the user PHP is running as right
+            // now is the one that will be reading the file later.
+            'default' => currentAccountName() ?: (string)($sample['host']['owner'] ?? ''),
+            'when' => 'host_enabled',
+            'validate' => fn(string $v): ?string => $v === '' || preg_match('/^[a-z_][a-z0-9_-]*$/i', $v)
+                ? null
+                : 'That does not look like a username.',
+            'optional' => true,
+        ],
+        [
+            'key' => 'host_watch',
+            'path' => ['host', 'watch'],
+            'type' => 'lines',
+            'label' => 'Root-owned files to watch, one pattern per line',
+            'help' => 'Apache writes each domain\'s logs under /etc owned by root, where a '
+                . 'rotated log can reach several hundred megabytes invisibly. Shell globs.',
+            'default' => (array)($sample['host']['watch'] ?? []),
+            'when' => 'host_enabled',
+        ],
+        [
+            'key' => 'host_keep_days',
+            'path' => ['host', 'keep_days'],
+            'type' => 'int',
+            'label' => 'Days of host readings to keep',
+            'help' => 'A host reading is much bigger than an account one - it carries every '
+                . 'user, the biggest processes and the slab table.',
+            'default' => (int)($sample['host']['keep_days'] ?? 14),
+            'when' => 'host_enabled',
+            'validate' => fn(string $v): ?string => is_numeric($v) && (float)$v >= 1
+                ? null
+                : 'Enter a number of days, at least 1.',
+        ],
     ];
+}
+
+/**
+ * The account this process is running as, for the host database's owner.
+ *
+ * Detected rather than defaulted to a name in the sample file, because a
+ * hardcoded username is right on exactly one machine and silently wrong
+ * everywhere else - and being wrong here produces a database the dashboard
+ * cannot read, with nothing to say why.
+ */
+function currentAccountName(): string
+{
+    if (function_exists('posix_geteuid') && function_exists('posix_getpwuid')) {
+        $info = @posix_getpwuid(posix_geteuid());
+        if (is_array($info) && !empty($info['name'])) {
+            return (string)$info['name'];
+        }
+    }
+
+    $out = @shell_exec('id -un 2>/dev/null');
+    return is_string($out) ? trim($out) : '';
 }
 
 /** Whether a field applies, given the answers so far. */
@@ -189,6 +267,24 @@ function parseField(array $field, mixed $raw): array
             return [(bool)preg_match('/^(y|yes|1|on|true)$/i', trim($raw)), null];
         }
         return [(bool)$raw, null];
+    }
+
+    /*
+     * A list, one per line - or comma separated, because the command-line
+     * wizard asks its questions on one line and cannot offer a textarea.
+     * Accepting both means the same field works in both front ends.
+     */
+    if ($type === 'lines') {
+        $text = is_array($raw) ? implode("\n", $raw) : (string)$raw;
+        $parts = preg_split('/[\r\n,]+/', $text) ?: [];
+        $clean = [];
+        foreach ($parts as $part) {
+            $part = trim($part);
+            if ($part !== '') {
+                $clean[] = $part;
+            }
+        }
+        return [$clean, null];
     }
 
     if ($type === 'categories') {
@@ -225,6 +321,12 @@ function parseField(array $field, mixed $raw): array
 
     if ($type === 'number') {
         return [(float)$value, null];
+    }
+
+    // Whole numbers stay whole. A day count written as 14.0 in a config file
+    // reads like a rounding error somebody should look into.
+    if ($type === 'int') {
+        return [(int)$value, null];
     }
 
     return [$value, null];
@@ -312,6 +414,7 @@ function displayValue(array $field, mixed $value): string
         'bytes' => formatBytes((int)$value),
         'bool' => $value ? 'y' : 'n',
         'categories' => implode(', ', (array)$value),
+        'lines' => implode("\n", (array)$value),
         default => (string)$value,
     };
 }

@@ -472,6 +472,15 @@ function hostView(array $config, bool $signedIn): array
         throw new ActionRefused('sign in to see host readings');
     }
 
+    if (!($config['host']['enabled'] ?? true)) {
+        return [
+            'available' => false,
+            'reason' => 'Host collection is turned off in the config.',
+            'off' => true,
+            'sample' => null,
+        ];
+    }
+
     $path = hostDatabasePath($config);
     $pdo = hostDb($config, false);
 
@@ -485,7 +494,10 @@ function hostView(array $config, bool $signedIn): array
                 ? 'The host database exists but this account cannot read it. Set '
                     . 'host.owner in the config to the account the dashboard runs as, '
                     . 'then run host-cron.php once as root.'
-                : 'No host readings yet. Add host-cron.php to root\'s crontab.',
+                : 'No host readings yet. This needs a second collector, run by root.',
+            // The exact line to paste, with this install's real paths in it.
+            'cron' => hostCronLine(__DIR__),
+            'command' => hostCronCommand(__DIR__),
             'sample' => null,
         ];
     }
@@ -501,7 +513,13 @@ function hostView(array $config, bool $signedIn): array
     }
 
     if (!$sample) {
-        return ['available' => false, 'reason' => 'No host readings recorded yet.', 'sample' => null];
+        return [
+            'available' => false,
+            'reason' => 'The host database is set up, but no readings have been recorded yet.',
+            'cron' => hostCronLine(__DIR__),
+            'command' => hostCronCommand(__DIR__),
+            'sample' => null,
+        ];
     }
 
     $id = (int)$sample['id'];

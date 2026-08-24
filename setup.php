@@ -52,6 +52,8 @@ if (!is_file($samplePath)) {
 }
 
 require_once $root . '/lib/configure.php';
+// For hostCronLine/hostCronCommand, shown after a successful write.
+require_once $root . '/lib/hostdb.php';
 
 /**
  * How long an unlock lasts. Long enough to fill a form in, and no longer.
@@ -426,6 +428,11 @@ function webPage(
         . '.banner.crit{border-color:#7a3030;background:#2b1414}'
         . 'code{background:#111;padding:1px 5px;border-radius:4px}'
         . 'pre{overflow-x:auto}'
+        // Only the form fields. The rule above is for the big read-only box
+        // that holds the config to copy, which has no name and wants its 340px.
+        . 'textarea[name]{min-height:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'
+        . 'font-size:.85rem;background:#111;color:#eee;border:1px solid var(--line);'
+        . 'border-radius:8px;padding:8px}'
         . '</style></head><body class="wiz">';
 
     $out[] = '<h1>Disk Usage Monitor — setup</h1>';
@@ -438,6 +445,21 @@ function webPage(
             . 'replace your config without the password, but there is no reason to leave a '
             . 'setup page on a live site.</p>'
             . '<p><a href="./">Open the dashboard</a></p></div>';
+
+        if (!empty($values['host_enabled'])) {
+            $out[] = '<div class="banner warn"><strong>One more step, as root.</strong>'
+                . '<p>The host collector cannot be installed from here — it runs as root, and '
+                . 'this page runs as your account. Log in to WHM or ssh as root and add this '
+                . 'to <em>root\'s</em> crontab (<code>crontab -e</code>):</p>'
+                . '<pre><code>' . h(hostCronLine()) . '</code></pre>'
+                . '<p>Then run it once by hand to see that it works — without the '
+                . 'schedule, and without <code>--quiet</code> so it tells you what it found:</p>'
+                . '<pre><code>' . h(hostCronCommand()) . '</code></pre>'
+                . '<p>Until it runs, the <em>whole machine</em> panel on the dashboard will say '
+                . 'so rather than showing anything. The dashboard\'s own schedule editor cannot '
+                . 'manage this job: it edits your account\'s crontab, and this one is root\'s.</p>'
+                . '</div>';
+        }
         $out[] = '</body></html>';
         return implode("\n", $out);
     }
@@ -559,6 +581,13 @@ function renderField(array $field, array $values, array $errors, bool $configure
             . '<div class="row">' . $boxes . '</div>' . $help . $bad . '</fieldset>';
     }
 
+    if ($field['type'] === 'lines') {
+        return '<label>' . $label
+            . '<textarea name="' . h($key) . '" rows="4" spellcheck="false">'
+            . h(displayValue($field, $values[$key])) . '</textarea>'
+            . $help . $bad . '</label>';
+    }
+
     $type = $field['type'] === 'email' ? 'email' : 'text';
 
     return '<label>' . $label
@@ -664,6 +693,17 @@ function runCli(
             say('    php cron.php --vitals');
             say('    php cron.php --scan');
             say('');
+            if (!empty($values['host_enabled'])) {
+                say('  One more step, as root. The host collector runs as root and cannot');
+                say('  be installed from here. In root\'s crontab (crontab -e):');
+                say('');
+                say('    ' . hostCronLine());
+                say('');
+                say('  Then run it once by hand to check it:');
+                say('');
+                say('    ' . hostCronCommand());
+                say('');
+            }
             return;
         }
         say('  ' . $problem);

@@ -17,6 +17,44 @@ declare(strict_types=1);
  * stays the only writer.
  */
 
+// hostMigrate leans on columnExists from db.php. Required rather than assumed:
+// this file is included by setup.php and api.php on different paths.
+require_once __DIR__ . '/db.php';
+
+/**
+ * The command that collects a host reading, with real paths filled in.
+ *
+ * Written out rather than described, because the two things people get wrong
+ * are the absolute path to the install and which of the eight PHP binaries on a
+ * cPanel box to use - and both are known here. Shared between the setup page
+ * and the dashboard so the two can never print different instructions.
+ */
+function hostCronCommand(?string $root = null): string
+{
+    $root ??= dirname(__DIR__);
+
+    $php = PHP_BINDIR . '/php';
+    foreach (['/usr/local/bin/php', '/opt/cpanel/ea-php85/root/usr/bin/php'] as $candidate) {
+        if (is_executable($candidate)) {
+            $php = $candidate;
+            break;
+        }
+    }
+
+    return sprintf('%s %s/host-cron.php --collect --prune', $php, $root);
+}
+
+/**
+ * The same, as a crontab line for root.
+ *
+ * Every five minutes: a reading walks every process in /proc, which is not free
+ * on a busy box, and nothing it watches moves faster than that.
+ */
+function hostCronLine(?string $root = null): string
+{
+    return '*/5 * * * * ' . hostCronCommand($root) . ' --quiet';
+}
+
 /** Where the host database lives when the config does not say. */
 function hostDatabasePath(array $config): string
 {

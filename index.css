@@ -248,3 +248,15 @@ tr.struck td {
   text-decoration: line-through;
   color: var(--muted);
 }
+
+/* A command to copy. Monospaced and scrollable rather than wrapped: a crontab
+   line broken across two lines is a crontab line somebody pastes wrong. */
+pre.paste {
+  background: #000;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: .8rem;
+  margin: 8px 0;
+}

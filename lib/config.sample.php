@@ -181,6 +181,15 @@ return [
      * writers of different privilege never share a write-ahead log.
      */
     'host' => [
+        /*
+         * Whether any of this is in play.
+         *
+         * Off means host-cron.php refuses to run and the dashboard hides the
+         * panel entirely - worth setting if you have no root on the machine,
+         * since none of it can work without it.
+         */
+        'enabled' => true,
+
         // Defaults to host.db beside the account database, which .htaccess
         // already denies over HTTP.
         'database' => null,
@@ -189,12 +198,17 @@ return [
          * Who the dashboard runs as.
          *
          * Root creates the database, so without this only root can read it and
-         * the dashboard shows an empty panel with no clue why. It is set rather
-         * than guessed because guessing wrong gives either an unreadable file
-         * or a world-readable one - and the second is worse, since this
-         * database lists every process on the machine with its command line.
+         * the dashboard shows an empty panel with no clue why. Set it to the
+         * cPanel username. The wizard fills it in with whatever account it is
+         * running as, which is the right answer in every normal case.
+         *
+         * Blank means no handover: root keeps the file to itself and the
+         * dashboard cannot read it. That is the safe direction to fail in -
+         * this database lists every process on the machine with its command
+         * line, so a wrong guess that made it world-readable would be worse
+         * than one that made it unreadable.
          */
-        'owner' => 'regaldra',
+        'owner' => '',
 
         'keep_days' => 14,
 

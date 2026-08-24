@@ -1796,7 +1796,37 @@ async function refreshHost() {
   }
 
   if (!data.available) {
-    $("hostBody").textContent = data.reason || "No host readings.";
+    /*
+     * The instruction, not just the diagnosis.
+     *
+     * This is the one panel that cannot set itself up: it needs a crontab entry
+     * for a user the dashboard is not running as. "No readings yet" leaves
+     * somebody to go and find out how, so the line to paste goes here, with
+     * this install's real paths already in it.
+     */
+    const holder = $("hostBody");
+    holder.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: data.reason || "No host readings.",
+    }));
+
+    if (data.cron) {
+      holder.appendChild(Object.assign(document.createElement("p"), {
+        className: "muted small",
+        textContent: "As root — ssh in or use WHM's Terminal — add this to root's "
+          + "crontab with crontab -e:",
+      }));
+      const pre = document.createElement("pre");
+      pre.className = "paste";
+      pre.textContent = data.cron;
+      holder.appendChild(pre);
+      holder.appendChild(Object.assign(document.createElement("p"), {
+        className: "muted small",
+        textContent: "Then run it once by hand to see what it finds: "
+          + data.command,
+      }));
+    }
+
     $("hostMemory").hidden = true;
     return;
   }

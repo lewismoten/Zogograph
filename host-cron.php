@@ -65,6 +65,11 @@ if (!$root) {
     $say('         Apache\'s logs will be invisible - which is the whole point of this.');
 }
 
+if (!($config['host']['enabled'] ?? true)) {
+    fwrite(STDERR, "Host collection is turned off: set host.enabled to true in lib/config.php.\n");
+    exit(1);
+}
+
 try {
     $pdo = hostDb($config, true);
     if ($pdo === null) {

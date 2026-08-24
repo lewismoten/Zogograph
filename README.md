@@ -47,8 +47,8 @@ trash / logs / temp. Minutes of IO on a large account, so hourly at most.
 ```bash
 mkdir -p ~/public_html/stats.example.com
 # everything except data/ and lib/config.php
-cp -r cron.php api.php setup.php index.html index.css index.js lib .htaccess \
-      ~/public_html/stats.example.com/
+cp -r cron.php host-cron.php api.php setup.php index.html index.css index.js \
+      lib .htaccess ~/public_html/stats.example.com/
 ```
 
 Then open `setup.php` in a browser and fill the form in. It writes
@@ -70,6 +70,21 @@ php cron.php --scan
 ```
 
 Then open the site. `data/stats.db` is created on the first run.
+
+**If you have root on the machine**, there is a second collector. The wizard asks
+about it — *Also collect host-wide readings* — and prints the crontab line when
+it finishes, with your real paths already filled in. It has to go in **root's**
+crontab rather than your account's, so it is the one step the wizard cannot do
+for you:
+
+```cron
+*/5 * * * * /usr/local/bin/php ~/public_html/stats.example.com/host-cron.php --collect --prune --quiet
+```
+
+Without it the dashboard's *whole machine* panel shows that line and nothing
+else. See [The host half](#the-host-half) for what it collects and why it needs
+its own database. On CloudLinux it is the only way to find out what is using the
+machine, because CageFS hides every other account's processes from yours.
 
 ## The wizard
 
@@ -133,6 +148,19 @@ the web server uses.
 Vitals every minute is roughly half a megabyte of database a week before
 pruning. `--prune` keeps the last two weeks at full resolution, thins everything
 older to one reading an hour, and drops anything past about a year.
+
+There is a third line, and it belongs to **root** rather than to your account:
+
+```cron
+# Host-wide readings: other users' memory, kernel slab, root-owned logs.
+*/5 * * * * /usr/local/bin/php ~/public_html/stats.example.com/host-cron.php --collect --prune --quiet
+```
+
+Five minutes rather than one: a reading walks every process in `/proc`, which is
+not free on a busy box, and nothing it watches moves faster than that. The
+dashboard's Schedule panel cannot write this one — it edits your account's
+crontab, and this job is root's. Add it with `crontab -e` as root, or through
+WHM's Terminal.
 
 ## Scheduling from the dashboard
 
@@ -377,7 +405,13 @@ as much disk as one in the home directory.
 
 `host-cron.php` is the other half. It runs as root out of WHM's crontab:
 
-    * * * * * /usr/local/bin/php /home/USER/public_html/stats/host-cron.php --collect --prune --quiet
+    */5 * * * * /usr/local/bin/php /home/USER/public_html/stats/host-cron.php --collect --prune --quiet
+
+Every five minutes rather than every minute: a reading walks every process in
+`/proc`, which is not free on a busy box. The setup wizard prints this line with
+your real paths in it, and so does the dashboard panel until the first reading
+arrives — it is the one step neither can perform, because it needs a crontab
+belonging to a user the dashboard is not running as.
 
 It is refused over HTTP twice — by `.htaccess` and by the file itself, which
 exits unless `PHP_SAPI` is `cli`. A root-privileged entry point reachable from a
