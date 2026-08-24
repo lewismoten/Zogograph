@@ -167,7 +167,20 @@ td.cmd {
 .busy-moment { margin-bottom: 14px; }
 .busy-moment h4 { margin: 0 0 4px; font-size: .85rem; font-weight: 600; color: #cfcfcf; }
 .panel-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.empty-buttons { display: flex; gap: 8px; }
+/* One card per emptyable category: the size above, the button below, so the
+   decision is made with the number that decides it. */
+.empty-buttons {
+  display: grid;
+  /* auto-fill with a capped track, not 1fr: two categories stretched across a
+     1600px panel are two very wide cards saying very little. */
+  grid-template-columns: repeat(auto-fill, minmax(170px, 210px));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+.empty-buttons:empty { display: none; }
+.empty-card { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.empty-card .value { font-size: 1.15rem; }
+.empty-card button { margin-top: 8px; }
 
 canvas { width: 100%; height: 260px; display: block; }
 

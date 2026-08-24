@@ -44,6 +44,8 @@ const state = {
   scheduleDirty: false,
   units: "bytes",
   uptime: null,
+  totals: {},
+  emptied: {},
   noticeAt: 0,
   noticeOk: false,
   restarts: [],
@@ -1156,6 +1158,8 @@ async function refreshAll() {
     state.signedIn = overview.signed_in;
     state.csrf = overview.csrf;
     state.deletable = overview.deletable || [];
+    state.totals = overview.totals || {};
+    state.emptied = overview.emptied || {};
     state.viewable = overview.viewable || [];
     applySignedInChrome();
 
@@ -1701,35 +1705,95 @@ function deleteButton(row) {
   return button;
 }
 
+/**
+ * One card per emptyable category: how much is in it, then the button.
+ *
+ * A bare "Empty trash" asks for a decision without supplying the fact the
+ * decision turns on. Putting the size above the button means the question being
+ * answered is "is 1.2 GiB across 4,312 files worth reclaiming", which is a
+ * question, rather than "do you want to delete an unknown quantity of things",
+ * which is a dare.
+ */
 function renderEmptyButtons() {
   const holder = $("emptyButtons");
-  if (!state.signedIn) {
+  if (!state.signedIn || !state.deletable.length) {
     holder.replaceChildren();
     return;
   }
 
   holder.replaceChildren(...state.deletable.map(category => {
+    const totals = (state.totals || {})[category] || { bytes: 0, files: 0 };
+    const emptiedAt = (state.emptied || {})[category];
+
+    const card = document.createElement("div");
+    card.className = "card empty-card";
+
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = category.charAt(0).toUpperCase() + category.slice(1);
+    card.appendChild(label);
+
+    const value = document.createElement("div");
+    value.className = "value";
+    value.textContent = humanBytes(totals.bytes);
+    // Struck through once emptied: the figure was true when the scan ran.
+    if (emptiedAt) value.classList.add("struck-through");
+    card.appendChild(value);
+
+    const sub = document.createElement("div");
+    sub.className = "sub muted";
+    sub.textContent = totals.files ? count(totals.files, "file") : "nothing counted here";
+    if (emptiedAt) sub.classList.add("struck-through");
+    card.appendChild(sub);
+
+    if (emptiedAt) {
+      /*
+       * Emptied already, so no button - the same reasoning as a deleted row,
+       * and the same shape: the figures struck through because they were true
+       * when the scan ran, and one line saying what happened. The card stays
+       * because the category still exists and will fill up again.
+       */
+      const done = document.createElement("div");
+      done.className = "muted small";
+      done.textContent = `emptied ${humanTime(emptiedAt)}`;
+      done.title = "The next scan will show what is in it now.";
+      card.appendChild(done);
+      return card;
+    }
+
     const button = document.createElement("button");
-    button.className = "danger";
-    button.textContent = `Empty ${category}`;
+    button.className = "danger small";
+    button.textContent = "Empty";
+    button.disabled = !totals.bytes && !totals.files;
+
     button.addEventListener("click", async () => {
-      if (!confirm(`Delete every file counted as ${category}?\n\nThis cannot be undone.`)) return;
+      if (!confirm(
+        `Delete every file counted as ${category}?\n\n`
+        + `${humanBytes(totals.bytes)} across ${count(totals.files, "file")}, `
+        + `as of the last scan.\n\nThis cannot be undone.`
+      )) return;
+
       button.disabled = true;
       try {
         const result = await post("empty", { category });
         notice(
-          `Emptied ${category}: ${humanCount(result.files_removed)} files, ${humanBytes(result.bytes_freed)} freed`
+          `Emptied ${category}: ${humanCount(result.files_removed)} files, `
+          + `${humanBytes(result.bytes_freed)} freed`
+          + (result.still_linked
+            ? `. ${count(result.still_linked, "file")} had another name, so freed nothing`
+            : "")
           + (result.failed ? `, ${result.failed} could not be removed.` : "."),
           true
         );
         await refreshAll();
       } catch (error) {
         notice(String(error.message || error));
-      } finally {
         button.disabled = false;
       }
     });
-    return button;
+
+    card.appendChild(button);
+    return card;
   }));
 }
 

@@ -144,6 +144,20 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
             ? ['started_at' => (int)$running['started_at']]
             : null,
         'totals' => $totals,
+        /*
+         * Categories emptied since the scan that measured them.
+         *
+         * The totals come from the last scan, so after emptying one the figure
+         * on its card is stale until the next scan runs - and offering to empty
+         * it again, under a size that is no longer there, is the same trap the
+         * per-row Delete button had.
+         *
+         * A partial empty counts here, unlike for individual rows. There the
+         * question is "was this exact file removed", and a partial run may have
+         * skipped it; here it is "is this total still true", and after any
+         * successful removal it is not.
+         */
+        'emptied' => $scan ? emptiedSince($pdo, (int)$scan['started_at']) : [],
         'open_alerts' => (int)$pdo->query(
             'SELECT COUNT(*) FROM alerts WHERE raised_at >= ' . (time() - 86400)
         )->fetchColumn(),
@@ -154,6 +168,28 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
         'viewable' => $config['viewable_categories'] ?? [],
         'server_time' => time(),
     ];
+}
+
+/**
+ * When each category was last emptied, if since the given moment.
+ *
+ * @return array<string, int>
+ */
+function emptiedSince(PDO $pdo, int $since): array
+{
+    $stmt = $pdo->prepare(
+        "SELECT target, MAX(at) AS at FROM actions
+         WHERE action = 'empty_category' AND outcome IN ('ok', 'partial') AND at >= ?
+         GROUP BY target"
+    );
+    $stmt->execute([$since]);
+
+    $out = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $out[(string)$row['target']] = (int)$row['at'];
+    }
+
+    return $out;
 }
 
 /** The vitals series for a window, thinned so a long range is not a huge body. */

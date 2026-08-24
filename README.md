@@ -950,6 +950,34 @@ returns the 7th without complaint. And the timezone problem above is invisible
 in testing on a machine whose system zone and configured zone agree — which is
 most development machines and few servers.
 
+### Emptying a category
+
+Each emptyable category is a card: how much is in it, how many files, then the
+button.
+
+    Trash                 Temp
+    16.7 MiB              4.58 MiB
+    25 files              12 files
+    [Empty]               [Empty]
+
+A bare "Empty trash" asks for a decision without supplying the fact the decision
+turns on. With the size above it, the question is *is 16.7 MiB across 25 files
+worth reclaiming* — which is a question. Without it, the question is *do you want
+to delete an unknown quantity of things*, which is a dare. The confirmation
+repeats the figures and says they are as of the last scan.
+
+The button is disabled when the category is empty, so a card can say "0 B" and
+still be worth showing: knowing trash is empty is knowing something.
+
+**After emptying**, the same treatment as a deleted row — figures struck through,
+button replaced by *emptied 2:52 AM*. The totals come from the last scan, so they
+are stale the moment the category is emptied, and offering to empty it again
+under a size that is no longer there is the trap the per-row Delete button had.
+
+A partial empty counts as emptied here, unlike for individual rows. There the
+question is "was this exact file removed", and a partial run may have skipped it;
+here it is "is this total still true", and after any successful removal it is not.
+
 ### After a delete
 
 The offenders table is what the **last scan** saw, so a file it found stays
