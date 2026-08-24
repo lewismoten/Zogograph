@@ -1219,6 +1219,19 @@ the right status code.
   after `session_lifetime`.
 - `.htaccess` redirects to HTTPS and sets a content security policy. A login
   sends a password; never over plain HTTP.
+- The policy is `default-src 'self'` with no `style-src`, which means **a single
+  `style=""` attribute in `index.html` is blocked outright** — the rule does not
+  apply, the console fills with violations, and the only symptom is something
+  looking slightly wrong. The Health panel checks for it, because it fails
+  silently otherwise. Styles set from JavaScript are fine: CSP governs style
+  attributes in markup and `<style>` blocks, not CSSOM assignment.
+- `health.php` and `setup.php` are the exception, and get `style-src 'self'
+  'unsafe-inline'` from a `FilesMatch` block. Both carry their stylesheet
+  inline, and both were rendering completely unstyled until that was noticed.
+  Giving `health.php` an external stylesheet instead would hand it a dependency
+  that can be missing in exactly the situation it exists for. Neither page puts
+  untrusted content into a style context — `health.php` reports states and never
+  values, `setup.php` escapes everything it echoes.
 - Even masked, the sizes describe a private machine, so nothing here is
   cacheable by a shared proxy.
 - `host.db` lists every process on the machine with its command line, so it is

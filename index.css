@@ -263,3 +263,12 @@ pre.paste {
   font-size: .8rem;
   margin: 8px 0;
 }
+
+/* Controls that sit above a chart rather than in a panel heading. The gap is
+   here and not in a style attribute because the CSP forbids inline styles -
+   `default-src 'self'` with no style-src means style="" is blocked outright. */
+.chart-controls { margin-top: 12px; }
+
+/* Taller than a line chart: the slice labels stack down the right, and a short
+   canvas crops the ones at the ends. */
+canvas.pie { height: 300px; }

@@ -743,6 +743,19 @@ function healthCheck(array $config, PDO $pdo, bool $signedIn): array
         'proc_readable' => @is_readable('/proc/stat'),
         'diskstats_readable' => @is_readable('/proc/diskstats'),
         'io_pressure_available' => @is_readable('/proc/pressure/io'),
+        /*
+         * The dashboard's own markup, checked against its own policy.
+         *
+         * .htaccess sends default-src 'self' with no style-src, so a single
+         * style="" attribute in index.html is blocked outright - the rule does
+         * not apply, the console fills with violations, and the only symptom is
+         * something looking slightly wrong. Cheap to check, and it fails
+         * silently otherwise.
+         */
+        'no_inline_styles' => !preg_match(
+            '/\sstyle\s*=\s*["\']/i',
+            (string)@file_get_contents(__DIR__ . '/index.html')
+        ),
         // Always available, and the thing people actually want to see when a
         // kernel feature is missing.
         'kernel' => php_uname('r'),

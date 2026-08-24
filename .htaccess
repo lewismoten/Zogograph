@@ -49,6 +49,21 @@ DirectoryIndex index.html
 <IfModule mod_headers.c>
   # The dashboard loads nothing from anywhere else, so it can say so.
   Header always set Content-Security-Policy "default-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
+  # health.php and setup.php carry their own stylesheet inline, and the policy
+  # above blocks it - so both were rendering completely unstyled. That matters
+  # most for health.php, which is the page you open when nothing else works and
+  # which deliberately depends on no other file: giving it an external
+  # stylesheet would hand it a dependency that can be missing in exactly the
+  # situation it exists for.
+  #
+  # So style-src is relaxed for those two files only. The dashboard keeps the
+  # strict policy. Neither page renders untrusted content into a style context -
+  # health.php reports states and never values, and setup.php escapes everything
+  # it echoes - so inline styles there are not a route to anything.
+  <FilesMatch "^(health|setup)\.php$">
+    Header always set Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+  </FilesMatch>
   Header always set X-Content-Type-Options "nosniff"
   Header always set Referrer-Policy "no-referrer"
   # Nothing here should ever be cached by a shared proxy: even masked, the

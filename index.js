@@ -2705,6 +2705,11 @@ const HEALTH_LABELS = {
   mail_available: ["mail() available", "Alert emails cannot be sent from here."],
   shell_available: ["shell_exec available", "Inodes and the crontab editor are unavailable."],
   proc_readable: ["/proc readable", "CPU, memory and network stay empty."],
+  no_inline_styles: [
+    "Dashboard has no inline styles",
+    "index.html carries a style=\"\" attribute, which the content security policy "
+      + "blocks — the rule silently does not apply. Move it into index.css.",
+  ],
   diskstats_readable: ["Disk counters readable", "Disk I/O throughput and utilisation stay empty."],
   io_pressure_available: ["I/O pressure available", "Stall percentages stay empty."],
 };
