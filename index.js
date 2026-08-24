@@ -2903,6 +2903,81 @@ function renderHostFiles(rows, totals) {
 
 /** Per-device throughput, utilisation and queue depth. */
 /*
+ * Groups a pile of paths by a shared parent.
+ *
+ * Seventy paths under /usr/share/cagefs-skeleton are one fact, not seventy,
+ * and a list that says so is readable where a list that does not is a wall.
+ *
+ * Grouped on the first three segments, which is a rule of thumb rather than a
+ * theory: it puts /usr/share/cagefs-skeleton/* together and leaves
+ * /var/log/apache2/domlogs on its own, which is the right answer for both. A
+ * cleverer longest-common-prefix would group everything under /usr the moment
+ * two unrelated /usr paths appeared.
+ */
+function groupPaths(paths) {
+  const groups = new Map();
+
+  for (const path of paths) {
+    const parts = String(path).split("/").filter(Boolean);
+    const key = parts.length > 3 ? "/" + parts.slice(0, 3).join("/") : String(path);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(String(path));
+  }
+
+  return [...groups.entries()]
+    .map(([prefix, members]) => ({ prefix, members }))
+    .sort((a, b) => b.members.length - a.members.length || a.prefix.localeCompare(b.prefix));
+}
+
+/** Shows a long list of paths in a dialog that scrolls. */
+function showPathList(title, paths, note) {
+  $("listDialogTitle").textContent = title;
+  $("listDialogNote").textContent = note || "";
+
+  const body = $("listDialogBody");
+  const frag = document.createDocumentFragment();
+
+  for (const group of groupPaths(paths)) {
+    const box = document.createElement("div");
+    box.className = "group";
+
+    const head = document.createElement("div");
+    head.className = "group-head";
+    /*
+     * A group of one shows the whole path, not the prefix it was keyed on.
+     *
+     * The key is the first three segments, so /var/log/apache2/domlogs keys on
+     * /var/log/apache2 - and printing that as the heading would display a
+     * directory that is not the one mounted. A truncated path presented as a
+     * real one is worse than a long list.
+     */
+    head.textContent = group.members.length > 1
+      ? `${group.prefix}/… — ${count(group.members.length, "path")}`
+      : group.members[0];
+    box.appendChild(head);
+
+    if (group.members.length > 1) {
+      const ul = document.createElement("ul");
+      for (const path of group.members) {
+        const li = document.createElement("li");
+        // The shared part is already in the heading; repeating it on every
+        // line is what made the original unreadable.
+        li.textContent = path.startsWith(group.prefix + "/")
+          ? path.slice(group.prefix.length + 1)
+          : path;
+        ul.appendChild(li);
+      }
+      box.appendChild(ul);
+    }
+
+    frag.appendChild(box);
+  }
+
+  body.replaceChildren(frag);
+  $("listDialog").showModal();
+}
+
+/*
  * The root-side answer to "df says 72 GB and I can only find 4".
  *
  * Laid out as the three questions in the order worth asking them, because the
@@ -2955,16 +3030,63 @@ async function refreshHostDisk() {
   }
 
   if (data.mounts.length) {
-    body.appendChild(section("Filesystems", simpleTable(
-      ["Mounted at", "Device", "Type", "Used", "Free", "Full"],
-      data.mounts.map(m => [
-        m.mount + (m.also_at ? ` (also ${m.also_at})` : ""),
-        m.device, m.type || "—",
-        humanBytes(m.used_bytes), humanBytes(m.free_bytes),
-        `${Number(m.used_percent).toFixed(0)}%`,
-      ]),
-      ["name", null, null, "size", "size", "size"]
-    )));
+    const wrap = document.createElement("div");
+    wrap.className = "scroll-x";
+
+    const table = document.createElement("table");
+    const head = table.createTHead().insertRow();
+    ["Mounted at", "Device", "Type", "Used", "Free", "Full"].forEach((label, i) => {
+      const th = document.createElement("th");
+      th.textContent = label;
+      if (i === 0) th.className = "name";
+      if (i >= 3) th.className = "size";
+      head.appendChild(th);
+    });
+
+    const tbody = table.createTBody();
+    for (const m of data.mounts) {
+      const tr = tbody.insertRow();
+
+      const first = tr.insertCell();
+      first.className = "name";
+      first.appendChild(document.createTextNode(m.mount));
+
+      /*
+       * The other mount points behind a button, not spilled into the cell.
+       *
+       * CageFS bind-mounts the same filesystem into seventy-odd places under
+       * /usr/share/cagefs-skeleton, and printing them inline produced a single
+       * unreadable line that pushed every other column off the screen. They
+       * are worth keeping - a bind mount is why one device appears once rather
+       * than seventy times - but they are reference material, not something to
+       * read every time the page loads.
+       */
+      const others = String(m.also_at || "").split(/\s+/).filter(Boolean);
+      if (others.length) {
+        const button = document.createElement("button");
+        button.className = "link more-link";
+        button.textContent = `+${count(others.length, "mount point")}`;
+        button.title = "The same filesystem is mounted in these places too. Bind mounts, "
+          + "so the space is counted once.";
+        button.addEventListener("click", () => showPathList(
+          `${m.mount} is also mounted at`,
+          others,
+          "One filesystem, mounted in several places. The disk holds these bytes once — "
+          + "which is why this table shows one row rather than one per mount point."
+        ));
+        first.appendChild(button);
+      }
+
+      [m.device, m.type || "—", humanBytes(m.used_bytes), humanBytes(m.free_bytes),
+       `${Number(m.used_percent).toFixed(0)}%`].forEach((value, i) => {
+        const td = tr.insertCell();
+        if (i >= 2) td.className = "size";
+        td.textContent = value;
+      });
+    }
+
+    wrap.appendChild(table);
+    body.appendChild(section("Filesystems", wrap));
   }
 
   if (data.deleted.length) {
@@ -3011,7 +3133,45 @@ async function refreshHostDisk() {
   if (data.note) when.push(data.note);
   body.appendChild(note(when.join(" · ")));
 
+  body.appendChild(walkButton(data));
   holder.replaceChildren(body);
+}
+
+/*
+ * Asks root to walk the disk on its next run.
+ *
+ * The dashboard cannot run anything as root, and the honest interface for that
+ * is a button that says what it actually does: it leaves a request, and the
+ * collector picks it up within a few minutes. A spinner implying work is
+ * happening now would be a lie about who is doing it.
+ */
+function walkButton(data) {
+  const box = document.createElement("p");
+
+  if (data.pending) {
+    box.className = "muted small";
+    box.textContent = `A walk was requested ${ago(data.requested_at)} and is waiting for the `
+      + "next host collection. It runs on the collector's schedule — every five minutes with "
+      + "the suggested crontab line.";
+    return box;
+  }
+
+  const button = document.createElement("button");
+  button.textContent = data.taken_at ? "Walk the disk again" : "Walk the disk";
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await post("request-host-walk");
+      notice("Requested. The host collector will walk the disk on its next run.");
+      await refreshHostDisk();
+    } catch (error) {
+      notice(String(error.message || error));
+      button.disabled = false;
+    }
+  });
+
+  box.appendChild(button);
+  return box;
 }
 
 /*
@@ -5541,6 +5701,8 @@ $("historyClose").addEventListener("click", () => {
   state.historyPathId = null;
   $("historyPanel").hidden = true;
 });
+
+$("listDialogClose").addEventListener("click", () => $("listDialog").close());
 
 $("incidentClose").addEventListener("click", () => {
   $("incidentPanel").hidden = true;

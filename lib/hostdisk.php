@@ -554,3 +554,96 @@ function hostUnaccounted(array $report): ?array
         'complete' => (bool)$report['complete'],
     ];
 }
+
+/* ------------------------------------------------------------------ *
+ * Asking root to do it
+ * ------------------------------------------------------------------ */
+
+/** The one task the dashboard can ask for. */
+const HOSTDISK_TASK = 'disk-walk';
+
+/**
+ * Records that somebody pressed the button.
+ *
+ * Overwrites rather than queues: two people asking for a disk walk want one
+ * disk walk, and the second press should not mean the collector does it twice.
+ */
+function requestHostWalk(PDO $account, ?string $who = null): int
+{
+    $at = time();
+    $account->prepare(
+        'INSERT INTO host_tasks (task, requested_at, requested_by)
+         VALUES (:task, :at, :who)
+         ON CONFLICT(task) DO UPDATE SET requested_at = :at, requested_by = :who'
+    )->execute([':task' => HOSTDISK_TASK, ':at' => $at, ':who' => $who]);
+
+    return $at;
+}
+
+/**
+ * When a walk was last asked for, read out of the account's database by root.
+ *
+ * Opened by hand with query_only, exactly as daemonWatchFromConfig() does and
+ * for the same reason: the root collector has no business writing to a file the
+ * account owns, and a pragma is a cheaper guarantee than remembering not to.
+ *
+ * Any failure means "nothing requested". A collector that ran an expensive disk
+ * walk every five minutes because it could not read a table would be a worse
+ * outcome than one that never ran it at all.
+ */
+function requestedHostWalk(array $config): ?int
+{
+    $file = (string)($config['database'] ?? '');
+    if ($file === '' || !is_file($file) || !is_readable($file)) {
+        return null;
+    }
+
+    try {
+        $pdo = new PDO('sqlite:' . $file, null, null, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+        $pdo->exec('PRAGMA query_only = 1');
+
+        $stmt = $pdo->prepare('SELECT requested_at FROM host_tasks WHERE task = ?');
+        $stmt->execute([HOSTDISK_TASK]);
+        $at = $stmt->fetchColumn();
+
+        return $at === false || $at === null ? null : (int)$at;
+    } catch (Throwable) {
+        return null;
+    }
+}
+
+/**
+ * Whether a requested walk is still outstanding.
+ *
+ * Satisfied when a walk has been recorded at or after the moment it was asked
+ * for. That is the whole completion protocol, and it needs no write back into
+ * the account's database - host_walks is written by the walk itself.
+ */
+function hostWalkPending(PDO $host, ?int $requestedAt): bool
+{
+    if ($requestedAt === null) {
+        return false;
+    }
+
+    $last = (int)$host->query('SELECT MAX(taken_at) FROM host_walks')->fetchColumn();
+
+    /*
+     * A walk in the same second as the request does not count as answering it.
+     *
+     * Timestamps here are whole seconds, so when they are equal there is no
+     * way to tell whether the walk ran before the button was pressed or after.
+     * The two mistakes are not equally bad: guessing "answered" gives a button
+     * that visibly does nothing and gets pressed again and again, while
+     * guessing "still pending" costs at most one extra walk inside a one-second
+     * window. So the tie goes to running it.
+     *
+     * host_walks records the time the walk *started*, which makes this
+     * conservative in the useful direction as well: a forty-second walk already
+     * in progress when the button is pressed will not be mistaken for a
+     * response to it.
+     */
+    return $last <= $requestedAt;
+}

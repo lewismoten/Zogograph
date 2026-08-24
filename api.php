@@ -115,6 +115,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'test-email' => doTestEmail($config, $pdo, $post),
         'clear-problems' => doClearProblems($config, $pdo, $post),
         'daemon-watch' => doDaemonWatch($config, $pdo, $post),
+        'request-host-walk' => doRequestHostWalk($config, $pdo, $post),
         'match-processes' => doMatchProcesses($config, $post),
         'stop-process' => doStopProcess($config, $pdo, $post),
         'stop-group' => doStopGroup($config, $pdo, $post),
@@ -674,6 +675,10 @@ function hostDiskView(array $config, bool $signedIn): array
 
     $report = hostDiskReport($host);
     $report['unaccounted'] = hostUnaccounted($report);
+
+    $requested = requestedHostWalk($config);
+    $report['requested_at'] = $requested;
+    $report['pending'] = hostWalkPending($host, $requested);
 
     return $report;
 }
@@ -1329,6 +1334,28 @@ function problemLog(array $config, bool $signedIn): array
  * next run, so the effect is not instant and the dashboard says so rather than
  * pretending the row changed.
  */
+/**
+ * Asks the root collector to walk the disk on its next run.
+ *
+ * It cannot run anything as root and does not pretend to. The request is left
+ * in the account database, the collector reads it within a few minutes, and the
+ * answer is that it says so plainly rather than spinning as if something is
+ * happening now.
+ */
+function doRequestHostWalk(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    if (!($config['host']['enabled'] ?? true)) {
+        throw new ActionRefused('host collection is turned off in the config');
+    }
+
+    $at = requestHostWalk($pdo, 'dashboard');
+    logAction($pdo, 'request_disk_walk', 'host', 'ok', 0, 0, 'queued for the next host run');
+
+    return ['ok' => true, 'requested_at' => $at];
+}
+
 function doDaemonWatch(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);

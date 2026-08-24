@@ -439,6 +439,27 @@ function migrations(): array
         11 => [
             'ALTER TABLE vitals ADD COLUMN samples INTEGER',
         ],
+
+        /*
+         * Jobs the dashboard would like root to do.
+         *
+         * The dashboard runs as the account and cannot run anything as root -
+         * so a "walk the disk now" button cannot walk anything. What it can do
+         * is leave a note here, which the root collector reads on its next run
+         * and acts on. Same direction of travel as daemon_watch, and for the
+         * same reason: this is the only database both of them can reach.
+         *
+         * No completion column. The collector must not write to the account's
+         * database, so "done" is worked out by comparing this timestamp with
+         * the newest row in host_walks - which the collector writes anyway.
+         */
+        12 => [
+            'CREATE TABLE host_tasks (
+                task TEXT PRIMARY KEY,
+                requested_at INTEGER NOT NULL,
+                requested_by TEXT
+            )',
+        ],
     ];
 }
 

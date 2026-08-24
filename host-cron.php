@@ -57,6 +57,16 @@ $doCollect = $want('--collect') || (!$want('--prune') && !$want('--show') && !$w
  */
 $doDisk = $want('--disk');
 
+/*
+ * Or because somebody asked for one from the dashboard.
+ *
+ * The dashboard runs as the account and cannot walk root's disk, so its button
+ * leaves a request in the account database and this picks it up on the next
+ * ordinary collection. Checked before the run rather than after, so a walk that
+ * takes forty seconds still counts as answering the request that started it.
+ */
+$requestedAt = requestedHostWalk($config);
+
 $say = function (string $line) use ($quiet): void {
     if (!$quiet) {
         echo $line, "\n";
@@ -88,49 +98,75 @@ try {
         throw new RuntimeException('the host database could not be opened for writing');
     }
 
+    /*
+     * Collection failing must not strand a requested disk walk.
+     *
+     * They are independent jobs that happen to share a cron line. A reading
+     * needs /proc and a walk does not, so a host where collection is broken is
+     * exactly the host somebody is trying to investigate - and having the
+     * button silently do nothing there would be the worst possible time for it.
+     */
+    $collectFailure = null;
+
     if ($doCollect) {
-        $result = hostTakeReading($config, $pdo, 'cron');
-        // Ownership is re-applied every run, not only at creation: WAL and
-        // shared-memory files are recreated by SQLite and come back owned by
-        // root, and the dashboard cannot read a WAL database without them.
-        hostHandOver($config, hostDatabasePath($config));
+        try {
+            $result = hostTakeReading($config, $pdo, 'cron');
+            // Ownership is re-applied every run, not only at creation: WAL and
+            // shared-memory files are recreated by SQLite and come back owned by
+            // root, and the dashboard cannot read a WAL database without them.
+            hostHandOver($config, hostDatabasePath($config));
 
-        $say(sprintf(
-            'Recorded sample %d: %d processes, %d users, %d services, %d slab caches, '
-            . '%d files, %d disks%s.',
-            $result['sample_id'],
-            $result['processes'],
-            $result['users'],
-            $result['services'],
-            $result['slab'],
-            $result['files'],
-            $result['disks'],
-            $result['lve'] === null ? '' : ", {$result['lve']} LVE rows"
-        ));
-
-        /*
-         * Said out loud when a source is missing, rather than left as a zero in
-         * a count nobody reads. Running the collector and seeing nothing appear
-         * on the dashboard is the situation this line exists to explain.
-         */
-        if ($result['disks'] === 0) {
-            $say('  No disk devices: /proc/diskstats could not be read, even as root.');
-        }
-        $say(sprintf(
-            '  Kernel %s. Device counters %s, pressure stall info %s.',
-            php_uname('r'),
-            $result['disks'] > 0 ? 'readable' : 'NOT readable',
-            $result['psi'] ? 'available' : 'NOT available'
-        ));
-        if (!$result['psi'] && $result['psi_reason'] !== '') {
-            $say('  ' . $result['psi_reason']);
-        }
-        if ($result['unaccounted'] !== null) {
             $say(sprintf(
-                'Other kernel/system memory: %s (not in any process, cache or slab).',
-                humanBytes((int)$result['unaccounted'])
+                'Recorded sample %d: %d processes, %d users, %d services, %d slab caches, '
+                . '%d files, %d disks%s.',
+                $result['sample_id'],
+                $result['processes'],
+                $result['users'],
+                $result['services'],
+                $result['slab'],
+                $result['files'],
+                $result['disks'],
+                $result['lve'] === null ? '' : ", {$result['lve']} LVE rows"
             ));
+
+            /*
+             * Said out loud when a source is missing, rather than left as a zero in
+             * a count nobody reads. Running the collector and seeing nothing appear
+             * on the dashboard is the situation this line exists to explain.
+             */
+            if ($result['disks'] === 0) {
+                $say('  No disk devices: /proc/diskstats could not be read, even as root.');
+            }
+            $say(sprintf(
+                '  Kernel %s. Device counters %s, pressure stall info %s.',
+                php_uname('r'),
+                $result['disks'] > 0 ? 'readable' : 'NOT readable',
+                $result['psi'] ? 'available' : 'NOT available'
+            ));
+            if (!$result['psi'] && $result['psi_reason'] !== '') {
+                $say('  ' . $result['psi_reason']);
+            }
+            if ($result['unaccounted'] !== null) {
+                $say(sprintf(
+                    'Other kernel/system memory: %s (not in any process, cache or slab).',
+                    humanBytes((int)$result['unaccounted'])
+                ));
+            }
+        } catch (Throwable $e) {
+            $collectFailure = $e->getMessage();
         }
+    }
+
+    if ($collectFailure !== null) {
+        $say('Collection failed: ' . $collectFailure);
+    }
+
+    if (!$doDisk && $requestedAt !== null && hostWalkPending($pdo, $requestedAt)) {
+        $doDisk = true;
+        $say(sprintf(
+            'A disk walk was requested from the dashboard %s ago. Running it now.',
+            humanDuration(max(0, time() - $requestedAt))
+        ));
     }
 
     if ($doDisk) {

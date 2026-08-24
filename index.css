@@ -503,3 +503,35 @@ canvas.pie { height: 340px; }
 .crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: .85rem; margin-bottom: 8px; }
 .crumbs button { padding: 2px 4px; }
 .crumbs .sep { color: var(--muted); }
+
+/* ------------------------------------------------------- list dialog -- */
+
+/*
+ * A long list in a box that scrolls, rather than a paragraph that does not.
+ *
+ * CloudLinux bind-mounts seventy paths into the CageFS skeleton, and printing
+ * them as one run-on line pushed every other column off the screen and told
+ * the reader nothing. Height is capped in viewport units so the dialog stays
+ * usable on a laptop and still uses a tall screen when there is one.
+ */
+#listDialog { max-width: min(900px, 92vw); }
+.scroll-list { max-height: 60vh; overflow-y: auto; }
+.scroll-list .group { margin-bottom: 14px; }
+.scroll-list .group-head {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  padding: 4px 0;
+  font-weight: 600;
+  font-size: .85rem;
+  border-bottom: 1px solid var(--line);
+}
+.scroll-list ul { margin: 6px 0 0; padding-left: 18px; }
+.scroll-list li {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .78rem;
+  line-height: 1.6;
+  word-break: break-all;
+  color: var(--muted);
+}
+.more-link { margin-left: 6px; white-space: nowrap; }
