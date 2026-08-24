@@ -52,6 +52,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/alerts.php';
 require_once __DIR__ . '/hostdb.php';
+require_once __DIR__ . '/daemons.php';
 
 /**
  * What each rule counts as normal, and what it takes to disagree.
@@ -598,6 +599,81 @@ function swapAnomalies(array $latest, array $earlier, array $rules): array
     ]];
 }
 
+/**
+ * A daemon that was running and is not any more.
+ *
+ * The one alert on this page that needs no baseline and no statistics: a
+ * service either answered or it did not. It is here rather than among the
+ * thresholds because the interesting part is still a comparison with the past -
+ * "not running" on its own is meaningless for something that was never
+ * installed.
+ *
+ * Which is the entire difficulty. A watch list has ten services on it and a
+ * given machine runs four; the other six must never raise anything, ever, or
+ * the mail becomes six permanent false alarms and the two real ones arrive in
+ * company nobody reads. So this fires only on a *transition*: the service was
+ * seen running within living memory, and now is not.
+ *
+ * @param list<array> $rows from daemonStatus()
+ */
+function daemonAnomalies(array $rows, array $rules): array
+{
+    $found = [];
+
+    foreach ($rows as $row) {
+        // Not installed here, or no systemd to ask and no process to see.
+        // Neither is evidence of anything having gone wrong.
+        if (($row['state'] ?? '') !== 'stopped') {
+            continue;
+        }
+
+        /*
+         * Only if we have actually watched it run.
+         *
+         * since_known false means the service has been stopped for every
+         * reading this monitor has ever taken, which is what a service somebody
+         * disabled on purpose looks like. Reporting that as an incident on the
+         * first night would be the monitor complaining about the machine's
+         * configuration rather than about a fault.
+         */
+        if (!($row['since_known'] ?? false)) {
+            continue;
+        }
+
+        $since = (int)($row['since'] ?? 0);
+        $label = (string)$row['label'];
+
+        $found[] = [
+            'rule' => 'anomaly:daemon_down:' . $row['name'],
+            'severity' => 'critical',
+            'subject' => sprintf('%s is not running', $label),
+            'detail' => sprintf(
+                "%s was running and is not any more%s.\n\n%s%s",
+                $label,
+                $since > 0 ? sprintf(', as of %s', humanDuration(max(0, time() - $since)) . ' ago') : '',
+                $row['unit']
+                    ? sprintf(
+                        "systemd reports the unit %s as %s (%s). ",
+                        $row['unit'],
+                        $row['active_state'] ?? 'inactive',
+                        $row['sub_state'] ?? 'unknown'
+                    )
+                    : 'No systemd unit answered for it. ',
+                ($row['restarts'] ?? 0) > 0
+                    ? sprintf(
+                        'It has restarted %d times, so if it comes back on its own it is '
+                        . 'crash-looping rather than recovering.',
+                        (int)$row['restarts']
+                    )
+                    : 'Nothing else on this page can report a service that is absent, '
+                        . 'because a process that is not running uses no memory and no CPU.'
+            ),
+        ];
+    }
+
+    return $found;
+}
+
 /* ------------------------------------------------------------------ *
  * Gathering
  * ------------------------------------------------------------------ */
@@ -827,9 +903,18 @@ function fileAnomalies(PDO $pdo, array $rules): array
  */
 function hostAnomalies(PDO $host, array $rules): array
 {
+    /*
+     * The daemon check first, and outside the services guard below.
+     *
+     * A machine with no host_services rows can still have daemon states, and
+     * "the database is too new to have memory history" is not a reason to stay
+     * quiet about MariaDB being down.
+     */
+    $found = daemonAnomalies(daemonStatus($host)['rows'], $rules);
+
     $latest = (int)$host->query('SELECT MAX(taken_at) FROM host_services')->fetchColumn();
     if ($latest <= 0) {
-        return [];
+        return $found;
     }
 
     $since = $latest - (int)$rules['service_baseline_hours'] * 3600;
@@ -867,7 +952,6 @@ function hostAnomalies(PDO $host, array $rules): array
         }
     }
 
-    $found = [];
     foreach ($current as $name => $row) {
         $past = $series[$name] ?? [];
 

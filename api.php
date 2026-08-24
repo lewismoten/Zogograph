@@ -41,6 +41,7 @@ require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/mask.php';
 require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/incident.php';
+require_once __DIR__ . '/lib/daemons.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/logs.php';
@@ -750,6 +751,12 @@ function hostView(array $config, bool $signedIn): array
          * what to go and look at.
          */
         'io_processes' => hostProcessIoRates($pdo),
+        /*
+         * Whether the services are alive, which no other figure on this page
+         * can answer: a process that is not running uses no memory and no CPU
+         * and appears in no ranking.
+         */
+        'daemons' => daemonStatus($pdo),
         // So an empty disk table can tell "not enough readings yet" apart from
         // "read them and found nothing".
         'sample_count' => (int)$pdo->query('SELECT COUNT(*) FROM host_samples')->fetchColumn(),

@@ -446,3 +446,16 @@ canvas.pie { height: 340px; }
 .tree-line.notable { color: inherit; }
 .tree-name { font-weight: 600; }
 .tree-meta { color: var(--muted); margin-left: 10px; font-weight: 400; }
+
+/* --------------------------------------------------------- daemons -- */
+
+/*
+ * Three weights, not two.
+ *
+ * Stopped is the only one that shouts. Running is quietly positive, and a
+ * service that is simply not installed here is greyed rather than coloured —
+ * it is not a result, and the eye should skip it.
+ */
+.state-up { color: var(--ok); }
+.state-down { color: var(--crit); font-weight: 600; letter-spacing: .02em; }
+.state-absent { color: var(--muted); }

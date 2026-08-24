@@ -2642,6 +2642,7 @@ async function refreshHost() {
   renderHostDisks(data.disks ?? [], s, Number(data.sample_count ?? 0));
   refreshHostIoChart();
   renderHostIoProcs(data.io_processes ?? null);
+  renderHostDaemons(data.daemons ?? null);
 
   renderTable("hostSlab", data.slab, [
     { label: "Cache", render: r => r.name },
@@ -2797,6 +2798,134 @@ function renderHostFiles(rows, totals) {
 }
 
 /** Per-device throughput, utilisation and queue depth. */
+/*
+ * Whether each watched service is alive.
+ *
+ * Four states, and keeping them four is the point. "Stopped" and "not
+ * installed" both mean the process is absent and they mean opposite things
+ * about whether anybody should care: the watch list covers ten daemons and a
+ * given machine runs four, so collapsing them would paint six permanent red
+ * rows and the panel would stop being read within a week.
+ */
+function renderHostDaemons(daemons) {
+  const holder = $("hostDaemons");
+  if (!holder) return;
+
+  if (!daemons || !daemons.available || !daemons.rows?.length) {
+    holder.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: daemons?.reason || "No service states recorded yet.",
+    }));
+    return;
+  }
+
+  const now = Date.now() / 1000;
+
+  const STATES = {
+    running: { text: "running", className: "state-up" },
+    stopped: { text: "STOPPED", className: "state-down" },
+    absent: { text: "not installed", className: "state-absent" },
+    unknown: { text: "cannot tell", className: "state-absent" },
+  };
+
+  renderTable("hostDaemons", daemons.rows, [
+    { label: "Service", className: "name", render: row => row.label },
+    {
+      label: "State",
+      render: row => {
+        const span = document.createElement("span");
+
+        /*
+         * Stopped since before we were watching is not the same as stopped.
+         *
+         * A service that has been down for every reading on record is one
+         * somebody turned off on purpose; one that was up this morning is a
+         * fault. The alert already draws exactly this line and stays quiet
+         * about the first kind — so if the table shouts about it in red anyway,
+         * the panel acquires a permanent alarm and the two disagree about what
+         * matters. The colour follows the alert.
+         */
+        if (row.state === "stopped" && !row.since_known) {
+          span.className = "state-absent";
+          span.textContent = "stopped";
+          span.title = "Stopped for every reading on record, so this was almost certainly "
+            + "disabled deliberately rather than having failed. It does not raise alerts.";
+          return span;
+        }
+
+        const shown = STATES[row.state] ?? STATES.unknown;
+        span.className = shown.className;
+        span.textContent = shown.text;
+        if (row.state === "absent") {
+          span.title = "Neither a systemd unit nor a running process by any of the names "
+            + "this service is known by. Almost certainly not installed on this machine.";
+        } else if (row.state === "unknown") {
+          span.title = "systemd could not be asked and no matching process is running. "
+            + "Stopped and never-installed look identical from a process list.";
+        } else if (row.state === "stopped") {
+          span.title = "This was running earlier and is not now.";
+        }
+        return span;
+      },
+    },
+    {
+      label: "For",
+      className: "size",
+      render: row => {
+        // A duration for something that was never installed is not a fact
+        // about the machine, it is a fact about when this monitor started.
+        if (row.state === "absent" || row.state === "unknown") return "—";
+
+        /*
+         * systemd's own start time in preference to ours.
+         *
+         * They differ whenever the collector was not watching — after its own
+         * outage, or on the first run — and systemd's does not depend on us
+         * having been there to see it.
+         */
+        const at = row.started_at ?? row.since;
+        if (!at) return "—";
+        const span = document.createElement("span");
+        span.textContent = humanDuration(now - at);
+        span.title = row.started_at
+          ? "Since systemd started it."
+          : (row.since_known
+              ? "Since this state was first seen here."
+              : "At least this long — it has been this way for every reading on record.");
+        if (!row.started_at && !row.since_known) span.className = "muted";
+        return span;
+      },
+    },
+    {
+      label: "Restarts",
+      className: "size",
+      render: row => (row.restarts == null ? "—" : String(row.restarts)),
+    },
+    {
+      label: "Processes",
+      className: "size",
+      render: row => {
+        // The unit count is what matters for PHP-FPM, where cPanel runs one
+        // service per installed PHP version and a missing one is the finding.
+        if (row.units_total > 1) return `${row.units_active}/${row.units_total} units`;
+        return row.procs ? String(row.procs) : "—";
+      },
+    },
+    {
+      label: "Last seen down",
+      render: row => {
+        if (!row.last_down_at) {
+          const span = document.createElement("span");
+          span.className = "muted";
+          span.textContent = row.state === "absent" ? "—" : `not in ${count(daemons.history_days, "day")}`;
+          return span;
+        }
+        return humanTime(row.last_down_at);
+      },
+    },
+  ]);
+}
+
 /*
  * Total host throughput over the selected range.
  *

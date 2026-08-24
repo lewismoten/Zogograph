@@ -344,6 +344,17 @@
     <p class="muted small chart-note" id="hostIoChartNote"></p>
     <div id="hostDisks"></div>
 
+    <h3 class="sub-head">Are the services alive?</h3>
+    <p class="muted small sub-note">
+      The one question the rest of this page cannot answer. A daemon that has
+      died uses no memory, no CPU and no disk, so it vanishes from every chart
+      above rather than standing out in one. <strong>Not installed</strong> is
+      shown apart from <strong>stopped</strong> on purpose — a service this
+      machine never ran is not a fault, and colouring it red would make the
+      panel permanently alarming and therefore ignored.
+    </p>
+    <div id="hostDaemons"></div>
+
     <h3 class="sub-head">Processes touching the disk</h3>
     <p class="muted small sub-note">
       Which processes the throughput above is actually coming from. CPU can sit

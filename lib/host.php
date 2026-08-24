@@ -27,6 +27,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/hostdb.php';
+require_once __DIR__ . '/daemons.php';
 // shellRead lives in collect.php and redactSecrets in processes.php. Required
 // explicitly rather than left to whatever the caller happened to load first.
 require_once __DIR__ . '/collect.php';
@@ -924,6 +925,29 @@ function hostTakeReading(
                 $row['rss_bytes'], $row['pss_bytes'], $row['swap_bytes'],
                 $row['read_bytes'], $row['write_bytes'],
                 $row['oldest_seconds'], $row['newest_seconds'],
+            ]);
+        }
+
+        /*
+         * Whether the daemons are alive, which nothing else here can say.
+         *
+         * Given the process table that was already read rather than reading it
+         * again - two answers a second apart would disagree, and a service that
+         * appeared to be down in one table and up in another would be worse
+         * than either answer alone.
+         */
+        $daemons = $pdo->prepare(
+            'INSERT INTO host_daemons
+                (taken_at, name, label, state, unit, units_total, units_active,
+                 active_state, sub_state, restarts, started_at, procs, pid, source)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        foreach (readDaemons($config, $processes['procs'], bootTime($procRoot) ?: null) as $row) {
+            $daemons->execute([
+                $takenAt, $row['name'], $row['label'], $row['state'], $row['unit'],
+                $row['units_total'], $row['units_active'], $row['active_state'],
+                $row['sub_state'], $row['restarts'], $row['started_at'],
+                $row['procs'], $row['pid'], $row['source'],
             ]);
         }
 

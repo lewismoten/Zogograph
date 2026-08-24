@@ -325,6 +325,31 @@ return [
         'keep_days' => 14,
 
         /*
+         * Which daemons to watch, and what they are called here.
+         *
+         * Leave this out entirely and a sensible list is used: Apache, MariaDB,
+         * Forgejo, MongoDB, Redis, Icecast, PHP-FPM, Exim, Dovecot and BIND.
+         * Each knows several names for itself, because the same service is
+         * httpd on Red Hat and apache2 on Debian.
+         *
+         * Setting it *replaces* that list rather than adding to it. Somebody
+         * who writes out the services they care about means those services, and
+         * quietly watching ten more would be the monitor arguing with them.
+         *
+         * A service on the list that this machine does not run is reported as
+         * "not installed" and never alerts. That is the point of having a
+         * generous default: there is no cost to watching for something that
+         * was never here, and a real cost to leaving out the one that dies.
+         *
+         *   'daemons' => [
+         *       ['name' => 'httpd', 'label' => 'Apache',
+         *        'units' => ['httpd', 'apache2'],   // systemd, globs allowed
+         *        'processes' => ['httpd']],         // fallback without systemd
+         *   ],
+         */
+        'daemons' => null,
+
+        /*
          * How long to keep the per-service memory series.
          *
          * Much longer than the rest, because these rows are a name and five

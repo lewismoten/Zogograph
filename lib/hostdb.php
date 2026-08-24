@@ -533,6 +533,41 @@ function hostMigrations(): array
             'ALTER TABLE host_processes ADD COLUMN read_bytes INTEGER',
             'ALTER TABLE host_processes ADD COLUMN write_bytes INTEGER',
         ],
+
+        /*
+         * Whether each watched daemon was alive at each reading.
+         *
+         * Its own timestamp rather than a sample_id, like host_services and for
+         * the same reason: this is the table somebody reads in three months to
+         * ask when MariaDB last fell over, and it must outlive the per-reading
+         * detail that gets pruned at a fortnight. A row is a name and a handful
+         * of integers, so a year of it costs less than a day of process rows.
+         *
+         * state is running / stopped / absent / unknown, and the last two are
+         * not the same as the second. See lib/daemons.php - a service that is
+         * not installed here must never be shown as down, or the panel has a
+         * permanent red row and stops being read.
+         */
+        11 => [
+            'CREATE TABLE host_daemons (
+                taken_at INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                label TEXT NOT NULL,
+                state TEXT NOT NULL,
+                unit TEXT,
+                units_total INTEGER NOT NULL DEFAULT 0,
+                units_active INTEGER NOT NULL DEFAULT 0,
+                active_state TEXT,
+                sub_state TEXT,
+                restarts INTEGER,
+                started_at INTEGER,
+                procs INTEGER NOT NULL DEFAULT 0,
+                pid INTEGER,
+                source TEXT NOT NULL
+            )',
+            'CREATE INDEX host_daemons_at ON host_daemons (taken_at)',
+            'CREATE INDEX host_daemons_name ON host_daemons (name, taken_at)',
+        ],
     ];
 }
 
@@ -565,5 +600,12 @@ function hostPruneServices(PDO $pdo, int $keepDays): int
     $cutoff = time() - max(1, $keepDays) * 86400;
     $stmt = $pdo->prepare('DELETE FROM host_services WHERE taken_at < ?');
     $stmt->execute([$cutoff]);
-    return $stmt->rowCount();
+    $removed = $stmt->rowCount();
+
+    // Daemon states keep the same long clock: both are the tables whose value
+    // is being older than everything else.
+    $stmt = $pdo->prepare('DELETE FROM host_daemons WHERE taken_at < ?');
+    $stmt->execute([$cutoff]);
+
+    return $removed + $stmt->rowCount();
 }
