@@ -3975,9 +3975,41 @@ async function refreshAlerts() {
   renderTable("alerts", data.rows, [
     { label: "When", render: row => humanTime(row.raised_at) },
     { label: "Severity", render: row => row.severity },
-    { label: "What", className: "name", render: row => row.subject },
+    { label: "What", className: "name", render: alertWhat },
     { label: "Emailed", render: row => (row.emailed_at ? "yes" : "no") },
   ], row => (row.path_id ? showHistory(row.path_id) : undefined));
+}
+
+/*
+ * The alert, and why it is one.
+ *
+ * The subject alone is enough for a threshold - "disk is at 91%" argues for
+ * itself. It is not enough for an anomaly, where the whole claim rests on a
+ * comparison the reader cannot make: "english has been running for 1.3 hours"
+ * is either alarming or completely routine depending on how long that job
+ * normally takes, and only the detail line knows. Showing the subject on its
+ * own would leave every one of these looking like an assertion.
+ *
+ * Built as nodes rather than markup because the detail is server-side text
+ * that quotes paths and service names, and renderTable sets .textContent on a
+ * string - which would escape the whole thing, newlines included, into one
+ * run-on line.
+ */
+function alertWhat(row) {
+  const cell = document.createDocumentFragment();
+
+  const subject = document.createElement("div");
+  subject.textContent = row.subject;
+  cell.appendChild(subject);
+
+  if (row.detail) {
+    const why = document.createElement("div");
+    why.className = "alert-why";
+    why.textContent = row.detail;
+    cell.appendChild(why);
+  }
+
+  return cell;
 }
 
 async function refreshActionLog() {

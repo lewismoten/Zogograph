@@ -497,6 +497,23 @@ function hostMigrations(): array
         8 => [
             'DELETE FROM host_boots',
         ],
+
+        /*
+         * How long each service's processes have been alive.
+         *
+         * The oldest and the newest of the group, because together they say
+         * what neither says alone: a group whose oldest is hours old and whose
+         * newest is seconds old is churning, not merely long-lived.
+         *
+         * Recorded for the anomaly that spots a batch job which never finished.
+         * Eleven webalizer processes still sitting there after 78 minutes look
+         * exactly like one running normally unless their age is written down
+         * and compared against how long that job usually takes.
+         */
+        9 => [
+            'ALTER TABLE host_services ADD COLUMN oldest_seconds INTEGER',
+            'ALTER TABLE host_services ADD COLUMN newest_seconds INTEGER',
+        ],
     ];
 }
 

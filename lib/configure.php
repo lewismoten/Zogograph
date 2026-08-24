@@ -182,6 +182,55 @@ function configFields(array $sample): array
             'default' => (int)$sample['alerts']['cooldown_seconds'],
             'when' => 'alerts_enabled',
         ],
+
+        /*
+         * The baseline rules.
+         *
+         * Only the switch and the two numbers worth arguing about are asked
+         * here. The rest have sensible defaults that depend on each other, and
+         * a wizard page of seventeen tuning knobs is one nobody finishes; they
+         * are all documented in lib/config.sample.php for anyone who wants them.
+         */
+        [
+            'key' => 'anomalies_enabled',
+            'path' => ['alerts', 'anomalies', 'enabled'],
+            'type' => 'bool',
+            'label' => 'Also alert on what is unusual, not just what is large',
+            'help' => 'Compares each service, category and file against its own history. '
+                . 'It catches the things no threshold can - a job that normally takes two '
+                . 'minutes still running after an hour - and stays quiet about the nightly '
+                . 'backup that always grows. Says nothing until it has history to say it from.',
+            'default' => (bool)($sample['alerts']['anomalies']['enabled'] ?? true),
+            'when' => 'alerts_enabled',
+        ],
+        [
+            'key' => 'anomalies_min_readings',
+            'path' => ['alerts', 'anomalies', 'min_readings'],
+            'type' => 'int',
+            'label' => 'Readings of history needed before it will judge anything',
+            'help' => 'Below this it says nothing at all. Too low and its first day is '
+                . 'all false alarms, which is how these get turned off.',
+            'default' => (int)($sample['alerts']['anomalies']['min_readings'] ?? 8),
+            'when' => 'alerts_enabled',
+            'validate' => fn(string $v): ?string => is_numeric($v) && (int)$v >= 3
+                ? null
+                : 'Enter a number of readings, at least 3.',
+        ],
+        [
+            'key' => 'anomalies_service_percent',
+            'path' => ['alerts', 'anomalies', 'service_pss_percent'],
+            'type' => 'number',
+            'label' => 'Warn when a service holds more memory than usual by (%)',
+            'help' => 'Against its own median over the last day, not against a fixed size. '
+                . 'A service that grows and stays grown is leaking; one that grows and comes '
+                . 'back was busy.',
+            'default' => (float)($sample['alerts']['anomalies']['service_pss_percent'] ?? 25),
+            'when' => 'alerts_enabled',
+            'validate' => fn(string $v): ?string => is_numeric($v) && (float)$v > 0
+                ? null
+                : 'Enter a percentage above 0.',
+        ],
+
         [
             'key' => 'deletable_categories',
             'path' => ['deletable_categories'],

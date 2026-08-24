@@ -347,3 +347,29 @@ canvas.pie { height: 340px; }
 
 /* A size that was true when the scan ran and is not any more. */
 .struck-through { text-decoration: line-through; color: var(--muted); }
+
+/*
+ * The reasoning under an alert.
+ *
+ * pre-line because the detail arrives with real newlines separating the
+ * finding from the explanation, and collapsing them runs the two together.
+ */
+.alert-why {
+  margin-top: 4px;
+  font-size: .82rem;
+  line-height: 1.45;
+  color: var(--muted);
+  white-space: pre-line;
+  max-width: 70ch;
+
+  /*
+   * Ordinary prose wrapping, against the break-all the column carries.
+   *
+   * td.name breaks anywhere so that a long path wraps instead of stretching
+   * the table, which is right for a path and wrong for a sentence - it splits
+   * "times" across two lines. Words break here only when a single one genuinely
+   * will not fit, which for these details means a path.
+   */
+  word-break: normal;
+  overflow-wrap: break-word;
+}

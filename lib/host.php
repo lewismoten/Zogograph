@@ -460,6 +460,10 @@ function hostByService(array $procs): array
             'name' => $name, 'procs' => 0, 'threads' => 0,
             'rss_bytes' => 0, 'pss_bytes' => 0, 'swap_bytes' => 0,
             'read_bytes' => 0, 'write_bytes' => 0,
+            // Both ends, because together they say what neither says alone: a
+            // group whose oldest is hours and whose newest is seconds is
+            // churning, not merely long-lived.
+            'oldest_seconds' => null, 'newest_seconds' => null,
         ];
 
         $services[$name]['procs']++;
@@ -469,6 +473,14 @@ function hostByService(array $procs): array
         $services[$name]['swap_bytes'] += (int)$proc['swap_bytes'];
         $services[$name]['read_bytes'] += (int)($proc['io']['read'] ?? 0);
         $services[$name]['write_bytes'] += (int)($proc['io']['write'] ?? 0);
+
+        $age = $proc['elapsed_seconds'] ?? null;
+        if ($age !== null) {
+            $services[$name]['oldest_seconds'] = $services[$name]['oldest_seconds'] === null
+                ? $age : max($services[$name]['oldest_seconds'], $age);
+            $services[$name]['newest_seconds'] = $services[$name]['newest_seconds'] === null
+                ? $age : min($services[$name]['newest_seconds'], $age);
+        }
     }
 
     $services = array_values(array_filter(
@@ -838,14 +850,15 @@ function hostTakeReading(
         $services = $pdo->prepare(
             'INSERT INTO host_services
                 (taken_at, name, procs, threads, rss_bytes, pss_bytes, swap_bytes,
-                 read_bytes, write_bytes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                 read_bytes, write_bytes, oldest_seconds, newest_seconds)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         foreach (hostByService($processes['procs']) as $row) {
             $services->execute([
                 $takenAt, $row['name'], $row['procs'], $row['threads'],
                 $row['rss_bytes'], $row['pss_bytes'], $row['swap_bytes'],
                 $row['read_bytes'], $row['write_bytes'],
+                $row['oldest_seconds'], $row['newest_seconds'],
             ]);
         }
 

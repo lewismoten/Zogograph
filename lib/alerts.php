@@ -20,6 +20,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/anomalies.php';
 
 /**
  * How far back a projection looks.
@@ -39,15 +40,28 @@ function evaluateAlerts(array $config, PDO $pdo): array
     }
 
     $raised = [];
-    foreach (
-        [
-            ...diskAlerts($pdo, $rules),
-            ...trendAlerts($pdo, $rules),
-            ...cpuAlerts($pdo, $rules),
-            ...categoryAlerts($pdo, $rules),
-            ...pathAlerts($pdo, $rules),
-        ] as $alert
-    ) {
+
+    /*
+     * Thresholds first, then the baseline rules, then the overlap removed.
+     *
+     * The two kinds genuinely do describe the same event sometimes, and the
+     * anomaly is the better of the two descriptions. See supersedeThresholds().
+     */
+    $candidates = supersedeThresholds([
+        ...diskAlerts($pdo, $rules),
+        ...trendAlerts($pdo, $rules),
+        ...cpuAlerts($pdo, $rules),
+        ...categoryAlerts($pdo, $rules),
+        ...pathAlerts($pdo, $rules),
+        /*
+         * The baseline rules, which need the whole config rather than the
+         * alert rules alone - some of them read the host database, and
+         * where that lives is configured outside this section.
+         */
+        ...detectAnomalies($config, $pdo),
+    ]);
+
+    foreach ($candidates as $alert) {
         $id = recordAlert($pdo, $rules, $alert);
         if ($id !== null) {
             $raised[] = $alert + ['id' => $id];

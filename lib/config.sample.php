@@ -66,6 +66,88 @@ return [
         // 21600 seconds is six hours.
         'cooldown_seconds' => 21600,
 
+        /*
+         * Anomalies: what is unusual, rather than what is large.
+         *
+         * The settings above are thresholds, and thresholds have two failure
+         * modes. They fire when nothing is wrong - a directory that gains
+         * 200 MB every night trips the category rule every night, and after a
+         * week nobody reads the mail. And they stay silent when something is:
+         * eleven webalizer processes sat on this server for 78 minutes without
+         * crossing any of them, because each one was small and the disk was
+         * fine. What gave it away was that the job normally takes two minutes,
+         * and no threshold can encode "normally" - that number is different on
+         * every server.
+         *
+         * These rules compare each thing against its own history instead. They
+         * need no tuning to start with and are deliberately quiet: none of them
+         * says anything until it has `min_readings` of history to say it from,
+         * and every proportional test is paired with an absolute floor so that
+         * 25% of something tiny stays out of your inbox.
+         *
+         * They are gated by 'enabled' above as well as this one - anomalies
+         * ride the same email and the same cooldown as everything else.
+         */
+        'anomalies' => [
+            'enabled' => true,
+
+            // Nothing is judged against less history than this.
+            'min_readings' => 8,
+
+            /*
+             * Two windows, because the two kinds of subject have different
+             * rhythms. A daemon appears in every reading, so a day of history
+             * is hundreds of samples. A job that runs four times a day appears
+             * in four, and nothing can be concluded from four - the rules that
+             * watch those look back a week to have anything to compare with.
+             */
+            'baseline_hours' => 24,
+            'service_baseline_hours' => 168,
+
+            // A service holding materially more memory than it usually does.
+            // Both have to be exceeded, so a quarter of a small service is not
+            // grounds for mail.
+            'service_pss_percent' => 25.0,
+            'service_pss_floor_bytes' => 67108864,      // 64 MiB
+
+            // A category that jumped, where jumping is not what it does. The
+            // multiple is what keeps the nightly backup quiet while the same
+            // growth somewhere flat still reports.
+            'category_floor_bytes' => 104857600,        // 100 MB
+            'category_multiple' => 3.0,
+
+            // A file growing far faster than that same file grows. Only the
+            // biggest few movers in a scan are examined; the rest cost more to
+            // check than they could ever be worth.
+            'file_floor_bytes' => 52428800,             // 50 MiB
+            'file_multiple' => 4.0,
+            'file_limit' => 5,
+
+            // Load above one job per core, held across this many consecutive
+            // readings. Load counts work waiting as well as work running.
+            'load_readings' => 3,
+
+            // Swap filling *while* available memory falls. Either alone is
+            // meaningless; together they are the kernel running out of options.
+            'swap_floor_bytes' => 33554432,             // 32 MiB
+
+            // Many more copies of something than there usually are.
+            'process_multiple' => 3.0,
+            'process_floor' => 4,
+
+            /*
+             * Something still running long after that thing normally finishes.
+             *
+             * This one needs the host collector, and it is the rule that would
+             * have caught the webalizer jobs. It never judges daemons: a
+             * process that has simply been up for nine days is not late for
+             * anything. See tracksTheClock() in lib/anomalies.php for how the
+             * two are told apart, which is the whole difficulty of the rule.
+             */
+            'age_multiple' => 3.0,
+            'age_floor_seconds' => 900,
+        ],
+
         // Fire when free space drops below this, in bytes, or below this
         // fraction of the filesystem.
         'disk_free_bytes' => 5 * 1024 * 1024 * 1024,
