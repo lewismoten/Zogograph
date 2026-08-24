@@ -40,6 +40,7 @@ require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/incident.php';
+require_once __DIR__ . '/lib/retention.php';
 require_once __DIR__ . '/lib/processes.php';
 
 $flags = array_slice($argv, 1);
@@ -116,7 +117,7 @@ try {
     }
 
     if ($wants('--prune')) {
-        $say('prune   ' . prune($pdo));
+        $say('prune   ' . prune($config, $pdo));
     }
 } catch (Throwable $e) {
     // To the log as well as to stderr: cron's stderr goes to whatever the
@@ -134,47 +135,50 @@ try {
  * full resolution; the older past is thinned to one reading an hour rather than
  * deleted, because "when did this start" is a question about months ago.
  */
-function prune(PDO $pdo): string
+function prune(array $config, PDO $pdo): string
 {
-    $fullResolutionDays = 14;
-    $keepThinnedDays = 400;
-
-    $cutoff = time() - $fullResolutionDays * 86400;
-    $ancient = time() - $keepThinnedDays * 86400;
+    $rules = retentionRules($config);
+    $now = time();
 
     $pdo->beginTransaction();
 
-    // Past the window: keep the first reading of each hour.
-    $thinned = $pdo->prepare(
-        'DELETE FROM vitals WHERE taken_at < ? AND id NOT IN (
-            SELECT MIN(id) FROM vitals WHERE taken_at < ? GROUP BY taken_at / 3600
-         )'
-    );
-    $thinned->execute([$cutoff, $cutoff]);
-    $thinnedCount = $thinned->rowCount();
+    /*
+     * Readings are compacted rather than thinned.
+     *
+     * The old rule kept the first reading of each hour and dropped the other
+     * fifty-nine, so a spike at twenty past survived one time in sixty - and a
+     * spike is most of the reason to keep a year of history at all. See
+     * lib/retention.php: a compacted row now carries the worst moment in its
+     * bucket rather than an arbitrary one.
+     */
+    $vitals = compactVitals($pdo, $rules, $now);
 
-    $dropped = $pdo->prepare('DELETE FROM vitals WHERE taken_at < ?');
-    $dropped->execute([$ancient]);
-    $droppedCount = $dropped->rowCount();
+    $ancient = fn(string $key): ?int =>
+        (int)$rules[$key] > 0 ? $now - (int)$rules[$key] * 86400 : null;
 
-    // Scans cascade to their totals and their path sizes.
-    $scans = $pdo->prepare('DELETE FROM scans WHERE started_at < ?');
-    $scans->execute([$ancient]);
-    $scanCount = $scans->rowCount();
+    $scanCount = 0;
+    if (($cut = $ancient('scan_days')) !== null) {
+        // Scans cascade to their totals and their path sizes.
+        $scans = $pdo->prepare('DELETE FROM scans WHERE started_at < ?');
+        $scans->execute([$cut]);
+        $scanCount = $scans->rowCount();
+    }
 
-    $processes = $pdo->prepare('DELETE FROM process_samples WHERE taken_at < ?');
-    $processes->execute([$ancient]);
-    $processCount = $processes->rowCount();
+    $processCount = 0;
+    if (($cut = $ancient('process_days')) !== null) {
+        $processes = $pdo->prepare('DELETE FROM process_samples WHERE taken_at < ?');
+        $processes->execute([$cut]);
+        $processCount = $processes->rowCount();
+    }
 
     /*
-     * Incidents keep their own clock, longer than the readings they explain.
-     *
-     * They are rare - one per alerting evaluation, not one per reading - and
-     * the whole point of an incident record is being able to look at a bad
-     * week from the far side of it, by which time the per-minute vitals behind
-     * it have long since been thinned away.
+     * Incidents are kept for ever by default, and separately from everything
+     * else, because they are the evidence. One per alerting evaluation rather
+     * than one per reading, so even a bad year is a few hundred rows.
      */
-    $incidentCount = pruneIncidents($pdo, 180);
+    $incidentCount = (int)$rules['incident_days'] > 0
+        ? pruneIncidents($pdo, (int)$rules['incident_days'])
+        : 0;
 
     // A path nothing refers to any more is history nobody can ask about.
     $paths = $pdo->exec(
@@ -185,14 +189,23 @@ function prune(PDO $pdo): string
 
     $pdo->commit();
 
+    // After the commit, never during: SQLite will not VACUUM inside a
+    // transaction, and it needs room for a second copy while it runs.
+    $reclaimed = reclaimSpace($pdo);
+
     return sprintf(
-        'thinned %d vitals, dropped %d vitals, %d scans, %d paths, %d process rows, '
-        . '%d incidents',
-        $thinnedCount,
-        $droppedCount,
+        'compacted %d buckets (5m %d, 1h %d, 1d %d) removing %d readings; '
+        . 'kept %d around alerts; dropped %d scans, %d paths, %d process rows, %d incidents; %s',
+        $vitals['compacted'],
+        $vitals['tiers']['five_minute'] ?? 0,
+        $vitals['tiers']['hourly'] ?? 0,
+        $vitals['tiers']['daily'] ?? 0,
+        $vitals['removed'],
+        protectedReadings($pdo, max(0, (int)$rules['protect_hours']) * 3600),
         $scanCount,
         (int)$paths,
         $processCount,
-        $incidentCount
+        $incidentCount,
+        $reclaimed
     );
 }

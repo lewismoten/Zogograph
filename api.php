@@ -233,6 +233,21 @@ function vitalsSeries(PDO $pdo): array
     $rows = $stmt->fetchAll();
 
     /*
+     * Whether this range has been compacted, and how coarsely.
+     *
+     * Once readings are merged, a point stops meaning "the machine was like
+     * this at 04:12" and starts meaning "this was the worst it got in the hour
+     * around 04:12". Those are different claims and the second one is only
+     * honest if it is stated - a chart that silently changes what its points
+     * mean halfway along its own x-axis is a trap.
+     */
+    $coarse = $pdo->prepare(
+        'SELECT MAX(COALESCE(samples, 1)) FROM vitals WHERE taken_at BETWEEN ? AND ?'
+    );
+    $coarse->execute([$from, $to]);
+    $worst = (int)$coarse->fetchColumn();
+
+    /*
      * The projection is computed over a fixed day, not over the rows returned.
      *
      * This used to follow the displayed range, on the reasoning that the card
@@ -277,6 +292,9 @@ function vitalsSeries(PDO $pdo): array
         'step' => $step,
         'rows' => $rows,
         'uptime' => $uptime,
+        // 1 means every point is a single reading; more means the older part
+        // of this range has been compacted and each point is a worst-of.
+        'samples_per_point' => $worst,
         // The window goes inside each trend rather than beside them: the card is
         // handed one trend, and a field it cannot reach is a field it will not
         // print.

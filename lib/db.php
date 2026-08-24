@@ -424,6 +424,21 @@ function migrations(): array
                 changed_at INTEGER NOT NULL
             )',
         ],
+
+        /*
+         * How many raw readings one row now stands for.
+         *
+         * 1 for everything as collected. A compacted row carries the count of
+         * what it replaced, so a chart can say "this point is the worst of 60
+         * readings" instead of quietly implying it is a measurement of one
+         * minute like every point beside it.
+         *
+         * Nullable, and read as 1 when absent: every row written before this
+         * migration is a single reading, which is exactly what null means here.
+         */
+        11 => [
+            'ALTER TABLE vitals ADD COLUMN samples INTEGER',
+        ],
     ];
 }
 

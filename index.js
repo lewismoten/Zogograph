@@ -1185,6 +1185,7 @@ async function refreshAll() {
     // so the shading and the line can never describe different windows.
     state.uptime.analysis = vitals.uptime;
     state.restarts = restartMarks(uptime, from, to);
+    showCompactionNote(vitals);
     renderVitalCharts(vitals.rows, vitals.uptime);
     renderCategoryChart(scans.rows, scans.categories ?? state.categories);
     $("lastSeen").textContent = overview.vitals
@@ -3468,6 +3469,32 @@ function num(value) {
  * or one that happened before boot times were recorded. Falls back to the boot
  * time of the current session, which at least marks the most recent one.
  */
+/*
+ * Says when the points have stopped being single readings.
+ *
+ * Old history is compacted, and a compacted point carries the worst value in
+ * its bucket rather than a measurement of one minute. That is the right thing
+ * to keep - a spike is most of the reason to hold a year of history - but it
+ * changes what the chart is claiming, and a chart whose points quietly change
+ * meaning partway along the axis is a trap rather than a record.
+ */
+function showCompactionNote(vitals) {
+  const note = $("compactionNote");
+  if (!note) return;
+
+  const perPoint = Number(vitals?.samples_per_point ?? 1);
+  if (!Number.isFinite(perPoint) || perPoint <= 1) {
+    note.hidden = true;
+    return;
+  }
+
+  note.hidden = false;
+  note.textContent =
+    `Part of this range is compacted: the oldest points each stand for up to `
+    + `${count(perPoint, "reading")} and show the worst value in that period, not an `
+    + `average. Readings from around an alert are never compacted.`;
+}
+
 function restartMarks(uptime, from, to) {
   const marks = new Set();
 

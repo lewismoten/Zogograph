@@ -292,6 +292,59 @@ return [
      * host-cron.php fills that gap. It writes to its own database so that two
      * writers of different privilege never share a write-ahead log.
      */
+    /*
+     * How long the monitor keeps its own history.
+     *
+     * A reading a minute is half a million rows a year, and a monitor that
+     * fills the disk it is watching has failed in the most embarrassing way
+     * available to it. So old readings are compacted: many rows become one
+     * covering a longer span, and the further back you look the coarser it
+     * gets.
+     *
+     * A compacted row holds the *worst* moment in its bucket, not the average
+     * and not an arbitrary sample. That matters more than it sounds: a minute
+     * at 100% CPU inside an otherwise idle hour averages to 1.7% and vanishes,
+     * and a spike is most of the reason to keep a year of history at all. The
+     * cost is that an old point reads as "load reached 8 during this hour"
+     * rather than "load was 8" - which is the more useful of the two.
+     *
+     * Zero anywhere means for ever, never "delete everything".
+     */
+    'retention' => [
+        // Every reading exactly as collected.
+        'raw_days' => 7,
+        // Then one row per five minutes.
+        'five_minute_days' => 30,
+        // Then one row per hour.
+        'hourly_days' => 365,
+        // Then one row per day, kept indefinitely - a few hundred rows a year,
+        // and what makes "was this normal last summer?" answerable.
+        'daily_days' => 0,
+
+        /*
+         * Untouched history either side of an alert.
+         *
+         * The hour around the thing that went wrong is the whole reason for
+         * keeping any of this, and compacting away the readings that sit
+         * beside an incident record would be a poor joke. These stay at full
+         * resolution however old they get.
+         */
+        'protect_hours' => 2,
+
+        /*
+         * Incident snapshots, kept separately from everything else because
+         * they are the evidence rather than the measurements. One per alerting
+         * evaluation - not one per reading - at roughly 26 KB, so even a bad
+         * year is a few hundred rows and a handful of megabytes.
+         */
+        'incident_days' => 0,
+        'alert_days' => 0,
+        'action_days' => 0,
+
+        'scan_days' => 400,
+        'process_days' => 400,
+    ],
+
     'host' => [
         /*
          * Whether any of this is in play.
