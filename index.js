@@ -2826,6 +2826,8 @@ function renderHostDaemons(daemons) {
     stopped: { text: "STOPPED", className: "state-down" },
     absent: { text: "not installed", className: "state-absent" },
     unknown: { text: "cannot tell", className: "state-absent" },
+    off: { text: "not watched", className: "state-absent" },
+    pending: { text: "waiting for a reading", className: "state-absent" },
   };
 
   renderTable("hostDaemons", daemons.rows, [
@@ -2856,7 +2858,13 @@ function renderHostDaemons(daemons) {
         const shown = STATES[row.state] ?? STATES.unknown;
         span.className = shown.className;
         span.textContent = shown.text;
-        if (row.state === "absent") {
+        if (row.state === "off") {
+          span.title = "Switched off here, so the collector is not recording it. Nothing is "
+            + "known about whether it is running.";
+        } else if (row.state === "pending") {
+          span.title = "Switched on, but the collector has not run since. It reports on its "
+            + "own schedule.";
+        } else if (row.state === "absent") {
           span.title = "Neither a systemd unit nor a running process by any of the names "
             + "this service is known by. Almost certainly not installed on this machine.";
         } else if (row.state === "unknown") {
@@ -2874,7 +2882,7 @@ function renderHostDaemons(daemons) {
       render: row => {
         // A duration for something that was never installed is not a fact
         // about the machine, it is a fact about when this monitor started.
-        if (row.state === "absent" || row.state === "unknown") return "—";
+        if (["absent", "unknown", "off", "pending"].includes(row.state)) return "—";
 
         /*
          * systemd's own start time in preference to ours.
@@ -2917,10 +2925,47 @@ function renderHostDaemons(daemons) {
         if (!row.last_down_at) {
           const span = document.createElement("span");
           span.className = "muted";
-          span.textContent = row.state === "absent" ? "—" : `not in ${count(daemons.history_days, "day")}`;
+          span.textContent = row.state === "absent" || row.state === "off" || row.state === "pending"
+            ? "—"
+            : `not in ${count(daemons.history_days, "day")}`;
           return span;
         }
         return humanTime(row.last_down_at);
+      },
+    },
+    {
+      label: "",
+      render: row => {
+        const button = document.createElement("button");
+        button.className = row.watched ? "link" : "link muted";
+        button.textContent = row.watched ? "Stop watching" : "Watch";
+        button.title = row.watched
+          ? "Stop recording this service. Its history is kept, but nothing more is added "
+            + "and it will not raise alerts."
+          : "Start recording this service again from the collector's next run.";
+
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            await post("daemon-watch", { name: row.name, watched: row.watched ? "0" : "1" });
+            /*
+             * Said plainly, because nothing visible happens for a few minutes.
+             *
+             * The choice is written here and acted on by the collector, which
+             * runs on its own schedule. Without this the button looks broken:
+             * you press it, the row does not change, and you press it again.
+             */
+            notice(row.watched
+              ? `${row.label} will stop being recorded at the next host reading.`
+              : `${row.label} will be recorded again at the next host reading.`);
+            await refreshHost();
+          } catch (error) {
+            notice(String(error.message || error));
+            button.disabled = false;
+          }
+        });
+
+        return button;
       },
     },
   ]);

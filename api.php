@@ -93,7 +93,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'schedule' => scheduleRead($signedIn),
         'processes' => processList($config, $pdo, $signedIn),
         'symlinks' => symlinkCheck($config, $signedIn),
-        'host' => hostView($config, $signedIn),
+        'host' => hostView($config, $signedIn, $pdo),
         'host-series' => hostSeries($config, $signedIn),
         'host-io' => hostIoSeries($config, $signedIn),
         'uptime' => uptimeView($config, $pdo, $signedIn),
@@ -108,6 +108,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'scan-now' => doScanNow($pdo, $post),
         'test-email' => doTestEmail($config, $pdo, $post),
         'clear-problems' => doClearProblems($config, $pdo, $post),
+        'daemon-watch' => doDaemonWatch($config, $pdo, $post),
         'match-processes' => doMatchProcesses($config, $post),
         'stop-process' => doStopProcess($config, $pdo, $post),
         'stop-group' => doStopGroup($config, $pdo, $post),
@@ -643,11 +644,17 @@ function symlinkCheck(array $config, bool $signedIn): array
  * migrates this database - a schema half-created by the web user in a file root
  * expects to own is a mess with no clean way out.
  */
-function hostView(array $config, bool $signedIn): array
+/**
+ * @param PDO $account the account database, which holds the monitoring choices -
+ *                     the host database is root's and cannot be written here.
+ */
+function hostView(array $config, bool $signedIn, PDO $account): array
 {
     if (!$signedIn) {
         throw new ActionRefused('sign in to see host readings');
     }
+
+    $watch = daemonWatch($account);
 
     if (!($config['host']['enabled'] ?? true)) {
         return [
@@ -756,7 +763,7 @@ function hostView(array $config, bool $signedIn): array
          * can answer: a process that is not running uses no memory and no CPU
          * and appears in no ranking.
          */
-        'daemons' => daemonStatus($pdo),
+        'daemons' => daemonStatus($pdo, daemonDefinitions($config), $watch),
         // So an empty disk table can tell "not enough readings yet" apart from
         // "read them and found nothing".
         'sample_count' => (int)$pdo->query('SELECT COUNT(*) FROM host_samples')->fetchColumn(),
@@ -1119,6 +1126,39 @@ function problemLog(array $config, bool $signedIn): array
  * POST, signed in, CSRF checked. Recorded in the audit log, because "the errors
  * disappeared" should have an explanation somewhere that is not the errors.
  */
+/**
+ * Switches monitoring of one service on or off.
+ *
+ * Written to the account database, which is the only one the dashboard can
+ * write - host.db belongs to root. The collector reads the choice back on its
+ * next run, so the effect is not instant and the dashboard says so rather than
+ * pretending the row changed.
+ */
+function doDaemonWatch(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $name = (string)($_POST['name'] ?? '');
+    $watched = (string)($_POST['watched'] ?? '') === '1';
+
+    /*
+     * Only a service that is actually defined.
+     *
+     * Otherwise this is a free write of arbitrary strings into the database by
+     * anyone with a session, and the table would fill with names nothing will
+     * ever read.
+     */
+    $known = array_column(daemonDefinitions($config), 'name');
+    if (!in_array($name, $known, true)) {
+        throw new ActionRefused('no such service');
+    }
+
+    setDaemonWatch($pdo, $name, $watched);
+    logAction($pdo, 'daemon_watch', $name, 'ok', 0, 0, $watched ? 'monitored' : 'not monitored');
+
+    return ['ok' => true, 'name' => $name, 'watched' => $watched];
+}
+
 function doClearProblems(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);

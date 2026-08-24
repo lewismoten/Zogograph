@@ -115,6 +115,96 @@ function daemonDefinitions(array $config): array
 }
 
 /* ------------------------------------------------------------------ *
+ * Which of them to watch
+ * ------------------------------------------------------------------ */
+
+/**
+ * The on/off choices, as name => bool.
+ *
+ * Only the choices, not the whole list: a service nobody has touched has no row
+ * at all, and the caller treats a missing entry as watched. That way a fresh
+ * install monitors everything without needing ten rows written first, and a
+ * service added to the defaults in a later version is watched immediately
+ * rather than being silently off because nothing turned it on.
+ */
+function daemonWatch(PDO $pdo): array
+{
+    try {
+        $rows = $pdo->query('SELECT name, watched FROM daemon_watch')->fetchAll(PDO::FETCH_KEY_PAIR);
+    } catch (Throwable) {
+        // The table arrives in a migration; an older database simply has no
+        // choices recorded, which means everything is watched.
+        return [];
+    }
+
+    $out = [];
+    foreach ($rows as $name => $watched) {
+        $out[(string)$name] = (bool)$watched;
+    }
+
+    return $out;
+}
+
+/** Records a choice. */
+function setDaemonWatch(PDO $pdo, string $name, bool $watched): void
+{
+    $pdo->prepare(
+        'INSERT INTO daemon_watch (name, watched, changed_at) VALUES (:name, :watched, :at)
+         ON CONFLICT(name) DO UPDATE SET watched = :watched, changed_at = :at'
+    )->execute(['name' => $name, 'watched' => $watched ? 1 : 0, 'at' => time()]);
+}
+
+/**
+ * The choices, read by the root collector out of the account's database.
+ *
+ * Opened by hand rather than through db(), which would migrate it - and a
+ * migration run by root leaves root-owned journal files in a directory the
+ * account has to be able to write. `query_only` makes that impossible rather
+ * than merely unlikely: this process has no business writing to the account's
+ * database at all, and the pragma is a cheaper guarantee than remembering not
+ * to.
+ *
+ * Every failure means "watch everything". Monitoring a service nobody asked
+ * about is untidy; silently monitoring nothing because a file was unreadable
+ * is the failure that gets noticed weeks later.
+ */
+function daemonWatchFromConfig(array $config): array
+{
+    $file = (string)($config['database'] ?? '');
+    if ($file === '' || !is_file($file) || !is_readable($file)) {
+        return [];
+    }
+
+    try {
+        $pdo = new PDO('sqlite:' . $file, null, null, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+        $pdo->exec('PRAGMA query_only = 1');
+        return daemonWatch($pdo);
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+/**
+ * Drops the definitions that have been switched off.
+ *
+ * "Not monitored" has to mean not collected, or the word is a lie - the rows
+ * would keep being written and the only difference would be that nobody sees
+ * them. The panel still lists a switched-off service, from the definitions
+ * rather than from the readings, which is what makes it possible to switch one
+ * back on.
+ */
+function watchedDaemons(array $definitions, array $watch): array
+{
+    return array_values(array_filter(
+        $definitions,
+        fn(array $d): bool => $watch[(string)$d['name']] ?? true
+    ));
+}
+
+/* ------------------------------------------------------------------ *
  * Asking systemd
  * ------------------------------------------------------------------ */
 
@@ -402,7 +492,11 @@ function matchUnits(array $units, array $patterns): array
  */
 function readDaemons(array $config, array $procs, ?int $bootAt = null): array
 {
-    $definitions = daemonDefinitions($config);
+    $definitions = watchedDaemons(daemonDefinitions($config), daemonWatchFromConfig($config));
+    if ($definitions === []) {
+        return [];
+    }
+
     $units = systemdUnits();
 
     $wanted = [];
@@ -440,30 +534,45 @@ const DAEMON_HISTORY_DAYS = 7;
  * nothing has changed since April would be the most expensive query on the page
  * and would say the same thing every time.
  */
-function daemonStatus(PDO $pdo, int $historyDays = DAEMON_HISTORY_DAYS): array
-{
+function daemonStatus(
+    PDO $pdo,
+    array $definitions = [],
+    array $watch = [],
+    int $historyDays = DAEMON_HISTORY_DAYS
+): array {
     $latest = (int)$pdo->query('SELECT MAX(taken_at) FROM host_daemons')->fetchColumn();
-    if ($latest <= 0) {
-        return [
-            'available' => false,
-            'reason' => 'No daemon states have been recorded yet. This needs the host '
-                . 'collector; upload it and let it run once.',
-            'taken_at' => 0,
-            'rows' => [],
-        ];
+
+    $collected = [];
+    if ($latest > 0) {
+        $stmt = $pdo->prepare('SELECT * FROM host_daemons WHERE taken_at = ?');
+        $stmt->execute([$latest]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $collected[(string)$row['name']] = $row;
+        }
     }
 
-    $current = $pdo->prepare('SELECT * FROM host_daemons WHERE taken_at = ? ORDER BY label');
-    $current->execute([$latest]);
-
     /*
-     * When the current state began.
+     * The list is the definitions, not the readings.
      *
-     * Found from the other end: the last reading that disagreed. The change
-     * happened between that reading and the one after it, and the later of the
-     * two is the honest answer - saying it changed at the earlier one would
-     * claim the service was already down while we were still watching it run.
+     * A service that has been switched off produces no rows, so a panel built
+     * from readings alone would lose it entirely - and with it the only control
+     * that could switch it back on. Anything collected under a name no longer
+     * in the definitions is kept too, so editing the config does not silently
+     * orphan its history.
      */
+    if ($definitions === []) {
+        foreach ($collected as $name => $row) {
+            $definitions[] = ['name' => $name, 'label' => (string)$row['label']];
+        }
+    } else {
+        $known = array_column($definitions, 'name');
+        foreach ($collected as $name => $row) {
+            if (!in_array($name, $known, true)) {
+                $definitions[] = ['name' => $name, 'label' => (string)$row['label'], 'retired' => true];
+            }
+        }
+    }
+
     $lastDifferent = $pdo->prepare(
         'SELECT MAX(taken_at) FROM host_daemons WHERE name = ? AND state != ?'
     );
@@ -471,25 +580,64 @@ function daemonStatus(PDO $pdo, int $historyDays = DAEMON_HISTORY_DAYS): array
         'SELECT MIN(taken_at) FROM host_daemons WHERE name = ? AND state = ? AND taken_at > ?'
     );
     $earliest = $pdo->prepare('SELECT MIN(taken_at) FROM host_daemons WHERE name = ?');
-
-    $downSince = $historyDays > 0 ? $latest - $historyDays * 86400 : $latest;
     $down = $pdo->prepare(
         'SELECT COUNT(*) AS readings, MAX(taken_at) AS last_at
          FROM host_daemons
          WHERE name = ? AND state = \'stopped\' AND taken_at >= ?'
     );
+    $downSince = $historyDays > 0 ? $latest - $historyDays * 86400 : $latest;
 
     $rows = [];
-    foreach ($current->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $name = (string)$row['name'];
+    foreach ($definitions as $definition) {
+        $name = (string)$definition['name'];
+        $watched = $watch[$name] ?? true;
+        $row = $collected[$name] ?? null;
+
+        $base = [
+            'name' => $name,
+            'label' => (string)($definition['label'] ?? $name),
+            'watched' => $watched,
+            'retired' => (bool)($definition['retired'] ?? false),
+        ];
+
+        if (!$watched) {
+            // Switched off: no reading was taken, so there is nothing to report
+            // about it and saying anything else would be inventing a state.
+            $rows[] = $base + [
+                'state' => 'off', 'unit' => null, 'units_total' => 0, 'units_active' => 0,
+                'active_state' => null, 'sub_state' => null, 'restarts' => null,
+                'started_at' => null, 'since' => null, 'since_known' => false,
+                'procs' => 0, 'pid' => null, 'source' => null,
+                'down_readings' => 0, 'last_down_at' => null,
+            ];
+            continue;
+        }
+
+        if ($row === null) {
+            /*
+             * Watched, but not in the latest reading.
+             *
+             * Almost always a service just switched back on: the choice is
+             * recorded here and acted on by the collector, which will not run
+             * again for a few minutes. "Pending" says that plainly instead of
+             * showing it as absent, which would look like a verdict.
+             */
+            $rows[] = $base + [
+                'state' => 'pending', 'unit' => null, 'units_total' => 0, 'units_active' => 0,
+                'active_state' => null, 'sub_state' => null, 'restarts' => null,
+                'started_at' => null, 'since' => null, 'since_known' => false,
+                'procs' => 0, 'pid' => null, 'source' => null,
+                'down_readings' => 0, 'last_down_at' => null,
+            ];
+            continue;
+        }
+
         $state = (string)$row['state'];
 
         $lastDifferent->execute([$name, $state]);
         $changed = $lastDifferent->fetchColumn();
 
         if ($changed === null || $changed === false) {
-            // It has been this way for as long as anything was recorded, which
-            // is not the same as for ever - the caller is told which.
             $earliest->execute([$name]);
             $since = (int)$earliest->fetchColumn();
             $sinceKnown = false;
@@ -502,9 +650,7 @@ function daemonStatus(PDO $pdo, int $historyDays = DAEMON_HISTORY_DAYS): array
         $down->execute([$name, $downSince]);
         $outage = $down->fetch(PDO::FETCH_ASSOC) ?: ['readings' => 0, 'last_at' => null];
 
-        $rows[] = [
-            'name' => $name,
-            'label' => (string)$row['label'],
+        $rows[] = $base + [
             'state' => $state,
             'unit' => $row['unit'],
             'units_total' => (int)$row['units_total'],
@@ -515,11 +661,11 @@ function daemonStatus(PDO $pdo, int $historyDays = DAEMON_HISTORY_DAYS): array
             /*
              * Two different times, and confusing them would be a real error.
              *
-             * started_at is what systemd says about the process that is running
-             * now. since is when this monitor first saw the current state. They
-             * disagree whenever the collector was not watching - after its own
-             * outage, or on the first run - and systemd's is the better answer
-             * when it exists because it does not depend on us having been there.
+             * started_at is what systemd says about the process running now.
+             * since is when this monitor first saw the current state. They
+             * disagree whenever the collector was not watching, and systemd's
+             * is the better answer because it does not depend on us having
+             * been there.
              */
             'started_at' => $row['started_at'] === null ? null : (int)$row['started_at'],
             'since' => $since ?: null,
@@ -532,9 +678,13 @@ function daemonStatus(PDO $pdo, int $historyDays = DAEMON_HISTORY_DAYS): array
         ];
     }
 
+    usort($rows, fn(array $a, array $b): int => strcasecmp($a['label'], $b['label']));
+
     return [
-        'available' => true,
-        'reason' => null,
+        'available' => $latest > 0,
+        'reason' => $latest > 0 ? null
+            : 'No daemon states have been recorded yet. This needs the host collector; '
+              . 'upload it and let it run once.',
         'taken_at' => $latest,
         'history_days' => $historyDays,
         'rows' => $rows,

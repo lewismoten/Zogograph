@@ -402,6 +402,28 @@ function migrations(): array
             'CREATE INDEX incidents_at ON incidents (captured_at)',
             'ALTER TABLE alerts ADD COLUMN incident_id INTEGER',
         ],
+
+        /*
+         * Which daemons the dashboard has been asked to watch.
+         *
+         * In *this* database rather than the host one, which looks backwards
+         * until you follow where the writes come from. host.db is created and
+         * owned by root and handed to the account read-only, so the dashboard
+         * physically cannot write a toggle there. It can write here, and the
+         * collector runs as root and can read here. The data flows the only
+         * direction it can.
+         *
+         * Absence means watched. A service is monitored until somebody says
+         * otherwise, so a fresh install watches everything and a row only
+         * appears once a choice has been made.
+         */
+        10 => [
+            'CREATE TABLE daemon_watch (
+                name TEXT PRIMARY KEY,
+                watched INTEGER NOT NULL,
+                changed_at INTEGER NOT NULL
+            )',
+        ],
     ];
 }
 
