@@ -445,6 +445,18 @@ function hostMigrations(): array
             'ALTER TABLE host_samples ADD COLUMN diskstats_available INTEGER',
             'ALTER TABLE host_samples ADD COLUMN psi_available INTEGER',
         ],
+
+        /*
+         * Why pressure stall info is missing, worked out where it can be.
+         *
+         * The dashboard runs as the account and cannot read /boot/config-*,
+         * which is the file that says whether CONFIG_PSI was compiled in. The
+         * collector runs as root and can, so the answer is recorded at
+         * collection time and simply read back later.
+         */
+        6 => [
+            'ALTER TABLE host_samples ADD COLUMN psi_reason TEXT',
+        ],
     ];
 }
 

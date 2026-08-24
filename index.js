@@ -2073,6 +2073,9 @@ async function refreshHost() {
   }
   $("hostSeesNote").textContent = seen.length
     ? `As root, the collector sees: ${seen.join(", ")}.`
+      // The reason, from the collector rather than from here: this page runs as
+      // the account and cannot read /boot/config to find out.
+      + (s.psi_reason ? ` ${s.psi_reason}` : "")
     : "";
 
   renderHostDisks(data.disks ?? [], s, Number(data.sample_count ?? 0));

@@ -972,3 +972,115 @@ function processIoTotals(string $procRoot = '/proc'): ?array
     return $any ? ['read' => $read, 'write' => $write,
                    'cancelled' => $cancelled, 'procs' => $seen] : null;
 }
+
+/* ---------------------------------------------------------- diagnosis -- */
+
+/**
+ * Why pressure stall information is missing, in the terms that fix it.
+ *
+ * Three independent ways to lack it, needing three different responses, and the
+ * file's absence alone does not say which. Note the version test is reported
+ * rather than concluded from: RHEL - and so CloudLinux - backported PSI into
+ * their 4.18 kernels, so "4.18 is below 4.20" is exactly the wrong conclusion
+ * on the machines this tool is aimed at.
+ */
+function pressureDiagnosis(string $procRoot = '/proc', ?string $bootConfig = null): string
+{
+    if (@is_readable($procRoot . '/pressure/io')) {
+        return '';
+    }
+
+    $kernel = php_uname('r');
+    $parts = ["Kernel $kernel."];
+
+    if (!@is_readable($procRoot . '/stat')) {
+        return "Kernel $kernel. /proc is not readable here at all, so nothing can be said.";
+    }
+
+    /*
+     * A filtered /proc means this account cannot diagnose the kernel, and that
+     * is all it means.
+     *
+     * An earlier version of this went further and blamed CageFS for the missing
+     * /proc/pressure as well, on the grounds that /proc/diskstats was hidden
+     * too. That turned out to be wrong on a real machine: enabling psi=1 and
+     * rebooting made /proc/pressure appear *inside* the cage while
+     * /proc/diskstats stayed hidden. The two absences had different causes -
+     * one filtered, one not enabled - and asserting a single explanation for
+     * both pointed at the wrong thing. So this now reports what it can see and
+     * defers the question rather than answering it from the wrong side.
+     */
+    if (!@is_readable($procRoot . '/diskstats')) {
+        return "Kernel $kernel. This account sees a filtered /proc: /proc/stat is "
+            . 'readable but /proc/diskstats is not, which is CageFS. Whether the kernel '
+            . 'has pressure stall info cannot be told from in here — the host collector '
+            . 'reads it as root and records the answer, which the host panel shows.';
+    }
+
+    if (!@file_exists($procRoot . '/pressure')) {
+        $parts[] = 'There is no /proc/pressure directory.';
+    }
+
+    // World-readable on most distributions, and absent inside a cage - which is
+    // itself the answer, so say so rather than staying silent.
+    // Whether the switch is already thrown changes the advice completely, so it
+    // is read before anything is recommended rather than tacked on afterwards.
+    $cmdline = @file_get_contents($procRoot . '/cmdline');
+    $booted = is_string($cmdline) && preg_match('/(^|\s)psi=1(\s|$)/', $cmdline);
+
+    $config = $bootConfig ?? "/boot/config-$kernel";
+    if (@is_readable($config)) {
+        $text = (string)@file_get_contents($config);
+        if (!preg_match('/^CONFIG_PSI=y/m', $text)) {
+            $parts[] = 'This kernel was built without CONFIG_PSI, so it cannot be turned on '
+                . 'without a different kernel.';
+        } elseif (preg_match('/^CONFIG_PSI_DEFAULT_DISABLED=y/m', $text)) {
+            /*
+             * The RHEL and CloudLinux case. Built in, off unless asked for -
+             * which is why a 5.14 kernel can be well past the version that
+             * introduced PSI and still not have the file.
+             */
+            $parts[] = $booted
+                ? 'The kernel has CONFIG_PSI and psi=1 is already on the command line, '
+                    . 'so this needs a reboot to take effect — or something is hiding '
+                    . '/proc/pressure.'
+                : 'The kernel has CONFIG_PSI but ships disabled: add psi=1 to the kernel '
+                    . 'command line (grubby --update-kernel=ALL --args="psi=1") and reboot.';
+        } else {
+            $parts[] = 'The kernel has CONFIG_PSI and is not built to default it off, '
+                . 'so something else is hiding /proc/pressure.';
+        }
+    } else {
+        $parts[] = "Cannot read $config to tell whether CONFIG_PSI was compiled in — "
+            . 'check it as root, or read /proc/pressure/io there.';
+        if (!$booted) {
+            $parts[] = 'psi=1 is not on the boot command line.';
+        }
+    }
+
+    return implode(' ', $parts);
+}
+
+/**
+ * Why the device counters are missing.
+ *
+ * The distinction that matters is between "this kernel has no such file" and
+ * "this account is not allowed to see it". They look identical from here and
+ * need opposite responses.
+ */
+function diskstatsDiagnosis(string $procRoot = '/proc'): string
+{
+    if (@is_readable($procRoot . '/diskstats')) {
+        return '';
+    }
+
+    if (!@is_readable($procRoot . '/stat')) {
+        return '/proc is not readable at all here.';
+    }
+
+    return 'Hidden from this account — /proc/stat is readable but /proc/diskstats is '
+        . 'not, which is CageFS filtering /proc. Nothing is broken: the host collector '
+        . 'reads the real device counters, and this account\'s own I/O is still '
+        . 'measured from its processes.';
+}
+

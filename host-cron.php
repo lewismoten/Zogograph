@@ -110,6 +110,9 @@ try {
             $result['disks'] > 0 ? 'readable' : 'NOT readable',
             $result['psi'] ? 'available' : 'NOT available'
         ));
+        if (!$result['psi'] && $result['psi_reason'] !== '') {
+            $say('  ' . $result['psi_reason']);
+        }
         if ($result['unaccounted'] !== null) {
             $say(sprintf(
                 'Other kernel/system memory: %s (not in any process, cache or slab).',

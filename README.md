@@ -663,8 +663,27 @@ answers "what is writing" and "what is growing" in one place. A service's
 counters restart when it does, so a negative difference is read as a restart and
 reported as unknown rather than as a large negative rate.
 
-**Pressure**, from `/proc/pressure/io` where the kernel has `CONFIG_PSI`. The
-Health panel says whether it is there and, when it is not, *which* of the three
+**Pressure**, from `/proc/pressure/io` where the kernel has `CONFIG_PSI`.
+
+On **RHEL 9 and CloudLinux 9 this is off by default**: the kernel is built with
+`CONFIG_PSI=y` *and* `CONFIG_PSI_DEFAULT_DISABLED=y`, so a 5.14 kernel — well
+past the 4.20 that introduced the feature — still has no `/proc/pressure`. Turn
+it on with
+
+    grubby --update-kernel=ALL --args="psi=1"
+
+and reboot. Everything else about disk I/O works without it; only the stall
+percentages are missing.
+
+The reason is worked out by the **host collector**, not the dashboard, because
+`/boot/config-$(uname -r)` is the file that settles it and the account cannot
+read it. Note that a filtered `/proc` and a disabled `CONFIG_PSI` are
+independent: on a real CloudLinux 9 box, enabling `psi=1` made
+`/proc/pressure/io` readable *inside* the cage while `/proc/diskstats` stayed
+hidden. Two absences, two causes — so the account-side check reports the
+filtering it can prove and defers the kernel question rather than guessing at
+it. It is recorded with each reading and shown in the host panel. The
+Health panel says whether it is there and, when it is not, *which* of the
 possible reasons applies — a kernel without it, a kernel with it disabled at
 boot, or a `/proc` filtered by CageFS so the account cannot see a kernel feature
 the machine does have. Note that the version is reported and never concluded

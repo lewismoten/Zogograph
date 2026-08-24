@@ -798,6 +798,9 @@ function hostTakeReading(
             'kernel' => php_uname('r'),
             'diskstats_available' => $disks === null ? 0 : 1,
             'psi_available' => $pressure === null ? 0 : 1,
+            // Empty when it is available; otherwise the reason, read from
+            // /boot/config and /proc/cmdline, which only root can see.
+            'psi_reason' => pressureDiagnosis($procRoot),
         ];
 
         $names = implode(', ', array_keys($sample));
@@ -910,6 +913,7 @@ function hostTakeReading(
         'services' => count(hostByService($processes['procs'])),
         'disks' => count($disks['devices'] ?? []),
         'psi' => $pressure !== null,
+        'psi_reason' => $sample['psi_reason'],
         'lve' => $lve['available'] ? count($lve['rows']) : null,
         'unaccounted' => $accounting['unaccounted'],
     ];
