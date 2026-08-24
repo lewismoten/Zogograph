@@ -374,8 +374,32 @@ function offenders(array $config, PDO $pdo, bool $signedIn): array
     }
     $stmt->execute();
 
+    /*
+     * Whether each row can actually be read, decided here rather than guessed.
+     *
+     * The dashboard used to offer View for anything in a viewable category, and
+     * a rotated log keeps the word "log" in its name - so
+     * git.lewismoten.com-ssl_log-Aug-2026.gz got a button that could only ever
+     * answer with binary. The category is not enough on its own.
+     *
+     * The same test the tail endpoint uses, including the sniff, because a
+     * handful of 4 KiB reads is nothing next to the scan that produced these
+     * rows and it is the only way for the button to be right about a binary
+     * file that happens to be named .log. Deleted rows are skipped: they show a
+     * marker instead of controls, and stat-ing a missing file proves nothing.
+     */
+    $viewableCategories = $config['viewable_categories'] ?? [];
     $rows = array_map(
-        fn(array $row): array => presentPath($config, $row, $signedIn),
+        function (array $row) use ($config, $signedIn, $viewableCategories): array {
+            $row['viewable'] = $signedIn
+                && $row['kind'] === 'file'
+                && $row['deleted_at'] === null
+                && in_array($row['category'], $viewableCategories, true)
+                && compressedExtension((string)$row['path']) === null
+                && looksLikeText((string)$row['path']);
+
+            return presentPath($config, $row, $signedIn);
+        },
         $stmt->fetchAll()
     );
 

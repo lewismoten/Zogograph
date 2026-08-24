@@ -35,6 +35,86 @@ const TAIL_MAX_LINE = 8192;
  * permissions, and the set of things worth reading (logs, error logs) is not
  * the set of things worth deleting (trash, temp).
  */
+/**
+ * Names that cannot be tailed whatever they are called.
+ *
+ * A rotated log keeps the word "log" in its name and lands in the same
+ * directory, so the category rules put it squarely in `logs` - and then the
+ * viewer reads the last few kilobytes of a gzip stream and prints them. On the
+ * machine this was found, 81% of the last 200 bytes of a .gz were unprintable.
+ *
+ * Decompressing to tail is not the fix. Gzip cannot be read backwards, so the
+ * only way to see the end is to inflate the whole thing - which on a 700 MB
+ * archive is exactly the cost the reverse-block reader exists to avoid. The
+ * honest answer is that this viewer does not read compressed files.
+ */
+const COMPRESSED_EXTENSIONS = [
+    'gz', 'bz2', 'xz', 'zst', 'lz4', 'lzma', 'z', 'zip', '7z', 'rar',
+    'tar', 'tgz', 'tbz2', 'txz',
+];
+
+/** The compressed extension of a path, or null if it has none. */
+function compressedExtension(string $path): ?string
+{
+    $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+    return in_array($extension, COMPRESSED_EXTENSIONS, true) ? $extension : null;
+}
+
+/**
+ * Whether the end of a file looks like text.
+ *
+ * The extension list catches what people name sensibly; this catches the rest.
+ * Only the tail is sampled, because the tail is what the viewer shows - a text
+ * log with a binary blob pasted into the middle is still readable at the end.
+ *
+ * Bytes above 0x7F are allowed: they are how UTF-8 spells anything that is not
+ * ASCII, and rejecting them would refuse a perfectly good log the moment
+ * somebody's name appeared in it. What gives binary away is control characters,
+ * which text uses only as tab, newline and carriage return.
+ */
+function looksLikeText(string $path, int $sample = 4096): bool
+{
+    $handle = @fopen($path, 'rb');
+    if ($handle === false) {
+        return false;
+    }
+
+    $size = @filesize($path);
+    if ($size === false) {
+        fclose($handle);
+        return false;
+    }
+    if ($size === 0) {
+        fclose($handle);
+        return true;
+    }
+
+    if ($size > $sample) {
+        fseek($handle, -$sample, SEEK_END);
+    }
+    $chunk = (string)fread($handle, $sample);
+    fclose($handle);
+
+    if ($chunk === '') {
+        return true;
+    }
+    // A NUL byte is the clearest single signal that this is not text.
+    if (str_contains($chunk, "\0")) {
+        return false;
+    }
+
+    $control = 0;
+    $length = strlen($chunk);
+    for ($i = 0; $i < $length; $i++) {
+        $byte = ord($chunk[$i]);
+        if (($byte < 32 && !in_array($byte, [9, 10, 13], true)) || $byte === 127) {
+            $control++;
+        }
+    }
+
+    return $control / $length <= 0.1;
+}
+
 function resolveViewable(array $config, string $requested): string
 {
     if ($requested === '' || str_contains($requested, "\0")) {
@@ -67,6 +147,23 @@ function resolveViewable(array $config, string $requested): string
 
     if (!is_readable($real)) {
         throw new ActionRefused('the file is not readable by this user');
+    }
+
+    $compressed = compressedExtension($real);
+    if ($compressed !== null) {
+        throw new ActionRefused(sprintf(
+            'that is a .%s archive, not a readable log. Compressed files cannot be '
+            . 'tailed: gzip and friends cannot be read backwards, so showing the end '
+            . 'would mean decompressing the whole file. Uncompress a copy and read that.',
+            $compressed
+        ));
+    }
+
+    if (!looksLikeText($real)) {
+        throw new ActionRefused(
+            'that file does not look like text — the end of it is mostly control bytes, '
+            . 'so showing it would print binary rather than log lines.'
+        );
     }
 
     return $real;

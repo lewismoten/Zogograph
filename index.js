@@ -1640,7 +1640,14 @@ function rowButtons(row) {
   holder.style.display = "inline-flex";
   holder.style.gap = "6px";
 
-  if (state.signedIn && row.kind === "file" && state.viewable.includes(row.category)) {
+  /*
+   * The server decides whether a row is readable, not the category.
+   *
+   * A rotated log is still in the logs category and still cannot be shown - it
+   * is a gzip stream, and the viewer would print the last few kilobytes of it
+   * as text. Only the server can tell, so it says.
+   */
+  if (row.viewable) {
     const view = document.createElement("button");
     view.textContent = "View";
     view.addEventListener("click", () => showLog(row.path_id));

@@ -1010,6 +1010,33 @@ read. That is deliberately a different list from `deletable_categories`: being
 allowed to look at a file and being allowed to remove it are different
 permissions, and the things worth reading are not the things worth deleting.
 
+### What can and cannot be viewed
+
+Being in a viewable category is not enough. A rotated log keeps the word "log"
+in its name and sits in the same directory, so the category rules put
+`git.lewismoten.com-ssl_log-Aug-2026.gz` squarely in `logs` — and the viewer would
+read the last few kilobytes of a gzip stream and print them. On the file that
+turned this up, 81% of the last 200 bytes were unprintable.
+
+**Compressed files are refused outright**, by extension. Decompressing to tail is
+not the fix: gzip cannot be read backwards, so seeing the end means inflating the
+whole thing, which on a 700 MB archive is exactly the cost the reverse-block
+reader exists to avoid. The refusal says so and suggests uncompressing a copy.
+
+**Anything else is sniffed**, because the extension list only catches what people
+name sensibly. The last 4 KiB is checked for NUL bytes and for a high proportion
+of control characters. Bytes above 0x7F are explicitly allowed — that is how UTF-8
+spells anything non-ASCII, and rejecting them would refuse a good log the moment
+somebody's name appeared in it. Verified against a plain log, a UTF-8 log with
+CJK and em-dashes, a CRLF log, an empty file, a `.gz`, a file full of NULs, and a
+binary blob named `.log`: only the last three are refused.
+
+**And the button follows.** The offenders list carries a `viewable` flag per row
+computed with the same test, sniff included — a handful of 4 KiB reads is nothing
+beside the scan that produced the rows, and it is the only way for the button to
+be right about a binary file that happens to be named `.log`. Hiding the control
+is the point; a refusal after the click is still a wasted click.
+
 ## Change, and telling a leak from a spike
 
 The **Show** control has a third setting, **Change per reading**: instead of how
