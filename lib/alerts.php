@@ -21,6 +21,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/anomalies.php';
+require_once __DIR__ . '/incident.php';
 
 /**
  * How far back a projection looks.
@@ -69,6 +70,31 @@ function evaluateAlerts(array $config, PDO $pdo): array
     }
 
     if ($raised) {
+        /*
+         * The snapshot is taken here, after the cooldown has had its say.
+         *
+         * Not before: most evaluations raise nothing, and running `ps` on every
+         * one to photograph a machine that is behaving would be a cost with no
+         * reader. Not later either - by the time the mail is opened the runaway
+         * has been reaped and there is nothing left to photograph.
+         *
+         * One snapshot for all of them, linked back afterwards, because seven
+         * rules firing together are seven views of one machine.
+         */
+        $incident = captureIncident($config, $pdo, $raised);
+        if ($incident !== null) {
+            $ids = array_map(intval(...), array_column($raised, 'id'));
+            $pdo->prepare(
+                'UPDATE alerts SET incident_id = ? WHERE id IN ('
+                . implode(',', array_fill(0, count($ids), '?')) . ')'
+            )->execute([$incident, ...$ids]);
+
+            $raised = array_map(
+                fn(array $alert): array => $alert + ['incident_id' => $incident],
+                $raised
+            );
+        }
+
         sendAlertEmail($config, $pdo, $raised);
     }
 
@@ -741,6 +767,23 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
         $lines[] = strtoupper($alert['severity']) . ' — ' . $alert['subject'];
         $lines[] = '  ' . str_replace("\n", "\n  ", $alert['detail']);
         $lines[] = '';
+    }
+
+    /*
+     * The evidence, before the routine status block.
+     *
+     * Whoever opens this wants to know what was happening, and putting the
+     * disk summary first buries it under numbers that are the same every time.
+     */
+    $incidentId = $raised[0]['incident_id'] ?? null;
+    if ($incidentId !== null) {
+        $incident = incidentRead($pdo, (int)$incidentId);
+        if ($incident !== null && $incident['evidence'] !== null) {
+            foreach (incidentSummary($incident['evidence']) as $line) {
+                $lines[] = $line;
+            }
+            $lines[] = '';
+        }
     }
 
     foreach (statusReport($pdo) as $line) {

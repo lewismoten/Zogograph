@@ -372,6 +372,36 @@ function migrations(): array
             'ALTER TABLE process_samples ADD COLUMN trigger_percent REAL',
             'ALTER TABLE process_samples ADD COLUMN accounted_percent REAL',
         ],
+
+        /*
+         * Why an alert fired: the machine as it stood at the moment.
+         *
+         * An alert says what crossed a line. It cannot say what was doing it,
+         * and by the time anybody reads the mail the evidence is gone - the
+         * runaway has been reaped, the log has been rotated, and all that is
+         * left is a subject line nobody can act on. This is the difference
+         * between knowing something happened and being able to find out what.
+         *
+         * One row per evaluation, not per alert: seven rules firing together
+         * are describing one machine, and seven copies of its state would be
+         * six copies too many. The alerts point at the incident instead.
+         *
+         * The evidence is JSON rather than columns. It is written once and
+         * read whole, never queried by field, and its shape depends on what
+         * the host allowed to be read - a table would need a column per fact
+         * and a migration every time one more became reachable.
+         */
+        9 => [
+            'CREATE TABLE incidents (
+                id INTEGER PRIMARY KEY,
+                captured_at INTEGER NOT NULL,
+                triggered_by TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                bytes INTEGER NOT NULL DEFAULT 0
+            )',
+            'CREATE INDEX incidents_at ON incidents (captured_at)',
+            'ALTER TABLE alerts ADD COLUMN incident_id INTEGER',
+        ],
     ];
 }
 

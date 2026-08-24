@@ -4009,7 +4009,290 @@ function alertWhat(row) {
     cell.appendChild(why);
   }
 
+  /*
+   * The evidence, for whoever is allowed to see it.
+   *
+   * Hidden when signed out rather than masked, which is not how the rest of
+   * this dashboard behaves - the record holds other accounts' command lines,
+   * and the endpoint refuses them outright. Offering a button that always
+   * returns "sign in" would be a worse answer than not offering it.
+   */
+  if (row.incident_id && state.signedIn) {
+    const button = document.createElement("button");
+    button.className = "link why";
+    button.textContent = "Why did this fire?";
+    button.addEventListener("click", () => showIncident(row.incident_id));
+    cell.appendChild(button);
+  }
+
   return cell;
+}
+
+/*
+ * The state of the machine at the moment a rule fired.
+ *
+ * Laid out worst-first rather than in the order the sections were gathered:
+ * whoever opens this is looking for the cause, and the cause is nearly always
+ * a process or a file rather than the load average that triggered the mail.
+ */
+async function showIncident(id) {
+  const data = await api("incident", { id });
+  const evidence = data.evidence;
+
+  $("incidentPanel").hidden = false;
+  $("incidentTitle").textContent =
+    data.alerts.length === 1 ? data.alerts[0].subject : `${data.alerts.length} alerts fired together`;
+  $("incidentWhen").textContent =
+    `Captured ${humanTime(data.captured_at)} — the machine as it stood at that moment.`;
+
+  const body = document.createDocumentFragment();
+
+  if (!evidence) {
+    body.appendChild(note("This record could not be read back."));
+    $("incidentBody").replaceChildren(body);
+    return;
+  }
+
+  if (data.alerts.length > 1) {
+    body.appendChild(section("What fired", listOf(data.alerts.map(a => a.subject))));
+  }
+
+  const vitals = evidence.vitals;
+  if (vitals) {
+    body.appendChild(section("At that moment", factGrid([
+      ["Load", vitals.load["1"] === null ? "not reported"
+        : `${vitals.load["1"].toFixed(2)}${vitals.load.cores ? ` on ${count(vitals.load.cores, "core")}` : ""}`],
+      ["Load per core", vitals.load.per_core === null ? "—" : vitals.load.per_core.toFixed(2)],
+      ["CPU", vitals.cpu_percent === null ? "not reported" : `${vitals.cpu_percent.toFixed(1)}%`],
+      ["Memory available", humanBytes(vitals.memory.available_bytes)],
+      ["Memory used", vitals.memory.used_percent === null ? "—" : `${vitals.memory.used_percent.toFixed(1)}%`],
+      ["Swap used", `${humanBytes(vitals.memory.swap_used_bytes)} of ${humanBytes(vitals.memory.swap_total_bytes)}`],
+      ["Reading own I/O", vitals.io.own_read_rate === null ? "not reported"
+        : `${humanBytes(vitals.io.own_read_rate)}/s`],
+      ["Writing own I/O", vitals.io.own_write_rate === null ? "not reported"
+        : `${humanBytes(vitals.io.own_write_rate)}/s`],
+    ])));
+  }
+
+  const procs = evidence.processes;
+  if (procs && procs.available) {
+    body.appendChild(section(`Top processes, of ${procs.count} running`, processTables(procs)));
+  } else if (procs) {
+    body.appendChild(section("Top processes", note(procs.missing?.processes || "Not available.")));
+  }
+
+  if (evidence.tree && evidence.tree.length) {
+    body.appendChild(section("How they were started", processTree(evidence.tree)));
+  }
+
+  const host = evidence.host;
+  if (host && host.available && host.services?.length) {
+    body.appendChild(section("Memory by service (PSS, from the host collector)",
+      simpleTable(
+        ["Service", "Proportional (PSS)", "Resident", "Processes", "Oldest"],
+        host.services.map(s => [
+          s.name,
+          humanBytes(s.pss_bytes),
+          humanBytes(s.rss_bytes),
+          String(s.procs),
+          s.oldest_seconds === null ? "—" : humanDuration(s.oldest_seconds),
+        ]),
+        [null, "size", "size", "size", "size"]
+      )));
+  }
+
+  const disk = evidence.disk;
+  if (disk) {
+    const growth = Object.entries(disk.growth_bytes || {}).map(([label, bytes]) =>
+      [`Grew over ${label}`, bytes === null ? "not enough history" : humanBytes(bytes)]);
+    body.appendChild(section("Disk", factGrid([
+      ["Used", `${humanBytes(disk.used_bytes)} of ${humanBytes(disk.total_bytes)} (${disk.used_percent.toFixed(1)}%)`],
+      ["Free", humanBytes(disk.free_bytes)],
+      ...growth,
+    ])));
+
+    if (disk.categories?.length) {
+      body.appendChild(section("By category, since the previous scan", simpleTable(
+        ["Category", "Size", "Change"],
+        disk.categories.map(c => [
+          c.category,
+          humanBytes(c.bytes),
+          c.grew_bytes === null ? "—" : humanBytes(c.grew_bytes),
+        ]),
+        [null, "size", "size"]
+      )));
+    }
+  }
+
+  const files = evidence.files;
+  if (files && files.rows?.length) {
+    body.appendChild(section("Files that grew most, since the previous scan", simpleTable(
+      ["Path", "Size", "Change"],
+      files.rows.map(f => [f.path, humanBytes(f.bytes), humanBytes(f.grew_bytes)]),
+      ["name", "size", "size"]
+    )));
+  }
+
+  const missing = Object.entries(evidence.missing || {});
+  if (missing.length) {
+    /*
+     * What could not be read, said out loud.
+     *
+     * A section quietly absent reads as "there was none of that", which for
+     * disk I/O inside CageFS would be flatly untrue.
+     */
+    body.appendChild(section("What could not be seen",
+      listOf(missing.map(([, why]) => why))));
+  }
+
+  $("incidentBody").replaceChildren(body);
+  $("incidentPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/** A titled block within the incident record. */
+function section(title, contents) {
+  const wrap = document.createElement("div");
+  wrap.className = "evidence";
+
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  wrap.appendChild(heading);
+  wrap.appendChild(contents);
+
+  return wrap;
+}
+
+function note(text) {
+  const p = document.createElement("p");
+  p.className = "muted";
+  p.textContent = text;
+  return p;
+}
+
+function listOf(items) {
+  const ul = document.createElement("ul");
+  ul.className = "evidence-list";
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.textContent = item;
+    ul.appendChild(li);
+  }
+  return ul;
+}
+
+/** Label/value pairs, which is most of what an incident is. */
+function factGrid(pairs) {
+  const grid = document.createElement("div");
+  grid.className = "facts";
+  for (const [label, value] of pairs) {
+    const l = document.createElement("div");
+    l.className = "facts-label";
+    l.textContent = label;
+    const v = document.createElement("div");
+    v.className = "facts-value";
+    v.textContent = value;
+    grid.append(l, v);
+  }
+  return grid;
+}
+
+function simpleTable(headings, rows, classes = []) {
+  const wrap = document.createElement("div");
+  wrap.className = "scroll-x";
+
+  const table = document.createElement("table");
+  const head = table.createTHead().insertRow();
+  headings.forEach((heading, i) => {
+    const th = document.createElement("th");
+    th.textContent = heading;
+    if (classes[i]) th.className = classes[i];
+    head.appendChild(th);
+  });
+
+  const body = table.createTBody();
+  for (const row of rows) {
+    const tr = body.insertRow();
+    row.forEach((cell, i) => {
+      const td = tr.insertCell();
+      if (classes[i]) td.className = classes[i];
+      td.textContent = cell;
+    });
+  }
+
+  wrap.appendChild(table);
+  return wrap;
+}
+
+/*
+ * Three rankings, because they answer three different questions.
+ *
+ * A stuck job appears in none of the usual ones: it is using no CPU and little
+ * memory, which is what being stuck means. It only stands out by still being
+ * there, so age gets a column of its own.
+ */
+function processTables(procs) {
+  const wrap = document.createElement("div");
+  wrap.className = "evidence-columns";
+
+  const views = [
+    ["Using the most CPU", procs.by_cpu, p => `${p.cpu_percent.toFixed(1)}%`],
+    ["Holding the most memory", procs.by_memory, p => humanBytes(p.rss_bytes)],
+    ["Running the longest", procs.by_age, p => humanDuration(p.elapsed_seconds)],
+  ];
+
+  for (const [title, rows, value] of views) {
+    if (!rows || !rows.length) continue;
+    const column = document.createElement("div");
+    const heading = document.createElement("h4");
+    heading.textContent = title;
+    column.appendChild(heading);
+    column.appendChild(simpleTable(
+      ["Process", "", "User"],
+      rows.slice(0, 8).map(p => [p.name, value(p), p.user]),
+      [null, "size", null]
+    ));
+    wrap.appendChild(column);
+  }
+
+  return wrap;
+}
+
+/*
+ * The tree, indented.
+ *
+ * The ancestry is the point. Eleven identical processes are a curiosity until
+ * you can see they all hang off one cron entry, and then they are a diagnosis -
+ * which is exactly how the webalizer jobs would have been read.
+ */
+function processTree(nodes) {
+  const wrap = document.createElement("div");
+  wrap.className = "scroll-x";
+
+  const pre = document.createElement("div");
+  pre.className = "tree";
+
+  for (const node of nodes) {
+    const line = document.createElement("div");
+    line.className = node.notable ? "tree-line notable" : "tree-line";
+    line.style.paddingLeft = `${node.depth * 18}px`;
+
+    const name = document.createElement("span");
+    name.className = "tree-name";
+    name.textContent = node.name;
+
+    const meta = document.createElement("span");
+    meta.className = "tree-meta";
+    const bits = [`pid ${node.pid}`, `${node.cpu_percent.toFixed(1)}% cpu`, humanBytes(node.rss_bytes)];
+    if (node.elapsed_seconds !== null) bits.push(`up ${humanDuration(node.elapsed_seconds)}`);
+    meta.textContent = bits.join(" · ");
+
+    line.append(name, meta);
+    line.title = node.command;
+    pre.appendChild(line);
+  }
+
+  wrap.appendChild(pre);
+  return wrap;
 }
 
 async function refreshActionLog() {
@@ -4236,6 +4519,10 @@ $("testEmail").addEventListener("click", async () => {
 $("historyClose").addEventListener("click", () => {
   state.historyPathId = null;
   $("historyPanel").hidden = true;
+});
+
+$("incidentClose").addEventListener("click", () => {
+  $("incidentPanel").hidden = true;
 });
 
 $("signInOut").addEventListener("click", async () => {

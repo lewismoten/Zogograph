@@ -373,3 +373,68 @@ canvas.pie { height: 340px; }
   word-break: normal;
   overflow-wrap: break-word;
 }
+
+/* ---------------------------------------------------------- incidents -- */
+
+.why {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: .82rem;
+}
+
+.evidence { margin-top: 22px; }
+.evidence:first-child { margin-top: 6px; }
+.evidence h3 {
+  font-size: .95rem;
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line, #333);
+}
+.evidence h4 {
+  font-size: .85rem;
+  color: var(--muted);
+  margin: 0 0 6px;
+  font-weight: 500;
+}
+
+.evidence-list { margin: 0; padding-left: 18px; }
+.evidence-list li { margin-bottom: 4px; }
+
+/*
+ * The rankings side by side where there is room for them, stacked where there
+ * is not. They are read against each other - the process at the top of one and
+ * absent from the others is the interesting one - which does not work when
+ * they are a screen apart.
+ */
+.evidence-columns {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  font-size: .9rem;
+}
+.facts-label { color: var(--muted); }
+
+/*
+ * Wide content scrolls inside its own box.
+ *
+ * A command line or a deep path is arbitrarily long, and without this the
+ * whole page gains a horizontal scrollbar because of one row in one table.
+ */
+.scroll-x { overflow-x: auto; }
+
+.tree {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .8rem;
+  line-height: 1.7;
+  white-space: nowrap;
+}
+.tree-line { color: var(--muted); }
+.tree-line.notable { color: inherit; }
+.tree-name { font-weight: 600; }
+.tree-meta { color: var(--muted); margin-left: 10px; font-weight: 400; }

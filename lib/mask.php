@@ -93,7 +93,16 @@ function presentAlert(array $config, array $row, bool $signedIn): array
     $row['subject'] = redactPaths((string)$row['subject']);
     $row['detail'] = redactPaths((string)$row['detail']);
 
-    unset($row['path']);
+    /*
+     * The link to the evidence goes too.
+     *
+     * The endpoint refuses anonymous readers outright, so this is not what
+     * stops the record being read - but an id is still a fact about the
+     * install, and handing out a run of them says how many times this server
+     * has been in trouble. There is nothing a signed-out visitor can do with
+     * it, so there is no reason to send it.
+     */
+    unset($row['path'], $row['incident_id']);
     $row['masked'] = true;
     return $row;
 }

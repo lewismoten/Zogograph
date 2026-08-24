@@ -39,6 +39,7 @@ define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/alerts.php';
+require_once __DIR__ . '/lib/incident.php';
 require_once __DIR__ . '/lib/processes.php';
 
 $flags = array_slice($argv, 1);
@@ -165,6 +166,16 @@ function prune(PDO $pdo): string
     $processes->execute([$ancient]);
     $processCount = $processes->rowCount();
 
+    /*
+     * Incidents keep their own clock, longer than the readings they explain.
+     *
+     * They are rare - one per alerting evaluation, not one per reading - and
+     * the whole point of an incident record is being able to look at a bad
+     * week from the far side of it, by which time the per-minute vitals behind
+     * it have long since been thinned away.
+     */
+    $incidentCount = pruneIncidents($pdo, 180);
+
     // A path nothing refers to any more is history nobody can ask about.
     $paths = $pdo->exec(
         'DELETE FROM paths
@@ -175,11 +186,13 @@ function prune(PDO $pdo): string
     $pdo->commit();
 
     return sprintf(
-        'thinned %d vitals, dropped %d vitals, %d scans, %d paths, %d process rows',
+        'thinned %d vitals, dropped %d vitals, %d scans, %d paths, %d process rows, '
+        . '%d incidents',
         $thinnedCount,
         $droppedCount,
         $scanCount,
         (int)$paths,
-        $processCount
+        $processCount,
+        $incidentCount
     );
 }

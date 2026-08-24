@@ -40,6 +40,7 @@ require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/mask.php';
 require_once __DIR__ . '/lib/alerts.php';
+require_once __DIR__ . '/lib/incident.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/logs.php';
@@ -86,6 +87,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'history' => pathHistory($config, $pdo, $signedIn),
         'alerts' => alertList($config, $pdo, $signedIn),
         'actions' => actionLog($config, $pdo, $signedIn),
+        'incident' => incidentView($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
         'processes' => processList($config, $pdo, $signedIn),
@@ -474,7 +476,7 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
     $limit = clampInt($_GET['limit'] ?? 50, 1, 500);
     $stmt = $pdo->prepare(
         'SELECT a.id, a.raised_at, a.rule, a.severity, a.subject, a.detail,
-                a.emailed_at, a.path_id, p.path, p.kind
+                a.emailed_at, a.path_id, a.incident_id, p.path, p.kind
          FROM alerts a LEFT JOIN paths p ON p.id = a.path_id
          ORDER BY a.raised_at DESC LIMIT :limit'
     );
@@ -490,6 +492,31 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
 }
 
 /** The audit trail. Only for people who could have caused an entry in it. */
+/**
+ * One incident record, in full.
+ *
+ * Signed-in only, and refused rather than masked. Everywhere else a signed-out
+ * visitor sees the shape of a problem with the names taken out, which works
+ * because the sizes are the interesting part. It does not work here: this
+ * record holds other accounts' command lines, and while redactSecrets() strips
+ * the password arguments it recognises, "the ones it recognises" is not a
+ * promise worth making to the open internet.
+ */
+function incidentView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the evidence behind an alert');
+    }
+
+    $id = clampInt($_GET['id'] ?? 0, 1, PHP_INT_MAX);
+    $incident = incidentRead($pdo, $id);
+    if ($incident === null) {
+        throw new ActionRefused('there is no such incident');
+    }
+
+    return $incident;
+}
+
 function actionLog(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
