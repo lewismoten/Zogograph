@@ -16,6 +16,9 @@ const API = "./api.php";
  * hand-written spans with no colour on them at all, so every swatch came out
  * the inherited grey and matched nothing on the chart.
  */
+/** How long a confirmation survives the refresh that its own action triggered. */
+const NOTICE_KEEP_SECONDS = 10;
+
 const SERIES_COLORS = ["#73b7ff", "#ffb86b", "#75d58a", "#d5a6ff", "#ff7f9f"];
 const seriesColor = i => SERIES_COLORS[i % SERIES_COLORS.length];
 
@@ -41,6 +44,8 @@ const state = {
   scheduleDirty: false,
   units: "bytes",
   uptime: null,
+  noticeAt: 0,
+  noticeOk: false,
   restarts: [],
   hostMetric: "pss",
   hostCharted: [],
@@ -144,6 +149,29 @@ function notice(message, ok = false) {
   const el = $("notice");
   el.textContent = message ?? "";
   el.className = ok ? "ok" : "";
+  // Remembered so a refresh can tell a confirmation it should leave alone from
+  // a stale error it should tidy away.
+  state.noticeAt = message ? Math.floor(Date.now() / 1000) : 0;
+  state.noticeOk = Boolean(message) && ok;
+}
+
+/**
+ * Clears the notice after a refresh, but not one that just said something.
+ *
+ * Every action that changes anything finishes by refreshing, and the refresh
+ * used to end by blanking the notice - so "Deleted 8.58 MiB." was wiped by the
+ * reload it had itself started, and deleting a file gave no confirmation at
+ * all. The message it replaced was the whole feedback for the action.
+ *
+ * Errors are still cleared: a failure that has since been fixed should not stay
+ * on screen. A success is kept briefly and then goes on its own.
+ */
+function clearStaleNotice() {
+  const age = Math.floor(Date.now() / 1000) - (state.noticeAt || 0);
+  if (state.noticeOk && age < NOTICE_KEEP_SECONDS) {
+    return;
+  }
+  notice("");
 }
 
 /* ------------------------------------------------------------------ cards -- */
@@ -1172,7 +1200,7 @@ async function refreshAll() {
     ]);
     if (state.historyPathId) await showHistory(state.historyPathId, true);
     if (state.log.pathId) await showLog(state.log.pathId, true);
-    notice("");
+    clearStaleNotice();
   } catch (error) {
     notice(String(error.message || error));
   } finally {
@@ -1550,7 +1578,14 @@ async function refreshOffenders() {
       className: "size",
       render: row => {
         const links = Number(row.links ?? 1);
-        if (links <= 1) return humanBytes(row.bytes);
+        if (links <= 1) {
+          if (!row.deleted_at) return humanBytes(row.bytes);
+          // Struck through: the size was real when the scan ran and is not now.
+          const was = document.createElement("span");
+          was.className = "struck-through";
+          was.textContent = humanBytes(row.bytes);
+          return was;
+        }
 
         const box = document.createElement("span");
         box.appendChild(document.createTextNode(humanBytes(row.bytes)));
@@ -1609,6 +1644,23 @@ function deleteButton(row) {
     return "";
   }
 
+  /*
+   * Already gone, so there is nothing to offer.
+   *
+   * The row stays in the table because the table is what the last scan saw, and
+   * that remains true. The button does not, and leaving it there meant a second
+   * press answered "path does not exist" - which is accurate and reads as a
+   * fault. Saying "deleted" instead is the same fact without the alarm.
+   */
+  if (row.deleted_at) {
+    const gone = document.createElement("span");
+    gone.className = "muted small";
+    gone.textContent = "deleted";
+    gone.title = `Deleted ${humanTime(row.deleted_at)}. Still listed because the last `
+      + `scan found it; the next scan will drop it.`;
+    return gone;
+  }
+
   const button = document.createElement("button");
   button.className = "danger";
   button.textContent = "Delete";
@@ -1617,7 +1669,13 @@ function deleteButton(row) {
     button.disabled = true;
     try {
       const result = await post("delete-file", { path: row.path });
-      notice(`Deleted ${humanBytes(result.bytes_freed)}.`, true);
+      notice(
+        result.bytes_freed > 0
+          ? `Deleted ${humanBytes(result.bytes_freed)}.`
+          : `Deleted, but nothing was freed: ${count(result.links, "other name")} still `
+            + `point at those ${humanBytes(result.bytes)}.`,
+        true
+      );
       await refreshAll();
     } catch (error) {
       notice(String(error.message || error));

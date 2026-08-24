@@ -331,3 +331,6 @@ canvas.pie { height: 340px; }
 /* The two shadings, named in the prose so the legend is the sentence itself. */
 .band-restart { color: #ff9a9a; font-weight: 600; }
 .band-gap { color: #b9b9b9; font-weight: 600; }
+
+/* A size that was true when the scan ran and is not any more. */
+.struck-through { text-decoration: line-through; color: var(--muted); }

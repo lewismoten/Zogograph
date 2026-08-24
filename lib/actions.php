@@ -97,6 +97,22 @@ function deleteFile(array $config, PDO $pdo, string $requested): array
     try {
         $real = resolveDeletable($config, $requested);
     } catch (ActionRefused $e) {
+        /*
+         * "Already deleted" rather than "path does not exist".
+         *
+         * Both describe a missing file, and only one of them tells the reader
+         * what happened. A path this tool removed itself is not an error to be
+         * investigated - it is a repeated click, or a stale tab - and the audit
+         * log is right there to say so.
+         */
+        if (!file_exists($requested) && alreadyDeleted($pdo, $requested)) {
+            logAction($pdo, 'delete_file', $requested, 'refused', 0, 0, 'already deleted');
+            throw new ActionRefused(
+                'that file was already deleted. It is still listed because the last scan '
+                . 'found it; the next scan will drop it.'
+            );
+        }
+
         logAction($pdo, 'delete_file', $requested, 'refused', 0, 0, $e->getMessage());
         throw $e;
     }
@@ -138,6 +154,17 @@ function deleteFile(array $config, PDO $pdo, string $requested): array
     );
 
     return ['bytes_freed' => $freed, 'files_removed' => 1, 'links' => $links, 'bytes' => $size];
+}
+
+/** Whether this tool has a record of successfully deleting that exact path. */
+function alreadyDeleted(PDO $pdo, string $path): bool
+{
+    $stmt = $pdo->prepare(
+        "SELECT COUNT(*) FROM actions
+         WHERE action = 'delete_file' AND outcome = 'ok' AND target = ?"
+    );
+    $stmt->execute([$path]);
+    return (int)$stmt->fetchColumn() > 0;
 }
 
 /**

@@ -950,6 +950,38 @@ returns the 7th without complaint. And the timezone problem above is invisible
 in testing on a machine whose system zone and configured zone agree — which is
 most development machines and few servers.
 
+### After a delete
+
+The offenders table is what the **last scan** saw, so a file it found stays
+listed until the next scan runs. That is right — it is a record, not a live
+directory listing — but the Delete button came back with it on every refresh, and
+pressing it a second time answered *path does not exist*, which reads as a fault
+rather than as "already done".
+
+So a row whose path has been deleted since the scan that found it shows
+**deleted** where the button was, with its size struck through: the size was true
+when the scan ran and is not now. Worked out on the server from the audit log
+rather than remembered in the browser, so it survives a reload — and only deletes
+recorded at or after the scan count, because a file removed before the scan
+cannot be the one the scan found, and a name since recreated is genuinely
+deletable again. Emptying a category writes one summary row rather than one per
+file, so that case is matched on the category instead.
+
+If a request does slip through — a stale tab, a second click in flight — the
+refusal now says what happened: *"that file was already deleted. It is still
+listed because the last scan found it."* A path this tool removed itself is not
+something to investigate.
+
+**And the confirmation now survives.** Every action that changes something
+finishes by refreshing, and the refresh used to end by blanking the notice — so
+`Deleted 8.58 MiB.` was wiped by the reload it had itself started, and deleting a
+file gave no feedback at all. Successes are kept for ten seconds; errors are
+still cleared by the next successful refresh, since a failure that has been fixed
+should not stay on screen.
+
+Where a hard link survives, the message says so rather than claiming space back:
+*"Deleted, but nothing was freed: 1 other name still points at those 2.86 MiB."*
+
 ## Reading log files
 
 Signed in, a log file in the offenders table gets a **View** button: the last N

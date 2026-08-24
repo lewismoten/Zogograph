@@ -335,13 +335,36 @@ function offenders(array $config, PDO $pdo, bool $signedIn): array
 
     $order = $sort === 'growth' ? 'growth DESC, now.bytes DESC' : 'now.bytes DESC';
 
+    /*
+     * Whether the path has been deleted since the scan that found it.
+     *
+     * The offenders list is drawn from the last scan, so a file stays in it
+     * until the next one runs - which is right, it is a record of what the scan
+     * saw. What is not right is still offering to delete it: the button came
+     * back on every refresh and the second press answered "path does not
+     * exist", which reads as a fault rather than as "already done".
+     *
+     * Only deletes recorded at or after the scan started count. A file removed
+     * before the scan cannot be the one the scan found, and a name that has
+     * since been recreated is genuinely deletable again.
+     *
+     * Emptying a category writes one summary row rather than one per file, so
+     * that case is matched on the category instead. Less precise, and the
+     * alternative is a row per file in an audit log meant to be readable.
+     */
     $stmt = $pdo->prepare(
         'SELECT p.id AS path_id, p.path, p.kind, p.category,
                 now.bytes, now.files, now.links,
                 COALESCE(now.bytes - before.bytes, 0) AS growth,
-                COALESCE(now.files - before.files, 0) AS growth_files
+                COALESCE(now.files - before.files, 0) AS growth_files,
+                (SELECT MAX(a.at) FROM actions a
+                  WHERE a.outcome = \'ok\' AND a.at >= s.started_at
+                    AND ((a.action = \'delete_file\' AND a.target = p.path)
+                      OR (a.action = \'empty_category\' AND a.target = p.category))
+                ) AS deleted_at
          FROM path_sizes now
          JOIN paths p ON p.id = now.path_id
+         JOIN scans s ON s.id = now.scan_id
          LEFT JOIN path_sizes before ON before.path_id = now.path_id AND before.scan_id = :before
          WHERE ' . implode(' AND ', $where) . "
          ORDER BY $order LIMIT :limit"
