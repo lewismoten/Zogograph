@@ -22,6 +22,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/anomalies.php';
 require_once __DIR__ . '/incident.php';
+require_once __DIR__ . '/logwatch.php';
 
 /**
  * How far back a projection looks.
@@ -60,6 +61,12 @@ function evaluateAlerts(array $config, PDO $pdo): array
          * where that lives is configured outside this section.
          */
         ...detectAnomalies($config, $pdo),
+        /*
+         * The log rules, which know things about logs that no general rule
+         * can: that they rotate, that a .bkup beside one is transient, and
+         * that two names for one file is one file.
+         */
+        ...logAlerts($pdo, $config),
     ]);
 
     foreach ($candidates as $alert) {

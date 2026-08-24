@@ -310,6 +310,59 @@ return [
      *
      * Zero anywhere means for ever, never "delete everything".
      */
+    /*
+     * What the monitor knows about logs specifically.
+     *
+     * Logs caused the incident this tool was written after, and they have a
+     * life cycle that general rules cannot see. A log rotates; a .bkup beside
+     * one is meant to be temporary; two names for one file is one file. None of
+     * that is visible to a rule that knows only how big something is.
+     *
+     * Set any threshold to 0 to turn that rule off.
+     */
+    'logs' => [
+        // Any single log above this, whatever it is doing. A log has no
+        // natural size the way a database or an archive does.
+        'max_bytes' => 1073741824,                  // 1 GiB
+
+        /*
+         * Bytes an hour, against a ceiling rather than against the file's own
+         * past. The baseline rule in lib/anomalies.php asks whether a rate is
+         * unusual for that file and answers no for a log that has written a
+         * gigabyte an hour all week - which is exactly when somebody wants to
+         * be told.
+         */
+        'fast_bytes_per_hour' => 104857600,         // 100 MiB/h
+
+        /*
+         * A job writes one of these beside the log it is processing and
+         * removes it when it finishes. One still there a day later means the
+         * job died halfway - the signature of the Webalizer incident, and
+         * invisible to everything else because the file is small.
+         */
+        'backup_suffixes' => ['.bkup', '.bak', '.tmp', '.partial'],
+        'backup_max_age_hours' => 24,
+
+        /*
+         * Rotation appears in the history as a fall, when the file is renamed
+         * or truncated and starts again. A log this big with no fall at all
+         * across this many days is one whose rotation is not running.
+         */
+        'rotate_after_days' => 8,
+        'rotate_min_bytes' => 104857600,            // 100 MiB
+
+        /*
+         * Error-log acceleration: the recent half of the history against the
+         * earlier half. A site that has begun to fail writes errors faster and
+         * faster, and the useful moment to hear about it is while the curve is
+         * bending rather than when it crosses a line. Both a multiple and a
+         * floor, because doubling from nothing is still nothing.
+         */
+        'acceleration_multiple' => 4.0,
+        'acceleration_floor_per_hour' => 10485760,  // 10 MiB/h
+        'error_names' => ['error_log', 'error.log', 'php_errorlog', 'php-error.log'],
+    ],
+
     'retention' => [
         // Every reading exactly as collected.
         'raw_days' => 7,
