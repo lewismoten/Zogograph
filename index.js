@@ -1554,17 +1554,24 @@ function renderCategoryChart(rows, categories) {
 }
 
 async function refreshOffenders() {
-  const params = {
-    limit: 30,
-    sort: $("offSort").value,
-  };
+  const view = $("offSort").value;
+  const params = { limit: 30, view };
   if ($("offCategory").value) params.category = $("offCategory").value;
   if ($("offKind").value) params.kind = $("offKind").value;
 
   const data = await api("offenders", params);
   $("maskNote").hidden = state.signedIn || !data.rows.length;
 
-  renderTable("offenders", data.rows, [
+  /*
+   * What was actually measured, said out loud.
+   *
+   * Scans are periodic and a window rarely lines up with one, so "the last
+   * hour" can easily be six hours of growth. The server works out the real
+   * span; printing it is the difference between a number and a misleading one.
+   */
+  $("offNote").textContent = data.note ?? "";
+
+  const columns = [
     { label: "Path", className: "name", render: row => row.display },
     { label: "Kind", render: row => (row.kind === "dir" ? "directory" : "file") },
     { label: "Category", render: row => row.category ?? "—" },
@@ -1578,12 +1585,12 @@ async function refreshOffenders() {
        * beside it is not the number you would get back - and that is worth
        * knowing before pressing Delete rather than after.
        */
-      label: "Size",
+      label: view === "deleted" ? "Size when last seen" : "Size",
       className: "size",
       render: row => {
         const links = Number(row.links ?? 1);
         if (links <= 1) {
-          if (!row.deleted_at) return humanBytes(row.bytes);
+          if (!row.deleted_at && !row.gone) return humanBytes(row.bytes);
           // Struck through: the size was real when the scan ran and is not now.
           const was = document.createElement("span");
           was.className = "struck-through";
@@ -1602,7 +1609,60 @@ async function refreshOffenders() {
         return box;
       },
     },
-    {
+  ];
+
+  if (view === "deleted") {
+    /*
+     * What happened to it, which the scan list alone cannot say.
+     *
+     * A scan records only the largest paths, so a file missing from the latest
+     * one may have been deleted or may just have been pushed off the list by
+     * something else growing. The server settles it by asking the filesystem;
+     * this reports which answer came back rather than flattening both into
+     * "deleted".
+     */
+    columns.push({
+      label: "What happened",
+      render: row => {
+        const span = document.createElement("span");
+        if (!row.gone) {
+          span.className = "muted";
+          span.textContent = "still on disk — no longer among the largest";
+          span.title = "The file has not gone anywhere. Something else grew past it, so it "
+            + "dropped out of the paths this scan records.";
+        } else if (row.deleted_at) {
+          span.className = "shrank";
+          span.textContent = `deleted from here ${humanTime(row.deleted_at)}`;
+          span.title = "Deleted through this dashboard, from the action log.";
+        } else {
+          span.className = "shrank";
+          span.textContent = "gone";
+          span.title = "Not on disk any more, and not deleted through this dashboard — so "
+            + "something else removed it: log rotation, a cron job, or a person.";
+        }
+        return span;
+      },
+    });
+  } else if (view === "new") {
+    columns.push({
+      label: "First seen",
+      render: row => {
+        const span = document.createElement("span");
+        if (row.never_seen_before) {
+          span.className = "grew";
+          span.textContent = "new";
+          span.title = "This path has never been recorded before.";
+        } else {
+          span.className = "muted";
+          span.textContent = "back in the list";
+          span.title = "Recorded before, absent from the previous scan, and back now — it "
+            + "grew past the size that gets a path recorded rather than being created.";
+        }
+        return span;
+      },
+    });
+  } else {
+    columns.push({
       label: "Change",
       className: "size",
       render: row => {
@@ -1612,9 +1672,15 @@ async function refreshOffenders() {
         span.className = growth > 0 ? "grew" : growth < 0 ? "shrank" : "";
         return span;
       },
-    },
-    { label: "", className: "size", render: row => rowButtons(row) },
-  ], row => showHistory(row.path_id));
+    });
+  }
+
+  // A file that is gone has nothing to press. The deleted view is a report.
+  if (view !== "deleted") {
+    columns.push({ label: "", className: "size", render: row => rowButtons(row) });
+  }
+
+  renderTable("offenders", data.rows, columns, row => showHistory(row.path_id));
 }
 
 /** The buttons for one row: view a log, delete a file, or neither. */
@@ -4316,6 +4382,7 @@ function alertWhat(row) {
   const cell = document.createDocumentFragment();
 
   const subject = document.createElement("div");
+  subject.className = "alert-subject";
   subject.textContent = row.subject;
   cell.appendChild(subject);
 

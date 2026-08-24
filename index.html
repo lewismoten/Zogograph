@@ -132,15 +132,21 @@
         </select>
       </label>
       <label class="inline">
-        Sort
+        Show
         <select id="offSort">
-          <option value="growth">Fastest growing</option>
-          <option value="bytes">Largest</option>
+          <option value="size">Largest</option>
+          <option value="growth">Grew most since last scan</option>
+          <option value="hour">Grew most in the last hour</option>
+          <option value="today">Grew most today</option>
+          <option value="week">Grew most in 7 days</option>
+          <option value="new">Newly appeared</option>
+          <option value="deleted">Gone since last scan</option>
         </select>
       </label>
     </div>
   </div>
   <div id="emptyButtons" class="empty-buttons"></div>
+  <p class="muted small chart-note" id="offNote"></p>
   <p class="muted small" id="maskNote" hidden>
     Names are hidden until you sign in. The sizes and the growth are real.
   </p>

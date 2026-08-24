@@ -362,6 +362,15 @@ canvas.pie { height: 340px; }
  * pre-line because the detail arrives with real newlines separating the
  * finding from the explanation, and collapsing them runs the two together.
  */
+/*
+ * The subject wraps as prose too.
+ *
+ * It sits in td.name, which breaks anywhere so a long path wraps instead of
+ * stretching the table. Right for a path, wrong for a sentence: it split
+ * "usual" across two lines as "usu / al".
+ */
+.alert-subject { word-break: normal; overflow-wrap: break-word; }
+
 .alert-why {
   margin-top: 4px;
   font-size: .82rem;

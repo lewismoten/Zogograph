@@ -42,6 +42,7 @@ require_once __DIR__ . '/lib/mask.php';
 require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/incident.php';
 require_once __DIR__ . '/lib/daemons.php';
+require_once __DIR__ . '/lib/growth.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/logs.php';
@@ -352,99 +353,144 @@ function scanSeries(array $config, PDO $pdo): array
  */
 function offenders(array $config, PDO $pdo, bool $signedIn): array
 {
-    $category = $_GET['category'] ?? null;
-    $kind = $_GET['kind'] ?? null;
-    $sort = ($_GET['sort'] ?? 'bytes') === 'growth' ? 'growth' : 'bytes';
+    $view = (string)($_GET['view'] ?? $_GET['sort'] ?? 'size');
+    if (!in_array($view, GROWTH_VIEWS, true)) {
+        // 'bytes' was the old name for the default, and old bookmarks and any
+        // half-updated index.js still send it.
+        $view = $view === 'bytes' ? 'size' : 'size';
+    }
+
+    $filters = ['category' => $_GET['category'] ?? '', 'kind' => $_GET['kind'] ?? ''];
     $limit = clampInt($_GET['limit'] ?? 25, 1, 200);
 
-    $scans = $pdo->query('SELECT id FROM scans WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 2')
-        ->fetchAll(PDO::FETCH_COLUMN);
-    if (!$scans) {
-        return ['rows' => [], 'scan_id' => null];
+    $window = growthWindow($pdo, $view);
+
+    if ($window['now'] === null || ($window['before'] === null && $view !== 'size')) {
+        return [
+            'rows' => [], 'view' => $view, 'scan_id' => $window['now'],
+            'note' => growthSpanNote($window, $view), 'window' => $window,
+        ];
     }
 
-    $where = ['now.scan_id = :now'];
-    $params = [':now' => $scans[0], ':before' => $scans[1] ?? -1, ':limit' => $limit];
-    if ($category !== null && $category !== '') {
-        $where[] = 'p.category = :category';
-        $params[':category'] = $category;
-    }
-    if ($kind === 'file' || $kind === 'dir') {
-        $where[] = 'p.kind = :kind';
-        $params[':kind'] = $kind;
-    }
-
-    $order = $sort === 'growth' ? 'growth DESC, now.bytes DESC' : 'now.bytes DESC';
+    $rows = match ($view) {
+        'new' => newlyAppeared($pdo, $window, $filters, $limit),
+        'deleted' => deletedSince($pdo, $window, $filters, $limit),
+        'size' => largestPaths($pdo, $window, $filters, $limit),
+        default => grewMost($pdo, $window, $filters, $limit),
+    };
 
     /*
      * Whether the path has been deleted since the scan that found it.
      *
-     * The offenders list is drawn from the last scan, so a file stays in it
-     * until the next one runs - which is right, it is a record of what the scan
-     * saw. What is not right is still offering to delete it: the button came
-     * back on every refresh and the second press answered "path does not
-     * exist", which reads as a fault rather than as "already done".
+     * The list is drawn from a scan, so a file stays in it until the next one
+     * runs - which is right, it is a record of what the scan saw. What is not
+     * right is still offering to delete it: the button came back on every
+     * refresh and the second press answered "path does not exist", which reads
+     * as a fault rather than as "already done".
      *
-     * Only deletes recorded at or after the scan started count. A file removed
-     * before the scan cannot be the one the scan found, and a name that has
-     * since been recreated is genuinely deletable again.
-     *
-     * Emptying a category writes one summary row rather than one per file, so
-     * that case is matched on the category instead. Less precise, and the
-     * alternative is a row per file in an audit log meant to be readable.
+     * The deleted view has already worked this out for itself, and by asking
+     * the filesystem rather than the audit log, so it is left alone.
      */
-    $stmt = $pdo->prepare(
-        'SELECT p.id AS path_id, p.path, p.kind, p.category,
-                now.bytes, now.files, now.links,
-                COALESCE(now.bytes - before.bytes, 0) AS growth,
-                COALESCE(now.files - before.files, 0) AS growth_files,
-                (SELECT MAX(a.at) FROM actions a
-                  WHERE a.outcome = \'ok\' AND a.at >= s.started_at
-                    AND ((a.action = \'delete_file\' AND a.target = p.path)
-                      OR (a.action = \'empty_category\' AND a.target = p.category))
-                ) AS deleted_at
-         FROM path_sizes now
-         JOIN paths p ON p.id = now.path_id
-         JOIN scans s ON s.id = now.scan_id
-         LEFT JOIN path_sizes before ON before.path_id = now.path_id AND before.scan_id = :before
-         WHERE ' . implode(' AND ', $where) . "
-         ORDER BY $order LIMIT :limit"
-    );
-    foreach ($params as $key => $value) {
-        $stmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+    if ($view !== 'deleted') {
+        $rows = markDeleted($pdo, $rows, (int)$window['now']);
     }
-    $stmt->execute();
 
-    /*
-     * Whether each row can actually be read, decided here rather than guessed.
-     *
-     * The dashboard used to offer View for anything in a viewable category, and
-     * a rotated log keeps the word "log" in its name - so
-     * git.lewismoten.com-ssl_log-Aug-2026.gz got a button that could only ever
-     * answer with binary. The category is not enough on its own.
-     *
-     * The same test the tail endpoint uses, including the sniff, because a
-     * handful of 4 KiB reads is nothing next to the scan that produced these
-     * rows and it is the only way for the button to be right about a binary
-     * file that happens to be named .log. Deleted rows are skipped: they show a
-     * marker instead of controls, and stat-ing a missing file proves nothing.
-     */
     $viewableCategories = $config['viewable_categories'] ?? [];
     $rows = array_map(
-        function (array $row) use ($config, $signedIn, $viewableCategories): array {
+        function (array $row) use ($config, $signedIn, $viewableCategories, $view): array {
+            /*
+             * Whether each row can actually be read, decided here rather than
+             * guessed. The dashboard used to offer View for anything in a
+             * viewable category, and a rotated log keeps the word "log" in its
+             * name - so git.lewismoten.com-ssl_log-Aug-2026.gz got a button
+             * that could only ever answer with binary.
+             *
+             * A row in the deleted view is never viewable: the file is the one
+             * thing it is documented as not being there.
+             */
             $row['viewable'] = $signedIn
-                && $row['kind'] === 'file'
-                && $row['deleted_at'] === null
-                && in_array($row['category'], $viewableCategories, true)
+                && $view !== 'deleted'
+                && ($row['kind'] ?? '') === 'file'
+                && ($row['deleted_at'] ?? null) === null
+                && in_array($row['category'] ?? null, $viewableCategories, true)
                 && compressedExtension((string)$row['path']) === null
                 && looksLikeText((string)$row['path']);
 
             return presentPath($config, $row, $signedIn);
         },
-        $stmt->fetchAll()
+        $rows
     );
 
-    return ['rows' => $rows, 'scan_id' => (int)$scans[0], 'sort' => $sort];
+    return [
+        'rows' => $rows,
+        'view' => $view,
+        'scan_id' => (int)$window['now'],
+        'note' => growthSpanNote($window, $view),
+        'window' => $window,
+        // Kept so an index.js that has not been uploaded yet still works.
+        'sort' => $view === 'size' ? 'bytes' : 'growth',
+    ];
+}
+
+/** The plain "what is biggest" list, which is still the one people open first. */
+function largestPaths(PDO $pdo, array $window, array $filters, int $limit): array
+{
+    $where = ['now.scan_id = :now'];
+    $params = [':now' => $window['now'], ':before' => $window['before'] ?? -1, ':limit' => $limit];
+    applyFilters($filters, $where, $params);
+
+    return runGrowthQuery(
+        $pdo,
+        'SELECT p.id AS path_id, p.path, p.kind, p.category,
+                now.bytes, now.files, now.links,
+                COALESCE(now.bytes - was.bytes, 0) AS growth,
+                COALESCE(now.files - was.files, 0) AS growth_files
+         FROM path_sizes now
+         JOIN paths p ON p.id = now.path_id
+         LEFT JOIN path_sizes was ON was.path_id = now.path_id AND was.scan_id = :before
+         WHERE ' . implode(' AND ', $where) . '
+         ORDER BY now.bytes DESC LIMIT :limit',
+        $params
+    );
+}
+
+/**
+ * Marks rows whose file has been deleted through this dashboard since the scan.
+ *
+ * Only deletes recorded at or after the scan started count. A file removed
+ * before the scan cannot be the one the scan found, and a name that has since
+ * been recreated is genuinely deletable again.
+ *
+ * Emptying a category writes one summary row rather than one per file, so that
+ * case is matched on the category instead. Less precise, and the alternative is
+ * a row per file in an audit log meant to be readable.
+ */
+function markDeleted(PDO $pdo, array $rows, int $scanId): array
+{
+    if ($rows === []) {
+        return $rows;
+    }
+
+    $startedAt = (int)$pdo->query("SELECT started_at FROM scans WHERE id = $scanId")->fetchColumn();
+
+    $stmt = $pdo->prepare(
+        'SELECT MAX(a.at) FROM actions a
+          WHERE a.outcome = \'ok\' AND a.at >= :started
+            AND ((a.action = \'delete_file\' AND a.target = :path)
+              OR (a.action = \'empty_category\' AND a.target = :category))'
+    );
+
+    foreach ($rows as $i => $row) {
+        $stmt->execute([
+            ':started' => $startedAt,
+            ':path' => (string)$row['path'],
+            ':category' => (string)($row['category'] ?? ''),
+        ]);
+        $at = $stmt->fetchColumn();
+        $rows[$i]['deleted_at'] = $at === false || $at === null ? null : (int)$at;
+    }
+
+    return $rows;
 }
 
 /** One path's size over time, which is the chart that shows a leak. */
