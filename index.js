@@ -1220,6 +1220,7 @@ async function refreshAll() {
        * poll: it reads four small tables and never touches a disk.
        */
       refreshHostDisk(),
+      refreshBackups(),
       /*
        * Both read stored rows only. The probe that fills them shells out and
        * runs on demand, never on a poll.
@@ -6200,6 +6201,257 @@ function showChangesIn(bar) {
   }
 
   body.replaceChildren(frag);
+  $("listDialog").showModal();
+}
+
+
+/* ------------------------------------------------------------------ backups -- */
+
+/*
+ * Backup storage, opening with the number that reframes the disk.
+ *
+ * "Disk 55% full" is a fact nobody can act on. "76 GiB of it is backups of an
+ * account holding 4.5 GiB" is the same disk described in a way that says what
+ * to do next.
+ */
+async function refreshBackups() {
+  const holder = $("backupBody");
+  if (!holder) return;
+
+  let data;
+  try {
+    data = await api("backups");
+  } catch (error) {
+    holder.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  if (!data.available) {
+    holder.replaceChildren(note(data.reason || "Nothing recorded."));
+    return;
+  }
+
+  const body = document.createDocumentFragment();
+
+  const headline = document.createElement("div");
+  headline.className = "headline";
+  headline.textContent = humanBytes(data.total_bytes);
+  body.appendChild(headline);
+
+  const sub = document.createElement("div");
+  sub.className = "headline-sub";
+  sub.textContent = data.share_percent != null
+    ? `${data.share_percent}% of the used space on ${data.mount || "this filesystem"}`
+    : "share of the disk unknown — no filesystem reading recorded";
+  body.appendChild(sub);
+
+  if (!data.complete) {
+    body.appendChild(note("The disk walk ran out of time, so these are lower bounds."));
+  }
+
+  // Growth, when there is more than one walk to compare.
+  const growth = data.growth;
+  if (growth?.reason) {
+    body.appendChild(note(growth.reason));
+  } else if (growth) {
+    const rows = [];
+    for (const [label, point] of [["24 hours ago", growth.day], ["7 days ago", growth.week]]) {
+      if (!point) continue;
+      /*
+       * The real span, not the one that was asked for.
+       *
+       * Disk walks are a manual or weekly job, so "24 hours ago" is often the
+       * nearest walk five days back — the same trap as the growth views.
+       */
+      rows.push([label, `${humanBytes(point.bytes)} — ${point.grew >= 0 ? "+" : ""}`
+        + `${humanBytes(point.grew)} over ${humanDuration(point.span)}`]);
+    }
+    if (rows.length) body.appendChild(section("Growth", factGrid(rows)));
+  }
+
+  if (data.accounts.length) {
+    const wrap = document.createDocumentFragment();
+    if (data.accounts[0].inferred) {
+      wrap.appendChild(note("Accounts inferred from directory names under the backup root — "
+        + "JetBackup's own metadata was not readable, so these are a reasonable guess rather "
+        + "than its records."));
+    }
+
+    wrap.appendChild(simpleTable(
+      ["Account", "Live data", "Backups", "Ratio", "Copies", "Oldest", "Newest"],
+      data.accounts.map(row => [
+        row.account,
+        row.live_bytes == null ? "—" : humanBytes(row.live_bytes),
+        humanBytes(row.backup_bytes),
+        row.ratio == null ? "—" : `${row.ratio}×`,
+        row.copies == null ? "—" : String(row.copies),
+        row.oldest ? humanTime(row.oldest) : "—",
+        row.newest ? humanTime(row.newest) : "—",
+      ]),
+      [null, "size", "size", "size", "size", null, null]
+    ));
+
+    for (const row of data.accounts) {
+      if (!row.verdict) continue;
+      const verdict = document.createElement("p");
+      verdict.className = "muted small";
+      verdict.textContent = `${row.account}: ${row.verdict}`;
+      wrap.appendChild(verdict);
+    }
+
+    body.appendChild(section("By account", wrap));
+  }
+
+  // What JetBackup itself says, or plainly that it did not say.
+  const jet = data.jetbackup;
+  if (!jet.available) {
+    body.appendChild(section("JetBackup", note(jet.reason)));
+  }
+
+  for (const root of data.roots) {
+    if (!root.children.length) continue;
+    body.appendChild(section(`Inside ${root.path}`, simpleTable(
+      ["Path", "Size", "Files"],
+      root.children.map(c => [c.name, humanBytes(c.bytes), humanCount(c.files)]),
+      ["name", "size", "size"]
+    )));
+  }
+
+  if (data.other.length) {
+    const wrap = document.createDocumentFragment();
+    wrap.appendChild(note("These are outside the backup system, so no retention policy will "
+      + "ever remove them. Matched on their names, which is evidence rather than proof — a "
+      + "directory called \\u201carchive\\u201d might be a live dataset."));
+    wrap.appendChild(simpleTable(
+      ["Path", "Size", "Files", "Matched"],
+      data.other.map(r => [r.path, humanBytes(r.bytes), humanCount(r.files), r.matched]),
+      ["name", "size", "size", null]
+    ));
+    body.appendChild(section("Other probable backups", wrap));
+  }
+
+  if (data.actions) body.appendChild(section("What can be done", backupActionList(data)));
+
+  holder.replaceChildren(body);
+}
+
+/*
+ * Actions grouped by how safe they are, with who can do them.
+ *
+ * Safety and reach are separate on purpose. "Run JetBackup cleanup" is safe and
+ * needs root; telling somebody with no root to run it is a dead end, which is
+ * why the ones they cannot do come with a message they can send instead.
+ */
+function backupActionList(data) {
+  const wrap = document.createDocumentFragment();
+
+  const REACH = {
+    here: "you can do this here",
+    root: "needs root or WHM",
+    provider: "ask your hosting provider",
+  };
+
+  for (const level of ["safe", "review", "dangerous"]) {
+    const members = data.actions.filter(a => a.level === level);
+    if (!members.length) continue;
+
+    const box = document.createElement("div");
+    box.className = "cap-group";
+
+    const head = document.createElement("h3");
+    head.textContent = {
+      safe: "Safe — returns space the backup system already considers disposable",
+      review: "Worth reviewing — a decision, not a chore",
+      dangerous: "Dangerous — listed so it can be named, not recommended",
+    }[level];
+    box.appendChild(head);
+
+    for (const action of members) {
+      const row = document.createElement("div");
+      row.className = "action-row";
+
+      const tag = document.createElement("span");
+      tag.className = `level level-${level}`;
+      tag.textContent = level;
+      row.appendChild(tag);
+
+      const reach = document.createElement("span");
+      reach.className = "reach";
+      reach.textContent = " · " + REACH[action.reach];
+      row.appendChild(reach);
+
+      const title = document.createElement("div");
+      title.className = "action-title";
+      title.textContent = action.title;
+      row.appendChild(title);
+
+      const detail = document.createElement("div");
+      detail.className = "action-detail";
+      detail.textContent = action.detail;
+      row.appendChild(detail);
+
+      if (action.command) {
+        const cmd = document.createElement("div");
+        cmd.className = "action-command";
+        cmd.textContent = action.command;
+        row.appendChild(cmd);
+      }
+
+      box.appendChild(row);
+    }
+
+    wrap.appendChild(box);
+  }
+
+  // The message for whoever does have root.
+  const ask = document.createElement("p");
+  const button = document.createElement("button");
+  button.textContent = "Message for your hosting provider";
+  button.addEventListener("click", () => showProviderMessage(data.message));
+  ask.appendChild(button);
+  wrap.appendChild(ask);
+
+  return wrap;
+}
+
+function showProviderMessage(message) {
+  $("listDialogTitle").textContent = "Message for your hosting provider";
+  $("listDialogNote").textContent = "Describes what was measured and asks for the safe "
+    + "actions only. It deliberately does not ask anybody to delete anything from the "
+    + "backup directory.";
+
+  const body = $("listDialogBody");
+  body.className = "";
+
+  const pre = document.createElement("pre");
+  pre.className = "commands";
+  pre.style.whiteSpace = "pre-wrap";
+  pre.textContent = message;
+
+  const copy = document.createElement("button");
+  copy.textContent = "Copy";
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(message);
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+    } catch {
+      copy.textContent = "Select it and copy";
+      const range = document.createRange();
+      range.selectNodeContents(pre);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  });
+
+  const holder = document.createDocumentFragment();
+  holder.appendChild(pre);
+  const buttons = document.createElement("p");
+  buttons.appendChild(copy);
+  holder.appendChild(buttons);
+
+  body.replaceChildren(holder);
   $("listDialog").showModal();
 }
 

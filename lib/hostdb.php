@@ -712,6 +712,28 @@ function hostMigrations(): array
             'ALTER TABLE host_processes ADD COLUMN state TEXT',
             'ALTER TABLE host_processes ADD COLUMN ppid INTEGER',
         ],
+
+        /*
+         * What JetBackup says it is holding.
+         *
+         * Recorded during the disk walk because that is when the sizes are
+         * measured, and the two are only useful together: a directory called
+         * files0000000005 is a number without this, and this is a claim
+         * without the directory sizes.
+         */
+        16 => [
+            'CREATE TABLE host_backups (
+                taken_at INTEGER NOT NULL,
+                account TEXT,
+                created_at INTEGER,
+                type TEXT,
+                bytes INTEGER,
+                destination TEXT,
+                path TEXT,
+                backup_id TEXT
+            )',
+            'CREATE INDEX host_backups_at ON host_backups (taken_at)',
+        ],
     ];
 }
 

@@ -46,6 +46,7 @@ require_once __DIR__ . '/lib/growth.php';
 require_once __DIR__ . '/lib/retention.php';
 require_once __DIR__ . '/lib/treemap.php';
 require_once __DIR__ . '/lib/hostdisk.php';
+require_once __DIR__ . '/lib/backups.php';
 require_once __DIR__ . '/lib/mountinfo.php';
 require_once __DIR__ . '/lib/capabilities.php';
 require_once __DIR__ . '/lib/collect.php';
@@ -97,6 +98,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'incident' => incidentView($config, $pdo, $signedIn),
         'treemap' => treemapView($config, $signedIn),
         'host-disk' => hostDiskView($config, $signedIn),
+        'backups' => backupsView($config, $signedIn),
         'capabilities' => capabilitiesView($config, $pdo, $signedIn),
         'mounts' => mountsView($config, $signedIn),
         'capability-changes' => capabilityChangesView($config, $pdo, $signedIn),
@@ -782,6 +784,44 @@ function mountsView(array $config, bool $signedIn): array
         // skeleton mounts means opposite things from the two sides.
         'cagefs' => cagefsMounts($mounts, CAGEFS_SKELETON, !$ownView),
     ];
+}
+
+/**
+ * Backup storage, as its own subject.
+ *
+ * Signed-in only: it names accounts, their live sizes and their backup sizes,
+ * which together describe the shape of somebody's hosting.
+ */
+function backupsView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see backup storage');
+    }
+
+    $host = hostDb($config, false);
+    if ($host === null) {
+        return [
+            'available' => false,
+            'reason' => 'Backups live outside this account, so this needs the host collector.',
+        ];
+    }
+
+    try {
+        $analysis = analyseBackups($host, $config);
+    } catch (Throwable $e) {
+        return ['available' => false, 'reason' => 'Could not be read: ' . $e->getMessage()];
+    }
+
+    if ($analysis['available']) {
+        // The named account, not the unattributed remainder.
+        $analysis += backupActions($analysis);
+        foreach ($analysis['accounts'] as $i => $row) {
+            $analysis['accounts'][$i]['verdict'] =
+                backupRatioVerdict($row['ratio'], $row['copies']);
+        }
+    }
+
+    return $analysis;
 }
 
 function hostDiskView(array $config, bool $signedIn): array

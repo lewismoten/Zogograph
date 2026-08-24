@@ -169,6 +169,25 @@ function hostDirectoryUsage(
     }
 
     /*
+     * Bind mounts are skipped, because they are the same blocks twice.
+     *
+     * The device check below stops the walk crossing onto another filesystem.
+     * It does nothing about a subtree of *this* filesystem mounted somewhere
+     * else on it, which is exactly what CageFS does seventy times over - and
+     * those files have one inode, one set of blocks, and two paths. The result
+     * was /usr/local/cpanel counted at 3.51 GiB and again at 3.55 GiB under the
+     * skeleton, and a root total that was not a total of anything.
+     *
+     * Deduplicating by inode would also work and costs a hash entry per file -
+     * tens of megabytes on a real server. Refusing to descend into the view in
+     * the first place is cheaper and more honest: the bytes are counted where
+     * they actually live.
+     */
+    foreach (bindMountPoints() as $point) {
+        $skip[] = $point;
+    }
+
+    /*
      * Skip paths are resolved before they are compared.
      *
      * The walk works in resolved paths - realpath() is applied to the root and
@@ -742,4 +761,31 @@ function hostWalkPending(PDO $host, ?int $requestedAt): bool
      * response to it.
      */
     return $last <= $requestedAt;
+}
+
+/**
+ * Mount points that are views of a subtree already on this filesystem.
+ *
+ * From /proc/self/mountinfo, where a root field of anything but "/" means the
+ * mount shows part of a filesystem rather than the whole of it. That is the
+ * definition of a bind, and it is the only reliable way to spot one - the
+ * device is the same, the inodes are the same, and nothing in the directory
+ * itself says it is a second window onto somewhere else.
+ *
+ * @return list<string>
+ */
+function bindMountPoints(string $procRoot = '/proc'): array
+{
+    if (!function_exists('readMountInfo')) {
+        require_once __DIR__ . '/mountinfo.php';
+    }
+
+    $points = [];
+    foreach (readMountInfo($procRoot) as $mount) {
+        if ($mount['bind'] && $mount['mount_point'] !== '/') {
+            $points[] = $mount['mount_point'];
+        }
+    }
+
+    return $points;
 }

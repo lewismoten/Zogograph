@@ -32,7 +32,7 @@ $required = [
     'lib/anomalies.php', 'lib/incident.php', 'lib/daemons.php',
     'lib/growth.php', 'lib/retention.php',
     'lib/logwatch.php', 'lib/treemap.php',
-    'lib/hostdisk.php', 'lib/capabilities.php',
+    'lib/hostdisk.php', 'lib/capabilities.php', 'lib/backups.php',
     'lib/mountinfo.php',
     'lib/auth.php', 'lib/mask.php', 'lib/actions.php', 'lib/logs.php',
     'lib/schedule.php', 'lib/configure.php', 'lib/processes.php',

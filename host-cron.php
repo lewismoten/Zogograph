@@ -38,6 +38,7 @@ require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/host.php';
 require_once __DIR__ . '/lib/hostdisk.php';
+require_once __DIR__ . '/lib/backups.php';
 require_once __DIR__ . '/lib/mountinfo.php';
 require_once __DIR__ . '/lib/capabilities.php';
 
@@ -424,6 +425,38 @@ try {
         }
         if ($deleted['reason'] !== null) {
             $say('  ' . $deleted['reason']);
+        }
+
+        /*
+         * JetBackup's own account of what it holds, alongside the sizes.
+         *
+         * Asked here rather than on every collection: it shells out to a tool
+         * that talks to a database, and the answer changes when a backup runs
+         * rather than minute to minute.
+         */
+        $jet = jetBackupInventory();
+        if ($jet['available']) {
+            $ins = $pdo->prepare(
+                'INSERT INTO host_backups (taken_at, account, created_at, type, bytes,
+                    destination, path, backup_id)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+            );
+            foreach ($jet['backups'] as $backup) {
+                $ins->execute([
+                    $at,
+                    is_string($backup['account'] ?? null) ? $backup['account'] : null,
+                    is_numeric($backup['created'] ?? null) ? (int)$backup['created'] : null,
+                    is_string($backup['type'] ?? null) ? $backup['type'] : null,
+                    is_numeric($backup['size'] ?? null) ? (int)$backup['size'] : null,
+                    is_string($backup['destination'] ?? null) ? $backup['destination'] : null,
+                    is_string($backup['path'] ?? null) ? $backup['path'] : null,
+                    is_string($backup['id'] ?? null) ? $backup['id'] : null,
+                ]);
+            }
+            $say(sprintf('JetBackup: %d backups recorded from its own metadata.',
+                count($jet['backups'])));
+        } else {
+            $say('JetBackup: ' . $jet['reason']);
         }
 
         $pdo->prepare(

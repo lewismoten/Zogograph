@@ -614,3 +614,29 @@ pre.commands {
   line-height: 1.5;
   white-space: pre;
 }
+
+/* -------------------------------------------------------------- backups -- */
+
+.headline { font-size: 1.6rem; font-weight: 600; }
+.headline-sub { color: var(--muted); font-size: .88rem; margin-top: 2px; }
+
+/*
+ * Safety levels are colour-coded, and dangerous is deliberately not red-as-in-
+ * do-this-first. It is listed to be named as dangerous, so it reads as a
+ * warning label rather than as the bottom of a to-do list.
+ */
+.level { font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.level-safe { color: var(--ok); }
+.level-review { color: var(--warn); }
+.level-dangerous { color: var(--crit); }
+.reach { font-size: .72rem; color: var(--muted); }
+.action-row { padding: 9px 0; border-bottom: 1px solid var(--line); }
+.action-row:last-child { border-bottom: 0; }
+.action-title { font-size: .9rem; font-weight: 600; margin: 2px 0; }
+.action-detail { font-size: .82rem; color: var(--muted); line-height: 1.5; max-width: 78ch; }
+.action-command {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .78rem; background: #000; border: 1px solid var(--line);
+  border-radius: 6px; padding: 2px 6px; display: inline-block; margin-top: 4px;
+}
+.ratio-high { color: var(--warn); font-weight: 600; }
