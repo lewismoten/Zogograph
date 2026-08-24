@@ -5750,9 +5750,26 @@ async function refreshMounts() {
   const frag = document.createDocumentFragment();
 
   if (data.own_view) {
-    frag.appendChild(note("Read from this account's own /proc/self/mountinfo. Inside CageFS "
-      + "that is the account's view of the filesystem, not the machine's — which is itself "
-      + "worth seeing. The host collector records the machine's."));
+    const lines = ["Read from this account's own /proc/self/mountinfo — the account's view of "
+      + "the filesystem, not the machine's."];
+
+    /*
+     * Why the account's view cannot answer the CageFS question.
+     *
+     * Inside a cage the skeleton's contents appear as /usr and /lib; the
+     * /usr/share/cagefs-skeleton mounts that assemble them live in the host's
+     * namespace and are invisible from in here. Reporting their absence as
+     * "CageFS is not installed" told people sitting inside a cage that they
+     * were not in one.
+     */
+    if (data.cagefs?.inside_cage) {
+      lines.push("This looks like the inside of a CageFS cage: "
+        + data.cagefs.cage_signals.join("; ") + ".");
+    }
+    lines.push("Run the host collector as root to see the machine's own mount table: "
+      + "php host-cron.php --capabilities");
+
+    frag.appendChild(note(lines.join(" ")));
   }
 
   /*

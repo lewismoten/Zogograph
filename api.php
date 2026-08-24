@@ -752,7 +752,9 @@ function mountsView(array $config, bool $signedIn): array
             : null,
         'mounts' => $mounts,
         'filesystems' => groupByFilesystem($mounts),
-        'cagefs' => cagefsMounts($mounts),
+        // Told which view it is looking at, because the same absence of
+        // skeleton mounts means opposite things from the two sides.
+        'cagefs' => cagefsMounts($mounts, CAGEFS_SKELETON, !$ownView),
     ];
 }
 

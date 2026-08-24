@@ -199,7 +199,7 @@ function groupByFilesystem(array $mounts): array
  *
  * @param list<array> $mounts
  */
-function cagefsMounts(array $mounts, string $skeleton = CAGEFS_SKELETON): array
+function cagefsMounts(array $mounts, string $skeleton = CAGEFS_SKELETON, bool $hostView = true): array
 {
     $prefix = rtrim($skeleton, '/');
     $under = [];
@@ -216,9 +216,13 @@ function cagefsMounts(array $mounts, string $skeleton = CAGEFS_SKELETON): array
 
     $devices = array_unique(array_column($under, 'device'));
 
+    $cage = looksLikeCage($mounts);
+    $insideCage = !$hostView && $cage['likely'];
+
     return [
         'skeleton' => $prefix,
         'present' => $under !== [],
+        'cage_signals' => $cage['signals'],
         'mounts' => $under,
         'count' => count($under),
         'devices' => count($devices),
@@ -231,15 +235,119 @@ function cagefsMounts(array $mounts, string $skeleton = CAGEFS_SKELETON): array
          * the disk it has, which is the specific error this whole file is
          * arranged to avoid.
          */
-        'note' => $under === []
-            ? 'Nothing is mounted under the CageFS skeleton, so either CageFS is not '
-              . 'installed or this host does not use it.'
-            : sprintf(
+        'view' => $hostView ? 'host' : 'account',
+        'inside_cage' => $insideCage,
+        /*
+         * What an empty list means depends entirely on who is looking.
+         *
+         * From the host, no mounts under the skeleton is real evidence that
+         * CageFS is not in use. From inside an account it is evidence of
+         * nothing at all: the cage's namespace shows the skeleton's *contents*
+         * as /usr and /lib, and the /usr/share/cagefs-skeleton paths that
+         * assemble it exist only in the host's namespace. An account can never
+         * see them, however thoroughly caged it is.
+         *
+         * The first version of this said "either CageFS is not installed or
+         * this host does not use it" in both cases, which told somebody sitting
+         * inside a cage that they were not in one.
+         */
+        /*
+         * Three different empties, and only one of them is evidence.
+         *
+         * No mount table at all means the question could not be asked. From
+         * inside an account it means the skeleton is invisible by design. Only
+         * from the host does an empty list actually mean CageFS is not here.
+         */
+        'note' => $mounts === []
+            ? 'No mount table could be read, so nothing can be said about CageFS either way.'
+            : ($under !== []
+            ? sprintf(
                 '%d mounts drawn from %d filesystem%s. These are views of filesystems '
                 . 'counted elsewhere, not additional space.',
                 count($under),
                 count($devices),
                 count($devices) === 1 ? '' : 's'
-            ),
+            )
+            : ($hostView
+                ? 'Nothing is mounted under the CageFS skeleton on this host, so CageFS is '
+                  . 'either not installed or not in use here.'
+                : ($insideCage
+                    ? 'This is the account\'s own mount table, and it is showing the inside '
+                      . 'of a CageFS cage - the skeleton\'s contents appear here as /usr and '
+                      . '/lib rather than under /usr/share/cagefs-skeleton. The mounts that '
+                      . 'assemble the cage exist only in the host\'s namespace. Run the host '
+                      . 'collector as root to see them: php host-cron.php --capabilities'
+                    : 'This is the account\'s own mount table. The CageFS skeleton is not '
+                      . 'visible from inside an account even when CageFS is in use, so this '
+                      . 'says nothing either way. Run the host collector as root to find out: '
+                      . 'php host-cron.php --capabilities'))),
     ];
+}
+
+/**
+ * Whether this mount table looks like the inside of a cage.
+ *
+ * Asked because the absence of skeleton mounts cannot answer it, and somebody
+ * reading "CageFS is not installed" while sitting inside CageFS is being
+ * actively misled.
+ *
+ * Only one signal actually separates the two sides, and finding that out cost a
+ * failing test: a mount *mentioning* cagefs proves nothing, because a host with
+ * CageFS installed mentions it constantly - that is where the skeleton lives.
+ * A small mount table proves nothing either; plenty of minimal hosts are small.
+ *
+ * What only an account sees is its own root mounted from a subtree. On a host,
+ * / comes from / . Inside a cage, / is assembled by binding a per-user
+ * directory into place, so the root's fs_root is somebody else's subdirectory.
+ * That is the test; everything else is corroboration printed alongside it.
+ *
+ * And one fact settles it in the other direction: skeleton mounts being visible
+ * at all means this is the host, because an account can never see them.
+ *
+ * @return array{likely: bool, signals: list<string>}
+ */
+function looksLikeCage(array $mounts, string $skeleton = CAGEFS_SKELETON): array
+{
+    $prefix = rtrim($skeleton, '/');
+
+    foreach ($mounts as $mount) {
+        if (str_starts_with($mount['mount_point'], $prefix)) {
+            // The skeleton is assembled here, so this is the host's namespace.
+            return ['likely' => false, 'signals' => []];
+        }
+    }
+
+    $rootFromSubtree = null;
+    foreach ($mounts as $mount) {
+        if ($mount['mount_point'] === '/' && $mount['fs_root'] !== '/') {
+            $rootFromSubtree = $mount['fs_root'];
+            break;
+        }
+    }
+
+    if ($rootFromSubtree === null) {
+        return ['likely' => false, 'signals' => []];
+    }
+
+    $signals = [sprintf(
+        'the root here is a subtree of its filesystem (%s), which is how a cage is built',
+        $rootFromSubtree
+    )];
+
+    // Corroboration only. Neither of these would be enough on its own.
+    foreach ($mounts as $mount) {
+        $haystack = strtolower($mount['device'] . ' ' . $mount['source'] . ' '
+            . $mount['mount_point'] . ' ' . $mount['fs_root']);
+        if (str_contains($haystack, 'cagefs')) {
+            $signals[] = 'a mount mentions cagefs';
+            break;
+        }
+    }
+
+    if (count($mounts) < 12) {
+        $signals[] = sprintf('only %d mounts are visible, far fewer than a whole host',
+            count($mounts));
+    }
+
+    return ['likely' => true, 'signals' => $signals];
 }
