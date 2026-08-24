@@ -5635,9 +5635,34 @@ function renderCapList(data) {
 
       const prog = document.createElement("div");
       prog.className = "cap-prog";
+      prog.appendChild(document.createTextNode(row.name));
+
+      /*
+       * The version is shown, not merely hovered.
+       *
+       * It used to be set as a title attribute and nothing else, so the answer
+       * to "what version of php is this" was there and invisible. The number
+       * alone goes in the column; the whole line stays as the tooltip, since
+       * "8.7.1" is what somebody is reading for and "curl 8.7.1
+       * (x86_64-apple-darwin25) libcurl/8.7.1" is what they need when the
+       * number turns out not to be enough.
+       */
+      const versionText = row.version_short || row.host_version_short;
+      if (versionText) {
+        const version = document.createElement("span");
+        version.className = "cap-version";
+        version.textContent = " " + versionText;
+        version.title = row.version || row.host_version;
+        prog.appendChild(version);
+      }
+
       const label = CAP_SHORT[row.state];
-      prog.textContent = label ? `${row.name} ${label}` : row.name;
-      if (row.version) prog.title = row.version;
+      if (label) {
+        const tag = document.createElement("span");
+        tag.className = "cap-tag";
+        tag.textContent = " " + label;
+        prog.appendChild(tag);
+      }
 
       /*
        * The button only where it can do anything.

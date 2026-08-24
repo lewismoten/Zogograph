@@ -559,6 +559,9 @@ canvas.pie { height: 340px; }
   white-space: nowrap;
 }
 .cap-why { color: var(--muted); font-size: .78rem; }
+/* The version is the answer; the state tag is an aside about it. */
+.cap-version { color: #cfcfcf; }
+.cap-tag { color: var(--muted); }
 .cap-group { margin-top: 18px; }
 .cap-group h3 { font-size: .9rem; margin: 0 0 8px; padding-bottom: 5px; border-bottom: 1px solid var(--line); }
 .cap-expose { margin-left: 8px; font-size: .75rem; }

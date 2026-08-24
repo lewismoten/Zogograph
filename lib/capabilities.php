@@ -404,21 +404,37 @@ function probeAlternatePaths(array $names, float $budgetSeconds = 8.0): array
  * @param array<string, string> $paths name => path
  * @return array<string, string> name => version line
  */
-function probeVersions(array $paths, array $catalogue, int $limit = 40): array
+function probeVersions(array $paths, array $catalogue, int $limit = 140): array
 {
     $args = [];
+    $keys = [];
     foreach ($catalogue as $row) {
         $args[$row['name']] = $row['version_arg'] ?? '--version';
+        $keys[$row['name']] = (bool)($row['key'] ?? false);
     }
+
+    /*
+     * The tools worth knowing about go first.
+     *
+     * The cap used to be applied in catalogue order, which spends it on cat, cp
+     * and mv - programs whose version nobody has ever wanted - and runs out
+     * before reaching git, php or curl. If a budget has to be spent somewhere,
+     * it should be spent on the answers somebody asked for.
+     */
+    $order = array_keys($paths);
+    usort($order, fn(string $a, string $b): int =>
+        (int)($keys[$b] ?? false) <=> (int)($keys[$a] ?? false));
 
     $hasTimeout = is_executable('/usr/bin/timeout') || is_executable('/bin/timeout');
     $versions = [];
     $done = 0;
 
-    foreach ($paths as $name => $path) {
+    foreach ($order as $name) {
         if ($done >= $limit) {
             break;
         }
+
+        $path = $paths[$name];
         if (!preg_match(PROGRAM_NAME_PATTERN, $name) || !is_executable($path)) {
             continue;
         }
@@ -440,13 +456,83 @@ function probeVersions(array $paths, array $catalogue, int $limit = 40): array
             continue;
         }
 
-        $first = trim(strtok($out, "\n") ?: '');
-        if ($first !== '') {
-            $versions[$name] = mb_substr($first, 0, 120);
+        $version = readVersionLine($out);
+        if ($version !== null) {
+            $versions[$name] = $version;
         }
     }
 
     return $versions;
+}
+
+/**
+ * Pulls a version out of a program's output, or gives up.
+ *
+ * Necessary because plenty of programs do not support the flag and say so, and
+ * the first version of this took the first line whatever it was - so `cat` was
+ * reported as having version "/bin/cat: illegal option -- -". That is worse
+ * than a blank: a blank says "not known", and an error message dressed as a
+ * version says something false with complete confidence.
+ *
+ * Several lines are considered, not just the first, because a program can be
+ * perfectly healthy and still have something else to say first. composer opens
+ * with a PHP deprecation notice; the version is on the line after it.
+ *
+ * Two tests per line, and both are applied to the *shortened* string that would
+ * actually be stored. Checking the full line and then truncating was its own
+ * bug: a deprecation notice ending in "on line 42" passed the digit test on the
+ * strength of a line number that the truncation then cut off.
+ */
+function readVersionLine(string $output): ?string
+{
+    $lines = preg_split('/\R/', trim($output)) ?: [];
+
+    foreach (array_slice($lines, 0, 6) as $line) {
+        $candidate = mb_substr(trim($line), 0, 120);
+        if ($candidate === '' || !looksLikeVersion($candidate)) {
+            continue;
+        }
+        return $candidate;
+    }
+
+    return null;
+}
+
+/** Whether one line could plausibly be a version rather than a complaint. */
+function looksLikeVersion(string $line): bool
+{
+    $lower = strtolower($line);
+
+    foreach ([
+        'illegal option', 'unrecognized option', 'unrecognised option',
+        'invalid option', 'unknown option', 'usage:', 'no such file',
+        'command not found', 'permission denied', 'try \'', 'try "',
+        // Programs that work fine and clear their throat first.
+        'deprecated', 'warning:', 'notice:', 'fatal error', 'stack trace',
+    ] as $complaint) {
+        if (str_contains($lower, $complaint)) {
+            return false;
+        }
+    }
+
+    // A version without a number in it is not a version.
+    return (bool)preg_match('/\d/', $line);
+}
+
+/**
+ * The number out of a version line, for somewhere there is no room for the rest.
+ *
+ * "GNU bash, version 3.2.57(1)-release" is the honest answer and far too long
+ * for a column; "3.2.57" is what somebody is actually reading it for. The full
+ * line is kept and shown alongside, so nothing is lost by shortening it.
+ */
+function shortVersion(string $line): string
+{
+    if (preg_match('/(\d+(?:\.\d+){1,3})/', $line, $m)) {
+        return $m[1];
+    }
+
+    return preg_match('/(\d[\w.\-]*)/', $line, $m) ? $m[1] : '';
 }
 
 /**
@@ -743,6 +829,9 @@ function mergeCapabilities(array $account, array $host, array $cagefs = []): arr
             'executable' => (bool)$row['executable'],
             'alternate_path' => (string)($row['alternate_path'] ?? ''),
             'version' => (string)($row['version'] ?? ''),
+            // The number on its own, for the column; the full line travels with
+            // it so nothing is lost to the shortening.
+            'version_short' => shortVersion((string)($row['version'] ?? '')),
             'source' => (string)($row['source'] ?? ''),
             /*
              * Absent host data is not evidence of absence.
@@ -756,6 +845,8 @@ function mergeCapabilities(array $account, array $host, array $cagefs = []): arr
             'on_host' => $hostRow !== null && (string)$hostRow['path'] !== '',
             'host_path' => $hostRow === null ? '' : (string)$hostRow['path'],
             'host_version' => $hostRow === null ? '' : (string)($hostRow['version'] ?? ''),
+            'host_version_short' => $hostRow === null
+                ? '' : shortVersion((string)($hostRow['version'] ?? '')),
             'caged' => $caged,
         ];
 
