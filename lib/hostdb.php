@@ -330,6 +330,28 @@ function hostMigrations(): array
             )",
             'CREATE INDEX host_lve_sample ON host_lve (sample_id)',
         ],
+
+        /*
+         * Columns added after the first release.
+         *
+         * These also appear in the CREATE TABLE above, so a fresh install gets
+         * them there and skips this step - the ALTER guard in hostMigrate()
+         * makes a column that already exists a no-op. They are repeated here
+         * because a database created before they were added has already
+         * recorded version 1 and will never run that statement again.
+         *
+         * That is the whole reason a shipped migration is never edited in
+         * place: changing step 1 fixes new installs and silently leaves every
+         * existing one behind, which surfaces later as "table host_files has no
+         * column named device" on the one machine that matters.
+         */
+        2 => [
+            'ALTER TABLE host_files ADD COLUMN device INTEGER',
+            'ALTER TABLE host_files ADD COLUMN inode INTEGER',
+            'ALTER TABLE host_files ADD COLUMN links INTEGER',
+            // Belt and braces: added the same careless way, one release earlier.
+            'ALTER TABLE host_samples ADD COLUMN pss_procs INTEGER',
+        ],
     ];
 }
 

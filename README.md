@@ -739,6 +739,20 @@ Polling stops while the tab is hidden.
 
 ## Schema
 
+**A shipped migration is never edited.** Adding a column to the `CREATE TABLE`
+in step 1 fixes new installs and silently leaves every existing one behind:
+those databases recorded step 1 as done long ago and will never run it again.
+It surfaces later, on the one machine that matters, as
+
+    Failed: SQLSTATE[HY000]: General error: 1 table host_files has no column named device
+
+New columns go in a new numbered step, *and* in the `CREATE TABLE` above it. The
+`ALTER TABLE … ADD COLUMN` guard makes the step a no-op where the column already
+exists, so both paths land in the same place — a fresh install builds it in one
+statement, an existing one alters into it.
+
+
+
 One SQLite file, normalised on `paths`:
 
 | table | what it holds |

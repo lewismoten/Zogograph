@@ -909,29 +909,39 @@ function hostFileTotals(array $rows): array
 {
     $seen = [];
     $bytes = 0;
+    $files = 0;
     $linked = 0;
 
     foreach ($rows as $row) {
-        $key = ($row['device'] ?? 0) . ':' . ($row['inode'] ?? 0);
-
-        // No inode recorded - an older reading - so it can only be taken at
-        // face value. Better a possible overcount than silently dropping a file.
-        if (($row['inode'] ?? 0) === 0) {
+        /*
+         * Rows written before the inode columns existed carry no identity, so
+         * they can only be taken at face value. Better a possible overcount for
+         * one transitional reading than a file silently dropped from the total.
+         *
+         * Counted in `files` as well as in `bytes`: deriving the two from
+         * different denominators is how a summary line ends up reading "57 MiB
+         * across 1 file" with three of them on screen.
+         */
+        if ((int)($row['inode'] ?? 0) === 0) {
             $bytes += (int)$row['bytes'];
+            $files++;
             continue;
         }
 
+        $key = $row['device'] . ':' . $row['inode'];
         if (isset($seen[$key])) {
             $linked++;
             continue;
         }
+
         $seen[$key] = true;
         $bytes += (int)$row['bytes'];
+        $files++;
     }
 
     return [
         'bytes' => $bytes,
-        'files' => count($seen),
+        'files' => $files,
         'paths' => count($rows),
         'linked' => $linked,
     ];
