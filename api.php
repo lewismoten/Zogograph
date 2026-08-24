@@ -43,6 +43,7 @@ require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/incident.php';
 require_once __DIR__ . '/lib/daemons.php';
 require_once __DIR__ . '/lib/growth.php';
+require_once __DIR__ . '/lib/retention.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/logs.php';
@@ -199,6 +200,36 @@ function emptiedSince(PDO $pdo, int $since): array
 }
 
 /** The vitals series for a window, thinned so a long range is not a huge body. */
+/**
+ * How wide one chart point should be, from a ladder of round durations.
+ *
+ * The smallest step that brings the range under the point budget. Round
+ * numbers because the reader has to hold the bucket in their head while
+ * looking at the chart - "each point is five minutes" is a thought, "each
+ * point is 43.7 seconds" is an obstacle.
+ */
+function displayBucket(int $span, int $points): int
+{
+    if ($span <= 0 || $points <= 0) {
+        return 0;
+    }
+
+    $ladder = [
+        1, 5, 10, 15, 30,
+        60, 120, 300, 600, 900, 1800,
+        3600, 7200, 10800, 21600, 43200,
+        86400, 172800, 604800,
+    ];
+
+    foreach ($ladder as $step) {
+        if ($span / $step <= $points) {
+            return $step;
+        }
+    }
+
+    return end($ladder);
+}
+
 function vitalsSeries(PDO $pdo): array
 {
     [$from, $to] = window();
@@ -209,28 +240,61 @@ function vitalsSeries(PDO $pdo): array
     $total = (int)$count->fetchColumn();
 
     /*
-     * Every nth row rather than an average.
+     * Grouped into time buckets chosen from the range, worst value per bucket.
      *
-     * A dashboard chart is read for shape and for spikes, and averaging is
-     * exactly the operation that removes spikes - the ten seconds when memory
-     * went through the roof is the thing you came to look at.
+     * A year holds three million ten-second readings and a canvas has about a
+     * thousand pixels, so something has to give. This used to take every nth
+     * row, on the reasoning that averaging destroys spikes - which is true,
+     * and every-nth destroys them just as thoroughly: it keeps an arbitrary
+     * sample and the spike is only kept if it happens to be the arbitrary one.
+     *
+     * So the bucket carries its worst value, exactly as compaction does in
+     * lib/retention.php and using the same classification - MAX for the
+     * columns where high is bad, MIN for the three that measure what is left.
+     * A point then means "the worst it got in this bucket", which is what a
+     * monitoring chart is read for.
+     *
+     * Buckets come from a ladder of round durations rather than span/points,
+     * so the x-axis lands on ten seconds or five minutes or an hour instead of
+     * on 43.7 seconds.
      */
-    $step = max(1, (int)ceil($total / $limit));
+    $bucket = displayBucket($to - $from, $limit);
 
-    $stmt = $pdo->prepare(
-        'SELECT * FROM (
-             SELECT *, ROW_NUMBER() OVER (ORDER BY taken_at) AS rn
+    if ($bucket <= 1) {
+        $stmt = $pdo->prepare(
+            'SELECT * FROM vitals WHERE taken_at BETWEEN :from AND :to ORDER BY taken_at'
+        );
+    } else {
+        $min = retentionMinColumns();
+        $select = [
+            'MAX(taken_at) AS taken_at',
+            'MAX(id) AS id',
+            'SUM(COALESCE(samples, 1)) AS samples',
+        ];
+        foreach (vitalsColumns($pdo) as $column) {
+            if (in_array($column, ['id', 'taken_at', 'samples'], true)) {
+                continue;
+            }
+            $select[] = (in_array($column, $min, true) ? 'MIN' : 'MAX') . "($column) AS $column";
+        }
+
+        $stmt = $pdo->prepare(
+            'SELECT ' . implode(', ', $select) . '
              FROM vitals WHERE taken_at BETWEEN :from AND :to
-         ) WHERE rn % :step = 0 ORDER BY taken_at'
-    );
+             GROUP BY taken_at / :bucket
+             ORDER BY taken_at'
+        );
+        $stmt->bindValue(':bucket', $bucket, PDO::PARAM_INT);
+    }
+
     // Integers, for the reason set out in lib/alerts.php: a bound string
     // compared against a computed expression never matches in SQLite.
     $stmt->bindValue(':from', $from, PDO::PARAM_INT);
     $stmt->bindValue(':to', $to, PDO::PARAM_INT);
-    $stmt->bindValue(':step', $step, PDO::PARAM_INT);
     $stmt->execute();
 
     $rows = $stmt->fetchAll();
+    $step = $bucket;
 
     /*
      * Whether this range has been compacted, and how coarsely.
@@ -290,6 +354,8 @@ function vitalsSeries(PDO $pdo): array
         'to' => $to,
         'total' => $total,
         'step' => $step,
+        // How wide each point is. 0 means the readings are shown as collected.
+        'bucket_seconds' => $bucket > 1 ? $bucket : 0,
         'rows' => $rows,
         'uptime' => $uptime,
         // 1 means every point is a single reading; more means the older part

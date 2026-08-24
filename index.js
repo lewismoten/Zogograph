@@ -1188,9 +1188,16 @@ async function refreshAll() {
     showCompactionNote(vitals);
     renderVitalCharts(vitals.rows, vitals.uptime);
     renderCategoryChart(scans.rows, scans.categories ?? state.categories);
-    $("lastSeen").textContent = overview.vitals
-      ? `updated ${ago(overview.vitals.taken_at)}`
-      : "";
+    /*
+     * Remembered rather than printed once.
+     *
+     * The label used to be written at each refresh and then sit there saying
+     * "updated 3s ago" for the next thirty seconds, which is not merely stale
+     * - it is the one number on the page whose whole job is to say how stale
+     * everything else is. A second-by-second ticker renders it from this.
+     */
+    state.lastReadingAt = overview.vitals ? Number(overview.vitals.taken_at) : null;
+    renderLastSeen();
 
     if (wasScanning && !state.scanRunning) {
       // Finished: back to the ordinary cadence.
@@ -3483,16 +3490,34 @@ function showCompactionNote(vitals) {
   if (!note) return;
 
   const perPoint = Number(vitals?.samples_per_point ?? 1);
-  if (!Number.isFinite(perPoint) || perPoint <= 1) {
+  const bucket = Number(vitals?.bucket_seconds ?? 0);
+  const parts = [];
+
+  /*
+   * Two different kinds of grouping, and they are worth separating.
+   *
+   * One is on disk and permanent - old readings merged by lib/retention.php.
+   * The other is only for this chart, because a year has more readings than
+   * the canvas has pixels. Both show the worst value rather than an average,
+   * and neither is something to leave the reader to infer.
+   */
+  if (bucket > 0) {
+    parts.push(`Each point covers ${humanDuration(bucket)} and shows the worst value in `
+      + `that period, not an average.`);
+  }
+  if (Number.isFinite(perPoint) && perPoint > 1) {
+    parts.push(`The oldest readings here are also compacted on disk, up to `
+      + `${count(perPoint, "reading")} to a row. Readings from around an alert are never `
+      + `compacted.`);
+  }
+
+  if (parts.length === 0) {
     note.hidden = true;
     return;
   }
 
   note.hidden = false;
-  note.textContent =
-    `Part of this range is compacted: the oldest points each stand for up to `
-    + `${count(perPoint, "reading")} and show the worst value in that period, not an `
-    + `average. Readings from around an alert are never compacted.`;
+  note.textContent = parts.join(" ");
 }
 
 function restartMarks(uptime, from, to) {
@@ -4753,6 +4778,27 @@ async function doSignIn(password) {
   state.csrf = parsed.csrf;
 }
 
+/*
+ * Keeps "updated 12s ago" honest between refreshes.
+ *
+ * Its own one-second timer rather than a faster poll: the cost is a string
+ * assignment, and tying it to the refresh interval is what made it wrong in
+ * the first place.
+ */
+function renderLastSeen() {
+  const el = $("lastSeen");
+  if (!el) return;
+
+  if (!state.lastReadingAt) {
+    el.textContent = "";
+    return;
+  }
+
+  el.textContent = `updated ${ago(state.lastReadingAt)}`;
+}
+
+setInterval(renderLastSeen, 1000);
+
 /* ----------------------------------------------------------------- polling -- */
 
 function schedule() {
@@ -4793,12 +4839,44 @@ $("units").addEventListener("change", () => {
   refreshAll();
 });
 
+/*
+ * The only range where live updates mean anything.
+ *
+ * Live takes a fresh reading every ten seconds. On a year-long chart those
+ * land inside a bucket a day wide and change nothing anybody can see, while
+ * still writing a row to the database every ten seconds - all of the cost and
+ * none of the point.
+ */
+const LIVE_RANGE = 600;
+
+function syncLiveAvailability() {
+  const button = $("live");
+  const allowed = state.range === LIVE_RANGE;
+
+  button.disabled = !allowed;
+  button.title = allowed
+    ? "Take a fresh reading every ten seconds."
+    : "Live updates are only available on the last 10 minutes — at any longer range "
+      + "a ten-second reading lands inside a bucket that hides it.";
+
+  if (!allowed && state.live) {
+    // Turned off rather than left on and ineffective: a Live indicator that is
+    // lit while nothing is being sampled is worse than no indicator.
+    state.live = false;
+    button.setAttribute("aria-pressed", "false");
+    schedule();
+    notice("Live updates switched off — they only apply to the last 10 minutes.");
+  }
+}
+
 $("range").addEventListener("change", () => {
   state.range = Number($("range").value);
+  syncLiveAvailability();
   refreshAll();
 });
 
 $("live").addEventListener("click", () => {
+  if (state.range !== LIVE_RANGE) return;
   state.live = !state.live;
   $("live").setAttribute("aria-pressed", String(state.live));
   schedule();
@@ -4979,6 +5057,10 @@ window.addEventListener("resize", () => {
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refreshAll();
 });
+
+// The Live button starts disabled unless the page opens on the short range,
+// so it can never be lit while nothing is being sampled.
+syncLiveAvailability();
 
 refreshAll();
 schedule();
