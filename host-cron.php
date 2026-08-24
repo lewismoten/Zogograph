@@ -178,14 +178,23 @@ try {
         ARRAY_FILTER_USE_KEY
     );
 
+    /*
+     * Captured before the sweep writes its own row.
+     *
+     * Everything below asks "was this requested since the last sweep", and
+     * storeHostCapabilities() inserts a run row partway through - so reading
+     * this afterwards would compare every request against the sweep that is
+     * answering it and conclude that none of them are outstanding.
+     */
+    $previousRun = 0;
+    try {
+        $previousRun = (int)$pdo->query('SELECT MAX(ran_at) FROM host_capability_runs')->fetchColumn();
+    } catch (Throwable) {
+        $previousRun = 0;
+    }
+
     if (!$doCapabilities && $capabilityRequests !== []) {
-        $lastRun = 0;
-        try {
-            $lastRun = (int)$pdo->query('SELECT MAX(ran_at) FROM host_capability_runs')->fetchColumn();
-        } catch (Throwable) {
-            $lastRun = 0;
-        }
-        if (max($capabilityRequests) >= $lastRun) {
+        if (max($capabilityRequests) >= $previousRun) {
             $doCapabilities = true;
             $say(sprintf('%d capability request(s) outstanding. Running a sweep.',
                 count($capabilityRequests)));
@@ -253,10 +262,23 @@ try {
          * friendly label, so the commands are printed and run only when the
          * config explicitly allows it.
          */
-        foreach (array_keys($capabilityRequests) as $task) {
+        foreach ($capabilityRequests as $task => $requestedAtTask) {
             if (!str_starts_with($task, 'expose:')) {
                 continue;
             }
+
+            /*
+             * Only requests made since the last sweep.
+             *
+             * The request row stays in the account's database - the collector
+             * cannot write there to mark it done - so without this every
+             * expose request ever made is reprinted on every run, for ever.
+             * A reminder that cannot be dismissed stops being read.
+             */
+            if ($requestedAtTask < $previousRun) {
+                continue;
+            }
+
             $program = substr($task, strlen('expose:'));
             $path = null;
             foreach ($probe['rows'] as $row) {
@@ -268,6 +290,24 @@ try {
 
             if ($path === null || $path === '') {
                 $say(sprintf('Cannot expose %s: it is not installed on this host.', $program));
+                continue;
+            }
+
+            /*
+             * If it is already visible, say so instead of giving instructions.
+             *
+             * The sweep re-probes inside the cage, so by the time this runs we
+             * know whether the exposure worked - and repeating the commands for
+             * something already done is how somebody ends up adding a duplicate
+             * line to cagefs conf.d.
+             */
+            if (isset($inCage[$program])) {
+                $say(sprintf(
+                    '%s is already visible to %s at %s - nothing to do.',
+                    $program,
+                    $user ?: 'the account',
+                    $inCage[$program]
+                ));
                 continue;
             }
 

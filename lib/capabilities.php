@@ -457,10 +457,18 @@ function probeVersions(array $paths, array $catalogue, int $limit = 40): array
  * problem. On a host with CageFS and the account enabled, it means the program
  * is not in the skeleton - a completely different fix.
  */
-function cagefsStatus(?string $user = null): array
+function cagefsStatus(?string $user = null, ?string $binary = null): array
 {
+    // The path is injectable so the wording can be tested without a real
+    // CloudLinux box - the strings here are read by somebody diagnosing a
+    // problem, and getting them wrong is how a message ends up describing the
+    // wrong account.
     $ctl = null;
-    foreach (['/usr/sbin/cagefsctl', '/sbin/cagefsctl', '/usr/bin/cagefsctl'] as $candidate) {
+    $candidates = $binary !== null
+        ? [$binary]
+        : ['/usr/sbin/cagefsctl', '/sbin/cagefsctl', '/usr/bin/cagefsctl'];
+
+    foreach ($candidates as $candidate) {
         if (is_executable($candidate)) {
             $ctl = $candidate;
             break;
@@ -506,13 +514,27 @@ function cagefsStatus(?string $user = null): array
         'user' => $user,
         'enabled' => $enabled,
         'raw' => mb_substr($text, 0, 400),
+        /*
+         * The account is named, never called "this account".
+         *
+         * This line is printed by a collector running as root on behalf of
+         * somebody else, so "this account" reads as whoever is at the terminal
+         * - which is exactly the account it is not talking about.
+         */
         'note' => $enabled === true
-            ? 'This account is inside CageFS, so it sees a curated filesystem rather than '
-              . 'the host\'s. A program missing here may be installed and simply not exposed.'
+            ? sprintf(
+                '%s is inside CageFS, so that account sees a curated filesystem rather than '
+                . 'the host\'s. A program missing there may be installed here and simply not '
+                . 'exposed.',
+                $user
+            )
             : ($enabled === false
-                ? 'CageFS is installed but this account is not caged, so it sees the host '
-                  . 'filesystem directly.'
-                : 'CageFS is installed; the account\'s status could not be read.'),
+                ? sprintf(
+                    'CageFS is installed but %s is not caged, so that account sees the host '
+                    . 'filesystem directly.',
+                    $user
+                )
+                : sprintf('CageFS is installed; the status of %s could not be read.', $user)),
     ];
 }
 
