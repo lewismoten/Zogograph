@@ -21,6 +21,16 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 
+/**
+ * How far back a projection looks.
+ *
+ * Shared between the alert rules and the dashboard card on purpose: two
+ * projections of the same disk that disagree because they measured different
+ * windows is worse than either being absent, and there is no reason for them to
+ * differ.
+ */
+const TREND_WINDOW_SECONDS = 86400;
+
 function evaluateAlerts(array $config, PDO $pdo): array
 {
     $rules = $config['alerts'] ?? [];
@@ -139,7 +149,7 @@ function trendAlerts(PDO $pdo, array $rules): array
         'SELECT taken_at, disk_free_bytes, inodes_free FROM vitals
          WHERE taken_at >= ? ORDER BY taken_at'
     );
-    $rows->execute([time() - 86400]);
+    $rows->execute([time() - TREND_WINDOW_SECONDS]);
     $readings = $rows->fetchAll();
 
     $out = [];

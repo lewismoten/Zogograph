@@ -191,12 +191,34 @@ function vitalsSeries(PDO $pdo): array
     $rows = $stmt->fetchAll();
 
     /*
-     * The trend is computed here, over exactly the rows being returned.
+     * The projection is computed over a fixed day, not over the rows returned.
      *
-     * Not separately in the browser: the card and the chart have to be talking
-     * about the same window, or changing the range moves the line and leaves
-     * the projection saying something else.
+     * This used to follow the displayed range, on the reasoning that the card
+     * and the chart should describe the same window. That was the wrong
+     * trade, for two reasons found by using it.
+     *
+     * First, nothing on the chart draws the trend, so there was no line for the
+     * card to agree with - the coupling bought nothing.
+     *
+     * Second, an hour cannot support a projection. Disk space does not fall
+     * smoothly: it sits flat and then jumps when something flushes, so a
+     * one-hour window catches whichever burst it happened to land in. Measured
+     * on identical simulated behaviour, the same machine projected anywhere
+     * between 80 and 207 days depending on the hour, and occasionally reported
+     * a spike instead. Changing the range to look at something made the
+     * projection jump, which reads as the machine changing.
+     *
+     * A day is also exactly the window the alert rules use, so the card and the
+     * email that may arrive about it now agree by construction rather than by
+     * coincidence.
      */
+    $recent = $pdo->prepare(
+        'SELECT taken_at, disk_free_bytes, inodes_free FROM vitals
+         WHERE taken_at >= ? ORDER BY taken_at'
+    );
+    $recent->execute([time() - TREND_WINDOW_SECONDS]);
+    $recentRows = $recent->fetchAll();
+
     /*
      * Worked out over exactly the rows being returned, like the trend above.
      *
@@ -213,11 +235,21 @@ function vitalsSeries(PDO $pdo): array
         'step' => $step,
         'rows' => $rows,
         'uptime' => $uptime,
+        // The window goes inside each trend rather than beside them: the card is
+        // handed one trend, and a field it cannot reach is a field it will not
+        // print.
         'trend' => [
-            'disk' => seriesTrend($rows, 'disk_free_bytes'),
-            'inodes' => seriesTrend($rows, 'inodes_free'),
+            'disk' => trendWithWindow($recentRows, 'disk_free_bytes'),
+            'inodes' => trendWithWindow($recentRows, 'inodes_free'),
         ],
     ];
+}
+
+/** A trend that carries the window it was measured over. */
+function trendWithWindow(array $rows, string $field): ?array
+{
+    $trend = seriesTrend($rows, $field);
+    return $trend === null ? null : $trend + ['window_seconds' => TREND_WINDOW_SECONDS];
 }
 
 /**

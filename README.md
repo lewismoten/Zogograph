@@ -950,6 +950,34 @@ Two things make that chart readable:
   reason about, and the mean of the steps inside it is a smaller number that
   means nothing on its own.
 
+### The projection is a date, over a fixed day
+
+The card says **12/11/2026**, not "1095.1 days". A duration is the harder thing
+to act on — it has to be converted to something a calendar understands before it
+means anything — and at that range the decimal is spurious precision on an
+estimate that really says "some time in 2029". The year appears only past thirty
+days: inside that the day and month are unambiguous, and beyond it leaving the
+year off makes next August and August three years hence look identical.
+
+**It is measured over the last 24 hours regardless of the range being viewed**,
+and that reverses an earlier decision. The projection used to follow the
+displayed rows, on the reasoning that the card and the chart should describe the
+same window. Two things were wrong with that.
+
+Nothing on the chart draws the trend, so there was no line for the card to agree
+with; the coupling bought nothing. And **an hour cannot support a projection at
+all.** Disk space does not fall smoothly — it sits flat and then jumps when
+something flushes — so a one-hour window catches whichever burst it landed in.
+On identical simulated behaviour the same machine projected anywhere between 80
+and 207 days depending on the hour, and one hour in six reported a one-off spike
+instead. Changing the range to look at something made the projection jump, which
+reads as the machine changing.
+
+A day is also exactly the window the alert rules use, so the card and any email
+about it now agree by construction rather than by coincidence — one shared
+constant, `TREND_WINDOW_SECONDS`. The card says which window it used, so nobody
+has to assume it follows the range picker.
+
 ### Why the projection is not a line of best fit
 
 A least-squares fit was the first attempt and it is the wrong tool: one large

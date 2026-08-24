@@ -256,10 +256,31 @@ function setTrendCard(trend) {
 
   setCard(
     "cardTrend",
-    humanDuration(trend.seconds_left),
-    `losing ${humanBytes(-trend.rate * 3600)}/h, and still falling`,
+    projectedDate(trend.seconds_left),
+    `losing ${humanBytes(-trend.rate * 3600)}/h`
+      + `, measured over ${humanDuration(trend.window_seconds || 86400)}`,
     trend.seconds_left < 86400 ? "crit" : trend.seconds_left < 604800 ? "warn" : ""
   );
+}
+
+/**
+ * When the disk is projected to fill, as a date.
+ *
+ * A duration is the harder thing to act on: "1095.1 days" has to be converted
+ * to something a calendar understands before it means anything, and at that
+ * range the decimal is spurious precision on an estimate that is really "some
+ * time in 2029". A date is the same information already converted.
+ *
+ * The year appears only past a month. Inside that, the day and month are
+ * unambiguous and the year is noise; beyond it, leaving the year off would make
+ * next August and August three years from now look identical.
+ */
+function projectedDate(secondsLeft) {
+  const when = new Date((Math.floor(Date.now() / 1000) + secondsLeft) * 1000);
+
+  return when.toLocaleDateString([], secondsLeft > 30 * 86400
+    ? { year: "numeric", month: "numeric", day: "numeric" }
+    : { month: "numeric", day: "numeric" });
 }
 
 /* ----------------------------------------------------------------- charts -- */
