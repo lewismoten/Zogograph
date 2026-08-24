@@ -560,7 +560,24 @@ table and the file list to redraw one canvas.
 
 ### Where the memory goes
 
-A pie of the services, anything under 1% folded into a single slice.
+A pie of the ten largest services; everything under 1%, and everything past the
+tenth, folded into a single grey slice. Capped by count as well as by share
+because a machine running thirty things at two percent each would otherwise
+produce thirty wedges, none of which can be told apart or written in.
+
+**Slices carry their own figures where they fit.** The share and size go inside
+the wedge, so the list beside the circle only has to name things. Whether they
+fit is measured rather than guessed: a share threshold alone is a guess about
+pixels, and at eight percent two neighbouring wedges are each narrower than the
+words placed in them, so the labels collide across the boundary. The wedge's
+width at the text's radius is a chord — 2r·sin(θ/2) — so it is compared against
+the actual measured text, and the answer holds at any canvas size. A wedge that
+can fit the percentage but not the size shows the percentage and leaves the size
+to the list; nothing is only ever readable in one place.
+
+The palette is the pie's own ten colours, not the line charts' five. With five,
+the sixth slice is handed the first colour again and two identical wedges make
+the list look shuffled — which is exactly what it looked like.
 
 **It is drawn from PSS, and it has to be.** A pie asserts that its slices make
 up a whole, and resident memory cannot: a page shared by ten processes is

@@ -271,4 +271,4 @@ pre.paste {
 
 /* Taller than a line chart: the slice labels stack down the right, and a short
    canvas crops the ones at the ends. */
-canvas.pie { height: 300px; }
+canvas.pie { height: 340px; }

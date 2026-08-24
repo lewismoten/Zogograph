@@ -692,6 +692,30 @@ function drawLineChart(canvas, rows, series, options = {}) {
 
 /* -------------------------------------------------------------------- pie -- */
 
+/*
+ * A palette wide enough for every slice.
+ *
+ * The line-chart palette holds five, which is plenty for five lines and wrong
+ * for a pie: at six slices the sixth is handed the first colour again, and two
+ * identical wedges make the labels look shuffled. Ten distinct hues, because
+ * the pie draws at most ten named slices before folding the rest away.
+ */
+const PIE_COLORS = [
+  "#73b7ff", "#ffb86b", "#75d58a", "#d5a6ff", "#ff7f9f",
+  "#4fd6d2", "#f5d76e", "#a0a8ff", "#ff9d6b", "#8fd67a",
+];
+
+/** The most named slices before the rest are folded into one. */
+const PIE_MAX_SLICES = 10;
+
+/** Text on a coloured wedge, dark or light by how bright the wedge is. */
+function inkOn(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  // Rec. 601 luma: green carries most of perceived brightness, blue least.
+  const luma = (((n >> 16) & 255) * 299 + ((n >> 8) & 255) * 587 + (n & 255) * 114) / 1000;
+  return luma > 140 ? "#111" : "#f0f0f0";
+}
+
 /**
  * A pie of memory by service, with the long tail as one slice.
  *
@@ -702,16 +726,15 @@ function drawLineChart(canvas, rows, series, options = {}) {
  * size divides shared pages among their holders, which is exactly the property
  * a pie needs.
  *
- * Anything below the threshold becomes one "everything else" slice rather than
- * forty slivers. The remainder is taken from the measured total rather than by
- * adding up what was left out, so services too small to be recorded at all are
- * still inside it — the slice means "all the rest", not "the rest of the rows
- * you can see".
+ * Slices large enough to hold text carry their own share and size, so the list
+ * beside the circle only has to name things. The ones too narrow to write in
+ * keep their figures in the list instead - nothing is only ever readable in one
+ * place.
  */
 function drawPieChart(canvas, slices, options = {}) {
   const dpr = window.devicePixelRatio || 1;
   const cssW = Math.max(240, canvas.clientWidth);
-  const cssH = canvas.clientHeight || 260;
+  const cssH = canvas.clientHeight || 300;
   canvas.width = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
 
@@ -719,6 +742,8 @@ function drawPieChart(canvas, slices, options = {}) {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, cssW, cssH);
   ctx.font = "12px system-ui";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
 
   const total = slices.reduce((sum, s) => sum + Math.max(0, s.value), 0);
   if (!slices.length || total <= 0) {
@@ -728,38 +753,80 @@ function drawPieChart(canvas, slices, options = {}) {
     return;
   }
 
-  /*
-   * The circle and its labels are centred as one block.
-   *
-   * Sizing the circle against half the canvas and then starting at the left
-   * edge leaves the whole right side empty on a wide panel, which reads as a
-   * chart that failed to fill its space. Measuring the longest label first
-   * gives the true width of the group, so it can be placed as a unit.
-   */
-  const radius = Math.max(40, Math.min(cssW / 3, cssH) / 2 - 8);
-  const labelGap = 18;
-  const widest = slices.reduce((wide, slice, i) => {
-    const share = (Math.max(0, slice.value) / total) * 100;
-    const shown = share >= 1 ? share.toFixed(0) : share.toFixed(1);
-    const text = `${slice.label} — ${humanBytes(slice.value)} (${shown}%)`;
-    return Math.max(wide, ctx.measureText(text).width + 15);
-  }, 0);
+  const shareOf = slice => Math.max(0, slice.value) / total;
+  const percentText = share => `${share >= 0.1 ? (share * 100).toFixed(0) : (share * 100).toFixed(1)}%`;
 
-  const groupWidth = radius * 2 + labelGap + widest;
-  const left = Math.max(0, (cssW - groupWidth) / 2);
+  /*
+   * The circle and its list are centred as one block.
+   *
+   * Sizing the circle against half the canvas and starting at the left edge
+   * leaves the whole right side empty on a wide panel, which reads as a chart
+   * that failed to fill its space.
+   */
+  const radius = Math.max(40, Math.min(cssW / 3, cssH) / 2 - 10);
+  const labelGap = 20;
+
+  /*
+   * A slice writes inside itself only if the text actually fits.
+   *
+   * A share threshold alone is a guess about pixels: at 8% two neighbouring
+   * wedges are each narrower than the words placed in them, and the labels
+   * collide across the boundary. The wedge's width at the text's radius is a
+   * chord - 2r·sin(θ/2) - so it can simply be measured against the widest of
+   * the two lines, and the answer holds at any canvas size.
+   */
+  const textRadius = radius * 0.62;
+
+  // "both" writes the share and the size, "percent" only the share, "none"
+  // leaves both to the list. Degrading through the middle case labels a good
+  // many more wedges than an all-or-nothing test at the same width.
+  const inside = slices.map(slice => {
+    const share = shareOf(slice);
+    if (share < 0.04) {
+      return "none";
+    }
+
+    const sweep = share * Math.PI * 2;
+    const available = 2 * textRadius * Math.sin(Math.min(sweep, Math.PI) / 2);
+
+    ctx.font = "bold 13px system-ui";
+    const percentWidth = ctx.measureText(percentText(share)).width;
+    ctx.font = "11px system-ui";
+    const sizeWidth = ctx.measureText(humanBytes(slice.value)).width;
+    ctx.font = "12px system-ui";
+
+    if (available >= Math.max(percentWidth, sizeWidth) + 8) return "both";
+    if (available >= percentWidth + 8) return "percent";
+    return "none";
+  });
+
+  // What the list has to say for each slice, given what the wedge already does.
+  const listText = slices.map((slice, i) => {
+    if (inside[i] === "both") return slice.label;
+    if (inside[i] === "percent") return `${slice.label} — ${humanBytes(slice.value)}`;
+    return `${slice.label} — ${humanBytes(slice.value)} (${percentText(shareOf(slice))})`;
+  });
+
+  const widest = listText.reduce(
+    (wide, text) => Math.max(wide, ctx.measureText(text).width + 16),
+    0
+  );
+
+  const left = Math.max(0, (cssW - (radius * 2 + labelGap + widest)) / 2);
   const cx = left + radius;
   const cy = cssH / 2;
 
   let angle = -Math.PI / 2;
   slices.forEach((slice, i) => {
-    const share = Math.max(0, slice.value) / total;
+    const share = shareOf(slice);
     const sweep = share * Math.PI * 2;
+    const color = slice.color || PIE_COLORS[i % PIE_COLORS.length];
 
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.arc(cx, cy, radius, angle, angle + sweep);
     ctx.closePath();
-    ctx.fillStyle = slice.color || seriesColor(i);
+    ctx.fillStyle = color;
     ctx.fill();
 
     /*
@@ -772,26 +839,42 @@ function drawPieChart(canvas, slices, options = {}) {
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
+    if (inside[i] !== "none") {
+      const mid = angle + sweep / 2;
+      const tx = cx + Math.cos(mid) * textRadius;
+      const ty = cy + Math.sin(mid) * textRadius;
+      const both = inside[i] === "both";
+
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.fillStyle = inkOn(color);
+      ctx.font = "bold 13px system-ui";
+      ctx.fillText(percentText(share), tx, both ? ty - 1 : ty + 4);
+      if (both) {
+        ctx.font = "11px system-ui";
+        ctx.fillText(humanBytes(slice.value), tx, ty + 13);
+      }
+      ctx.restore();
+    }
+
     angle += sweep;
   });
 
-  // Labels down the right, in the same order as the slices, so the eye can
-  // follow them round without a separate key.
+  // The list runs down the right in slice order, so the eye can follow it round.
   const labelX = cx + radius + labelGap;
-  const lineHeight = 17;
+  const lineHeight = 18;
   const startY = cy - ((slices.length - 1) * lineHeight) / 2;
 
   slices.forEach((slice, i) => {
     const y = startY + i * lineHeight;
-    if (y < 10 || y > cssH - 4) return;
+    if (y < 12 || y > cssH - 4) return;
 
-    ctx.fillStyle = slice.color || seriesColor(i);
-    ctx.fillRect(labelX, y - 7, 9, 9);
+    const color = slice.color || PIE_COLORS[i % PIE_COLORS.length];
+    ctx.fillStyle = color;
+    ctx.fillRect(labelX, y - 8, 10, 10);
 
     ctx.fillStyle = "#ddd";
-    const share = (Math.max(0, slice.value) / total) * 100;
-    const shown = share >= 1 ? share.toFixed(0) : share.toFixed(1);
-    ctx.fillText(`${slice.label} — ${humanBytes(slice.value)} (${shown}%)`, labelX + 15, y + 1);
+    ctx.fillText(listText[i], labelX + 16, y + 1);
   });
 
   // The canvas carries its own labels, so the shared legend would repeat them.
@@ -799,10 +882,16 @@ function drawPieChart(canvas, slices, options = {}) {
 }
 
 /**
- * Slices for the memory pie: everything at or above the threshold, then one
- * slice for all the rest.
+ * Slices for the memory pie: the biggest few, then one slice for all the rest.
+ *
+ * Capped by count as well as by share. A machine running thirty things each
+ * taking two percent would otherwise produce thirty wedges, none of which can
+ * be told apart or written in, which is a picture of nothing.
  */
-function memorySlices(services, measuredTotal, threshold = 0.01) {
+function memorySlices(services, measuredTotal, options = {}) {
+  const threshold = options.threshold ?? 0.01;
+  const most = options.most ?? PIE_MAX_SLICES;
+
   const rows = services
     .map(s => ({ label: s.name, value: Number(s.pss_bytes) || 0 }))
     .filter(s => s.value > 0)
@@ -818,16 +907,14 @@ function memorySlices(services, measuredTotal, threshold = 0.01) {
   const total = measuredTotal > 0 ? measuredTotal : rows.reduce((sum, r) => sum + r.value, 0);
   if (total <= 0) return [];
 
-  const big = rows.filter(r => r.value / total >= threshold);
+  const big = rows.filter(r => r.value / total >= threshold).slice(0, most);
   const rest = total - big.reduce((sum, r) => sum + r.value, 0);
 
   const slices = big.slice();
   if (rest > 0) {
     const hidden = rows.length - big.length;
     slices.push({
-      label: hidden > 0
-        ? `Everything else (${count(hidden, "service")} and smaller)`
-        : "Everything else",
+      label: hidden > 0 ? `Everything else (${count(hidden, "service")})` : "Everything else",
       value: rest,
       // Deliberately grey: it is the part with no answer in it, and colouring
       // it like a service invites reading it as one.
@@ -2655,8 +2742,9 @@ function renderMemoryPie(services, sample) {
     + "slices make a whole, and resident memory cannot — a page shared by ten "
     + "processes would be counted ten times and every slice inflated."
     + (measured
-      ? ` Total ${humanBytes(measured)} across the ${sample.pss_procs} biggest processes;`
-        + " anything under 1% is folded into one slice."
+      ? ` Total ${humanBytes(measured)} across the ${sample.pss_procs} biggest processes.`
+        + " The ten largest services get a slice; everything under 1%, and everything"
+        + " past the tenth, is folded into one."
       : "");
 }
 
