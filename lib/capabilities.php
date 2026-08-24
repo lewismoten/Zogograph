@@ -977,3 +977,71 @@ function capabilityReport(array $config, PDO $pdo, ?PDO $host): array
         'host_checked_at' => $hostRun ? (int)$hostRun['ran_at'] : null,
     ];
 }
+
+/**
+ * A valid CageFS config fragment for exposing one program.
+ *
+ * The format is INI with a section header, which is not obvious and is not what
+ * an earlier version of this file suggested. Appending a bare path produces:
+ *
+ *   configparser.MissingSectionHeaderError: File contains no section headers.
+ *
+ * and - worse than simply not working - cagefsctl then refuses to run at all
+ * until the file is removed, so a bad suggestion here breaks the tool somebody
+ * needs in order to recover from it. Hence writing it out in full rather than
+ * describing it, and hence the test that parses the result.
+ *
+ * One file per program rather than appending to a shared one: appending twice
+ * gives two sections with the same name, and removing a program again becomes
+ * an edit rather than a delete.
+ *
+ * @return array{file: string, contents: string, commands: list<string>}
+ */
+function cagefsExposeSnippet(string $program, string $path): array
+{
+    if (!preg_match(PROGRAM_NAME_PATTERN, $program)) {
+        throw new InvalidArgumentException('not a usable program name');
+    }
+
+    $file = '/etc/cagefs/conf.d/monitor-' . $program . '.cfg';
+
+    /*
+     * `paths` takes a comma-separated list. Only the binary is listed here:
+     * CageFS resolves shared libraries itself, and anything that needs its own
+     * data directory - ImageMagick's delegates, terminfo for the curses tools -
+     * needs those directories adding too, which is a judgement per program
+     * rather than something to guess at.
+     */
+    /*
+     * A plain comment, with no brackets in it.
+     *
+     * cagefsctl parses these with Python's configparser, which is relaxed about
+     * punctuation - but a value full of brackets is exactly the sort of thing
+     * that is fine until some other reader is pointed at the file. There is
+     * nothing to gain from the parentheses.
+     */
+    $contents = sprintf(
+        "[%s]\ncomment=%s - exposed for the disk monitor\npaths=%s\n",
+        $program,
+        $program,
+        $path
+    );
+
+    /*
+     * The heredoc body is returned unindented and must be printed that way.
+     *
+     * Indenting it for tidiness would write those spaces into the file, and a
+     * leading space in an INI file is a continuation line - so the pretty
+     * version produces a config that parses differently from the one that was
+     * tested.
+     */
+    return [
+        'file' => $file,
+        'contents' => $contents,
+        'commands' => array_merge(
+            [sprintf('cat > %s <<\'EOF\'', $file)],
+            explode("\n", rtrim($contents, "\n")),
+            ['EOF', 'cagefsctl --force-update']
+        ),
+    ];
+}

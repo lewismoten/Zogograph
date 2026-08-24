@@ -311,10 +311,20 @@ try {
                 continue;
             }
 
+            $snippet = cagefsExposeSnippet($program, $path);
+
             $say(sprintf('Requested: expose %s (%s) to %s.', $program, $path, $user ?: 'the account'));
             $say('  To do it, as root:');
-            $say(sprintf('    echo %s >> /etc/cagefs/conf.d/monitor.cfg', escapeshellarg($path)));
-            $say('    cagefsctl --force-update');
+            $say('');
+            // Printed flush left: this is meant to be copied and pasted, and an
+            // indented heredoc body writes its indentation into the file, where
+            // a leading space means a continuation line.
+            foreach ($snippet['commands'] as $line) {
+                $say($line);
+            }
+            $say('');
+            $say('  These files are INI, so the section header matters - a bare path makes '
+                . 'cagefsctl refuse to run at all.');
             $say('  Not done automatically: it changes what every caged account can run.');
         }
     }
