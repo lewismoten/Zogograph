@@ -482,6 +482,21 @@ function hostMigrations(): array
                 seen_at       INTEGER NOT NULL
             )",
         ],
+
+        /*
+         * Clear the boot history once.
+         *
+         * Boots collected before the timezone fix were stored at an epoch four
+         * hours out, and the table is keyed on that epoch - so the corrected
+         * reading inserts alongside the wrong one instead of replacing it, and
+         * every restart appears twice, once in each timezone. Deleting rather
+         * than trying to match them up is safe because this table is derived:
+         * it is a cache of what `last` says, and the next collection rebuilds
+         * it from wtmp in full.
+         */
+        8 => [
+            'DELETE FROM host_boots',
+        ],
     ];
 }
 

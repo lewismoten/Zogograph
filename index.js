@@ -41,6 +41,7 @@ const state = {
   scheduleDirty: false,
   units: "bytes",
   uptime: null,
+  restarts: [],
   hostMetric: "pss",
   hostCharted: [],
   busy: false,
@@ -594,6 +595,41 @@ function drawLineChart(canvas, rows, series, options = {}) {
     ctx.restore();
   }
 
+  /*
+   * Known restarts, as a line rather than a band.
+   *
+   * A reboot need not leave a measurable hole: if the collector resumes within
+   * a minute, the gap is under the threshold and there is nothing to shade -
+   * yet the machine did restart, and that is exactly the moment somebody
+   * scanning a chart wants marked. A band of near-zero width would be
+   * invisible, so these are drawn as a line at the instant itself.
+   *
+   * They come from `last` on the host, which knows about restarts the readings
+   * cannot show - including any that happened before boot times were being
+   * recorded at all.
+   */
+  for (const at of options.marks || []) {
+    if (at < t0 || at > t1) continue;
+    const mx = x(at);
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(230, 90, 90, 0.85)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(mx, pad.top);
+    ctx.lineTo(mx, pad.top + h);
+    ctx.stroke();
+    ctx.restore();
+
+    // A solid cap at the top, so a dashed line crossing a busy chart still
+    // reads as a marker rather than as another series.
+    ctx.save();
+    ctx.fillStyle = "rgba(230, 90, 90, 0.95)";
+    ctx.fillRect(mx - 3, pad.top, 6, 3);
+    ctx.restore();
+  }
+
   // Gridlines follow the left axis; the right one only gets labels, or two
   // sets of lines cross each other and the chart turns into a net.
   const gridding = scales.left || scales.right;
@@ -1041,10 +1077,19 @@ async function refreshAll() {
     const to = Math.floor(Date.now() / 1000);
     const from = to - state.range;
 
-    const [overview, vitals, scans] = await Promise.all([
+    /*
+     * Uptime is fetched here rather than in the batch below.
+     *
+     * The charts need its restart marks at the moment they draw. Left in the
+     * parallel batch it landed afterwards, so the marks were simply absent on
+     * load and appeared only after some later refresh - which looks exactly
+     * like the feature not working.
+     */
+    const [overview, vitals, scans, uptime] = await Promise.all([
       api("overview"),
       api("vitals", { from, to, limit: 900 }),
       api("scans", { from, to }),
+      api("uptime", { from, to }),
     ]);
 
     state.signedIn = overview.signed_in;
@@ -1070,7 +1115,11 @@ async function refreshAll() {
      * vitals response analyses exactly the rows it returns, which removes the
      * ordering question rather than working around it.
      */
-    state.uptime = { analysis: vitals.uptime };
+    state.uptime = uptime;
+    // The analysis from the vitals payload covers exactly the rows returned,
+    // so the shading and the line can never describe different windows.
+    state.uptime.analysis = vitals.uptime;
+    state.restarts = restartMarks(uptime, from, to);
     renderVitalCharts(vitals.rows, vitals.uptime);
     renderCategoryChart(scans.rows, scans.categories ?? state.categories);
     $("lastSeen").textContent = overview.vitals
@@ -1216,7 +1265,8 @@ function renderRoomChart(rows) {
 
   $("roomNote").textContent = note;
   drawLineChart($("roomChart"), mode === "delta" ? bucketed : prepared,
-    shape.series, { ...shape.options, outages: outageBands(state.uptime) });
+    shape.series,
+    { ...shape.options, outages: outageBands(state.uptime), marks: state.restarts || [] });
 }
 
 /** The change between two readings, or null when there is nothing to compare. */
@@ -1297,6 +1347,7 @@ function renderCpuChart(rows) {
 
   drawLineChart($("cpuChart"), prepared, series, {
     outages: outageBands(state.uptime),
+    marks: state.restarts || [],
     axis: percentAxis,
     rightAxis: absolute ? bytesAxis : undefined,
     zeroBased: true,
@@ -1343,6 +1394,7 @@ function renderIoChart(rows) {
 
   drawLineChart($("ioChart"), rows, series, {
     outages: outageBands(state.uptime),
+    marks: state.restarts || [],
     axis: rateAxis,
     rightAxis: percentAxis,
     zeroBased: true,
@@ -1407,6 +1459,7 @@ function renderVitalCharts(rows, uptime) {
    * draws a line at one-per-core - the level above which work is queueing.
    */
   const bands = outageBands({ analysis: uptime });
+  const marks = state.restarts || [];
 
   drawLineChart($("loadChart"), rows,
     [
@@ -1415,11 +1468,11 @@ function renderVitalCharts(rows, uptime) {
       { key: "load15", label: "15 min" },
     ],
     { axis: step => ({ scale: 1, unit: "", format: v => v.toFixed(tickPrecision(step)) }),
-      zeroBased: true, outages: bands });
+      zeroBased: true, outages: bands, marks });
 
   drawLineChart($("netChart"), rows,
     [{ key: "net_rx_rate", label: "In" }, { key: "net_tx_rate", label: "Out" }],
-    { axis: rateAxis, zeroBased: true, outages: bands,
+    { axis: rateAxis, zeroBased: true, outages: bands, marks,
       empty: "No network counters here — /proc/net/dev is not readable" });
 }
 
@@ -2820,6 +2873,29 @@ function num(value) {
 
 /* ----------------------------------------------------------------- uptime -- */
 
+/**
+ * Instants the machine is known to have come up, for marking on the charts.
+ *
+ * Sourced from the host's boot history where there is one, because `last` knows
+ * about restarts the readings cannot show - a reboot too brief to leave a gap,
+ * or one that happened before boot times were recorded. Falls back to the boot
+ * time of the current session, which at least marks the most recent one.
+ */
+function restartMarks(uptime, from, to) {
+  const marks = new Set();
+
+  for (const boot of uptime?.history?.boots || []) {
+    const at = Number(boot.booted_at);
+    if (at >= from && at <= to) marks.add(at);
+  }
+
+  // Without a host collector there is still one boot time worth marking.
+  const own = Number(uptime?.boot_at);
+  if (Number.isFinite(own) && own >= from && own <= to) marks.add(own);
+
+  return [...marks].sort((a, b) => a - b);
+}
+
 /** Both kinds of hole, flattened into bands the charts can shade. */
 function outageBands(uptime) {
   const analysis = uptime?.analysis;
@@ -2839,18 +2915,12 @@ function outageBands(uptime) {
  * for. Merging them would let a cron job that stopped running look exactly like
  * a server that keeps falling over.
  */
-async function refreshUptime() {
-  const to = Math.floor(Date.now() / 1000);
-
-  let data;
-  try {
-    data = await api("uptime", { from: to - state.range, to });
-  } catch (error) {
-    $("uptimeBody").textContent = String(error.message || error);
+function refreshUptime() {
+  const data = state.uptime;
+  if (!data) {
     return;
   }
 
-  state.uptime = data;
   const a = data.analysis || {};
 
   if (data.up_for == null) {

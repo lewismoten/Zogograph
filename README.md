@@ -791,10 +791,23 @@ up, so it is recorded with every reading, on both sides:
 - a gap with a **later** boot time after it means the machine restarted inside
   it — a real outage.
 
-The charts shade them differently: <span style="color:#ff9a9a">red</span> for a
-restart, grey for a stretch nobody was recording. Without the shading a gap is
-invisible, because the line simply joins the reading before to the reading after
-and draws a confident straight edge across hours that were never measured.
+The charts shade them differently: red for a restart, grey for a stretch nobody
+was recording. Without the shading a gap is invisible, because the line simply
+joins the reading before to the reading after and draws a confident straight
+edge across hours that were never measured.
+
+**Restarts also get a dashed red line**, and that is a separate mechanism doing
+a job the shading cannot. A reboot need not leave a measurable hole at all: if
+the collector resumes within a minute the gap is under the threshold and there
+is nothing to shade, yet the machine did restart and that is exactly the moment
+somebody scanning a chart wants marked. A band of near-zero width would be
+invisible, so the marker is a line at the instant itself.
+
+The marks come from `last` on the host, which knows about restarts the readings
+cannot show — including any from **before boot times were being recorded**. That
+case is not hypothetical: the first machine this ran on had a real reboot that
+the readings could not detect, because every reading before it predated the
+`boot_at` column and there was nothing to compare against.
 
 ### Two percentages, deliberately
 

@@ -357,12 +357,19 @@
   </div>
   <p class="muted small sub-note">
     A hole in the readings is not the same as the machine being off, and the
-    charts shade them differently for that reason — <span class="band-restart">red</span>
-    where the boot time moved, so it really did restart, and
+    charts distinguish them — <span class="band-restart">red shading</span> where
+    the boot time moved, so it really did restart, and
     <span class="band-gap">grey</span> where the boot time was unchanged either
     side and the collector simply was not running. Uptime counts only the first
     kind; a cron job that stops should not look like a server that keeps falling
     over.
+  </p>
+  <p class="muted small sub-note">
+    A <span class="band-restart">dashed red line</span> marks each restart the
+    host knows about from <code>last</code>. Those need not leave a hole at all —
+    a reboot the collector resumes after within a minute has nothing to shade —
+    and they include restarts from before boot times were being recorded, which
+    the readings alone cannot show.
   </p>
   <div id="uptimeBody"></div>
 
