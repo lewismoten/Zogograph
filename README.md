@@ -88,6 +88,18 @@ machine, because CageFS hides every other account's processes from yours.
 
 ## The wizard
 
+Sizes and times are written the way you say them, in both directions. The
+cooldown field showed `21600` and expected the reader to know that is six hours —
+nobody knows that, and **a number you cannot check is a number you cannot safely
+change**. It now shows `6h` and takes `6h`, `90m`, `2d`, `45 minutes` or a plain
+number of seconds.
+
+Displayed with exact divisors only, matching how sizes are shown: 5400 seconds
+comes back as `90m` rather than `1.5h`, because a whole number in a smaller unit
+is easier to trust than a fraction of a larger one. Every value survives being
+displayed and typed back unchanged, and the config file keeps storing plain
+integers.
+
 `setup.php` asks the questions, overlays the answers on
 `lib/config.sample.php`, and produces a finished config. Both front ends read
 the same field definitions from `lib/configure.php`, so the browser and the

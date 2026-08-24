@@ -176,8 +176,9 @@ function configFields(array $sample): array
             'key' => 'cooldown_seconds',
             'path' => ['alerts', 'cooldown_seconds'],
             'type' => 'seconds',
-            'label' => 'Wait at least this long before repeating an alert (seconds)',
-            'help' => 'An alert that arrives every minute becomes a filter rule within a day.',
+            'label' => 'Wait at least this long before repeating an alert',
+            'help' => 'Written how you say it: 6h, 90m, 2d. A plain number is seconds. '
+                . 'An alert that arrives every minute becomes a filter rule within a day.',
             'default' => (int)$sample['alerts']['cooldown_seconds'],
             'when' => 'alerts_enabled',
         ],
@@ -333,17 +334,18 @@ function parseField(array $field, mixed $raw): array
         }
     }
 
-    if ($type === 'bytes' || $type === 'seconds') {
-        $parsed = parseBytes($value, $type === 'bytes');
-        if ($parsed === null) {
-            return [
-                $field['default'],
-                $type === 'bytes'
-                    ? 'Enter a size, like 5G or 500M or a plain number of bytes.'
-                    : 'Enter a whole number of seconds.',
-            ];
-        }
-        return [$parsed, null];
+    if ($type === 'bytes') {
+        $parsed = parseBytes($value, true);
+        return $parsed === null
+            ? [$field['default'], 'Enter a size, like 5G or 500M or a plain number of bytes.']
+            : [$parsed, null];
+    }
+
+    if ($type === 'seconds') {
+        $parsed = parseDuration($value);
+        return $parsed === null
+            ? [$field['default'], 'Enter a time, like 6h or 90m or 2d. A plain number is seconds.']
+            : [$parsed, null];
     }
 
     if ($type === 'number') {
@@ -424,6 +426,64 @@ function parseBytes(string $value, bool $units = true): ?int
     return (int)round((float)$m[1] * $scale[strtolower($m[2])]);
 }
 
+/**
+ * A duration as something a person can read back.
+ *
+ * The field used to show 21600 and expect the reader to know that is six hours.
+ * Nobody knows that, and a number you cannot check is a number you cannot
+ * safely change - so it is shown as 6h and typed back the same way.
+ *
+ * Exact divisors only, matching formatBytes: 5400 seconds becomes 90m rather
+ * than 1.5h, because a whole number in a smaller unit is easier to trust than a
+ * fraction of a larger one.
+ */
+function formatDuration(int $seconds): string
+{
+    foreach ([['d', 86400], ['h', 3600], ['m', 60]] as [$suffix, $scale]) {
+        if ($seconds >= $scale && $seconds % $scale === 0) {
+            return ($seconds / $scale) . $suffix;
+        }
+    }
+    return $seconds . 's';
+}
+
+/**
+ * Reads a duration typed in any reasonable way.
+ *
+ * Bare digits stay seconds, so nothing that worked before stops working. The
+ * spelled-out forms are here because somebody typing a timeout is thinking in
+ * hours and will write "6 hours" as readily as "6h".
+ */
+function parseDuration(string $value): ?int
+{
+    $value = trim(strtolower($value));
+    if ($value === '') {
+        return null;
+    }
+    if (ctype_digit($value)) {
+        return (int)$value;
+    }
+
+    if (!preg_match('/^(\d+(?:\.\d+)?)\s*([a-z]+)$/', $value, $m)) {
+        return null;
+    }
+
+    $units = [
+        86400 => ['d', 'day', 'days'],
+        3600 => ['h', 'hr', 'hrs', 'hour', 'hours'],
+        60 => ['m', 'min', 'mins', 'minute', 'minutes'],
+        1 => ['s', 'sec', 'secs', 'second', 'seconds'],
+    ];
+
+    foreach ($units as $scale => $names) {
+        if (in_array($m[2], $names, true)) {
+            return (int)round((float)$m[1] * $scale);
+        }
+    }
+
+    return null;
+}
+
 function formatBytes(int $bytes): string
 {
     foreach ([['T', 1024 ** 4], ['G', 1024 ** 3], ['M', 1024 ** 2], ['K', 1024]] as [$suffix, $scale]) {
@@ -439,6 +499,7 @@ function displayValue(array $field, mixed $value): string
 {
     return match ($field['type']) {
         'bytes' => formatBytes((int)$value),
+        'seconds' => formatDuration((int)$value),
         'bool' => $value ? 'y' : 'n',
         'categories' => implode(', ', (array)$value),
         'lines' => implode("\n", (array)$value),

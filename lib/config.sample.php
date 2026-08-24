@@ -63,6 +63,7 @@ return [
         'cpu_minutes' => 15,
         'cpu_share' => 0.9,
 
+        // 21600 seconds is six hours.
         'cooldown_seconds' => 21600,
 
         // Fire when free space drops below this, in bytes, or below this
