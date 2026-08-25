@@ -3,17 +3,30 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Disk Usage Monitor</title>
+<title>Hostscope</title>
 <link rel="stylesheet" href="index.css">
 <script src="index.js" defer></script>
 </head>
 <body>
 
-<header class="bar">
-  <h1>Disk Usage Monitor</h1>
-  <div class="bar-controls">
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <button id="navToggle" class="icon-button" aria-label="Menu" aria-expanded="false">
+    <span aria-hidden="true">&#9776;</span>
+  </button>
+
+  <a class="brand" href="#/overview">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-text">
+      <strong>Hostscope</strong>
+      <small>the whole machine, not just the account</small>
+    </span>
+  </a>
+
+  <div class="topbar-controls">
     <label class="inline">
-      Range
+      <span class="control-label">Range</span>
       <select id="range">
         <option value="600">Last 10 minutes</option>
         <option value="3600">Last hour</option>
@@ -24,26 +37,93 @@
         <option value="31536000">Last year</option>
       </select>
     </label>
-    <label class="inline">
-      Show
+
+    <label class="inline" id="unitsWrap">
+      <span class="control-label">Show</span>
       <select id="units">
         <option value="bytes" selected>Absolute</option>
         <option value="percent">Percent free</option>
         <option value="delta">Change per reading</option>
       </select>
     </label>
+
     <button id="live" class="toggle" aria-pressed="false">
       <span class="dot" aria-hidden="true"></span> Live
     </button>
+
+    <!--
+      The poll indicator: a ring that fills while a request is in flight and
+      drains to show how long until the next one. It replaces a static
+      "updated 12s ago", which said the same thing without saying whether
+      anything was happening about it.
+    -->
+    <button id="pollState" class="poll" aria-label="Refresh now" title="Refresh now">
+      <svg viewBox="0 0 36 36" aria-hidden="true">
+        <circle class="poll-track" cx="18" cy="18" r="15"></circle>
+        <circle class="poll-fill" cx="18" cy="18" r="15"></circle>
+      </svg>
+      <span class="poll-dot" aria-hidden="true"></span>
+    </button>
+
     <span id="lastSeen" class="muted small"></span>
-    <button id="signInOut">Sign in</button>
+    <button id="signInOut" class="primary">Sign in</button>
   </div>
 </header>
 
-<div id="notice"></div>
+<div class="shell">
+  <nav class="sidebar" id="sidebar" aria-label="Sections">
+    <a class="nav-item" href="#/overview" data-nav="overview">
+      <span class="nav-icon" aria-hidden="true">◴</span>
+      <span class="nav-label">Overview</span>
+      <span class="nav-badge" data-badge="overview" hidden></span>
+    </a>
+    <a class="nav-item" href="#/storage" data-nav="storage">
+      <span class="nav-icon" aria-hidden="true">▤</span>
+      <span class="nav-label">Storage</span>
+      <span class="nav-badge" data-badge="storage" hidden></span>
+    </a>
+    <a class="nav-item" href="#/backups" data-nav="backups">
+      <span class="nav-icon" aria-hidden="true">☁</span>
+      <span class="nav-label">Backups</span>
+      <span class="nav-badge" data-badge="backups" hidden></span>
+    </a>
+    <a class="nav-item" href="#/host" data-nav="host">
+      <span class="nav-icon" aria-hidden="true">▣</span>
+      <span class="nav-label">Whole machine</span>
+      <span class="nav-badge" data-badge="host" hidden></span>
+    </a>
+    <a class="nav-item" href="#/processes" data-nav="processes">
+      <span class="nav-icon" aria-hidden="true">⚙</span>
+      <span class="nav-label">Processes</span>
+      <span class="nav-badge" data-badge="processes" hidden></span>
+    </a>
+    <a class="nav-item" href="#/capabilities" data-nav="capabilities">
+      <span class="nav-icon" aria-hidden="true">✓</span>
+      <span class="nav-label">Capabilities</span>
+      <span class="nav-badge" data-badge="capabilities" hidden></span>
+    </a>
+    <a class="nav-item" href="#/alerts" data-nav="alerts">
+      <span class="nav-icon" aria-hidden="true">⚠</span>
+      <span class="nav-label">Alerts</span>
+      <span class="nav-badge" data-badge="alerts" hidden></span>
+    </a>
+    <a class="nav-item" href="#/system" data-nav="system">
+      <span class="nav-icon" aria-hidden="true">⚒</span>
+      <span class="nav-label">System</span>
+      <span class="nav-badge" data-badge="system" hidden></span>
+    </a>
+    <div class="nav-foot">
+      <button id="shareLink" class="link">Copy link to this view</button>
+    </div>
+  </nav>
 
-<section id="alertBanner" hidden></section>
+  <div class="scrim" id="scrim" hidden></div>
 
+  <main id="main">
+    <div id="notice"></div>
+    <section id="alertBanner" hidden></section>
+
+<section class="view" data-view="overview" hidden>
 <div class="cards">
   <div class="card" id="cardUptime"><div class="label">Up for</div><div class="value">—</div><div class="sub muted"></div></div>
   <div class="card" id="cardDisk"><div class="label">Disk free</div><div class="value">—</div><div class="sub muted"></div></div>
@@ -111,7 +191,9 @@
     <canvas id="categoryChart"></canvas>
   </section>
 </div>
+</section>
 
+<section class="view" data-view="storage" hidden>
 <section class="panel" id="offenderPanel">
   <div class="panel-head">
     <h2>What is taking the space</h2>
@@ -156,109 +238,6 @@
   <div id="offenders"></div>
 </section>
 
-<section class="panel" id="logPanel" hidden>
-  <div class="panel-head">
-    <h2 id="logTitle">Log</h2>
-    <div class="panel-controls">
-      <label class="inline">
-        Search
-        <input type="search" id="logSearch" placeholder="text to find" size="18">
-      </label>
-      <label class="inline">
-        Lines
-        <select id="logLines">
-          <option>100</option>
-          <option selected>200</option>
-          <option>500</option>
-          <option>1000</option>
-        </select>
-      </label>
-      <button id="logNewer">Newer</button>
-      <button id="logOlder">Older</button>
-      <button id="logClose" class="link">Close</button>
-    </div>
-  </div>
-  <p class="muted small" id="logStatus"></p>
-  <pre id="logBody" class="logview"></pre>
-</section>
-
-<section class="panel" id="historyPanel" hidden>
-  <div class="panel-head">
-    <h2 id="historyTitle">History</h2>
-    <button id="historyClose" class="link">Close</button>
-  </div>
-  <canvas id="historyChart"></canvas>
-</section>
-
-<section class="panel" id="capabilityPanel">
-  <div class="panel-head">
-    <h2>Capabilities</h2>
-    <div class="panel-controls">
-      <label class="inline">
-        Show
-        <select id="capFilter">
-          <option value="key">The ones worth having</option>
-          <option value="gap">Not available here</option>
-          <option value="all">Everything</option>
-        </select>
-      </label>
-      <button id="capCheck">Check now</button>
-      <button id="capHostCheck" class="link">Ask the host</button>
-    </div>
-  </div>
-  <p class="muted small sub-note">
-    What this account can actually run, and what the machine has that it cannot
-    reach. Those are the same question on ordinary hosting and different ones
-    here — see below.
-  </p>
-  <div id="capSummary"></div>
-  <h3 class="sub-head">What has changed</h3>
-  <p class="muted small sub-note">
-    Each bar counts the programs whose availability or version moved, coloured
-    by group. Click one to see exactly what. Times are when a check
-    <em>noticed</em> the change, not when it happened — a weekly check turns a
-    Tuesday upgrade into a Sunday event.
-  </p>
-  <canvas id="capChanges"></canvas>
-  <div id="capChangeLegend" class="legend"></div>
-  <p class="muted small chart-note" id="capChangeNote"></p>
-  <div id="capBody"></div>
-</section>
-
-<section class="panel" id="mountPanel">
-  <div class="panel-head">
-    <h2>Filesystem layout</h2>
-  </div>
-  <div id="cagefsExplainer"></div>
-  <div id="mountBody"></div>
-</section>
-
-<section class="panel" id="backupPanel">
-  <h2>Backup storage</h2>
-  <p class="muted small sub-note">
-    Backups are usually the largest thing on a server and the last place anybody
-    looks, because they are not in <code>/home</code>. This asks four questions:
-    how much space, whose, how old, and what is safe to do about it.
-  </p>
-  <div id="backupBody"></div>
-</section>
-
-<section class="panel" id="hostDiskPanel">
-  <h2>Where the disk went — the whole machine</h2>
-  <p class="muted small sub-note">
-    For when <code>df</code> reports a number nothing else can explain. This is
-    the root's-eye view: every filesystem, the biggest directories anywhere on
-    the machine, and the space held by files that have been deleted but are
-    still open — which no directory listing anywhere can show you.
-  </p>
-  <p class="muted small sub-note">
-    Run <code>php host-cron.php --disk</code> as root. It takes tens of seconds,
-    so it is deliberately not part of the per-minute collection and has its own
-    schedule.
-  </p>
-  <div id="hostDisk"></div>
-</section>
-
 <section class="panel" id="treemapPanel">
   <div class="panel-head">
     <h2>Where the space is</h2>
@@ -287,88 +266,54 @@
   <p class="muted small chart-note" id="treeNote"></p>
 </section>
 
-<section class="panel" id="incidentPanel" hidden>
+<section class="panel" id="historyPanel" hidden>
   <div class="panel-head">
-    <h2 id="incidentTitle">Why this fired</h2>
-    <button id="incidentClose" class="link">Close</button>
+    <h2 id="historyTitle">History</h2>
+    <button id="historyClose" class="link">Close</button>
   </div>
-  <p class="muted" id="incidentWhen"></p>
-  <div id="incidentBody"></div>
+  <canvas id="historyChart"></canvas>
 </section>
 
-<div class="grid">
-  <section class="panel">
-    <h2>Alerts</h2>
-    <div id="alerts"></div>
-  </section>
-
-  <section class="panel" id="actionPanel" hidden>
-    <h2>What has been deleted</h2>
-    <div id="actionLog"></div>
-  </section>
-</div>
-
-<section class="panel" id="processPanel" hidden>
+<section class="panel" id="logPanel" hidden>
   <div class="panel-head">
-    <h2>What is using the machine</h2>
+    <h2 id="logTitle">Log</h2>
     <div class="panel-controls">
       <label class="inline">
-        By
-        <select id="procBy">
-          <option value="cpu" selected>CPU</option>
-          <option value="memory">Memory</option>
-        </select>
+        Search
+        <input type="search" id="logSearch" placeholder="text to find" size="18">
       </label>
       <label class="inline">
-        <input type="checkbox" id="procGroup" checked>
-        Group by name
+        Lines
+        <select id="logLines">
+          <option>100</option>
+          <option selected>200</option>
+          <option>500</option>
+          <option>1000</option>
+        </select>
       </label>
-      <button id="procRefresh" class="link">Refresh</button>
+      <button id="logNewer">Newer</button>
+      <button id="logOlder">Older</button>
+      <button id="logClose" class="link">Close</button>
     </div>
   </div>
-  <p class="muted small sub-note">
-    Running right now, with processes of the same name added together. “Running
-    for” is the oldest of the group — a long-lived pool whose newest member is
-    seconds old is restarting as fast as it dies. Arguments that look like
-    passwords are hidden.
-  </p>
-  <div id="processBody"></div>
-  <p class="muted small" id="procStopNote"></p>
-
-  <h3 class="sub-head">Stop by command line</h3>
-  <p class="muted small sub-note">
-    For when the name is not specific enough to aim with — twelve
-    <code>webalizer</code> processes where one of them is chewing through one
-    particular log. This is <code>pkill -f</code>, with the two differences that
-    matter: the pattern is matched here rather than handed to a shell, and it
-    shows you what it would hit before it hits anything.
-  </p>
-  <form id="patternForm" class="pattern-row">
-    <input type="text" id="patternText" spellcheck="false" autocomplete="off"
-           placeholder="webalizer/bin/english.*ssl_log\.bkup">
-    <button type="submit" id="patternPreview">Show matches</button>
-  </form>
-  <div id="patternBody"></div>
-
-  <h3 class="sub-head">When it was last busy</h3>
-  <p class="muted small sub-note">
-    Recorded automatically whenever a reading crosses the CPU or memory
-    threshold — so an overnight spike still has an answer in the morning. The
-    collector and the <code>ps</code> it runs are left out: a record of a busy
-    moment listing the thing that looks at processes is noise by construction.
-  </p>
-  <p class="muted small sub-note">
-    <strong>The percentage is of what this account may use, not of the
-    machine.</strong> Inside CageFS <code>/proc/stat</code> is virtualised to the
-    account's own CPU allowance, so one PHP request working hard can cross 70%
-    while the server as a whole is idle. Raise
-    <code>processes.record_when_cpu_above</code> if these are too frequent to be
-    interesting; the <em>whole machine</em> panel is where the server's own load
-    lives.
-  </p>
-  <div id="processHistory"></div>
+  <p class="muted small" id="logStatus"></p>
+  <pre id="logBody" class="logview"></pre>
+</section>
 </section>
 
+<section class="view" data-view="backups" hidden>
+<section class="panel" id="backupPanel">
+  <h2>Backup storage</h2>
+  <p class="muted small sub-note">
+    Backups are usually the largest thing on a server and the last place anybody
+    looks, because they are not in <code>/home</code>. This asks four questions:
+    how much space, whose, how old, and what is safe to do about it.
+  </p>
+  <div id="backupBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="host" hidden>
 <section class="panel" id="hostPanel" hidden>
   <div class="panel-head">
     <h2>The whole machine</h2>
@@ -497,6 +442,153 @@
   </div>
 </section>
 
+<section class="panel" id="hostDiskPanel">
+  <h2>Where the disk went — the whole machine</h2>
+  <p class="muted small sub-note">
+    For when <code>df</code> reports a number nothing else can explain. This is
+    the root's-eye view: every filesystem, the biggest directories anywhere on
+    the machine, and the space held by files that have been deleted but are
+    still open — which no directory listing anywhere can show you.
+  </p>
+  <p class="muted small sub-note">
+    Run <code>php host-cron.php --disk</code> as root. It takes tens of seconds,
+    so it is deliberately not part of the per-minute collection and has its own
+    schedule.
+  </p>
+  <div id="hostDisk"></div>
+</section>
+
+<section class="panel" id="mountPanel">
+  <div class="panel-head">
+    <h2>Filesystem layout</h2>
+  </div>
+  <div id="cagefsExplainer"></div>
+  <div id="mountBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="processes" hidden>
+<section class="panel" id="processPanel" hidden>
+  <div class="panel-head">
+    <h2>What is using the machine</h2>
+    <div class="panel-controls">
+      <label class="inline">
+        By
+        <select id="procBy">
+          <option value="cpu" selected>CPU</option>
+          <option value="memory">Memory</option>
+        </select>
+      </label>
+      <label class="inline">
+        <input type="checkbox" id="procGroup" checked>
+        Group by name
+      </label>
+      <button id="procRefresh" class="link">Refresh</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    Running right now, with processes of the same name added together. “Running
+    for” is the oldest of the group — a long-lived pool whose newest member is
+    seconds old is restarting as fast as it dies. Arguments that look like
+    passwords are hidden.
+  </p>
+  <div id="processBody"></div>
+  <p class="muted small" id="procStopNote"></p>
+
+  <h3 class="sub-head">Stop by command line</h3>
+  <p class="muted small sub-note">
+    For when the name is not specific enough to aim with — twelve
+    <code>webalizer</code> processes where one of them is chewing through one
+    particular log. This is <code>pkill -f</code>, with the two differences that
+    matter: the pattern is matched here rather than handed to a shell, and it
+    shows you what it would hit before it hits anything.
+  </p>
+  <form id="patternForm" class="pattern-row">
+    <input type="text" id="patternText" spellcheck="false" autocomplete="off"
+           placeholder="webalizer/bin/english.*ssl_log\.bkup">
+    <button type="submit" id="patternPreview">Show matches</button>
+  </form>
+  <div id="patternBody"></div>
+
+  <h3 class="sub-head">When it was last busy</h3>
+  <p class="muted small sub-note">
+    Recorded automatically whenever a reading crosses the CPU or memory
+    threshold — so an overnight spike still has an answer in the morning. The
+    collector and the <code>ps</code> it runs are left out: a record of a busy
+    moment listing the thing that looks at processes is noise by construction.
+  </p>
+  <p class="muted small sub-note">
+    <strong>The percentage is of what this account may use, not of the
+    machine.</strong> Inside CageFS <code>/proc/stat</code> is virtualised to the
+    account's own CPU allowance, so one PHP request working hard can cross 70%
+    while the server as a whole is idle. Raise
+    <code>processes.record_when_cpu_above</code> if these are too frequent to be
+    interesting; the <em>whole machine</em> panel is where the server's own load
+    lives.
+  </p>
+  <div id="processHistory"></div>
+</section>
+</section>
+
+<section class="view" data-view="capabilities" hidden>
+<section class="panel" id="capabilityPanel">
+  <div class="panel-head">
+    <h2>Capabilities</h2>
+    <div class="panel-controls">
+      <label class="inline">
+        Show
+        <select id="capFilter">
+          <option value="key">The ones worth having</option>
+          <option value="gap">Not available here</option>
+          <option value="all">Everything</option>
+        </select>
+      </label>
+      <button id="capCheck">Check now</button>
+      <button id="capHostCheck" class="link">Ask the host</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    What this account can actually run, and what the machine has that it cannot
+    reach. Those are the same question on ordinary hosting and different ones
+    here — see below.
+  </p>
+  <div id="capSummary"></div>
+  <h3 class="sub-head">What has changed</h3>
+  <p class="muted small sub-note">
+    Each bar counts the programs whose availability or version moved, coloured
+    by group. Click one to see exactly what. Times are when a check
+    <em>noticed</em> the change, not when it happened — a weekly check turns a
+    Tuesday upgrade into a Sunday event.
+  </p>
+  <canvas id="capChanges"></canvas>
+  <div id="capChangeLegend" class="legend"></div>
+  <p class="muted small chart-note" id="capChangeNote"></p>
+  <div id="capBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="alerts" hidden>
+<div class="grid">
+  <section class="panel">
+    <h2>Alerts</h2>
+    <div id="alerts"></div>
+  </section>
+
+  <section class="panel" id="actionPanel" hidden>
+    <h2>What has been deleted</h2>
+    <div id="actionLog"></div>
+  </section>
+</div>
+
+<section class="panel" id="incidentPanel" hidden>
+  <div class="panel-head">
+    <h2 id="incidentTitle">Why this fired</h2>
+    <button id="incidentClose" class="link">Close</button>
+  </div>
+  <p class="muted" id="incidentWhen"></p>
+  <div id="incidentBody"></div>
+</section>
+
 <section class="panel" id="uptimePanel" hidden>
   <div class="panel-head">
     <h2>Uptime and outages</h2>
@@ -530,7 +622,9 @@
     <div id="bootHistory"></div>
   </div>
 </section>
+</section>
 
+<section class="view" data-view="system" hidden>
 <section class="panel" id="healthPanel">
   <div class="panel-head">
     <h2>Health</h2>
@@ -576,6 +670,9 @@
   </p>
   <div id="scheduleBody"></div>
 </section>
+</section>
+  </main>
+</div>
 
 <dialog id="listDialog">
   <div class="panel-head">

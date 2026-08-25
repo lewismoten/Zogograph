@@ -33,6 +33,10 @@ const state = {
   csrf: null,
   range: 86400,
   capabilities: null,
+  view: "overview",
+  rendered: new Set(),
+  frozenAt: null,
+  overview: null,
   live: false,
   timer: null,
   historyPathId: null,
@@ -1050,11 +1054,94 @@ function memorySlices(services, measuredTotal, options = {}) {
 
 /* ------------------------------------------------------------------ table -- */
 
+/** How many rows of a table are drawn before "show more" appears. */
+const TABLE_PAGE = 25;
+
+/*
+ * Turns whatever a column renders into something a spreadsheet can hold.
+ *
+ * The render functions return DOM nodes as often as strings - a struck-through
+ * size, a link, a tooltip - and an export that wrote "[object HTMLSpanElement]"
+ * would be worse than no export. textContent is what the reader actually saw.
+ */
+function cellText(column, row) {
+  const value = column.render ? column.render(row) : row[column.key] ?? "";
+  if (value instanceof Node) return value.textContent ?? "";
+  return String(value ?? "");
+}
+
+function downloadFile(name, text, type) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Revoked on the next turn of the loop: revoking immediately races the
+  // download in some browsers and silently produces an empty file.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/*
+ * Exports what is on screen, not what the server holds.
+ *
+ * Deliberately: the table has already had filters, a range and a sort applied,
+ * and an export that quietly returned something else would be a different
+ * answer wearing the same name.
+ */
+function exportRows(target, rows, columns, format) {
+  const headers = columns.map(c => c.label).filter(Boolean);
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const name = `hostscope-${target}-${stamp}.${format}`;
+
+  if (format === "json") {
+    const out = rows.map(row => {
+      const item = {};
+      for (const column of columns) {
+        if (!column.label) continue;
+        item[column.label] = cellText(column, row);
+      }
+      return item;
+    });
+    downloadFile(name, JSON.stringify(out, null, 2), "application/json");
+    return;
+  }
+
+  const quote = value => `"${String(value).replace(/"/g, '""')}"`;
+  const lines = [headers.map(quote).join(",")];
+  for (const row of rows) {
+    lines.push(columns.filter(c => c.label).map(c => quote(cellText(c, row))).join(","));
+  }
+  // A BOM, so Excel opens UTF-8 as UTF-8 rather than as mojibake.
+  downloadFile(name, "\uFEFF" + lines.join("\r\n"), "text/csv;charset=utf-8");
+}
+
 function renderTable(target, rows, columns, onRowClick) {
   const el = $(target);
   if (!rows || !rows.length) {
     el.innerHTML = '<p class="muted">Nothing to show.</p>';
     return;
+  }
+
+  const tools = document.createElement("div");
+  tools.className = "table-tools";
+
+  const counter = document.createElement("span");
+  tools.appendChild(counter);
+
+  const spacer = document.createElement("span");
+  spacer.className = "spacer";
+  tools.appendChild(spacer);
+
+  for (const format of ["csv", "json"]) {
+    const button = document.createElement("button");
+    button.className = "link";
+    button.textContent = format.toUpperCase();
+    button.title = `Download these ${rows.length} rows as ${format.toUpperCase()}`;
+    button.addEventListener("click", () => exportRows(target, rows, columns, format));
+    tools.appendChild(button);
   }
 
   const table = document.createElement("table");
@@ -1067,7 +1154,9 @@ function renderTable(target, rows, columns, onRowClick) {
   }
 
   const body = table.createTBody();
-  for (const row of rows) {
+  let shown = 0;
+
+  const addRow = row => {
     const tr = body.insertRow();
     if (onRowClick) {
       tr.className = "clickable";
@@ -1083,9 +1172,28 @@ function renderTable(target, rows, columns, onRowClick) {
       if (content instanceof Node) td.appendChild(content);
       else td.textContent = content;
     }
-  }
+  };
 
-  el.replaceChildren(table);
+  const more = document.createElement("button");
+  more.className = "table-more";
+
+  const draw = () => {
+    const next = rows.slice(shown, shown + TABLE_PAGE);
+    next.forEach(addRow);
+    shown += next.length;
+
+    counter.textContent = shown >= rows.length
+      ? count(rows.length, "row")
+      : `${shown} of ${count(rows.length, "row")}`;
+
+    more.hidden = shown >= rows.length;
+    more.textContent = `Show ${Math.min(TABLE_PAGE, rows.length - shown)} more`;
+  };
+
+  draw();
+  more.addEventListener("click", draw);
+
+  el.replaceChildren(tools, table, more);
 }
 
 /**
@@ -1133,129 +1241,122 @@ function syncCategoryOptions() {
 
 /* ------------------------------------------------------------------ views -- */
 
-async function refreshAll() {
-  if (state.busy) return;
-  state.busy = true;
+/*
+ * The parts every view needs, whichever one is on screen.
+ *
+ * Session state drives the sign-in button, the alert count drives the
+ * navigation badges, and both are visible from everywhere - so they refresh
+ * with the poll regardless of which view asked for it. Everything else belongs
+ * to a view and is fetched only when that view is showing.
+ */
+async function refreshShared() {
+  const overview = await api("overview");
+
+  state.signedIn = overview.signed_in;
+  state.csrf = overview.csrf;
+  state.deletable = overview.deletable || [];
+  state.totals = overview.totals || {};
+  state.emptied = overview.emptied || {};
+  state.viewable = overview.viewable || [];
+  state.categories = overview.categories ?? [];
+
   const wasScanning = state.scanRunning;
-  try {
-    const to = Math.floor(Date.now() / 1000);
-    const from = to - state.range;
+  state.scanRunning = Boolean(overview.scan_running);
 
-    /*
-     * Uptime is fetched here rather than in the batch below.
-     *
-     * The charts need its restart marks at the moment they draw. Left in the
-     * parallel batch it landed afterwards, so the marks were simply absent on
-     * load and appeared only after some later refresh - which looks exactly
-     * like the feature not working.
-     */
-    const [overview, vitals, scans, uptime] = await Promise.all([
-      api("overview"),
-      api("vitals", { from, to, limit: 900 }),
-      api("scans", { from, to }),
-      api("uptime", { from, to }),
-    ]);
+  applySignedInChrome();
+  syncCategoryOptions();
+  syncScanButton(overview);
 
-    state.signedIn = overview.signed_in;
-    state.csrf = overview.csrf;
-    state.deletable = overview.deletable || [];
-    state.totals = overview.totals || {};
-    state.emptied = overview.emptied || {};
-    state.viewable = overview.viewable || [];
-    applySignedInChrome();
+  state.overview = overview;
+  state.lastReadingAt = overview.vitals ? Number(overview.vitals.taken_at) : null;
+  renderLastSeen();
 
-    state.categories = overview.categories ?? [];
-    state.scanRunning = Boolean(overview.scan_running);
-    syncCategoryOptions();
-    syncScanButton(overview);
-
-    // The card reads the trend the server worked out over exactly these rows.
-    overview.trend = vitals.trend;
-    renderCards(overview, vitals.rows);
-    /*
-     * The shading comes from the vitals payload, not from the uptime endpoint.
-     *
-     * Both compute the same thing, but the uptime call runs in the parallel
-     * batch below and had not landed when the charts first drew - so the bands
-     * were simply absent on load and appeared only after a later refresh. The
-     * vitals response analyses exactly the rows it returns, which removes the
-     * ordering question rather than working around it.
-     */
-    state.uptime = uptime;
-    // The analysis from the vitals payload covers exactly the rows returned,
-    // so the shading and the line can never describe different windows.
-    state.uptime.analysis = vitals.uptime;
-    state.restarts = restartMarks(uptime, from, to);
-    showCompactionNote(vitals);
-    renderVitalCharts(vitals.rows, vitals.uptime);
-    renderCategoryChart(scans.rows, scans.categories ?? state.categories);
-    /*
-     * Remembered rather than printed once.
-     *
-     * The label used to be written at each refresh and then sit there saying
-     * "updated 3s ago" for the next thirty seconds, which is not merely stale
-     * - it is the one number on the page whose whole job is to say how stale
-     * everything else is. A second-by-second ticker renders it from this.
-     */
-    state.lastReadingAt = overview.vitals ? Number(overview.vitals.taken_at) : null;
-    renderLastSeen();
-
-    if (wasScanning && !state.scanRunning) {
-      // Finished: back to the ordinary cadence.
-      schedule();
-      notice("Scan finished.", true);
-    }
-
-    await Promise.all([
-      refreshOffenders(), refreshAlerts(), refreshActionLog(),
-      refreshSchedule(), refreshHealth(), refreshProblems(), refreshProcesses(),
-      refreshHost(), refreshUptime(),
-      /*
-       * Its own panel and its own refresh, not part of refreshHost().
-       *
-       * The host panel gives up early when no reading has been collected, and
-       * the disk walk writes different tables on a different schedule - so
-       * somebody who ran --disk to chase missing space would have been told
-       * "no readings recorded yet" and shown nothing at all. Cheap enough to
-       * poll: it reads four small tables and never touches a disk.
-       */
-      refreshHostDisk(),
-      refreshBackups(),
-      /*
-       * Both read stored rows only. The probe that fills them shells out and
-       * runs on demand, never on a poll.
-       */
-      refreshCapabilities().then(() => refreshMounts()),
-      refreshCapabilityChanges(),
-    ]);
-    if (state.historyPathId) await showHistory(state.historyPathId, true);
-    if (state.log.pathId) await showLog(state.log.pathId, true);
-
-    /*
-     * The treemap is loaded once, never polled.
-     *
-     * Every other panel here re-reads a database. This one walks the disk, and
-     * doing that every ten seconds because a chart wanted refreshing would
-     * make the monitor the heaviest thing on the machine. It loads when there
-     * is a session to load it for, and after that only when asked - a click, a
-     * source change, or signing in.
-     */
-    if (state.signedIn && !treeState.level) {
-      refreshTreemap().catch(() => {});
-    } else if (!state.signedIn && treeState.level) {
-      treeState.level = null;
-      treeState.boxes = [];
-      drawTreemap();
-      $("treeCrumbs").replaceChildren();
-      $("treeNote").textContent = "Sign in to explore the disk.";
-    }
-
-    clearStaleNotice();
-  } catch (error) {
-    notice(String(error.message || error));
-  } finally {
-    state.busy = false;
+  if (wasScanning && !state.scanRunning) {
+    notice("Scan finished.", true);
+    // A finished scan changes what Storage shows, wherever you are standing.
+    state.rendered.delete("storage");
+    if (state.view === "storage") await VIEWS.storage.refresh();
   }
+
+  await refreshBadges();
+}
+
+/*
+ * The counts behind the navigation badges.
+ *
+ * Deliberately small queries. The whole point of one view at a time is not
+ * paying for the other seven, and a badge that cost a full panel refresh would
+ * put all of it back.
+ */
+async function refreshBadges() {
+  try {
+    const alerts = await api("alerts", { limit: 40 });
+    const day = Date.now() / 1000 - 86400;
+    const recent = alerts.rows.filter(r => r.raised_at >= day);
+    const critical = recent.filter(r => r.severity === "critical").length;
+
+    setBadge("alerts", recent.length, critical ? "crit" : "warn");
+    renderAlertBanner(recent);
+  } catch {
+    setBadge("alerts", 0);
+  }
+
+  if (!state.signedIn) {
+    setBadge("system", 0);
+    return;
+  }
+
+  try {
+    const problems = await api("problems", { limit: 1 });
+    setBadge("system", Number(problems.total || 0), "warn");
+  } catch {
+    setBadge("system", 0);
+  }
+}
+
+/*
+ * The overview: cards and the vitals charts.
+ *
+ * Uptime is fetched alongside rather than after, because the charts need its
+ * restart marks at the moment they draw. Fetched later, the marks were simply
+ * absent on load and appeared at some subsequent refresh, which looks exactly
+ * like the feature not working.
+ */
+async function refreshVitals() {
+  const to = state.frozenAt || Math.floor(Date.now() / 1000);
+  const from = to - state.range;
+
+  const [vitals, uptime] = await Promise.all([
+    api("vitals", { from, to, limit: 900 }),
+    api("uptime", { from, to }),
+  ]);
+
+  const overview = state.overview || await api("overview");
+  overview.trend = vitals.trend;
+  renderCards(overview, vitals.rows);
+
+  state.uptime = uptime;
+  // The analysis from the vitals payload covers exactly the rows returned, so
+  // the shading and the line can never describe different windows.
+  state.uptime.analysis = vitals.uptime;
+  state.restarts = restartMarks(uptime, from, to);
+
+  showCompactionNote(vitals);
+  renderVitalCharts(vitals.rows, vitals.uptime);
+}
+
+/** The category chart, which belongs to Storage rather than to the overview. */
+async function refreshScans() {
+  const to = state.frozenAt || Math.floor(Date.now() / 1000);
+  const from = to - state.range;
+
+  const scans = await api("scans", { from, to });
+  renderCategoryChart(scans.rows, scans.categories ?? state.categories);
+}
+
+/** Kept so that anything still calling it refreshes the view on screen. */
+async function refreshAll() {
+  await refreshCurrent();
 }
 
 /**
@@ -4705,20 +4806,49 @@ async function saveSchedule(remove) {
   }
 }
 
+/*
+ * The banner, which appears above every view rather than only on Alerts.
+ *
+ * Split out from refreshAlerts so the shared poll can raise it wherever you
+ * are standing. A monitor whose warnings are only visible on the page about
+ * warnings has arranged for them to be missed.
+ */
+function renderAlertBanner(recent) {
+  const banner = $("alertBanner");
+  if (!banner) return;
+
+  if (!recent.length) {
+    banner.hidden = true;
+    return;
+  }
+
+  banner.hidden = false;
+  banner.className = recent.some(r => r.severity === "critical") ? "crit" : "";
+
+  const frag = document.createDocumentFragment();
+  const head = document.createElement("strong");
+  head.textContent = `${count(recent.length, "alert")} in the last day`;
+  frag.appendChild(head);
+
+  const list = document.createElement("ul");
+  for (const row of recent.slice(0, 4)) {
+    const li = document.createElement("li");
+    li.textContent = row.subject;
+    list.appendChild(li);
+  }
+  frag.appendChild(list);
+
+  const go = document.createElement("button");
+  go.className = "link";
+  go.textContent = "See all";
+  go.addEventListener("click", () => showView("alerts"));
+  frag.appendChild(go);
+
+  banner.replaceChildren(frag);
+}
+
 async function refreshAlerts() {
   const data = await api("alerts", { limit: 40 });
-
-  const recent = data.rows.filter(r => Date.now() / 1000 - r.raised_at < 86400);
-  const banner = $("alertBanner");
-  if (recent.length) {
-    banner.hidden = false;
-    banner.className = recent.some(r => r.severity === "critical") ? "crit" : "";
-    const list = recent.slice(0, 4).map(r => `<li>${escapeHtml(r.subject)}</li>`).join("");
-    banner.innerHTML =
-      `<strong>${recent.length} alert${recent.length === 1 ? "" : "s"} in the last day</strong><ul>${list}</ul>`;
-  } else {
-    banner.hidden = true;
-  }
 
   renderTable("alerts", data.rows, [
     { label: "When", render: row => humanTime(row.raised_at) },
@@ -6500,12 +6630,273 @@ function showProviderMessage(message) {
   $("listDialog").showModal();
 }
 
+
+/* ------------------------------------------------------------------- shell -- */
+
+/*
+ * One view at a time, and only the visible one costs anything.
+ *
+ * This began as a single page that rendered everything and polled all of it on
+ * a timer. That is fine with four panels and absurd with twenty-two: a
+ * dashboard nobody was looking at still walked the process table, re-read a
+ * year of vitals and asked the host database eleven questions, every ten
+ * seconds, for ever.
+ *
+ * So each view declares what it needs, and the poll only ever refreshes the
+ * one on screen. Everything else keeps whatever it last rendered, which is
+ * both correct - it is still true, it is just older - and free.
+ */
+const VIEWS = {
+  overview: {
+    label: "Overview",
+    refresh: () => refreshVitals(),
+  },
+  storage: {
+    label: "Storage",
+    refresh: async () => {
+      await refreshScans();
+      await refreshOffenders();
+      if (state.historyPathId) await showHistory(state.historyPathId, true);
+      if (state.log.pathId) await showLog(state.log.pathId, true);
+      if (state.signedIn && !treeState.level) await refreshTreemap().catch(() => {});
+    },
+  },
+  backups: { label: "Backups", refresh: () => refreshBackups() },
+  host: {
+    label: "Whole machine",
+    refresh: async () => {
+      await refreshHost();
+      await refreshHostDisk();
+      await refreshMounts();
+    },
+  },
+  processes: { label: "Processes", refresh: () => refreshProcesses() },
+  capabilities: {
+    label: "Capabilities",
+    refresh: async () => {
+      await refreshCapabilities();
+      await refreshCapabilityChanges();
+    },
+  },
+  alerts: {
+    label: "Alerts",
+    refresh: async () => {
+      await refreshAlerts();
+      await refreshUptime();
+      await refreshActionLog();
+    },
+  },
+  system: {
+    label: "System",
+    refresh: async () => {
+      await refreshHealth();
+      await refreshProblems();
+      await refreshSchedule();
+    },
+  },
+};
+
+const DEFAULT_VIEW = "overview";
+
+/*
+ * The address bar is the state.
+ *
+ * #/storage?range=604800 is a link somebody can send, and the person who opens
+ * it sees the same view over the same window. That is the whole feature: a
+ * screenshot with a URL attached, rather than "scroll down to the third panel
+ * and set the dropdown to a week".
+ */
+function readRoute() {
+  const raw = location.hash.replace(/^#\/?/, "");
+  const [path, query] = raw.split("?");
+  const params = new URLSearchParams(query || "");
+
+  return {
+    view: VIEWS[path] ? path : DEFAULT_VIEW,
+    range: Number(params.get("range")) || null,
+    units: params.get("units"),
+    at: Number(params.get("at")) || null,
+  };
+}
+
+function writeRoute(replace = false) {
+  const params = new URLSearchParams();
+  params.set("range", String(state.range));
+  if (state.units !== "bytes") params.set("units", state.units);
+  if (state.frozenAt) params.set("at", String(state.frozenAt));
+
+  const url = `#/${state.view}?${params.toString()}`;
+  if (replace) history.replaceState(null, "", url);
+  else if (location.hash !== url) history.pushState(null, "", url);
+}
+
+function applyRoute() {
+  const route = readRoute();
+
+  if (route.range && route.range !== state.range) {
+    state.range = route.range;
+    const select = $("range");
+    if (select && [...select.options].some(o => Number(o.value) === route.range)) {
+      select.value = String(route.range);
+    }
+  }
+  if (route.units && route.units !== state.units) {
+    state.units = route.units;
+    const select = $("units");
+    if (select) select.value = route.units;
+  }
+  state.frozenAt = route.at;
+
+  showView(route.view, false);
+}
+
+function showView(view, push = true) {
+  if (!VIEWS[view]) view = DEFAULT_VIEW;
+
+  const changed = state.view !== view;
+  state.view = view;
+
+  for (const section of document.querySelectorAll("[data-view]")) {
+    section.hidden = section.dataset.view !== view;
+  }
+  for (const link of document.querySelectorAll("[data-nav]")) {
+    link.classList.toggle("current", link.dataset.nav === view);
+    if (link.dataset.nav === view) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  }
+
+  document.title = `${VIEWS[view].label} · Hostscope`;
+
+  // The units picker only means anything where something is charted against a
+  // unit; showing it on Capabilities is a control that does nothing.
+  const unitsWrap = $("unitsWrap");
+  if (unitsWrap) unitsWrap.hidden = !["overview", "storage"].includes(view);
+
+  closeNav();
+  if (push) writeRoute();
+  if (changed || !state.rendered.has(view)) refreshCurrent();
+}
+
+/* ------------------------------------------------------------------- poll -- */
+
+/*
+ * A ring that says what the page is doing.
+ *
+ * Spinning while a request is in flight, then draining as the cooldown runs
+ * down to the next one. The previous "updated 12s ago" told you how stale
+ * things were and nothing about whether anything was being done about it - so
+ * a stalled poll and a healthy one looked identical until the number got
+ * conspicuously large.
+ */
+const poll = { busy: false, nextAt: 0, every: 0, raf: null };
+
+function setPollState(busy, every) {
+  poll.busy = busy;
+  if (!busy && every) {
+    poll.every = every;
+    poll.nextAt = Date.now() + every;
+  }
+  const el = $("pollState");
+  if (el) el.classList.toggle("busy", busy);
+  drawPoll();
+}
+
+function drawPoll() {
+  const fill = document.querySelector(".poll-fill");
+  if (!fill) return;
+
+  const circumference = 2 * Math.PI * 15;
+  fill.style.strokeDasharray = String(circumference);
+
+  if (poll.busy) {
+    // A quarter-arc, spun by CSS: an indeterminate wait needs an
+    // indeterminate indicator rather than a progress bar that is lying.
+    fill.style.strokeDashoffset = String(circumference * 0.75);
+  } else if (poll.every > 0) {
+    const left = Math.max(0, poll.nextAt - Date.now());
+    const done = 1 - left / poll.every;
+    fill.style.strokeDashoffset = String(circumference * (1 - done));
+    const el = $("pollState");
+    if (el) {
+      el.title = `Next refresh in ${Math.ceil(left / 1000)}s — click to refresh now`;
+    }
+  }
+
+  cancelAnimationFrame(poll.raf);
+  if (!poll.busy && poll.every > 0) {
+    poll.raf = requestAnimationFrame(drawPoll);
+  }
+}
+
+async function refreshCurrent() {
+  if (document.hidden) return;
+
+  const view = VIEWS[state.view] || VIEWS[DEFAULT_VIEW];
+  setPollState(true);
+
+  try {
+    // The session and the alert count are cheap and belong to every view: the
+    // sign-in button and the navigation badges are on screen whatever is.
+    await refreshShared();
+    await view.refresh();
+    state.rendered.add(state.view);
+    clearStaleNotice();
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    setPollState(false, pollInterval());
+  }
+}
+
+function pollInterval() {
+  if (state.live) return LIVE_POLL_MS;
+  if (state.scanRunning) return SCAN_POLL_MS;
+  return IDLE_POLL_MS;
+}
+
+/* --------------------------------------------------------------- navigation -- */
+
+function openNav() {
+  document.body.classList.add("nav-open");
+  $("navToggle").setAttribute("aria-expanded", "true");
+  $("scrim").hidden = false;
+}
+
+function closeNav() {
+  document.body.classList.remove("nav-open");
+  $("navToggle")?.setAttribute("aria-expanded", "false");
+  const scrim = $("scrim");
+  if (scrim) scrim.hidden = true;
+}
+
+/*
+ * Badges on the navigation, so a problem is visible from any view.
+ *
+ * The point of splitting one page into eight is that you are only looking at
+ * one - which would also mean only noticing problems in the one you happen to
+ * be on. The counts come from the shared refresh, so they stay current
+ * wherever you are.
+ */
+function setBadge(view, count, level = "warn") {
+  const el = document.querySelector(`[data-badge="${view}"]`);
+  if (!el) return;
+
+  if (!count) {
+    el.hidden = true;
+    return;
+  }
+
+  el.hidden = false;
+  el.textContent = count > 99 ? "99+" : String(count);
+  el.className = `nav-badge badge-${level}`;
+}
+
 /* ----------------------------------------------------------------- polling -- */
 
 function schedule() {
   if (state.timer) clearInterval(state.timer);
-  const every = state.live ? LIVE_POLL_MS : state.scanRunning ? SCAN_POLL_MS : IDLE_POLL_MS;
-  state.timer = setInterval(tick, every);
+  state.timer = setInterval(tick, pollInterval());
+  setPollState(false, pollInterval());
 }
 
 async function tick() {
@@ -6530,14 +6921,16 @@ async function tick() {
     }
   }
 
-  await refreshAll();
+  await refreshCurrent();
 }
 
 /* -------------------------------------------------------------------- wire -- */
 
 $("units").addEventListener("change", () => {
   state.units = $("units").value;
-  refreshAll();
+  state.rendered.clear();
+  writeRoute();
+  refreshCurrent();
 });
 
 /*
@@ -6573,7 +6966,10 @@ function syncLiveAvailability() {
 $("range").addEventListener("change", () => {
   state.range = Number($("range").value);
   syncLiveAvailability();
-  refreshAll();
+  // Everything already drawn was drawn for the old window.
+  state.rendered.clear();
+  writeRoute();
+  refreshCurrent();
 });
 
 window.addEventListener("resize", () => {
@@ -6799,9 +7195,55 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) refreshAll();
 });
 
+/* ------------------------------------------------------------------ start -- */
+
+for (const link of document.querySelectorAll("[data-nav]")) {
+  link.addEventListener("click", event => {
+    event.preventDefault();
+    showView(link.dataset.nav);
+  });
+}
+
+$("navToggle").addEventListener("click", () => {
+  document.body.classList.contains("nav-open") ? closeNav() : openNav();
+});
+$("scrim").addEventListener("click", closeNav);
+
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") closeNav();
+});
+
+// Back and forward move between views, which is what people expect of
+// something that puts its state in the address bar.
+window.addEventListener("hashchange", applyRoute);
+
+$("pollState").addEventListener("click", () => {
+  if (!poll.busy) refreshCurrent();
+});
+
+$("shareLink").addEventListener("click", async () => {
+  /*
+   * A link to exactly this, frozen at this moment.
+   *
+   * Without the timestamp the recipient opens the same view over the last day
+   * *from when they clicked*, which is a different chart. Pinning it is the
+   * difference between "look at this" and "look at roughly this".
+   */
+  state.frozenAt = state.frozenAt || Math.floor(Date.now() / 1000);
+  writeRoute(true);
+
+  try {
+    await navigator.clipboard.writeText(location.href);
+    notice("Link copied. It opens this view over this exact window.", true);
+  } catch {
+    notice(location.href);
+  }
+});
+
 // The Live button starts disabled unless the page opens on the short range,
 // so it can never be lit while nothing is being sampled.
 syncLiveAvailability();
 
-refreshAll();
+applyRoute();
+writeRoute(true);
 schedule();

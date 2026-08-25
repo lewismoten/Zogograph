@@ -1,17 +1,41 @@
 :root {
   color-scheme: dark;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #111;   /* literal: --bg is declared below and cannot be used here */
-  color: #eee;
 
-  --bg: #111;
-  --panel: #181818;
-  --line: #333;
-  --muted: #9a9a9a;
-  --warn: #ffb86b;
-  --crit: #ff7f7f;
-  --ok: #75d58a;
+  /*
+   * A cooler, deeper ground than the old flat #111.
+   *
+   * Panels sit slightly above the page rather than being outlined against it,
+   * which is what stops twenty-two of them reading as a list of boxes. The
+   * accent is a single blue used for interaction only - never for data, so a
+   * link can never be mistaken for a series.
+   */
+  --bg: #0d1117;
+  --bg-raised: #131a23;
+  --panel: #161d27;
+  --panel-hover: #1b2430;
+  --line: #232d3a;
+  --line-soft: #1c2531;
+
+  --text: #e6edf3;
+  --muted: #8b98a8;
+  --dim: #66717f;
+
+  --accent: #4c9aff;
+  --accent-soft: rgba(76, 154, 255, .14);
+
+  --warn: #f0a35e;
+  --crit: #f2616b;
+  --ok: #56c98a;
+
+  --topbar-height: 56px;
+  --sidebar-width: 232px;
+  --radius: 10px;
+
+  color: var(--text);
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
 }
+
 * { box-sizing: border-box; }
 body { margin: 0; padding: 24px; max-width: 1600px; margin-inline: auto; }
 h1 { font-size: 1.35rem; margin: 0; }
@@ -640,3 +664,307 @@ pre.commands {
   border-radius: 6px; padding: 2px 6px; display: inline-block; margin-top: 4px;
 }
 .ratio-high { color: var(--warn); font-weight: 600; }
+
+
+/* =========================================================== application == */
+
+/*
+ * The shell: a fixed top bar, a sidebar of sections, and one view at a time.
+ *
+ * The layout is grid rather than flex so the sidebar can be pinned on a wide
+ * screen and slid over the content on a narrow one without either arrangement
+ * needing its own markup.
+ */
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  max-width: none;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--accent);
+  color: #04101f;
+  padding: 8px 14px;
+  z-index: 60;
+  border-radius: 0 0 var(--radius) 0;
+}
+.skip-link:focus { left: 0; }
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  height: var(--topbar-height);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 16px;
+  background: rgba(13, 17, 23, .92);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; }
+
+/*
+ * The mark: concentric arcs, drawn in CSS.
+ *
+ * A scope looking at something. No image file, so it cannot be the one asset
+ * that fails to upload and leaves a broken icon in the corner.
+ */
+.brand-mark {
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 2px solid var(--accent);
+  position: relative;
+  flex: none;
+}
+.brand-mark::before,
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  opacity: .55;
+}
+.brand-mark::before { inset: 4px; }
+.brand-mark::after { inset: 9px; opacity: 1; background: var(--accent); border: 0; }
+
+.brand-text { display: flex; flex-direction: column; line-height: 1.15; }
+.brand-text strong { font-size: 1.02rem; letter-spacing: -.01em; }
+.brand-text small { color: var(--dim); font-size: .68rem; }
+
+.topbar-controls { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.control-label { color: var(--muted); font-size: .78rem; margin-right: 4px; }
+
+.icon-button {
+  display: none;
+  background: none; border: 0; color: var(--text);
+  font-size: 1.15rem; padding: 6px 8px; cursor: pointer; border-radius: 8px;
+}
+.icon-button:hover { background: var(--panel-hover); }
+
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  min-height: calc(100vh - var(--topbar-height));
+}
+
+.sidebar {
+  position: sticky;
+  top: var(--topbar-height);
+  align-self: start;
+  height: calc(100vh - var(--topbar-height));
+  overflow-y: auto;
+  padding: 14px 10px;
+  border-right: 1px solid var(--line);
+  background: var(--bg-raised);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-item {
+  display: flex; align-items: center; gap: 11px;
+  padding: 9px 12px; border-radius: 8px;
+  color: var(--muted); text-decoration: none;
+  font-size: .88rem; transition: background .12s, color .12s;
+}
+.nav-item:hover { background: var(--panel-hover); color: var(--text); }
+.nav-item.current { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.nav-icon { width: 1.1em; text-align: center; opacity: .85; }
+.nav-label { flex: 1; }
+
+/*
+ * The badge is the reason one-view-at-a-time is safe.
+ *
+ * Splitting the page means only seeing the section you are on; without a mark
+ * on the others, a problem three views away is invisible until somebody goes
+ * looking. These are updated by the shared poll, wherever you are.
+ */
+.nav-badge {
+  min-width: 20px; padding: 1px 6px; border-radius: 999px;
+  font-size: .68rem; font-weight: 700; text-align: center;
+}
+.badge-warn { background: rgba(240, 163, 94, .18); color: var(--warn); }
+.badge-crit { background: rgba(242, 97, 107, .2); color: var(--crit); }
+
+.nav-foot { margin-top: auto; padding: 10px 12px 4px; border-top: 1px solid var(--line-soft); }
+
+.scrim { display: none; }
+
+main {
+  padding: 22px;
+  max-width: 1500px;
+  width: 100%;
+}
+
+.view { display: flex; flex-direction: column; gap: 18px; }
+.view[hidden] { display: none; }
+
+/* ---------------------------------------------------------- poll ring -- */
+
+.poll {
+  position: relative;
+  width: 30px; height: 30px; padding: 0;
+  background: none; border: 0; cursor: pointer;
+  flex: none;
+}
+.poll svg { width: 30px; height: 30px; transform: rotate(-90deg); }
+.poll-track { fill: none; stroke: var(--line); stroke-width: 3; }
+.poll-fill {
+  fill: none; stroke: var(--accent); stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset .25s linear;
+}
+/*
+ * Spinning only while a request is actually in flight.
+ *
+ * An indeterminate wait gets an indeterminate indicator; the draining ring is
+ * for the cooldown, where the remaining time is genuinely known.
+ */
+.poll.busy svg { animation: poll-spin .9s linear infinite; }
+.poll.busy .poll-fill { transition: none; }
+@keyframes poll-spin { to { transform: rotate(270deg); } }
+
+.poll-dot {
+  position: absolute; inset: 0; margin: auto;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--muted);
+}
+.poll.busy .poll-dot { background: var(--accent); }
+
+/* ------------------------------------------------------------ panels -- */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+
+h1 { font-size: 1.1rem; }
+h2 { font-size: 1.02rem; margin: 0 0 10px; letter-spacing: -.01em; }
+
+button {
+  font: inherit;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  color: var(--text);
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+button:hover:not(:disabled) { background: var(--panel-hover); border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+
+button.primary { background: var(--accent); border-color: var(--accent); color: #04101f; font-weight: 600; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+
+button.link { background: none; border: 0; color: var(--accent); padding: 2px 4px; }
+button.link:hover:not(:disabled) { background: var(--accent-soft); border-color: transparent; }
+
+select, input {
+  font: inherit;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 8px;
+}
+
+table { font-size: .86rem; }
+th {
+  position: sticky; top: 0;
+  background: var(--panel);
+  font-weight: 600; color: var(--muted);
+  font-size: .76rem; text-transform: uppercase; letter-spacing: .05em;
+}
+td, th { border-bottom: 1px solid var(--line-soft); }
+tr.clickable:hover { background: var(--panel-hover); }
+
+/* ------------------------------------------------------- responsive -- */
+
+/*
+ * Below 900px the sidebar slides over the content rather than shrinking it.
+ *
+ * A 232px rail on a phone leaves nothing for the tables, and tables are most
+ * of this application.
+ */
+@media (max-width: 900px) {
+  .icon-button { display: block; }
+  .shell { grid-template-columns: minmax(0, 1fr); }
+
+  .sidebar {
+    position: fixed;
+    top: var(--topbar-height);
+    left: 0;
+    width: var(--sidebar-width);
+    z-index: 25;
+    transform: translateX(-100%);
+    transition: transform .18s ease;
+  }
+  body.nav-open .sidebar { transform: none; }
+
+  .scrim {
+    display: block;
+    position: fixed;
+    inset: var(--topbar-height) 0 0 0;
+    background: rgba(0, 0, 0, .5);
+    z-index: 20;
+  }
+
+  main { padding: 14px; }
+  .brand-text small { display: none; }
+  .control-label { display: none; }
+  #lastSeen { display: none; }
+  .topbar { gap: 8px; padding: 0 10px; }
+  .topbar-controls { gap: 6px; min-width: 0; }
+  /* The controls shrink before they overflow: a select running off the right
+     edge of a phone is worse than a narrow one. */
+  .topbar-controls select { max-width: 116px; }
+  #live .dot + * , #live { font-size: .82rem; }
+}
+
+@media (max-width: 520px) {
+  /* Percent-free and change-per-reading are refinements; on a phone the space
+     goes to the range, which everything else depends on. */
+  #unitsWrap { display: none !important; }
+  #live { padding: 6px 8px; }
+  .brand-text strong { font-size: .95rem; }
+}
+
+@media (max-width: 620px) {
+  .cards { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .panel { padding: 14px; border-radius: 10px; }
+  .panel-head { flex-wrap: wrap; gap: 8px; }
+  .panel-controls { flex-wrap: wrap; }
+  /* A table that cannot shrink scrolls inside its own panel rather than
+     stretching the page sideways. */
+  .panel > div > table, .scroll-x > table { min-width: 520px; }
+  .panel > div:has(> table) { overflow-x: auto; }
+}
+
+
+/* ------------------------------------------------------------- tables -- */
+
+/*
+ * Long tables are paged rather than printed whole.
+ *
+ * A scan can return two hundred paths and a process list four hundred rows;
+ * rendering all of them builds a DOM nobody scrolls to the bottom of and makes
+ * every refresh visibly slow. The first page is what somebody reads, and the
+ * rest is one click away.
+ */
+.table-tools {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 6px; font-size: .78rem; color: var(--muted);
+}
+.table-tools .spacer { flex: 1; }
+.table-more { margin-top: 8px; }
