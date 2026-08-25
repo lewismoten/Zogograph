@@ -8994,14 +8994,35 @@ function renderCapture(capture) {
 
 /* ------------------------------------------------------------------- DNS -- */
 
+/*
+ * The last lookup that was asked for, so a redraw repeats it.
+ *
+ * Without this, anything that re-rendered the view - opening it again, a resize,
+ * the poll before it was excluded - reverted to the default queries and wiped
+ * the answer the reader had just asked for.
+ */
+const dnsState = { params: {}, at: null };
+
 async function refreshDns(params = {}) {
+  dnsState.params = params;
   const body = $("dnsBody");
   if (!state.signedIn) {
     body.replaceChildren(note("Sign in to run name lookups."));
     return;
   }
 
-  body.replaceChildren(spinner("Asking\u2026"));
+  /*
+   * Says how long this may take, because it can genuinely take seconds.
+   *
+   * Each query waits up to three for a reply and they are asked one after
+   * another, so a nameserver that is down - the case somebody is most likely to
+   * be here for - is the slowest possible answer. Silence for six seconds reads
+   * as a broken page rather than as a server not replying.
+   */
+  body.replaceChildren(spinner(
+    "Asking\u2026 a server that does not reply takes three seconds to give up on, "
+    + "so this can take a few."
+  ));
 
   let data;
   try {
@@ -9021,7 +9042,24 @@ async function refreshDns(params = {}) {
     return;
   }
 
+  dnsState.at = Math.floor(Date.now() / 1000);
+
   const wrap = document.createDocumentFragment();
+
+  /*
+   * When these ran, said plainly.
+   *
+   * A page that stops updating has to say so, or old answers look like current
+   * ones - which on this page would be actively misleading, since the whole
+   * point is whether name service is working *now*.
+   */
+  const asked = params.name
+    ? `Asked for ${params.name} ${params.type || "A"}`
+      + (params.server ? ` at ${params.server}` : "")
+    : "The default checks";
+  wrap.appendChild(note(`${asked}, run ${humanTime(dnsState.at)}. `
+    + "These do not refresh on their own \u2014 each one sends a real query, and a page that "
+    + "repeated them every few seconds would be adding to the traffic it is measuring."));
 
   if (data.serves_dns) {
     wrap.appendChild(note("This machine is listening on port 53, so it is a nameserver. "
@@ -11123,7 +11161,13 @@ const VIEWS = {
   "net-ports": { label: "Open ports", parent: "network", refresh: () => refreshNetwork() },
   "net-peers": { label: "Who is connected", parent: "network", refresh: () => refreshNetwork() },
   "net-capture": { label: "What is on the wire", parent: "network", refresh: () => refreshNetwork() },
-  "net-dns": { label: "Name lookups", parent: "network", refresh: () => refreshDns() },
+  "net-dns": {
+    label: "Name lookups",
+    parent: "network",
+    // Run when opened and when asked for, never on a timer - see refreshCurrent.
+    manual: true,
+    refresh: () => refreshDns(dnsState.params),
+  },
   units: { label: "Every service", parent: "processes", refresh: () => refreshUnits() },
   "log-stream": { label: "Every log at once", parent: "storage", refresh: () => refreshLogStream() },
 
@@ -11325,7 +11369,7 @@ function drawPoll() {
   }
 }
 
-async function refreshCurrent() {
+async function refreshCurrent(fromPoll = false) {
   if (document.hidden) return;
 
   const view = VIEWS[state.view] || VIEWS[DEFAULT_VIEW];
@@ -11335,8 +11379,20 @@ async function refreshCurrent() {
     // The session and the alert count are cheap and belong to every view: the
     // sign-in button and the navigation badges are on screen whatever is.
     await refreshShared();
-    await view.refresh();
-    state.rendered.add(state.view);
+
+    /*
+     * Some views are run on demand and must not be polled.
+     *
+     * The name lookups actually send DNS queries, so a page that refreshed
+     * itself every few seconds would add this machine's own traffic to the
+     * thing it is measuring - and it would throw away whatever the reader had
+     * just asked for and replace it with the defaults. Opening the view still
+     * loads it; only the timer is declined.
+     */
+    if (!(fromPoll && view.manual)) {
+      await view.refresh();
+      state.rendered.add(state.view);
+    }
     clearStaleNotice();
   } catch (error) {
     notice(String(error.message || error));
@@ -11421,7 +11477,7 @@ async function tick() {
     }
   }
 
-  await refreshCurrent();
+  await refreshCurrent(true);
 }
 
 /* -------------------------------------------------------------------- wire -- */
@@ -11775,7 +11831,8 @@ $("streamLines").addEventListener("change",
   () => refreshLogStream().catch(error => notice(String(error.message || error))));
 
 $("dnsRun").addEventListener("click",
-  () => refreshDns().catch(error => notice(String(error.message || error))));
+  // Literally again: whatever was last asked for, not a reset to the defaults.
+  () => refreshDns(dnsState.params).catch(error => notice(String(error.message || error))));
 
 $("dnsForm").addEventListener("submit", event => {
   event.preventDefault();
