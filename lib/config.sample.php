@@ -486,6 +486,67 @@ return [
         'error_names' => ['error_log', 'error.log', 'php_errorlog', 'php-error.log'],
     ],
 
+    /*
+     * The troubleshooting assistant.
+     *
+     * Off by default and inert until a key is set. When it is on, this tool
+     * sends parts of your logs, your disk figures and your process list to
+     * whichever service you point it at - which is worth deciding deliberately
+     * rather than discovering. A local model needs no key and nothing leaves
+     * the machine; see the 'compatible' provider.
+     */
+    'ai' => [
+        'enabled' => false,
+
+        // openai, anthropic, or compatible (Ollama, llama.cpp, vLLM, a gateway).
+        'provider' => 'openai',
+        'base_url' => '',
+        'model' => '',
+        'api_key' => '',
+
+        /*
+         * Prices per million tokens, in cents. Optional.
+         *
+         * Without them the session reports token counts and no money, which is
+         * correct - a wrong price is worse than no price, so nothing is guessed
+         * from the model name. Cached input is billed separately by everyone
+         * who offers it, usually at a tenth of the rate, and on a conversation
+         * that re-sends a long prompt every turn it is most of the bill.
+         */
+        'price_in' => 0,
+        'price_out' => 0,
+        'price_cached' => 0,
+
+        /*
+         * What one conversation may spend before it stops.
+         *
+         * Zero means no limit of that kind. All three are checked before each
+         * call rather than after, so a limit stops the next request rather
+         * than being noticed once the money is gone.
+         */
+        'max_seconds' => 3600,
+        'max_cents' => 50,
+        'max_turns' => 40,
+
+        /*
+         * Which tools the assistant may use, and which need permission first.
+         *
+         *   'tools' => [
+         *       'get_recent_log_lines' => ['enabled' => false],
+         *       'take_screenshot'      => ['permission' => true],
+         *   ]
+         *
+         * Anything absent uses the default in lib/aitools.php: reading tools
+         * on, anything that acts off. A tool switched off is not described to
+         * the model at all - one told about a tool it cannot use keeps trying
+         * it and explains its absence to the user as a fault.
+         */
+        'tools' => [],
+
+        // Defaults to ai.db beside the other two databases.
+        'database' => null,
+    ],
+
     'retention' => [
         // Every reading exactly as collected.
         'raw_days' => 7,

@@ -72,6 +72,7 @@ require_once __DIR__ . '/lib/storekeep.php';
 require_once __DIR__ . '/lib/notes.php';
 require_once __DIR__ . '/lib/software.php';
 require_once __DIR__ . '/lib/rdns.php';
+require_once __DIR__ . '/lib/aisession.php';
 require_once __DIR__ . '/lib/headers.php';
 require_once __DIR__ . '/lib/pagebits.php';
 require_once __DIR__ . '/lib/domains.php';
@@ -157,6 +158,14 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'notes' => notesView($config, $pdo, $signedIn),
         'changed' => changedView($config, $pdo, $signedIn),
         'rdns' => rdnsView($config, $pdo, $signedIn),
+        'ai' => aiView($config, $pdo, $signedIn),
+        'ai-poll' => aiPollView($config, $pdo, $signedIn),
+        'ai-start' => doAiStart($config, $pdo, $post),
+        'ai-say' => doAiSay($config, $pdo, $post),
+        'ai-step' => doAiStep($config, $pdo, $post),
+        'ai-permit' => doAiPermit($config, $pdo, $post),
+        'ai-tool-result' => doAiToolResult($config, $pdo, $post),
+        'ai-stop' => doAiStop($config, $pdo, $post),
         'rdns-ask' => doRdnsAsk($config, $pdo, $post),
         'rdns-cancel' => doRdnsCancel($config, $pdo, $post),
         'rdns-now' => doRdnsNow($config, $pdo, $post),
@@ -5775,4 +5784,351 @@ function doRdnsNow(array $config, PDO $pdo, bool $post): array
     }
 
     return ['ok' => true, 'done' => $done] + rdnsView($config, $pdo, true);
+}
+
+/* -------------------------------------------------------------------- ai -- */
+
+/** Where the assistant stands: settings, whether it can run, and any open session. */
+function aiView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to use the assistant');
+    }
+
+    $ready = aiReady($config);
+    $settings = aiSettings($config);
+
+    $out = [
+        'ready' => $ready['ok'],
+        'why' => $ready['why'],
+        'model' => $settings['model'],
+        'provider' => $settings['provider'],
+        'session' => null,
+    ];
+
+    if (!$ready['ok']) {
+        return $out;
+    }
+
+    $ai = aiDb($config, false);
+    if ($ai === null) {
+        return $out;
+    }
+
+    $session = aiOpenSession($ai);
+    if ($session !== null) {
+        $out['session'] = aiSessionView($config, $ai, (int)$session['id'], aiViews());
+    }
+
+    return $out;
+}
+
+/** Opens a conversation, ending any that was still running. */
+function doAiStart(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ready = aiReady($config);
+    if (!$ready['ok']) {
+        throw new ActionRefused($ready['why']);
+    }
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused(
+            'the assistant\'s database cannot be created beside the others'
+        );
+    }
+
+    /*
+     * Only one conversation at a time.
+     *
+     * Two running at once would each be spending money against the same limits
+     * with neither aware of the other, and there is no interface here for
+     * choosing between them.
+     */
+    $open = aiOpenSession($ai);
+    if ($open !== null) {
+        aiSetState($ai, (int)$open['id'], 'stopped', 'a new conversation was started');
+    }
+
+    $id = aiSessionStart($config, $ai, currentAccountName() ?: 'account',
+        (string)($_POST['from'] ?? ''));
+
+    logAction($pdo, 'ai_session', null, 'ok', 0, 0, 'started, model ' . aiSettings($config)['model']);
+
+    return ['ok' => true, 'session' => aiSessionView($config, $ai, $id, aiViews())];
+}
+
+/** Adds what the user said and readies a step. */
+function doAiSay(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('the assistant is not available');
+    }
+
+    $text = trim((string)($_POST['text'] ?? ''));
+    if ($text === '') {
+        throw new ActionRefused('say something first');
+    }
+    if (mb_strlen($text) > 4000) {
+        throw new ActionRefused('that is longer than one message can be');
+    }
+
+    $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
+    $session = aiSession($ai, $id);
+
+    if ($session === null) {
+        throw new ActionRefused('no such conversation');
+    }
+    if (in_array($session['state'], ['stopped', 'ended', 'failed'], true)) {
+        throw new ActionRefused('that conversation has finished. Start a new one.');
+    }
+
+    aiAddMessage($ai, $id, 'user', $text);
+    aiSetState($ai, $id, 'thinking');
+
+    return ['ok' => true, 'session' => aiSessionView($config, $ai, $id, aiViews())];
+}
+
+/**
+ * Advances one step.
+ *
+ * Driven by the browser's polling rather than by a worker, because there is no
+ * worker - see the note at the top of lib/aisession.php.
+ */
+function doAiStep(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('the assistant is not available');
+    }
+
+    $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
+    return ['ok' => true, 'session' => aiStep($config, $ai, $pdo, $id, aiViews())];
+}
+
+/**
+ * How the conversation stands, without changing it.
+ *
+ * Polled several times a second while a turn runs, so it does as little as
+ * possible: one read of the session and its messages.
+ */
+function aiPollView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to use the assistant');
+    }
+
+    $ai = aiDb($config, false);
+    if ($ai === null) {
+        return ['exists' => false];
+    }
+
+    $id = clampInt($_GET['session'] ?? 0, 1, PHP_INT_MAX);
+    return aiSessionView($config, $ai, $id, aiViews());
+}
+
+/** Allows or refuses a tool the model asked permission for. */
+function doAiPermit(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('the assistant is not available');
+    }
+
+    $runId = clampInt($_POST['run'] ?? 0, 1, PHP_INT_MAX);
+    $allow = ($_POST['allow'] ?? '0') === '1';
+
+    $stmt = $ai->prepare("SELECT * FROM ai_tool_runs WHERE id = ? AND state = 'proposed'");
+    $stmt->execute([$runId]);
+    $run = $stmt->fetch();
+
+    if ($run === false) {
+        throw new ActionRefused('that request has already been answered');
+    }
+
+    $session = (int)$run['session_id'];
+    $who = currentAccountName() ?: 'account';
+
+    if (!$allow) {
+        $ai->prepare(
+            'UPDATE ai_tool_runs SET state = ?, settled_at = ?, decided_by = ? WHERE id = ?'
+        )->execute(['denied', time(), $who, $runId]);
+
+        /*
+         * The refusal is told to the model as the tool's result.
+         *
+         * A model whose call simply never came back will call it again. One
+         * told it was refused, and why, works around it - which is the whole
+         * point of asking rather than silently blocking.
+         */
+        aiRecordToolResult($ai, $session, (string)$run['tool_id'], (string)$run['tool'], [
+            'refused' => true,
+            'reason' => 'The person you are talking to did not allow this. Do not ask '
+                . 'again for the same thing. Carry on with what you can do without it, '
+                . 'and say what you cannot determine as a result.',
+        ]);
+
+        aiSetState($ai, $session, 'thinking');
+        return ['ok' => true, 'session' => aiSessionView($config, $ai, $session, aiViews())];
+    }
+
+    $ai->prepare(
+        'UPDATE ai_tool_runs SET state = ?, decided_by = ? WHERE id = ?'
+    )->execute(['allowed', $who, $runId]);
+
+    if ((string)$run['runs_where'] === 'browser') {
+        aiSetState($ai, $session, 'waiting_browser');
+        return ['ok' => true, 'session' => aiSessionView($config, $ai, $session, aiViews())];
+    }
+
+    aiRunAndRecord(
+        $config, $ai, $pdo, $session, $runId, (string)$run['tool'],
+        json_decode((string)$run['arguments'], true) ?: [],
+        (string)$run['tool_id']
+    );
+    aiSetState($ai, $session, 'thinking');
+
+    return ['ok' => true, 'session' => aiSessionView($config, $ai, $session, aiViews())];
+}
+
+/**
+ * The browser's answer to a tool only it could run.
+ *
+ * A screenshot arrives here as a data URL and a navigation as a confirmation
+ * that it happened. Both are recorded as ordinary tool results, so the model
+ * sees no difference between something the server worked out and something the
+ * page did.
+ */
+function doAiToolResult(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('the assistant is not available');
+    }
+
+    $runId = clampInt($_POST['run'] ?? 0, 1, PHP_INT_MAX);
+
+    $stmt = $ai->prepare(
+        "SELECT * FROM ai_tool_runs WHERE id = ? AND state = 'allowed' AND runs_where = 'browser'"
+    );
+    $stmt->execute([$runId]);
+    $run = $stmt->fetch();
+
+    if ($run === false) {
+        throw new ActionRefused('that is not something the browser is being asked for');
+    }
+
+    $session = (int)$run['session_id'];
+    $failed = trim((string)($_POST['error'] ?? ''));
+
+    if ($failed !== '') {
+        $ai->prepare(
+            'UPDATE ai_tool_runs SET state = ?, settled_at = ?, error = ? WHERE id = ?'
+        )->execute(['failed', time(), $failed, $runId]);
+
+        aiRecordToolResult($ai, $session, (string)$run['tool_id'], (string)$run['tool'], [
+            'error' => 'The browser could not do that: ' . $failed,
+        ]);
+        aiSetState($ai, $session, 'thinking');
+        return ['ok' => true, 'session' => aiSessionView($config, $ai, $session, aiViews())];
+    }
+
+    $result = aiBrowserResult($ai, $session, $run);
+
+    $ai->prepare(
+        'UPDATE ai_tool_runs SET state = ?, settled_at = ?, result = ? WHERE id = ?'
+    )->execute(['done', time(), aiEncodeResult($result), $runId]);
+
+    aiSetState($ai, $session, 'thinking');
+    return ['ok' => true, 'session' => aiSessionView($config, $ai, $session, aiViews())];
+}
+
+/**
+ * Turns what the browser sent into a tool result for the model.
+ *
+ * A screenshot is the interesting case: it arrives as a data URL and has to go
+ * back as an image block, which is the one place the message shape differs by
+ * provider. Bounded hard - an uncompressed screenshot of a large display is
+ * megabytes, and megabytes of base64 is a very expensive way to say very little.
+ */
+function aiBrowserResult(PDO $ai, int $session, array $run): array
+{
+    $tool = (string)$run['tool'];
+
+    if ($tool === 'open_page') {
+        $arguments = json_decode((string)$run['arguments'], true) ?: [];
+
+        aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+            'opened' => (string)($arguments['page'] ?? ''),
+            'note' => 'The user is now looking at that page. This told you nothing new - '
+                . 'if you need data from it, use a diagnostic tool.',
+        ]);
+
+        return ['opened' => (string)($arguments['page'] ?? '')];
+    }
+
+    if ($tool === 'take_screenshot') {
+        $image = (string)($_POST['image'] ?? '');
+
+        if (!preg_match('#^data:image/(png|jpeg|webp);base64,#', $image)) {
+            aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+                'error' => 'The browser did not return an image.',
+            ]);
+            return ['error' => 'not an image'];
+        }
+
+        if (strlen($image) > 4 * 1024 * 1024) {
+            aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+                'error' => 'That screenshot was too large to send. Ask the user to describe '
+                    . 'what they can see instead.',
+            ]);
+            return ['error' => 'too large'];
+        }
+
+        /*
+         * The image goes in as a message of its own, not as a tool result.
+         *
+         * Every provider requires a tool result to be text, and an image has to
+         * arrive as a content block on a user message. So the tool answers "it
+         * was taken" and the picture follows immediately after it.
+         */
+        aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+            'taken' => true,
+            'note' => 'The screenshot follows as an image. Describe only what you can '
+                . 'actually see in it; do not infer numbers that are not legible.',
+        ]);
+
+        aiAddMessage($ai, $session, 'user', $image, ['visible' => 0, 'tool_name' => 'screenshot']);
+
+        return ['taken' => true, 'bytes' => strlen($image)];
+    }
+
+    return ['error' => 'unknown browser tool'];
+}
+
+/** Stops the conversation without deleting it. */
+function doAiStop(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('the assistant is not available');
+    }
+
+    $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
+    aiSetState($ai, $id, 'stopped', 'stopped by ' . (currentAccountName() ?: 'the account'));
+
+    return ['ok' => true, 'session' => aiSessionView($config, $ai, $id, aiViews())];
 }
