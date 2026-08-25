@@ -5041,6 +5041,328 @@ function cropInto(canvas, box) {
   canvas.getContext("2d").drawImage(piece, 0, 0);
 }
 
+/* ----------------------------------------------------------- what is run -- */
+
+/*
+ * When work happens, on both collectors, in one place.
+ *
+ * Five things that looked separate and are one: what the host runs, what the
+ * account runs, collecting more eagerly while somebody is looking, things worth
+ * recording only while somebody is looking, and how hard to throttle anything
+ * that leaves the machine. They interlock - a scan set to hourly that also
+ * speeds up while browsing and also shares a per-run budget cannot be
+ * configured on three pages without the settings contradicting each other.
+ */
+const scanState = { data: null };
+
+async function refreshScans(side) {
+  const body = $(side === "host" ? "hostScansBody" : "accountScansBody");
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see this."));
+    return;
+  }
+
+  try {
+    renderScans(await api("scan-schedule"));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderScans(data) {
+  scanState.data = data;
+
+  for (const side of ["account", "host"]) {
+    const body = $(side === "host" ? "hostScansBody" : "accountScansBody");
+    if (!body) continue;
+
+    const rows = data.scans.filter(scan => scan.side === side);
+    const parts = [];
+
+    if (side === "host" && !data.host_enabled) {
+      parts.push(note(
+        "The host collector is not set up on this install, so none of these run. "
+        + "Setting it up is under Capabilities."
+      ));
+    }
+
+    if (side === "account" && data.browsing) {
+      parts.push(note(
+        `Somebody has the dashboard open right now (last seen ${ago(data.last_browsed_at)}), `
+        + "so anything set to speed up while browsing is currently on its shorter interval."
+      ));
+    }
+
+    parts.push(scanTable(rows, data));
+
+    const actions = document.createElement("div");
+    actions.className = "inspect-actions";
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.textContent = "Save these";
+    save.disabled = !data.writable;
+    actions.appendChild(save);
+
+    if (!data.writable) {
+      actions.appendChild(note("lib/config.php is not writable, so these cannot change."));
+    }
+    parts.push(actions);
+
+    body.replaceChildren(...parts);
+  }
+
+  renderThrottles(data);
+}
+
+function scanTable(rows, data) {
+  const table = document.createElement("table");
+  table.className = "retention";
+
+  const head = table.createTHead().insertRow();
+  for (const label of ["What", "How often", "Recommended", "Last run", "Next", ""]) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    head.appendChild(th);
+  }
+
+  const tbody = table.createTBody();
+
+  for (const scan of rows) {
+    const row = tbody.insertRow();
+
+    const what = row.insertCell();
+    what.className = "name";
+    what.appendChild(document.createTextNode(scan.label));
+    what.appendChild(helpIcon({
+      title: scan.what,
+      note: `${scan.cost} ${scan.why}`,
+      mine: false,
+    }));
+
+    const often = row.insertCell();
+    const select = document.createElement("select");
+    select.className = "scan-every";
+    select.name = `every_${scan.key.replace(/-/g, "_")}`;
+    select.dataset.scan = scan.key;
+    select.disabled = !data.writable;
+
+    for (const [seconds, label] of Object.entries(data.intervals)) {
+      const option = document.createElement("option");
+      option.value = seconds;
+      option.textContent = label;
+      option.selected = Number(scan.every) === Number(seconds);
+      select.appendChild(option);
+    }
+    often.appendChild(select);
+
+    /*
+     * The two switches only appear where they mean something.
+     *
+     * A disk walk that ran faster because somebody opened a page would be
+     * actively harmful, so it is not offered the option - an unavailable
+     * choice is better than one that is available and wrong.
+     */
+    if (scan.browse_boost > 0) {
+      often.appendChild(toggleLine("boost", scan, data,
+        `speed up to every ${humanSpan(scan.browse_boost)} while somebody is looking`));
+    }
+    if (scan.live_only || scan.browse_boost > 0) {
+      often.appendChild(toggleLine("live_only", scan, data,
+        "only while somebody is looking"));
+    }
+
+    const suggested = row.insertCell();
+    suggested.className = "muted";
+    suggested.textContent = data.intervals[scan.recommended] ?? "";
+    if (Number(scan.every) === Number(scan.recommended)) {
+      suggested.className = "muted band-ok";
+      suggested.textContent = "as recommended";
+    }
+    /*
+     * "Only when asked" as a recommendation needs its reason attached.
+     *
+     * Otherwise it reads as a setting nobody filled in, and somebody helpfully
+     * turns on an hourly walk of every filesystem on a shared machine.
+     */
+    if (scan.recommended === 0) {
+      suggested.title = scan.why;
+    }
+
+    const last = row.insertCell();
+    last.textContent = scan.last_at ? ago(scan.last_at) : "never";
+    if (scan.last_at) last.title = humanTime(scan.last_at);
+
+    const next = row.insertCell();
+    next.className = "muted";
+    next.textContent = scan.due ? "due now" : scan.due_why;
+    if (scan.due) next.className = "band-warn";
+
+    const actions = row.insertCell();
+    actions.className = "row-actions";
+
+    if (scan.pending) {
+      const waiting = document.createElement("span");
+      waiting.className = "band-warn small";
+      waiting.textContent = `asked ${ago(scan.pending.requested_at)}`;
+      actions.appendChild(waiting);
+
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "link danger";
+      cancel.textContent = "Withdraw";
+      cancel.addEventListener("click", async () => {
+        cancel.disabled = true;
+        try {
+          await post("cancel-task", { task: scan.pending.task });
+          notice("Withdrawn. The collector will not run it.", true);
+          await refreshScans(scan.side);
+        } catch (error) {
+          notice(String(error.message || error));
+          cancel.disabled = false;
+        }
+      });
+      actions.appendChild(cancel);
+    } else if (scan.goes_to) {
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "link";
+      go.textContent = "Set one up";
+      go.title = "This one needs choosing before it can be asked for";
+      go.addEventListener("click", () => {
+        location.hash = `#/${scan.goes_to}?range=${state.range}`;
+      });
+      actions.appendChild(go);
+    } else if (scan.can_ask) {
+      const ask = document.createElement("button");
+      ask.type = "button";
+      ask.className = "link";
+      ask.textContent = "Ask for one";
+      ask.title = "It happens on the collector's next pass, not now";
+      ask.addEventListener("click", async () => {
+        ask.disabled = true;
+        try {
+          /*
+           * The catalogue names the action, not a raw task string.
+           *
+           * Two of these already had their own endpoint before this page
+           * existed, and routing everything through one would have meant a
+           * third way of asking for the same thing.
+           */
+          const [action, argument] = String(scan.task).split(":");
+          await post(action, argument ? { task: argument } : {});
+          notice("Asked. It runs on the host collector's next pass.", true);
+          await refreshScans(scan.side);
+        } catch (error) {
+          notice(String(error.message || error));
+        } finally {
+          ask.disabled = false;
+        }
+      });
+      actions.appendChild(ask);
+    }
+  }
+
+  return table;
+}
+
+/** One of the two per-scan switches, as a line under its interval. */
+function toggleLine(kind, scan, data, label) {
+  const line = document.createElement("label");
+  line.className = "scan-toggle muted small";
+
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.className = `scan-${kind}`;
+  box.dataset.scan = scan.key;
+  box.checked = Boolean(scan[kind]);
+  box.disabled = !data.writable;
+  line.appendChild(box);
+
+  line.appendChild(document.createTextNode(" " + label));
+  return line;
+}
+
+function renderThrottles(data) {
+  const body = $("throttleBody");
+  if (!body) return;
+
+  const parts = [];
+  const form = document.createElement("div");
+  form.className = "settings";
+
+  const fallback = document.createElement("input");
+  fallback.type = "number";
+  fallback.id = "throttleDefault";
+  fallback.min = "1";
+  fallback.max = "50";
+  fallback.className = "days";
+  fallback.value = String(data.throttle.default);
+  fallback.disabled = !data.writable;
+  form.appendChild(fieldRow("Anything not listed below", fallback,
+    "Per collector run. One is the floor: a budget of zero would stop a queue for ever, "
+    + "which is never what anybody means by “slow down”."));
+
+  for (const command of data.throttle.commands) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = "days throttle-command";
+    input.dataset.command = command.command;
+    input.min = "1";
+    input.max = "50";
+    input.value = String(command.per_run);
+    input.disabled = !data.writable;
+    form.appendChild(fieldRow(command.command, input, command.why));
+  }
+
+  parts.push(form);
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.textContent = "Save these";
+  save.disabled = !data.writable;
+  actions.appendChild(save);
+  parts.push(actions);
+
+  body.replaceChildren(...parts);
+}
+
+/**
+ * Sends everything on both pages at once.
+ *
+ * Both forms save the whole set, because the settings interlock: saving one
+ * page's half against a config the other page had already changed would
+ * silently revert it.
+ */
+async function saveScans() {
+  const values = {};
+
+  for (const select of document.querySelectorAll("select.scan-every")) {
+    values[select.name] = select.value;
+  }
+
+  values.boosted = [...document.querySelectorAll("input.scan-boost:checked")]
+    .map(box => box.dataset.scan).join(",");
+  values.live_only = [...document.querySelectorAll("input.scan-live_only:checked")]
+    .map(box => box.dataset.scan).join(",");
+
+  const fallback = $("throttleDefault");
+  if (fallback) values.throttle_default = fallback.value;
+
+  for (const input of document.querySelectorAll("input.throttle-command")) {
+    values[`throttle_${input.dataset.command}`] = input.value;
+  }
+
+  try {
+    renderScans(await post("scan-schedule-save", values));
+    notice("Saved. The next collector run will use these.", true);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+}
+
 /* ------------------------------------------------------------ chart names -- */
 
 /*
@@ -19456,6 +19778,16 @@ const VIEWS = {
     parent: "system",
     refresh: () => refreshAiSettings(),
   },
+  "scans-account": {
+    label: "Account scans",
+    parent: "system",
+    refresh: () => refreshScans("account"),
+  },
+  "scans-host": {
+    label: "Host scans",
+    parent: "system",
+    refresh: () => refreshScans("host"),
+  },
   "net-rdns": {
     label: "Address names",
     parent: "network",
@@ -20124,6 +20456,13 @@ $("aiSettingsForm").addEventListener("submit", event => {
   event.preventDefault();
   saveAiSettings();
 });
+
+for (const id of ["accountScansForm", "hostScansForm", "throttleForm"]) {
+  $(id).addEventListener("submit", event => {
+    event.preventDefault();
+    saveScans();
+  });
+}
 
 $("aiSessionsRefresh").addEventListener("click", () => {
   refreshAiSessions().catch(error => notice(String(error.message || error)));

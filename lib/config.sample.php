@@ -547,6 +547,30 @@ return [
         'database' => null,
     ],
 
+    /*
+     * How often each scan runs, and who it speeds up for.
+     *
+     * Only the ones that differ from the recommendation are stored, so a later
+     * change to what this tool recommends reaches an existing install rather
+     * than being frozen out by a config written today.
+     *
+     *   'scans' => [
+     *       'scan'             => ['every' => 43200],
+     *       'host-capture'     => ['every' => 21600],
+     *       'processes'        => ['every' => 300, 'live_only' => true],
+     *       'vitals'           => ['boost' => false],
+     *   ]
+     *
+     * `every` is seconds, and 0 means only when asked. `boost` collects more
+     * eagerly while somebody has the dashboard open. `live_only` records
+     * nothing unless somebody is looking, which suits the samples that are
+     * only interesting when a person is watching them happen.
+     *
+     * The recommendations are in lib/scans.php with the reasoning attached,
+     * including for the ones recommended NOT to run on a schedule at all.
+     */
+    'scans' => [],
+
     'retention' => [
         // Every reading exactly as collected.
         'raw_days' => 7,

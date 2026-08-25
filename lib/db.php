@@ -595,6 +595,24 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        29 => [
+            /*
+             * Small facts the app needs to remember between requests.
+             *
+             * One key-value table rather than a column somewhere, because the
+             * things that land here have nothing to do with each other and no
+             * natural home: when somebody last had the dashboard open, and
+             * whatever else turns out to need remembering.
+             *
+             * Not settings in the configuration sense - those live in
+             * lib/config.php where a person can read and edit them.
+             */
+            "CREATE TABLE settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+        ],
+
         28 => [
             /*
              * What the internet says an address is called.

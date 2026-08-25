@@ -21,6 +21,7 @@ if (PHP_SAPI !== 'cli') {
     exit("host-cron.php runs from the command line only.\n");
 }
 
+require_once __DIR__ . '/lib/scans.php';
 require_once __DIR__ . '/lib/rdns.php';
 require_once __DIR__ . '/lib/boot.php';
 
@@ -321,6 +322,21 @@ try {
         $previousRun = (int)$pdo->query('SELECT MAX(ran_at) FROM host_capability_runs')->fetchColumn();
     } catch (Throwable) {
         $previousRun = 0;
+    }
+
+    /*
+     * Or because it is simply due.
+     *
+     * The crontab line runs this every few minutes and the expensive scans
+     * decide for themselves whether their turn has come - which is what makes
+     * "daily" expressible without a second crontab entry per scan.
+     */
+    if (!$doCapabilities && $capabilityRequests === []) {
+        $when = hostScanDue($config, $pdo, 'host-capabilities');
+        if ($when['due']) {
+            $say('A capability probe is due.');
+            $doCapabilities = true;
+        }
     }
 
     if (!$doCapabilities && $capabilityRequests !== []) {

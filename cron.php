@@ -33,6 +33,7 @@ if (!is_file($configFile)) {
 $config = require $configFile;
 date_default_timezone_set($config['timezone'] ?? 'UTC');
 
+require_once __DIR__ . '/lib/scans.php';
 require_once __DIR__ . '/lib/rdns.php';
 require_once __DIR__ . '/lib/boot.php';
 define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
@@ -126,7 +127,27 @@ try {
      * hangs is exactly the condition being watched for, and losing the disk
      * reading to it would be the monitor breaking in sympathy.
      */
-    if ($wants('--vitals') || $wants('--urls')) {
+    /*
+     * Whether each of these is due, rather than whether it was asked for.
+     *
+     * The crontab line runs this every five minutes; what happens inside is
+     * decided per scan, which is what makes "daily" and "only when somebody is
+     * looking" expressible at all. A flag on the command line still forces one
+     * - somebody typing --urls means now.
+     */
+    $due = function (string $key) use ($config, $pdo, $wants): bool {
+        if ($wants('--' . $key)) {
+            return true;
+        }
+        if (!$wants('--vitals')) {
+            return false;
+        }
+
+        $last = scanLastRunFor($config, $pdo, $key);
+        return scanDue($config, $pdo, $key, $last)['due'];
+    };
+
+    if ($due('urls')) {
         try {
             $urls = urlWatchRunDue($pdo, null, null, $config);
             if ($urls['ran'] > 0) {
@@ -164,7 +185,7 @@ try {
      * somebody else's behalf, and a queue that drains slowly is the correct
      * behaviour rather than a limitation to work around.
      */
-    if ($wants('--vitals') || $wants('--rdns')) {
+    if ($due('rdns')) {
         try {
             $imported = rdnsImportHostAnswers($pdo, hostDb($config, false));
             if ($imported > 0) {
@@ -196,7 +217,7 @@ try {
         }
     }
 
-    if ($wants('--vitals') || $wants('--domains')) {
+    if ($due('domains')) {
         try {
             $domains = domainCheckDue($pdo, null, null, $config);
             if ($domains['ran'] > 0) {

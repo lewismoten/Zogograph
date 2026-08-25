@@ -45,6 +45,7 @@ $required = [
     'lib/spans.php', 'lib/storekeep.php', 'lib/notes.php', 'lib/software.php',
     'lib/notify.php', 'lib/rdns.php', 'lib/ai.php', 'lib/aidb.php',
     'lib/aitools.php', 'lib/airun.php', 'lib/aisession.php', 'lib/aicharts.php',
+    'lib/scans.php',
 ];
 
 $files = [];

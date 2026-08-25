@@ -72,6 +72,7 @@ require_once __DIR__ . '/lib/storekeep.php';
 require_once __DIR__ . '/lib/notes.php';
 require_once __DIR__ . '/lib/software.php';
 require_once __DIR__ . '/lib/rdns.php';
+require_once __DIR__ . '/lib/scans.php';
 require_once __DIR__ . '/lib/aisession.php';
 require_once __DIR__ . '/lib/headers.php';
 require_once __DIR__ . '/lib/pagebits.php';
@@ -170,6 +171,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-settings-save' => doAiSettingsSave($config, $pdo, $post),
         'ai-sessions' => aiSessionsView($config, $signedIn),
         'charts' => chartCatalogueView($signedIn),
+        'scan-schedule' => scansView($config, $pdo, $signedIn),
+        'scan-schedule-save' => doScansSave($config, $pdo, $post),
         'chart-series' => chartSeriesView($pdo, $signedIn),
         'rdns-ask' => doRdnsAsk($config, $pdo, $post),
         'rdns-cancel' => doRdnsCancel($config, $pdo, $post),
@@ -286,6 +289,15 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
          * "I know about the disk" before they start investigating it again.
          */
         'broadcasts' => $signedIn ? noteBroadcasts($pdo) : [],
+        /*
+         * Recorded here because every page makes this call.
+         *
+         * The collectors use it to decide whether to collect more eagerly, and
+         * a browser polling is a far better signal than the web server's
+         * access log - which on a host behind a CDN may not be readable and on
+         * any host is full of crawlers.
+         */
+        'browsing_noted' => $signedIn ? aiNoteBrowsing($pdo) : false,
         'vitals' => $vitals,
         'scan' => $scan,
         'scan_running' => scanRunning($pdo),
@@ -6469,4 +6481,230 @@ function chartSeriesView(PDO $pdo, bool $signedIn): array
         (string)($_GET['chart'] ?? ''),
         clampInt($_GET['hours'] ?? 24, 1, 8760)
     );
+}
+
+/** Records that somebody has the dashboard open, and says so. */
+function aiNoteBrowsing(PDO $pdo): bool
+{
+    noteBrowsing($pdo);
+    return true;
+}
+
+/* -------------------------------------------------------------- scanning -- */
+
+/**
+ * Every scan, when it last ran, when it is next due, and what is pending.
+ *
+ * One view for both sides. They are the same question asked of two collectors,
+ * and splitting the data as well as the pages would mean two round trips to
+ * draw one idea.
+ */
+function scansView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see this');
+    }
+
+    $lastRuns = scanLastRuns($config, $pdo);
+
+    /*
+     * What has been asked for and not yet answered.
+     *
+     * outstandingHostTasks compares the account's requests against the host's
+     * answers, so it needs both - and returns nothing rather than failing when
+     * the host database cannot be opened, which is the ordinary case on an
+     * install with no root collector.
+     */
+    $pending = [];
+    if ($config['host']['enabled'] ?? false) {
+        try {
+            $host = hostDb($config, false);
+            if ($host !== null) {
+                $pending = outstandingHostTasks($config, $host);
+            }
+        } catch (Throwable) {
+            $pending = [];
+        }
+    }
+
+    $pendingByTask = [];
+    foreach ($pending as $task) {
+        $pendingByTask[(string)$task['task']] = $task;
+    }
+
+    $rows = [];
+    foreach (scanSettings($config) as $scan) {
+        $last = $lastRuns[$scan['key']] ?? null;
+        $due = scanDue($config, $pdo, $scan['key'], $last);
+
+        $rows[] = $scan + [
+            'last_at' => $last,
+            'due' => $due['due'],
+            'due_why' => $due['why'],
+            'next_at' => $due['next_at'],
+            /*
+             * The catalogue names an action; the queue holds a task string.
+             *
+             * `request-host-task:capabilities` is asked for through that
+             * endpoint and lands on the queue as plain `capabilities`, so the
+             * lookup uses the part after the colon where there is one.
+             */
+            'pending' => $pendingByTask[scanTaskName($scan['task'])] ?? null,
+            'can_ask' => $scan['task'] !== null,
+            'goes_to' => $scan['goes_to'] ?? null,
+        ];
+    }
+
+    return [
+        'scans' => $rows,
+        'intervals' => scanIntervals(),
+        'browsing' => someoneIsBrowsing($pdo),
+        'last_browsed_at' => lastSeenBrowsing($pdo),
+        'writable' => is_writable(__DIR__ . '/lib/config.php'),
+        'host_enabled' => (bool)($config['host']['enabled'] ?? false),
+        'throttle' => throttleSettings($config),
+    ];
+}
+
+/**
+ * When each scan last produced something.
+ *
+ * Read from what each one writes rather than from a record of runs: a
+ * collector that started and crashed has not collected, and a "last run"
+ * column would say it had.
+ *
+ * @return array<string, int|null>
+ */
+function scanLastRuns(array $config, PDO $pdo): array
+{
+    $out = [];
+
+    $first = function (string $sql) use ($pdo): ?int {
+        try {
+            $at = $pdo->query($sql)->fetchColumn();
+            return $at === false || $at === null ? null : (int)$at;
+        } catch (Throwable) {
+            return null;
+        }
+    };
+
+    $out['vitals'] = $first('SELECT MAX(taken_at) FROM vitals');
+    $out['scan'] = $first('SELECT MAX(finished_at) FROM scans');
+    $out['urls'] = $first('SELECT MAX(at) FROM url_results');
+    $out['domains'] = $first('SELECT MAX(last_checked_at) FROM domains');
+    $out['rdns'] = $first('SELECT MAX(checked_at) FROM rdns');
+    $out['processes'] = $first('SELECT MAX(taken_at) FROM process_samples');
+
+    if (!($config['host']['enabled'] ?? false)) {
+        return $out;
+    }
+
+    try {
+        $host = hostDb($config, false);
+    } catch (Throwable) {
+        $host = null;
+    }
+
+    if ($host === null) {
+        return $out;
+    }
+
+    $hostFirst = function (string $sql) use ($host): ?int {
+        try {
+            $at = $host->query($sql)->fetchColumn();
+            return $at === false || $at === null ? null : (int)$at;
+        } catch (Throwable) {
+            return null;
+        }
+    };
+
+    $out['host-collect'] = $hostFirst('SELECT MAX(taken_at) FROM host_samples');
+    $out['host-disk'] = $hostFirst('SELECT MAX(taken_at) FROM host_disks');
+    $out['host-capabilities'] = $hostFirst('SELECT MAX(checked_at) FROM host_capabilities');
+    $out['host-capture'] = $hostFirst('SELECT MAX(taken_at) FROM host_captures');
+    $out['host-rdns'] = $hostFirst(
+        "SELECT MAX(answered_at) FROM host_answers WHERE verb = 'rdns'"
+    );
+
+    return $out;
+}
+
+/** How hard to throttle each thing that leaves this machine. */
+function throttleSettings(array $config): array
+{
+    $commands = [
+        'whois' => 'Registry lookups, for domain expiry dates. Registries rate-limit '
+            . 'hard and a burst gets this address blocked, which reports every domain as '
+            . 'unknown - one self-inflicted problem wearing the costume of twenty real ones.',
+        'dig' => 'DNS queries against a nameserver that is usually not yours.',
+        'rdns' => 'Reverse lookups, turning addresses into names. The queue drains at '
+            . 'this rate, so this is really "how fast does the queue move".',
+    ];
+
+    $out = [];
+    foreach ($commands as $name => $why) {
+        $out[] = [
+            'command' => $name,
+            'why' => $why,
+            'per_run' => externalBudget($config, $name),
+            'recommended' => 1,
+            'set' => isset($config['external']['per_run_by_command'][$name]),
+        ];
+    }
+
+    return [
+        'commands' => $out,
+        'default' => max(1, (int)($config['external']['per_run'] ?? 1)),
+    ];
+}
+
+function doScansSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    if (!is_writable(__DIR__ . '/lib/config.php')) {
+        throw new ActionRefused('lib/config.php is not writable, so this cannot save.');
+    }
+
+    $current = require __DIR__ . '/lib/config.php';
+    $current['scans'] = scanSettingsFrom($_POST);
+
+    /*
+     * The throttles ride along on the same form.
+     *
+     * They are the same decision from a different angle - how often work
+     * happens - and putting them on their own page would mean setting a scan
+     * to hourly and then discovering somewhere else that its budget makes that
+     * impossible.
+     */
+    $perCommand = [];
+    foreach (throttleSettings($config)['commands'] as $entry) {
+        $field = 'throttle_' . $entry['command'];
+        if (!array_key_exists($field, $_POST)) {
+            continue;
+        }
+        $value = clampInt($_POST[$field], 1, 50);
+        if ($value !== 1) {
+            $perCommand[$entry['command']] = $value;
+        }
+    }
+
+    $current['external']['per_run'] = clampInt($_POST['throttle_default'] ?? 1, 1, 50);
+    $current['external']['per_run_by_command'] = $perCommand;
+
+    writeConfigFile($current);
+
+    logAction($pdo, 'scan_settings', null, 'ok', 0, 0,
+        count($current['scans']) . ' scan(s) set differently from the recommendation');
+
+    return ['ok' => true] + scansView($current, $pdo, true);
+}
+
+/** The queue's name for a scan, from the catalogue's action name. */
+function scanTaskName(?string $task): string
+{
+    if ($task === null) {
+        return '';
+    }
+    return str_contains($task, ':') ? explode(':', $task, 2)[1] : $task;
 }
