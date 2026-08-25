@@ -1913,6 +1913,7 @@ async function refreshVitals() {
   // the shading and the line can never describe different windows.
   state.uptime.analysis = vitals.uptime;
   state.restarts = restartMarks(uptime, from, to);
+  state.uptimeWindow = { from, to };
 
   renderUptime();
   showCompactionNote(vitals);
@@ -3903,6 +3904,12 @@ function renderBusyMoments(moments) {
  * Merging it would leave every other panel having to explain which half of its
  * numbers were missing.
  */
+/* Every panel fed by the one host reading, so none can be left behind. */
+const HOST_PANELS = [
+  "hostPanel", "hostIoPanel", "hostDaemonPanel", "diskProcsPanel", "rootFilesPanel",
+  "memUsersPanel", "memServicesPanel", "memGoesPanel", "memProcsPanel", "memSlabPanel",
+];
+
 async function refreshHost() {
   /*
    * One request, three pages.
@@ -3913,25 +3920,28 @@ async function refreshHost() {
    * for the "no host readings" message and its own content wrapper, so whichever
    * one is open shows the state of the collector rather than an empty panel.
    */
-  const bodies = ["hostBody", "hostIoBody", "hostDaemonBody", "diskProcsBody", "rootFilesBody"];
-  const contents = ["hostMemory", "hostIoContent", "hostDaemonContent"];
+  const bodies = ["hostBody", "hostIoBody", "hostDaemonBody", "diskProcsBody", "rootFilesBody",
+    "memUsersBody", "memServicesBody", "memGoesBody", "memProcsBody", "memSlabBody"];
+  const contents = ["hostMemory", "hostIoContent", "hostDaemonContent",
+    "memUsersContent", "memServicesContent", "memGoesContent", "memProcsContent",
+    "memSlabContent"];
   const showAll = hidden => contents.forEach(id => { const el = $(id); if (el) el.hidden = hidden; });
   const sayAll = build => bodies.forEach(id => { const el = $(id); if (el) build(el); });
 
-  for (const id of ["hostBody", "hostIoBody", "hostDaemonBody", "diskProcsBody", "rootFilesBody"]) {
+  for (const id of bodies) {
     const el = $(id);
     if (el && !el.childElementCount) el.replaceChildren(spinner("Reading the host collector\u2026"));
   }
 
   const panel = $("hostPanel");
   if (!state.signedIn) {
-    for (const id of ["hostPanel", "hostIoPanel", "hostDaemonPanel", "diskProcsPanel", "rootFilesPanel"]) {
+    for (const id of HOST_PANELS) {
       const el = $(id);
       if (el) el.hidden = true;
     }
     return;
   }
-  for (const id of ["hostPanel", "hostIoPanel", "hostDaemonPanel", "diskProcsPanel", "rootFilesPanel"]) {
+  for (const id of HOST_PANELS) {
     const el = $(id);
     if (el) el.hidden = false;
   }
@@ -3960,7 +3970,7 @@ async function refreshHost() {
     const holder = $("hostBody");
     // The same explanation on the other two pages, which are just as blank
     // without the collector and just as much in need of the instruction.
-    for (const id of ["hostIoBody", "hostDaemonBody"]) {
+    for (const id of bodies.filter(b => b !== "hostBody")) {
       const el = $(id);
       if (el) {
         el.replaceChildren(Object.assign(document.createElement("p"), {
@@ -4006,6 +4016,8 @@ async function refreshHost() {
   const swapPercent = num(s.swap_total) > 0
     ? Math.round((swapUsed / num(s.swap_total)) * 100)
     : null;
+
+  renderHostGauges(s, swapUsed, swap);
 
   setHostCard("Memory in use", humanBytes(s.used_bytes),
     `of ${humanBytes(s.mem_total)}`);
@@ -4072,14 +4084,30 @@ async function refreshHost() {
    * machine has" would then be simply wrong in a panel whose whole job is to be
    * trusted about memory.
    */
-  const parts = [
-    `${s.proc_count} processes across ${data.users.length} users, `
-      + `${s.thread_count} threads.`,
-  ];
+  /*
+   * A count that was not recorded is said to be missing, not printed as null.
+   *
+   * An older collector, or one that could not read /proc for every process,
+   * leaves these empty - and "null processes across 0 users, null threads" is
+   * the interface reporting the shape of its own data rather than the state of
+   * the machine.
+   */
+  const parts = [];
+  if (s.proc_count != null || s.thread_count != null) {
+    parts.push(
+      [
+        s.proc_count == null ? null : `${humanCount(s.proc_count)} processes`,
+        data.users.length ? `across ${count(data.users.length, "user")}` : null,
+        s.thread_count == null ? null : `${humanCount(s.thread_count)} threads`,
+      ].filter(Boolean).join(", ") + "."
+    );
+  } else {
+    parts.push("This reading did not record how many processes or threads were running.");
+  }
 
   const rssSum = num(s.rss_sum_bytes);
   const inUse = num(s.used_bytes);
-  parts.push(
+  if (rssSum > 0) parts.push(
     rssSum > inUse
       ? `Their resident sizes add up to ${humanBytes(rssSum)}, more than the `
         + `${humanBytes(inUse)} actually in use — a page shared by ten processes is `
@@ -5236,6 +5264,115 @@ function hostPss(value) {
   return value == null || Number(value) === 0 ? "—" : humanBytes(value);
 }
 
+/*
+ * The machine's memory as dials, for the things that have a real ceiling.
+ *
+ * Only quantities with a known cap get one. A gauge needs a maximum to mean
+ * anything, and inventing one - drawing slab against total RAM as though a
+ * kernel using all of it were the failure being watched for - would make the
+ * dial say something nobody measured. So slab and shared memory stay as cards
+ * with figures, and the four things that genuinely have a ceiling get arcs.
+ *
+ * The bands are chosen against how Linux actually behaves, not against round
+ * numbers. Memory *in use* is not alarming on its own, because the kernel will
+ * happily fill RAM with reclaimable cache; what matters is how little is
+ * available, which is why that one is drawn as headroom rather than as usage.
+ */
+function renderHostGauges(sample, swapUsed, swap) {
+  const holder = $("hostGauges");
+  if (!holder) return;
+
+  const total = Number(sample.mem_total) || 0;
+  const available = Number(sample.mem_available) || 0;
+  const swapTotal = Number(sample.swap_total) || 0;
+  const cores = Number(sample.cpu_cores) || 0;
+  const load1 = sample.load1 == null ? null : Number(sample.load1);
+
+  const dials = [];
+
+  if (total > 0) {
+    /*
+     * Committed memory: what is neither free nor reclaimable.
+     *
+     * Drawn instead of "used" because used includes cache, and a machine whose
+     * RAM is full of page cache is a machine working correctly. This is the
+     * figure that actually runs out.
+     */
+    const committed = Math.max(0, total - available);
+    dials.push({
+      label: "Memory committed",
+      value: (committed / total) * 100,
+      warn: 80, crit: 92,
+      sub: `${humanBytes(committed)} of ${humanBytes(total)} \u00b7 `
+        + `${humanBytes(available)} still available`,
+    });
+  }
+
+  if (swapTotal > 0) {
+    dials.push({
+      label: "Swap used",
+      value: (swapUsed / swapTotal) * 100,
+      /*
+       * Swap in use is not itself a problem - the kernel pages out things
+       * nothing has touched in hours, and that is the system working. The
+       * collector decides separately whether there is real pressure, and that
+       * verdict is what colours this rather than the percentage alone.
+       */
+      warn: swap?.state === "pressure" ? 1 : 60,
+      crit: swap?.state === "pressure" ? 25 : 90,
+      sub: `${humanBytes(swapUsed)} of ${humanBytes(swapTotal)}`
+        + (swap?.state === "pressure" ? " \u00b7 under pressure" : " \u00b7 no pressure"),
+    });
+  } else {
+    dials.push({
+      label: "Swap used", value: null, warn: 60, crit: 90,
+      sub: "no swap configured on this machine",
+    });
+  }
+
+  if (cores > 0 && load1 != null) {
+    dials.push({
+      label: "Load per core",
+      value: (load1 / cores) * 100,
+      // One job per core is a busy machine, not a broken one; past that, work
+      // is queueing, and half again is where it starts to be felt.
+      warn: 100, crit: 150, max: 200,
+      sub: `${load1.toFixed(2)} over ${count(cores, "core")}`,
+    });
+  }
+
+  if (sample.cpu_percent != null) {
+    dials.push({
+      label: "Host CPU",
+      value: Number(sample.cpu_percent),
+      warn: 70, crit: 90,
+      sub: "of every core on the machine",
+    });
+  }
+
+  /*
+   * The account's share of the machine, when both readings exist.
+   *
+   * The one number that says whether this account is the reason the machine is
+   * busy - and the one nothing else on the site can produce, because it needs a
+   * reading from inside the cage and one from outside it at the same moment.
+   */
+  const mine = Number(state.overview?.vitals?.mem_total_bytes) || 0;
+  if (total > 0 && mine > 0 && mine < total) {
+    dials.push({
+      label: "This account's share",
+      value: (mine / total) * 100,
+      // Not a health measure: a small share is the normal, healthy state of a
+      // tenant on a shared box. Bands set past anything ordinary so it stays
+      // green unless the account really is most of the machine.
+      warn: 60, crit: 85,
+      sub: `may use ${humanBytes(mine)} of the machine's ${humanBytes(total)}`,
+    });
+  }
+
+  holder.replaceChildren(...dials.map(buildGauge));
+}
+
 function setHostCard(label, value, sub, level = "", valueClass = "") {
   const card = document.createElement("div");
   card.className = `card ${level}`.trim();
@@ -5367,8 +5504,151 @@ async function refreshUptime() {
   state.uptime = uptime;
   state.uptime.analysis = vitals.uptime;
   state.restarts = restartMarks(uptime, from, to);
+  state.uptimeWindow = { from, to };
 
   renderUptime();
+}
+
+/*
+ * The window as one bar, with what happened to it drawn on.
+ *
+ * Anchored to the range that was asked for, not to the readings that exist.
+ * That distinction is the whole point: a chart that starts at the first reading
+ * makes a collector which only began on Tuesday look like a machine that only
+ * existed from Tuesday, and the missing half - the part nobody has any evidence
+ * about - disappears instead of being the most important thing on screen.
+ *
+ * So the bar always spans from..to, and every second of it is one of four
+ * things: up, restarted, a hole in the readings, or outside what was ever
+ * recorded. The fourth is not a failure and is not downtime; it is the absence
+ * of evidence, drawn as such.
+ */
+function drawUptimeChart(from, to) {
+  const canvas = $("uptimeChart");
+  if (!canvas) return;
+
+  /*
+   * The replay reads the window from state, it does not close over it.
+   *
+   * redrawCharts calls the remembered function again on a resize or when the
+   * view is unhidden. A closure over this call's from/to would replay whatever
+   * range was selected when the chart was first drawn - so changing the range
+   * updated the legend and left the bar and its labels describing the old one.
+   */
+  rememberDraw(canvas, () => drawUptimeChart(
+    state.uptimeWindow?.from ?? from,
+    state.uptimeWindow?.to ?? to
+  ));
+  const width = canvas.clientWidth;
+  if (!width) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const height = 132;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  canvas.style.height = height + "px";
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const pad = { left: 8, right: 8, top: 16, bottom: 30 };
+  const plotW = Math.max(1, width - pad.left - pad.right);
+  const barTop = pad.top;
+  const barH = 42;
+
+  const span = Math.max(1, to - from);
+  const x = at => pad.left + ((Math.max(from, Math.min(to, at)) - from) / span) * plotW;
+
+  const data = state.uptime;
+  const a = data?.analysis || {};
+
+  const COLOURS = {
+    up: "#3f7f5f",
+    restart: "#f2616b",
+    gap: "#4a5563",
+    unknown: "#232d3a",
+  };
+
+  /*
+   * The baseline is "not recorded", and evidence is painted over it.
+   *
+   * Starting from "up" and cutting holes would mean any stretch nobody has data
+   * for is drawn as a working machine, which is a claim rather than a reading.
+   */
+  ctx.fillStyle = COLOURS.unknown;
+  ctx.fillRect(pad.left, barTop, plotW, barH);
+
+  const covered = [];
+  if (a.tracking_from) {
+    const start = Math.max(from, Number(a.tracking_from));
+    if (start < to) {
+      ctx.fillStyle = COLOURS.up;
+      ctx.fillRect(x(start), barTop, Math.max(1, x(to) - x(start)), barH);
+      covered.push([start, to]);
+    }
+  }
+
+  const bands = [
+    ...(a.outages || []).map(o => ({ ...o, colour: COLOURS.restart, kind: "restart" })),
+    ...(a.gaps || []).map(g => ({ ...g, colour: COLOURS.gap, kind: "gap" })),
+  ];
+
+  for (const band of bands) {
+    const left = x(band.from);
+    const right = x(band.to);
+    if (right < pad.left || left > pad.left + plotW) continue;
+    ctx.fillStyle = band.colour;
+    ctx.fillRect(left, barTop, Math.max(2, right - left), barH);
+  }
+
+  /*
+   * Restarts as ticks above the bar, including ones that left no gap at all.
+   *
+   * A reboot the collector resumes after within a minute has nothing to shade,
+   * and is exactly the reboot somebody is looking for when they ask why a
+   * process is younger than they expected.
+   */
+  const boots = bootTimes(data).filter(at => at >= from && at <= to);
+  ctx.strokeStyle = "#f2616b";
+  ctx.lineWidth = 1.5;
+  for (const at of boots) {
+    const bx = x(at);
+    ctx.beginPath();
+    ctx.moveTo(bx, barTop - 8);
+    ctx.lineTo(bx, barTop + barH);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(bx, barTop - 10, 3, 0, Math.PI * 2);
+    ctx.fillStyle = "#f2616b";
+    ctx.fill();
+  }
+
+  // The ends of the window, said in full - this is the range that was asked
+  // for, whether or not anything was recorded in it.
+  ctx.fillStyle = "#8b98a8";
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(humanTime(from), pad.left, barTop + barH + 18);
+  ctx.textAlign = "right";
+  ctx.fillText(humanTime(to), pad.left + plotW, barTop + barH + 18);
+
+  const unknown = Math.max(0, span - covered.reduce((sum, [s2, e]) => sum + (e - s2), 0));
+  const legend = document.createDocumentFragment();
+  const entries = [
+    ["up and recorded", COLOURS.up, null],
+    ...(bands.some(b => b.kind === "restart") ? [["restarted", COLOURS.restart, null]] : []),
+    ...(bands.some(b => b.kind === "gap") ? [["readings missing", COLOURS.gap, null]] : []),
+    ...(unknown > 0 ? [["nothing recorded", COLOURS.unknown, humanDuration(unknown)]] : []),
+  ];
+  for (const [label, colour, extra] of entries) {
+    const span_ = document.createElement("span");
+    span_.style.setProperty("--dot", colour);
+    span_.textContent = extra ? `${label} (${extra})` : label;
+    legend.appendChild(span_);
+  }
+  $("uptimeLegend").replaceChildren(legend);
 }
 
 function renderUptime() {
@@ -5376,6 +5656,16 @@ function renderUptime() {
   if (!data) {
     return;
   }
+
+  /*
+   * The window that was asked for, remembered rather than inferred.
+   *
+   * refreshUptime knows it; renderUptime is also called from the dashboard's
+   * own refresh, and both have to draw the same span or the chart and the
+   * summary beside it would describe different periods.
+   */
+  const to = state.uptimeWindow?.to || state.frozenAt || Math.floor(Date.now() / 1000);
+  const from = state.uptimeWindow?.from || to - state.range;
 
   const a = data.analysis || {};
 
@@ -5420,6 +5710,8 @@ function renderUptime() {
   $("uptimeSummary").textContent = parts.length
     ? parts.join(" · ") + "."
     : "No readings in this window.";
+
+  drawUptimeChart(from, to);
 
   const bands = [
     ...(a.outages || []).map(o => ({
@@ -8143,6 +8435,155 @@ async function deleteFromInspect(data) {
 }
 
 /*
+ * What the monitor costs and whether it is still running.
+ *
+ * The collectors come first. A stale one makes every other number on this site
+ * quietly wrong, and it is the failure nothing else reports - a chart drawn from
+ * data that stopped arriving looks like a machine that went quiet.
+ */
+async function refreshSelf() {
+  const body = $("selfBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see the monitor's own state."));
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner());
+
+  let data;
+  try {
+    data = await api("self");
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  const parts = [];
+
+  const cards = document.createElement("div");
+  cards.className = "cards small-cards";
+  for (const c of data.collectors) {
+    const card = document.createElement("div");
+    card.className = "card " + (
+      c.state === "stopped" ? "crit" : c.state === "late" ? "warn" : ""
+    );
+
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = c.name;
+    card.appendChild(label);
+
+    const value = document.createElement("div");
+    value.className = "value";
+    value.textContent = c.last_at ? `${humanDuration(c.age)} ago` : "never";
+    card.appendChild(value);
+
+    const sub = document.createElement("div");
+    sub.className = "sub muted";
+    sub.textContent = c.last_at
+      ? humanTime(c.last_at) + (c.interval ? ` \u00b7 usually every ${humanDuration(c.interval)}` : "")
+      : "has not run";
+    card.appendChild(sub);
+
+    /*
+     * The verdict in words as well as in colour.
+     *
+     * "Late" and "stopped" are the two states that matter and they are worth
+     * different reactions - one is a slow machine, the other is a crontab that
+     * is gone - so they are not merged into one warning colour and left there.
+     */
+    if (c.state !== "ok" && c.state !== "never") {
+      const said = document.createElement("div");
+      said.className = "sub " + (c.state === "stopped" ? "band-crit" : "band-warn");
+      said.textContent = c.state === "stopped"
+        ? "not running \u2014 check the crontab"
+        : "later than usual";
+      card.appendChild(said);
+    }
+
+    card.title = `${c.what}\nRun by ${c.who}.`;
+    cards.appendChild(card);
+  }
+  parts.push(section("Is it still collecting?", cards));
+
+  parts.push(section("What it is using", databaseFacts(data)));
+
+  if (data.retention) {
+    const r = data.retention;
+    const forever = days => (Number(days) > 0 ? `${days} days` : "kept indefinitely");
+    parts.push(section("How long it keeps things", factGrid([
+      ["Readings, full detail", forever(r.raw_days)],
+      ["Rolled up to 5 minutes", forever(r.five_minute_days)],
+      ["Rolled up to an hour", forever(r.hourly_days)],
+      ["Rolled up to a day", forever(r.daily_days)],
+      ["Alerts", forever(r.alert_days)],
+      ["The action log", forever(r.action_days)],
+      ["Incident evidence", forever(r.incident_days)],
+      ["Scans", forever(r.scan_days)],
+    ])));
+  }
+
+  body.replaceChildren(...parts);
+}
+
+/*
+ * The two databases, with the WAL counted.
+ *
+ * SQLite in WAL mode keeps a `-wal` file that can be larger than the database
+ * between checkpoints. Reporting only the main file understates what is on the
+ * disk, which is exactly the mistake this page exists to catch elsewhere.
+ */
+function databaseFacts(data) {
+  const wrap = document.createDocumentFragment();
+
+  for (const [title, db, extra] of [
+    ["This account's database", data.account_db, null],
+    ["The host collector's database", data.host_db,
+      data.host_readable ? null : "Present but not readable by this account, or not there at all."],
+  ]) {
+    const box = document.createElement("div");
+    box.className = "db-box";
+
+    const heading = document.createElement("h4");
+    heading.textContent = title;
+    box.appendChild(heading);
+
+    if (!db.size.exists) {
+      box.appendChild(note(extra || "Not on disk."));
+      wrap.appendChild(box);
+      continue;
+    }
+
+    const total = document.createElement("div");
+    total.className = "headline-sub";
+    total.textContent = humanBytes(db.size.total)
+      + (db.size.parts.length > 1
+        ? ` \u2014 ${db.size.parts.map(p => `${humanBytes(p.bytes)} ${p.label}`).join(", ")}`
+        : "");
+    box.appendChild(total);
+
+    const path = document.createElement("div");
+    path.className = "muted small";
+    path.textContent = db.path;
+    box.appendChild(path);
+
+    if (extra) box.appendChild(note(extra));
+
+    if (db.tables.length) {
+      box.appendChild(simpleTable(
+        ["Table", "Rows"],
+        db.tables.map(t => [t.table, humanCount(t.rows)]),
+        ["name", "size"]
+      ));
+    }
+
+    wrap.appendChild(box);
+  }
+
+  return wrap;
+}
+
+/*
  * How to set the host collector up, for whoever has to do it.
  *
  * Written as steps with a tick against the ones already done, because the
@@ -8352,29 +8793,9 @@ function renderEmail(data) {
   const list = document.createElement("div");
   list.className = "conditions";
   for (const condition of data.conditions) {
-    const label = document.createElement("label");
-    label.className = "condition";
-
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = condition.on;
-    box.dataset.condition = condition.key;
-    label.appendChild(box);
-
-    const text = document.createElement("span");
-    const name = document.createElement("strong");
-    name.textContent = condition.name;
-    text.appendChild(name);
-
-    const detail = document.createElement("span");
-    detail.className = "muted small";
-    detail.textContent = condition.detail;
-    text.appendChild(detail);
-
-    label.appendChild(text);
-    list.appendChild(label);
+    list.appendChild(conditionBlock(condition));
   }
-  parts.push(section("What to send about", list));
+  parts.push(section("What to send about, and when", list));
 
   const save = document.createElement("div");
   save.className = "inspect-actions";
@@ -8402,6 +8823,128 @@ function renderEmail(data) {
 
   body.replaceChildren(...parts);
   button.addEventListener("click", saveEmailSettings);
+}
+
+/*
+ * One condition: the switch, what it means, and the numbers behind it.
+ *
+ * The thresholds are shown rather than described, because "at or above 95%,
+ * held for 15 minutes" is a sentence somebody reads once and a pair of boxes
+ * they can actually act on. They grey out with the switch: a threshold on a
+ * rule that is off is not a setting, it is a memory of one, and leaving it
+ * editable invites the reader to change something that will not take effect.
+ */
+function conditionBlock(condition) {
+  const block = document.createElement("div");
+  block.className = "condition-block";
+
+  const label = document.createElement("label");
+  label.className = "condition";
+
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = condition.on;
+  box.dataset.condition = condition.key;
+  label.appendChild(box);
+
+  const text = document.createElement("span");
+  const name = document.createElement("strong");
+  name.textContent = condition.name;
+  text.appendChild(name);
+
+  const detail = document.createElement("span");
+  detail.className = "muted small";
+  detail.textContent = condition.detail;
+  text.appendChild(detail);
+
+  label.appendChild(text);
+  block.appendChild(label);
+
+  if (condition.fields?.length) {
+    const fields = document.createElement("div");
+    fields.className = "condition-fields";
+    for (const field of condition.fields) {
+      fields.appendChild(thresholdField(field));
+    }
+    block.appendChild(fields);
+
+    const sync = () => fields.classList.toggle("off", !box.checked);
+    box.addEventListener("change", sync);
+    sync();
+  }
+
+  return block;
+}
+
+/*
+ * One editable threshold, in whatever unit it is actually measured in.
+ *
+ * Bytes get a size picker rather than a box wanting 1073741824 - nobody types
+ * that correctly and nobody reads it back. A fraction is shown as the
+ * percentage it stands for, because "0.9 of readings" is arithmetic and "90% of
+ * readings" is the thing being configured. The stored value is unchanged in
+ * both cases; only the way it is asked for differs.
+ */
+function thresholdField(field) {
+  const row = document.createElement("div");
+  row.className = "threshold";
+
+  const label = document.createElement("label");
+  label.className = "muted small";
+  label.textContent = field.label;
+  row.appendChild(label);
+
+  const input = document.createElement("input");
+  input.type = "number";
+  input.dataset.field = field.key;
+  input.dataset.unit = field.unit;
+  input.id = "field_" + field.key.replace(/\./g, "__");
+  label.htmlFor = input.id;
+
+  if (field.unit === "bytes") {
+    // Entered in MiB and stored in bytes, with the step matching the scale so
+    // the arrows move by something useful rather than by one byte.
+    input.value = String(Math.round(Number(field.value) / 1048576));
+    input.min = String(Math.round(Number(field.min) / 1048576));
+    input.max = String(Math.round(Number(field.max) / 1048576));
+    input.step = "1";
+  } else if (field.unit === "fraction") {
+    input.value = String(Math.round(Number(field.value) * 100));
+    input.min = String(Math.round(Number(field.min) * 100));
+    input.max = String(Math.round(Number(field.max) * 100));
+    input.step = "1";
+  } else {
+    input.value = trimNumber(Number(field.value));
+    input.min = String(field.min);
+    input.max = String(field.max);
+    input.step = ["percent", "times"].includes(field.unit) ? "0.5" : "1";
+  }
+
+  row.appendChild(input);
+
+  const unit = document.createElement("span");
+  unit.className = "muted small threshold-unit";
+  unit.textContent = UNIT_WORDS[field.unit] || field.unit;
+  row.appendChild(unit);
+
+  return row;
+}
+
+const UNIT_WORDS = {
+  percent: "%",
+  fraction: "% of readings",
+  bytes: "MiB",
+  hours: "hours",
+  minutes: "minutes",
+  readings: "readings",
+  files: "files",
+  processes: "processes",
+  times: "\u00d7 the usual",
+};
+
+/** A number without trailing zeros, for putting in a field. */
+function trimNumber(value) {
+  return String(Number(value.toFixed(4)));
 }
 
 function fieldRow(label, control, hint) {
@@ -8433,8 +8976,34 @@ async function saveEmailSettings() {
     .map(box => box.dataset.condition)
     .join(",");
 
+  /*
+   * The thresholds, converted back to what the config stores.
+   *
+   * The reverse of thresholdField: MiB becomes bytes, a percentage of readings
+   * becomes the fraction the rule compares against. Done here rather than on
+   * the server so that only one side of the wire has to know the display unit,
+   * and the server keeps validating in the unit it stores.
+   */
+  const fields = {};
+  for (const input of document.querySelectorAll("[data-field]")) {
+    const raw = input.value.trim();
+    if (raw === "") continue;
+
+    const value = Number(raw);
+    if (!Number.isFinite(value)) continue;
+
+    const stored = input.dataset.unit === "bytes"
+      ? Math.round(value * 1048576)
+      : input.dataset.unit === "fraction"
+        ? value / 100
+        : value;
+
+    fields["field_" + input.dataset.field.replace(/\./g, "__")] = String(stored);
+  }
+
   try {
     const result = await post("email-save", {
+      ...fields,
       enabled: $("emailEnabled").checked ? "1" : "0",
       to: $("emailTo").value.trim(),
       from: $("emailFrom").value.trim(),
@@ -9651,6 +10220,11 @@ const VIEWS = {
   cagefs: { label: "CageFS skeleton", parent: "storage", refresh: () => refreshMounts() },
 
   host: { label: "Memory", refresh: () => refreshHost() },
+  "mem-users": { label: "Memory by user", parent: "host", refresh: () => refreshHost() },
+  "mem-goes": { label: "Where it goes", parent: "host", refresh: () => refreshHost() },
+  "mem-services": { label: "Services over time", parent: "host", refresh: () => refreshHost() },
+  "mem-procs": { label: "Biggest processes", parent: "host", refresh: () => refreshHost() },
+  "mem-slab": { label: "Kernel slab caches", parent: "host", refresh: () => refreshHost() },
 
   processes: { label: "Processes", refresh: () => refreshProcesses() },
   services: { label: "Services", parent: "processes", refresh: () => refreshHost() },
@@ -9678,6 +10252,7 @@ const VIEWS = {
   system: {
     label: "System",
     refresh: async () => {
+      await refreshSelf();
       await refreshHealth();
       await refreshProblems();
     },
@@ -10273,13 +10848,18 @@ for (const [id, key] of [["actionKind", "kind"], ["actionWho", "who"], ["actionR
   });
 }
 
-for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh"]) {
+for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh",
+  "memUsersRefresh", "memServicesRefresh", "memGoesRefresh", "memProcsRefresh",
+  "memSlabRefresh"]) {
   $(id).addEventListener("click",
     () => refreshHost().catch(error => notice(String(error.message || error))));
 }
 
 $("offenderDelete").addEventListener("click",
   () => deletePicked().catch(error => notice(String(error.message || error))));
+
+$("selfRefresh").addEventListener("click",
+  () => refreshSelf().catch(error => notice(String(error.message || error))));
 
 $("cagefsRefresh").addEventListener("click",
   () => refreshMounts().catch(error => notice(String(error.message || error))));

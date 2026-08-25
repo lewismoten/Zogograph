@@ -157,6 +157,31 @@
       <span class="nav-label">Memory</span>
       <span class="nav-badge" data-badge="host" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/mem-users" data-nav="mem-users" data-parent="host">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Memory by user</span>
+      <span class="nav-badge" data-badge="mem-users" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/mem-goes" data-nav="mem-goes" data-parent="host">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Where it goes</span>
+      <span class="nav-badge" data-badge="mem-goes" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/mem-services" data-nav="mem-services" data-parent="host">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Services over time</span>
+      <span class="nav-badge" data-badge="mem-services" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/mem-procs" data-nav="mem-procs" data-parent="host">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Biggest processes</span>
+      <span class="nav-badge" data-badge="mem-procs" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/mem-slab" data-nav="mem-slab" data-parent="host">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Kernel slab caches</span>
+      <span class="nav-badge" data-badge="mem-slab" hidden></span>
+    </a>
     <a class="nav-item" href="#/processes" data-nav="processes">
       <span class="nav-icon" aria-hidden="true">⚙</span>
       <span class="nav-label">Processes</span>
@@ -593,7 +618,7 @@
 <section class="view" data-view="host" hidden>
 <section class="panel" id="hostPanel" hidden>
   <div class="panel-head">
-    <h2>Memory across the whole machine</h2>
+    <h2>Memory</h2>
     <div class="panel-controls">
       <button id="hostRefresh" class="link">Refresh</button>
     </div>
@@ -601,20 +626,42 @@
   <p class="muted small sub-note">
     From <code>host-cron.php</code>, run by root. Inside CageFS this account gets
     its own <code>/proc</code> holding only its own processes, so everything
-    below is invisible to every other panel on this site. The machine's disks
-    are under <a href="#/storage-io">Storage → Disk I/O</a>, and whether its
-    daemons are alive is under <a href="#/services">Processes → Services</a>.
+    below is invisible to every other panel on this site. The detail sits on the
+    pages beneath this one; what is here is the state of the machine's memory at
+    a glance. Its disks are under <a href="#/storage-io">Storage</a>, and whether
+    its daemons are alive is under <a href="#/services">Processes → Services</a>.
   </p>
   <div id="hostBody"></div>
 
   <div id="hostMemory" hidden>
+    <div class="gauges" id="hostGauges"></div>
     <h3 class="sub-head">Where the memory went</h3>
     <p class="muted small sub-note" id="hostMemNote"></p>
     <div class="cards" id="hostCards"></div>
     <p class="muted small sub-note" id="hostSwapNote"></p>
     <canvas id="hostChart"></canvas>
 
-    <h3 class="sub-head">Memory by user</h3>
+    <div id="hostLveWrap" hidden>
+      <h3 class="sub-head">CloudLinux limits</h3>
+      <p class="muted small sub-note">
+        A process killed for hitting an LVE limit leaves no other trace. A rising
+        fault count is the evidence.
+      </p>
+      <div id="hostLve"></div>
+    </div>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="mem-users" hidden>
+<section class="panel" id="memUsersPanel">
+  <div class="panel-head">
+    <h2>Memory by user</h2>
+    <button id="memUsersRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note">The column CageFS hides. Inside a cage this account sees only its own processes, so who else is using the machine's memory is unanswerable from anywhere but here.</p>
+  <div id="memUsersBody"></div>
+  <div id="memUsersContent" hidden>
     <p class="muted small sub-note">
       The column CageFS hides. <strong>Proportional (PSS)</strong> counts a
       process's private memory <em>in full</em> and divides each shared page
@@ -630,7 +677,19 @@
     </p>
     <div id="hostUsers"></div>
 
-    <h3 class="sub-head">Services over time</h3>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="mem-services" hidden>
+<section class="panel" id="memServicesPanel">
+  <div class="panel-head">
+    <h2>Services over time</h2>
+    <button id="memServicesRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note">One line per service, from the host collector's own longer-lived record. This is the panel that answers &ldquo;and what was it in June?&rdquo;</p>
+  <div id="memServicesBody"></div>
+  <div id="memServicesContent" hidden>
     <p class="muted small sub-note">
       Grouped by executable rather than by process, so a row survives a restart —
       a series keyed on pids resets to zero every time a daemon is upgraded,
@@ -651,7 +710,19 @@
     </div>
     <canvas id="hostServiceChart"></canvas>
 
-    <h3 class="sub-head">Where the memory goes</h3>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="mem-goes" hidden>
+<section class="panel" id="memGoesPanel">
+  <div class="panel-head">
+    <h2>Where the memory goes</h2>
+    <button id="memGoesRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note">The share of measured process memory each service holds, drawn from PSS rather than RSS — a pie claims its slices make a whole, and resident memory cannot: a page shared by ten processes would be counted ten times.</p>
+  <div id="memGoesBody"></div>
+  <div id="memGoesContent" hidden>
     <p class="muted small sub-note" id="hostPieNote">
       Share of measured process memory. Drawn from PSS because a pie claims its
       slices make a whole, and resident memory cannot — a page shared by ten
@@ -659,10 +730,34 @@
     </p>
     <canvas id="hostPie" class="pie"></canvas>
 
-    <h3 class="sub-head">Biggest processes on the host</h3>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="mem-procs" hidden>
+<section class="panel" id="memProcsPanel">
+  <div class="panel-head">
+    <h2>Biggest processes on the host</h2>
+    <button id="memProcsRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note">Every process on the machine, not just this account's. This is the list that answers &ldquo;what is actually holding the memory&rdquo; when the per-user totals only say whose it is.</p>
+  <div id="memProcsBody"></div>
+  <div id="memProcsContent" hidden>
     <div id="hostProcesses"></div>
 
-    <h3 class="sub-head">Kernel slab caches</h3>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="mem-slab" hidden>
+<section class="panel" id="memSlabPanel">
+  <div class="panel-head">
+    <h2>Kernel slab caches</h2>
+    <button id="memSlabRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note">Memory the kernel holds for itself. It belongs to no process and no account, and it is the first place to look when the numbers do not add up — a quarter of a gigabyte of <code>xfs_inode</code> appears in nothing else on this site.</p>
+  <div id="memSlabBody"></div>
+  <div id="memSlabContent" hidden>
     <p class="muted small sub-note">
       Memory the kernel holds for itself. It belongs to no process and no
       account, and it is the first place to look when the numbers do not add up
@@ -671,14 +766,6 @@
     </p>
     <div id="hostSlab"></div>
 
-    <div id="hostLveWrap" hidden>
-      <h3 class="sub-head">CloudLinux limits</h3>
-      <p class="muted small sub-note">
-        A process killed for hitting an LVE limit leaves no other trace. A rising
-        fault count is the evidence.
-      </p>
-      <div id="hostLve"></div>
-    </div>
   </div>
 </section>
 </section>
@@ -1008,6 +1095,8 @@
     and they include restarts from before boot times were being recorded, which
     the readings alone cannot show.
   </p>
+  <canvas id="uptimeChart"></canvas>
+  <div class="legend" id="uptimeLegend"></div>
   <div id="uptimeBody"></div>
 
   <div id="bootHistoryWrap" hidden>
@@ -1098,6 +1187,21 @@
 </section>
 
 <section class="view" data-view="system" hidden>
+<section class="panel" id="selfPanel">
+  <div class="panel-head">
+    <h2>The monitor itself</h2>
+    <button id="selfRefresh" class="link">Recheck</button>
+  </div>
+  <p class="muted small sub-note">
+    A disk monitor should be able to answer for its own disk use, and should
+    never stop collecting without saying so. Neither is visible anywhere else on
+    this site: a database quietly growing to a gigabyte looks exactly like one
+    that is fine, and a cron job that stopped last Tuesday just makes every chart
+    look quiet.
+  </p>
+  <div id="selfBody"></div>
+</section>
+
 <section class="panel" id="healthPanel">
   <div class="panel-head">
     <h2>Health</h2>

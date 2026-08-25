@@ -1202,3 +1202,33 @@ ol.steps .step.done strong { color: var(--ok); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem;
 }
+
+/* The monitor's own state -------------------------------------------- */
+
+.db-box { margin-bottom: 22px; }
+.db-box h4 { margin: 0 0 4px; font-size: .95rem; }
+.db-box .headline-sub { font-size: 1.1rem; color: var(--text); margin-bottom: 2px; }
+.db-box table { margin-top: 10px; }
+.card.crit .value { color: var(--crit); }
+.card.warn .value { color: var(--warn); }
+
+/* Alert thresholds --------------------------------------------------- */
+
+.condition-block { border-top: 1px solid var(--line-soft); padding: 14px 0; }
+.condition-block:first-child { border-top: 0; padding-top: 0; }
+
+.condition-fields {
+  display: grid; gap: 10px 20px; margin: 10px 0 0 30px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+/* A threshold on a rule that is off is a memory of a setting, not a setting. */
+.condition-fields.off { opacity: .42; pointer-events: none; }
+
+.threshold { display: grid; grid-template-columns: 1fr 90px auto; gap: 8px; align-items: center; }
+.threshold input[type="number"] {
+  background: var(--bg-raised); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 7px; font: inherit; width: 100%;
+}
+.threshold-unit { white-space: nowrap; }
+@media (max-width: 620px) { .threshold { grid-template-columns: 1fr 80px auto; } }

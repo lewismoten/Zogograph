@@ -121,6 +121,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'host-io' => hostIoSeries($config, $signedIn),
         'uptime' => uptimeView($config, $pdo, $signedIn),
         'health' => healthCheck($config, $pdo, $signedIn),
+        'self' => selfReport($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
         'signin' => doSignIn($config, $post, $pdo),
@@ -1860,63 +1861,172 @@ function doScanNow(PDO $pdo, bool $post): array
 }
 
 /*
- * Which conditions can raise an email, and what each is set to.
+ * Every condition that can raise an email, with the settings behind it.
  *
- * Built from the config rather than written out, so a rule that is turned off
- * by having its threshold set to zero shows as off rather than as absent - and
- * so this cannot drift from what the alerting code actually reads.
+ * Built from the keys lib/alerts.php actually reads, and named here exactly as
+ * they are named there. An earlier version of this listed conditions under
+ * invented key names - `disk_percent` where the rule reads `disk_free_percent` -
+ * so the checkboxes turned things on and off in a corner of the config nothing
+ * consulted. The page looked right and did nothing, which is the worst way for
+ * a setting to be wrong.
+ *
+ * A condition is off when its threshold is zero, because that is already how
+ * the rules read them. There is no second flag to disagree with the first.
+ *
+ * `fields` is what the interface renders and what it may write back. Each one
+ * carries its own unit so a percentage cannot be saved as bytes, and its own
+ * bounds so a typo cannot set a threshold nothing could ever cross.
  */
 function emailConditions(array $config): array
 {
     $a = $config['alerts'] ?? [];
-    $n = fn(string $key, float $fallback = 0.0): float => (float)($a[$key] ?? $fallback);
+    $an = $a['anomalies'] ?? [];
+
+    $number = fn(array $from, string $key, float $fallback): float =>
+        isset($from[$key]) ? (float)$from[$key] : $fallback;
+
+    $field = fn(string $key, string $label, string $unit, float $value,
+                float $min, float $max, string $hint = '', string $group = 'alerts'): array => [
+        'key' => $key, 'label' => $label, 'unit' => $unit, 'value' => $value,
+        'min' => $min, 'max' => $max, 'hint' => $hint, 'group' => $group,
+    ];
 
     return [
         [
-            'key' => 'disk_percent',
-            'name' => 'The disk is nearly full',
-            'detail' => sprintf('At or above %s%% used.', trimNumber($n('disk_percent', 90))),
-            'on' => $n('disk_percent', 90) > 0,
+            'key' => 'disk',
+            'name' => 'Running out of disk',
+            'detail' => 'Free space below either of these. Two tests because a percentage '
+                . 'of a small filesystem is a few hundred megabytes, and a percentage of a '
+                . 'large one is more room than most accounts ever use.',
+            'switch' => 'disk_free_percent',
+            'on' => $number($a, 'disk_free_percent', 5.0) > 0
+                || $number($a, 'disk_free_bytes', 0) > 0,
+            'fields' => [
+                $field('disk_free_percent', 'Free space below', 'percent',
+                    $number($a, 'disk_free_percent', 5.0), 0, 90),
+                $field('disk_free_bytes', 'Or free space below', 'bytes',
+                    $number($a, 'disk_free_bytes', 5368709120), 0, 1099511627776),
+            ],
         ],
         [
-            'key' => 'inode_percent',
-            'name' => 'Inodes are nearly gone',
-            'detail' => sprintf('At or above %s%% of inodes used. A disk with free '
-                . 'gigabytes and no inodes still refuses to create a file.',
-                trimNumber($n('inode_percent', 90))),
-            'on' => $n('inode_percent', 90) > 0,
+            'key' => 'inodes',
+            'name' => 'Running out of inodes',
+            'detail' => 'A filesystem with free gigabytes and no inodes still refuses to '
+                . 'create a file, and nothing about the disk figures shows it coming.',
+            'switch' => 'inodes_free_percent',
+            'on' => $number($a, 'inodes_free_percent', 5.0) > 0,
+            'fields' => [
+                $field('inodes_free_percent', 'Free inodes below', 'percent',
+                    $number($a, 'inodes_free_percent', 5.0), 0, 90),
+            ],
         ],
         [
-            'key' => 'cpu_percent',
+            'key' => 'projected',
+            'name' => 'On course to fill up',
+            'detail' => 'Free space falling fast enough to run out within this many hours, '
+                . 'judged from the recent trend rather than from one reading. This is the '
+                . 'one that arrives before the disk is full rather than after.',
+            'switch' => 'projected_full_hours',
+            'on' => $number($a, 'projected_full_hours', 72.0) > 0,
+            'fields' => [
+                $field('projected_full_hours', 'Warn when full within', 'hours',
+                    $number($a, 'projected_full_hours', 72.0), 0, 8760),
+            ],
+        ],
+        [
+            'key' => 'cpu',
             'name' => 'CPU held at the ceiling',
-            'detail' => sprintf(
-                'At least %s%% of readings over %s minutes at or above %s%% — a spike '
-                . 'cannot satisfy that however tall it is.',
-                trimNumber($n('cpu_share', 0.9) * 100),
-                trimNumber($n('cpu_minutes', 15)),
-                trimNumber($n('cpu_percent', 95))
-            ),
-            'on' => $n('cpu_percent', 95) > 0,
+            'detail' => 'All three together: at least this share of readings over this many '
+                . 'minutes at or above this percentage. A single spike cannot satisfy that '
+                . 'however tall it is, which is the point \u2014 a backup starting is not an '
+                . 'incident. Inside CageFS the percentage is of the account\'s own allowance, '
+                . 'not of the machine.',
+            'switch' => 'cpu_percent',
+            'on' => $number($a, 'cpu_percent', 95.0) > 0,
+            'fields' => [
+                $field('cpu_percent', 'At or above', 'percent',
+                    $number($a, 'cpu_percent', 95.0), 0, 100),
+                $field('cpu_minutes', 'Held for', 'minutes',
+                    $number($a, 'cpu_minutes', 15), 1, 1440),
+                $field('cpu_share', 'For at least this share of readings', 'fraction',
+                    $number($a, 'cpu_share', 0.9), 0.1, 1.0),
+            ],
         ],
         [
-            'key' => 'growth_bytes',
-            'name' => 'Something grew unusually fast',
-            'detail' => 'A file or category growing far beyond its own recent baseline.',
-            'on' => true,
+            'key' => 'growth',
+            'name' => 'Something grew suddenly',
+            'detail' => 'A category or a single path gaining more than this in one scan '
+                . 'interval, or a directory gaining this many files \u2014 which is the shape a '
+                . 'runaway log or a stuck job makes.',
+            'switch' => 'category_jump_bytes',
+            'on' => $number($a, 'category_jump_bytes', 0) > 0
+                || $number($a, 'path_jump_bytes', 0) > 0,
+            'fields' => [
+                $field('category_jump_bytes', 'A category grew by', 'bytes',
+                    $number($a, 'category_jump_bytes', 1073741824), 0, 1099511627776),
+                $field('path_jump_bytes', 'One path grew by', 'bytes',
+                    $number($a, 'path_jump_bytes', 536870912), 0, 1099511627776),
+                $field('path_jump_files', 'A directory gained', 'files',
+                    $number($a, 'path_jump_files', 5000), 0, 10000000),
+            ],
         ],
         [
             'key' => 'anomalies',
-            'name' => 'Anomalies against the baseline',
+            'name' => 'Unusual against this machine\'s own baseline',
             'detail' => 'Memory, process counts, swap, load and process age compared with '
-                . 'what is normal for this machine rather than against a fixed number.',
-            'on' => (bool)($a['anomalies']['enabled'] ?? true),
+                . 'what is normal here rather than against a fixed number. Every proportional '
+                . 'test is paired with an absolute floor, so a large percentage of something '
+                . 'tiny stays out of your inbox.',
+            'switch' => 'anomalies.enabled',
+            'on' => (bool)($an['enabled'] ?? true),
+            'fields' => [
+                $field('anomalies.baseline_hours', 'Compare against the last', 'hours',
+                    $number($an, 'baseline_hours', 24), 1, 720, '', 'anomalies'),
+                $field('anomalies.min_readings', 'Needing at least', 'readings',
+                    $number($an, 'min_readings', 8), 3, 1000, '', 'anomalies'),
+                $field('anomalies.service_pss_percent', 'A service using more memory by', 'percent',
+                    $number($an, 'service_pss_percent', 25.0), 0, 1000, '', 'anomalies'),
+                $field('anomalies.service_pss_floor_bytes', 'and at least', 'bytes',
+                    $number($an, 'service_pss_floor_bytes', 67108864), 0, 1099511627776, '', 'anomalies'),
+                $field('anomalies.process_multiple', 'This many times the usual process count', 'times',
+                    $number($an, 'process_multiple', 3.0), 1, 100, '', 'anomalies'),
+                $field('anomalies.process_floor', 'and at least this many', 'processes',
+                    $number($an, 'process_floor', 4), 1, 10000, '', 'anomalies'),
+                $field('anomalies.age_multiple', 'Running this many times its usual span', 'times',
+                    $number($an, 'age_multiple', 3.0), 1, 100, '', 'anomalies'),
+                $field('anomalies.load_readings', 'Load above one per core for', 'readings',
+                    $number($an, 'load_readings', 3), 1, 1000, '', 'anomalies'),
+            ],
         ],
     ];
 }
 
+/** A number with its trailing zeros trimmed, for putting in a sentence. */
+/**
+ * Writes a value at a dotted key, creating what is missing on the way.
+ *
+ * Only one level of nesting is used today (`anomalies.*`), but writing it as a
+ * path rather than a special case means adding another group later is a line in
+ * emailConditions rather than a branch here.
+ */
+function assignConfigValue(array &$into, string $key, mixed $value): void
+{
+    $parts = explode('.', $key);
+    $last = array_pop($parts);
+
+    $cursor = &$into;
+    foreach ($parts as $part) {
+        if (!isset($cursor[$part]) || !is_array($cursor[$part])) {
+            $cursor[$part] = [];
+        }
+        $cursor = &$cursor[$part];
+    }
+    $cursor[$last] = $value;
+}
+
 function trimNumber(float $value): string
 {
-    return rtrim(rtrim(number_format($value, 2, '.', ''), '0'), '.');
+    return rtrim(rtrim(number_format($value, 4, '.', ''), '0'), '.') ?: '0';
 }
 
 function emailSettings(array $config, PDO $pdo, bool $signedIn): array
@@ -1993,24 +2103,84 @@ function doEmailSave(array $config, PDO $pdo, bool $post): array
     }
 
     /*
-     * A condition is turned off by zeroing its threshold, not by a new flag.
+     * The thresholds, each validated against the field that offered it.
      *
-     * That is already how the alerting code reads them - `cpu_percent => 0`
-     * means the rule does not run - so the checkbox writes the thing the rules
-     * already consult rather than adding a second switch that could disagree
-     * with the first.
+     * The bounds come from emailConditions, so the interface and the check are
+     * reading one definition rather than two that can drift. A value outside
+     * its range is refused by name rather than clamped: silently accepting 500%
+     * and storing 100 leaves somebody sure they configured something they did
+     * not.
+     */
+    $fields = [];
+    foreach (emailConditions($config) as $condition) {
+        foreach ($condition['fields'] as $f) {
+            $fields[$f['key']] = $f;
+        }
+    }
+
+    foreach ($fields as $key => $f) {
+        $posted = $_POST['field_' . str_replace('.', '__', $key)] ?? null;
+        if ($posted === null || $posted === '') {
+            continue;
+        }
+
+        $value = (float)$posted;
+        if (!is_numeric($posted) || $value < $f['min'] || $value > $f['max']) {
+            throw new ActionRefused(sprintf(
+                '"%s" must be between %s and %s',
+                $f['label'],
+                trimNumber((float)$f['min']),
+                trimNumber((float)$f['max'])
+            ));
+        }
+
+        // Whole numbers where a fraction would be meaningless - you cannot wait
+        // 15.5 readings, and bytes are bytes.
+        $whole = in_array($f['unit'], ['bytes', 'minutes', 'readings', 'files', 'processes', 'hours'], true);
+        assignConfigValue($current['alerts'], $key, $whole ? (int)round($value) : $value);
+    }
+
+    /*
+     * A condition is turned off by zeroing the threshold the rule reads.
+     *
+     * That is already how the alerting code works - `cpu_percent => 0` means
+     * the rule does not run - so unticking writes the thing the rules consult
+     * rather than adding a second switch that could disagree with the first.
+     *
+     * Turning one back on restores what it was, not a default, unless it was
+     * off before and there is nothing to restore.
      */
     $wanted = array_filter(explode(',', (string)($_POST['conditions'] ?? '')));
-    $defaults = ['disk_percent' => 90.0, 'inode_percent' => 90.0, 'cpu_percent' => 95.0];
 
-    foreach ($defaults as $key => $fallback) {
-        $on = in_array($key, $wanted, true);
-        $existing = (float)($config['alerts'][$key] ?? $fallback);
-        // Turning one back on restores what it was set to, not the default -
-        // unless it was off before, in which case there is nothing to restore.
-        $current['alerts'][$key] = $on ? ($existing > 0 ? $existing : $fallback) : 0;
+    foreach (emailConditions($config) as $condition) {
+        $on = in_array($condition['key'], $wanted, true);
+
+        if ($condition['switch'] === 'anomalies.enabled') {
+            $current['alerts']['anomalies']['enabled'] = $on;
+            continue;
+        }
+
+        foreach ($condition['fields'] as $f) {
+            // Only the thresholds that gate the rule; a companion setting like
+            // "how many readings to look back over" is not a switch.
+            if (!str_ends_with($f['key'], '_percent') && !str_ends_with($f['key'], '_bytes')
+                && !str_ends_with($f['key'], '_hours') && !str_ends_with($f['key'], '_files')) {
+                continue;
+            }
+            if (str_starts_with($f['key'], 'anomalies.')) {
+                continue;
+            }
+
+            if ($on) {
+                $existing = (float)($current['alerts'][$f['key']] ?? 0);
+                if ($existing <= 0) {
+                    $current['alerts'][$f['key']] = $f['value'] > 0 ? $f['value'] : 0;
+                }
+            } else {
+                $current['alerts'][$f['key']] = 0;
+            }
+        }
     }
-    $current['alerts']['anomalies']['enabled'] = in_array('anomalies', $wanted, true);
 
     $rendered = renderConfig($current, __DIR__ . '/lib');
 
@@ -2066,6 +2236,213 @@ function doTestEmail(array $config, PDO $pdo, bool $post): array
  * everybody because a broken install has to be diagnosable by whoever can see
  * it, and it deliberately reports states rather than paths.
  */
+/**
+ * What the monitor is costing and whether it is still running.
+ *
+ * The one thing a disk monitor should be embarrassed to get wrong is its own
+ * disk use, and the one thing it should never do is stop collecting without
+ * saying so. Both are invisible from every other page: a database quietly
+ * growing to a gigabyte looks exactly like a database that is fine, and a cron
+ * job that stopped last Tuesday leaves every chart looking merely quiet.
+ *
+ * Two collectors on two clocks, reported separately. They fail independently -
+ * the account one is a user crontab, the host one is root's - and merging them
+ * would let a working half hide a broken one.
+ */
+function selfReport(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the monitor\'s own state');
+    }
+
+    $now = time();
+    $accountDb = (string)$config['database'];
+    $hostDbPath = hostDatabasePath($config);
+
+    /*
+     * WAL and shared-memory files count.
+     *
+     * SQLite in WAL mode keeps a `-wal` alongside the database that can be
+     * larger than the database itself between checkpoints, and reporting only
+     * the main file understates what is actually on the disk - which is exactly
+     * the mistake this page exists to catch other people making.
+     */
+    $sizeOf = function (string $path): array {
+        $parts = [];
+        $total = 0;
+        foreach (['' => 'database', '-wal' => 'write-ahead log', '-shm' => 'shared memory'] as $suffix => $label) {
+            $file = $path . $suffix;
+            if (!is_file($file)) {
+                continue;
+            }
+            $bytes = (int)(@filesize($file) ?: 0);
+            $total += $bytes;
+            $parts[] = ['label' => $label, 'bytes' => $bytes];
+        }
+        return ['total' => $total, 'parts' => $parts, 'exists' => $parts !== []];
+    };
+
+    $rows = function (PDO $db, array $tables): array {
+        $out = [];
+        foreach ($tables as $table) {
+            try {
+                $out[] = [
+                    'table' => $table,
+                    'rows' => (int)$db->query("SELECT COUNT(*) FROM {$table}")->fetchColumn(),
+                ];
+            } catch (Throwable) {
+                // A table an older schema does not have. Absent, not zero.
+            }
+        }
+        usort($out, fn(array $a, array $b): int => $b['rows'] <=> $a['rows']);
+        return $out;
+    };
+
+    $account = [
+        'path' => $accountDb,
+        'size' => $sizeOf($accountDb),
+        'tables' => $rows($pdo, [
+            'vitals', 'scans', 'scan_totals', 'scan_file_types', 'scan_extensions',
+            'paths', 'path_sizes', 'alerts', 'actions', 'incidents',
+            'process_samples', 'capabilities', 'capability_changes',
+        ]),
+    ];
+
+    $host = ['path' => $hostDbPath, 'size' => $sizeOf($hostDbPath), 'tables' => []];
+    $hostPdo = null;
+    try {
+        $hostPdo = hostDb($config, false);
+    } catch (Throwable) {
+        $hostPdo = null;
+    }
+    if ($hostPdo !== null) {
+        $host['tables'] = $rows($hostPdo, [
+            'host_samples', 'host_users', 'host_processes', 'host_slab', 'host_files',
+            'host_services', 'host_disks', 'host_boots', 'host_daemons', 'host_dirs',
+            'host_deleted', 'host_mounts',
+        ]);
+    }
+
+    /*
+     * When each collector last wrote, and whether that is late.
+     *
+     * "Late" needs an interval to be late against, and the only honest source
+     * for that is the gap between the readings themselves - a crontab this
+     * process may not be able to read is a worse guess than what the data
+     * actually shows. Two intervals of grace before it is called late, so one
+     * slow run on a busy machine is not an alarm.
+     */
+    $collector = function (?int $lastAt, ?int $interval) use ($now): array {
+        if ($lastAt === null || $lastAt <= 0) {
+            return ['last_at' => null, 'age' => null, 'interval' => null, 'state' => 'never'];
+        }
+        $age = $now - $lastAt;
+        $state = 'ok';
+        if ($interval !== null && $interval > 0 && $age > $interval * 2.5) {
+            $state = $age > $interval * 12 ? 'stopped' : 'late';
+        }
+        return ['last_at' => $lastAt, 'age' => $age, 'interval' => $interval, 'state' => $state];
+    };
+
+    $vitalsAt = (int)$pdo->query('SELECT MAX(taken_at) FROM vitals')->fetchColumn();
+    $vitalsGap = medianGap($pdo->query(
+        'SELECT taken_at FROM vitals ORDER BY taken_at DESC LIMIT 30'
+    )->fetchAll(PDO::FETCH_COLUMN));
+
+    $scanAt = (int)$pdo->query(
+        'SELECT MAX(started_at) FROM scans WHERE finished_at IS NOT NULL'
+    )->fetchColumn();
+    $scanGap = medianGap($pdo->query(
+        'SELECT started_at FROM scans WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 20'
+    )->fetchAll(PDO::FETCH_COLUMN));
+
+    $hostAt = null;
+    $hostGap = null;
+    if ($hostPdo !== null) {
+        try {
+            $hostAt = (int)$hostPdo->query('SELECT MAX(taken_at) FROM host_samples')->fetchColumn();
+            $hostGap = medianGap($hostPdo->query(
+                'SELECT taken_at FROM host_samples ORDER BY id DESC LIMIT 30'
+            )->fetchAll(PDO::FETCH_COLUMN));
+        } catch (Throwable) {
+            $hostAt = null;
+        }
+    }
+
+    $walkAt = null;
+    if ($hostPdo !== null) {
+        try {
+            $walkAt = (int)$hostPdo->query('SELECT MAX(taken_at) FROM host_dirs')->fetchColumn() ?: null;
+        } catch (Throwable) {
+            $walkAt = null;
+        }
+    }
+
+    return [
+        'account_db' => $account,
+        'host_db' => $host,
+        'host_readable' => $hostPdo !== null,
+        'collectors' => [
+            [
+                'name' => 'Readings',
+                'what' => 'Disk, inodes, CPU, memory and load for this account. '
+                    . 'php cron.php --vitals',
+                'who' => 'this account',
+            ] + $collector($vitalsAt ?: null, $vitalsGap),
+            [
+                'name' => 'Scans',
+                'what' => 'Walks the watched directory and records what is growing. '
+                    . 'php cron.php --scan',
+                'who' => 'this account',
+            ] + $collector($scanAt ?: null, $scanGap),
+            [
+                'name' => 'Host collection',
+                'what' => 'Everything past the account: memory by user, devices, daemons. '
+                    . 'php host-cron.php --collect',
+                'who' => 'root, or whoever runs the host collector',
+            ] + $collector($hostAt, $hostGap),
+            [
+                'name' => 'Host disk walk',
+                'what' => 'The whole filesystem, including what the account cannot see. '
+                    . 'php host-cron.php --disk',
+                'who' => 'root',
+                // No expected interval: this one is on its own schedule and is
+                // often run by hand, so "late" would be an invention.
+            ] + $collector($walkAt, null),
+        ],
+        'retention' => retentionRules($config),
+    ];
+}
+
+/**
+ * The usual gap between a series of timestamps, newest first.
+ *
+ * The median rather than the mean, because one long outage would drag an
+ * average out to where nothing is ever late again - which is precisely when
+ * this needs to still work.
+ */
+function medianGap(array $times): ?int
+{
+    $times = array_values(array_map('intval', $times));
+    if (count($times) < 3) {
+        return null;
+    }
+
+    $gaps = [];
+    for ($i = 1; $i < count($times); $i++) {
+        $gap = $times[$i - 1] - $times[$i];
+        if ($gap > 0) {
+            $gaps[] = $gap;
+        }
+    }
+    if ($gaps === []) {
+        return null;
+    }
+
+    sort($gaps);
+    return (int)$gaps[intdiv(count($gaps), 2)];
+}
+
 function healthCheck(array $config, PDO $pdo, bool $signedIn): array
 {
     $dataDir = dirname((string)$config['database']);
