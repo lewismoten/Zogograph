@@ -169,6 +169,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-stop' => doAiStop($config, $pdo, $post),
         'ai-settings' => aiSettingsView($config, $pdo, $signedIn),
         'ai-settings-save' => doAiSettingsSave($config, $pdo, $post),
+        'ai-test' => doAiTest($config, $pdo, $post),
         'ai-sessions' => aiSessionsView($config, $signedIn),
         'charts' => chartCatalogueView($signedIn),
         'scan-schedule' => scansView($config, $pdo, $signedIn),
@@ -6261,6 +6262,7 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         'model' => $settings['model'],
         // Whether one is set, never what it is.
         'has_key' => $settings['api_key'] !== '',
+        'reasoning_effort' => $settings['reasoning_effort'],
         'price_in' => $settings['price_in'],
         'price_out' => $settings['price_out'],
         'price_cached' => $settings['price_cached'],
@@ -6303,6 +6305,12 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
     $current['ai']['provider'] = $provider;
     $current['ai']['base_url'] = $base;
     $current['ai']['model'] = trim((string)($_POST['model'] ?? ''));
+
+    $effort = (string)($_POST['reasoning_effort'] ?? '');
+    if (!in_array($effort, ['', 'minimal', 'low', 'medium', 'high'], true)) {
+        throw new ActionRefused('that is not one of the reasoning settings');
+    }
+    $current['ai']['reasoning_effort'] = $effort;
 
     /*
      * The key is only written when a new one is given.
@@ -6707,4 +6715,154 @@ function scanTaskName(?string $task): string
         return '';
     }
     return str_contains($task, ':') ? explode(':', $task, 2)[1] : $task;
+}
+
+/**
+ * One real call, to find out whether any of this works.
+ *
+ * The alternative is discovering it in the chat, where a configuration mistake
+ * arrives as a failed conversation and somebody has to work backwards from a
+ * provider's error message to the field that was wrong.
+ *
+ * Deliberately WITH a tool attached. Half the ways this can be misconfigured
+ * only show up when tools are involved - a reasoning model on the wrong
+ * endpoint answers ordinary messages perfectly well and refuses the moment a
+ * function is offered, which is exactly the report that led to this. A test
+ * that passed without tools would be a test that passed and then failed.
+ */
+function doAiTest(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    /*
+     * The settings on the form, not the ones on disk.
+     *
+     * Testing before saving is the whole point: somebody pasting a key wants
+     * to know it works before committing it, and testing what is already
+     * stored would answer a different question.
+     */
+    $current = $config;
+    foreach (['provider', 'model', 'base_url', 'reasoning_effort'] as $field) {
+        if (isset($_POST[$field]) && $_POST[$field] !== '') {
+            $current['ai'][$field] = (string)$_POST[$field];
+        }
+    }
+
+    $key = trim((string)($_POST['api_key'] ?? ''));
+    if ($key !== '') {
+        $current['ai']['api_key'] = $key;
+    }
+
+    $current['ai']['enabled'] = true;
+    $settings = aiSettings($current);
+
+    if ($settings['model'] === '') {
+        throw new ActionRefused('choose a model first');
+    }
+    if ($settings['api_key'] === '' && !str_starts_with($settings['provider'], 'compatible')) {
+        throw new ActionRefused('there is no key to test - type one, or save one first');
+    }
+
+    /*
+     * A question with an obvious answer, and one tool it should not need.
+     *
+     * The tool is there to be offered, not called: what is being tested is
+     * whether the provider accepts a request carrying tool definitions at all.
+     */
+    $probe = [[
+        'role' => 'user',
+        'content' => 'Reply with exactly: ready. Do not use any tool.',
+    ]];
+
+    $tools = aiToolSchemas([
+        'get_current_status' => aiToolCatalogue()['get_current_status'],
+    ]);
+
+    $answer = aiAsk($settings, $probe, $tools, 'You are being tested. Answer in one word.');
+
+    $said = trim((string)($answer['text'] ?? ''));
+
+    logAction($pdo, 'ai_test', $settings['model'], $answer['ok'] ? 'ok' : 'failed', 0, 0,
+        $answer['ok'] ? $said : (string)$answer['error']);
+
+    if (!$answer['ok']) {
+        return [
+            'ok' => false,
+            'error' => $answer['error'],
+            'status' => $answer['status'] ?? 0,
+            'ms' => $answer['ms'] ?? 0,
+            'hint' => aiTestHint((string)$answer['error'], $settings),
+        ];
+    }
+
+    return [
+        'ok' => true,
+        'said' => $said === '' ? '(it answered with nothing, which is odd but not fatal)' : $said,
+        'ms' => (int)($answer['ms'] ?? 0),
+        'tokens' => [
+            'in' => (int)($answer['tokens_in'] ?? 0),
+            'out' => (int)($answer['tokens_out'] ?? 0),
+            'reasoning' => (int)($answer['tokens_reasoning'] ?? 0),
+        ],
+        'cost' => aiMoney(aiCost($settings, (int)($answer['tokens_in'] ?? 0),
+            (int)($answer['tokens_out'] ?? 0), (int)($answer['tokens_cached'] ?? 0))),
+        'tools_accepted' => true,
+    ];
+}
+
+/**
+ * What a provider's complaint usually means, in terms of this page's fields.
+ *
+ * A provider error names its own concepts - endpoints, parameters, model
+ * families - and the reader is looking at a form with four boxes. Translating
+ * the handful that actually happen saves somebody an hour of guessing.
+ */
+function aiTestHint(string $error, array $settings): string
+{
+    $said = strtolower($error);
+
+    if (str_contains($said, 'reasoning_effort') || str_contains($said, '/v1/responses')) {
+        return 'This model wants the newer endpoint when tools are involved. Change the '
+            . 'provider to "OpenAI (responses, for reasoning models)" - same key, same '
+            . 'address.';
+    }
+
+    if (str_contains($said, 'incorrect api key') || str_contains($said, 'invalid_api_key')
+        || str_contains($said, '401')) {
+        return 'The key was refused. Check it is the whole key and belongs to the account '
+            . 'you think it does.';
+    }
+
+    if (str_contains($said, 'does not exist') || str_contains($said, 'model_not_found')) {
+        return sprintf(
+            'The provider does not recognise "%s". Check the exact spelling on their '
+            . 'model list - these names are precise and change often.',
+            $settings['model']
+        );
+    }
+
+    if (str_contains($said, 'quota') || str_contains($said, 'billing')
+        || str_contains($said, 'insufficient')) {
+        return 'The key is valid but the account cannot pay for the request.';
+    }
+
+    if (str_contains($said, 'rate limit') || str_contains($said, '429')) {
+        return 'The key is valid and the account is being rate-limited. Wait and try again.';
+    }
+
+    if (str_contains($said, 'could not resolve') || str_contains($said, 'connection')
+        || str_contains($said, 'timed out')) {
+        return sprintf(
+            'Nothing answered at %s. If that is a local model, check it is running; if it '
+            . 'is a provider, this host may not be allowed to make outbound requests.',
+            $settings['base_url']
+        );
+    }
+
+    if (str_contains($said, 'tool') || str_contains($said, 'function')) {
+        return 'The provider accepted the request but not the tools. Lookout needs tool '
+            . 'calling; a model without it cannot look anything up.';
+    }
+
+    return '';
 }

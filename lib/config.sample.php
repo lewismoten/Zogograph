@@ -498,11 +498,34 @@ return [
     'ai' => [
         'enabled' => false,
 
-        // openai, anthropic, or compatible (Ollama, llama.cpp, vLLM, a gateway).
+        /*
+         * Which wire format to speak.
+         *
+         *   openai            chat completions. Also Groq, Together, DeepSeek,
+         *                     OpenRouter and most others - point base_url at
+         *                     theirs.
+         *   openai-responses  the newer endpoint. Reasoning models refuse
+         *                     function tools on chat completions unless
+         *                     reasoning is turned off entirely, which is
+         *                     throwing away the reason for using them.
+         *   anthropic         its own message format, translated to and from.
+         *   compatible        anything OpenAI-shaped: Ollama, llama.cpp, vLLM,
+         *                     a gateway of your own. No key needed, and nothing
+         *                     leaves the machine.
+         */
         'provider' => 'openai',
         'base_url' => '',
         'model' => '',
         'api_key' => '',
+
+        /*
+         * How hard a reasoning model should think. Responses endpoint only.
+         *
+         * '', minimal, low, medium or high. The thinking is billed as output
+         * tokens and on a reasoning model is usually most of the bill, so this
+         * is the setting that moves the cost most.
+         */
+        'reasoning_effort' => '',
 
         /*
          * Prices per million tokens, in cents. Optional.

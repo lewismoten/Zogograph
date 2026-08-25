@@ -4326,6 +4326,34 @@ function renderAiSettings(data) {
       : "Stored in lib/config.php, which is outside the web root. A local model needs "
         + "none."));
 
+  /*
+   * How hard a reasoning model should think, where the endpoint takes one.
+   *
+   * Only shown for the Responses provider: on chat completions the same models
+   * refuse function tools whenever this is set to anything but none, which is
+   * the error that led to that endpoint being spoken at all.
+   */
+  const effort = document.createElement("select");
+  effort.id = "aiEffort";
+  for (const [value, label] of [
+    ["", "the provider's default"],
+    ["minimal", "minimal"],
+    ["low", "low"],
+    ["medium", "medium"],
+    ["high", "high"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = (data.reasoning_effort || "") === value;
+    effort.appendChild(option);
+  }
+  const effortRow = fieldRow("How hard to think", effort,
+    "Reasoning models charge for the thinking as output tokens, so this is the setting "
+    + "that moves the bill most. Higher is worth it for a knotty problem and wasted on "
+    + "\u201cis the disk full\u201d.");
+  form.appendChild(effortRow);
+
   if (data.has_key) {
     const forget = document.createElement("button");
     forget.type = "button";
@@ -4340,6 +4368,37 @@ function renderAiSettings(data) {
   }
 
   parts.push(section("Which model", form));
+
+  /*
+   * A test before any of it is used in anger.
+   *
+   * Half the ways this can be misconfigured only show up once tools are
+   * involved - a reasoning model on the wrong endpoint answers ordinary
+   * messages perfectly and refuses the moment a function is offered - so the
+   * test sends one, and says so.
+   */
+  const testing = document.createElement("div");
+  testing.className = "inspect-actions";
+
+  const test = document.createElement("button");
+  test.type = "button";
+  test.id = "aiTest";
+  test.textContent = "Test the connection";
+  test.title = "One real request, with a tool attached, using whatever is in the boxes "
+    + "above \u2014 including a key you have typed but not saved";
+  testing.appendChild(test);
+
+  const testResult = document.createElement("span");
+  testResult.id = "aiTestResult";
+  testResult.className = "muted small";
+  testing.appendChild(testResult);
+
+  parts.push(testing);
+  parts.push(note(
+    "The test asks the model one trivial question with one tool attached. It costs a few "
+    + "hundred tokens and tells you four things at once: the address answers, the key is "
+    + "accepted, the model exists, and it will take tools."
+  ));
 
   /* ---- money ---- */
 
@@ -4450,6 +4509,10 @@ function renderAiSettings(data) {
   const syncProvider = () => {
     const meta = data.providers[provider.value];
     providerNote.textContent = meta?.note ?? "";
+
+    // Only one endpoint takes it, and offering it elsewhere would suggest it
+    // does something.
+    effortRow.hidden = provider.value !== "openai-responses";
     models.replaceChildren(...(meta?.models ?? []).map(name => {
       const option = document.createElement("option");
       option.value = name;
@@ -4571,6 +4634,7 @@ async function saveAiSettings(extra = {}) {
       max_seconds: $("aiMaxSeconds").value,
       max_cents: $("aiMaxCents").value,
       max_turns: $("aiMaxTurns").value,
+      reasoning_effort: $("aiEffort").value,
       tools_on: on,
       tools_ask: ask,
       ...extra,
@@ -7488,7 +7552,7 @@ const SYMLINK_KINDS = {
  * On a button rather than on the poll: it is a whole extra walk of the tree,
  * and the answer only changes when somebody makes a link.
  */
-const linkState = { data: null, sweep: null };
+const linkState = { data: null, sweep: null, at: null };
 
 /**
  * Checks the tree for symlinks that will send something into a loop.
@@ -7506,6 +7570,7 @@ async function checkSymlinks() {
 
   try {
     linkState.data = await api("symlinks", { budget: 15 });
+    linkState.at = Math.floor(Date.now() / 1000);
     renderSymlinks();
   } catch (error) {
     holder.replaceChildren(note(String(error.message || error)));
@@ -7537,8 +7602,16 @@ function renderSymlinks() {
     + `${humanCount(data.dirs)} directories in ${data.seconds}s. `
     + (data.complete
       ? "The whole tree was checked."
-      : "Stopped before the end of the tree — there may be more.");
+      : "Stopped before the end of the tree — there may be more.")
+    + (linkState.at ? ` Checked ${ago(linkState.at)}.` : "");
   parts.push(summary);
+
+  if (linkState.at && Date.now() / 1000 - linkState.at > 900) {
+    parts.push(note(
+      "This is the last check, not a fresh one — the walk takes seconds and is not run "
+      + "on a timer. Press Check again for the current state."
+    ));
+  }
 
   /*
    * What changed since last time, which is the only part worth an alarm.
@@ -7905,6 +7978,14 @@ async function refreshLinks() {
     $("linkSweepPanel").hidden = true;
     return;
   }
+
+  /*
+   * The last result is redrawn rather than thrown away.
+   *
+   * linkState survives navigation, so coming back to this page shows what the
+   * last check found - with its age, so nobody reads a week-old walk as
+   * current. Only pressing the button walks the tree again.
+   */
   renderSymlinks();
 }
 
@@ -19727,7 +19808,14 @@ const VIEWS = {
   alerts: { label: "Alerts", refresh: () => refreshAlerts() },
   uptime: { label: "Uptime", refresh: () => refreshUptime() },
   deletions: { label: "Actions", refresh: () => refreshActionLog() },
-  email: { label: "Email alerts", parent: "system", refresh: () => refreshEmail() },
+  email: {
+    // Rebuilds its form from the server's answer, so it must not be polled -
+    // see the note on sys-ai.
+    manual: true,
+    label: "Email alerts",
+    parent: "system",
+    refresh: () => refreshEmail(),
+  },
   schedule: {
     label: "Schedule",
     parent: "system",
@@ -19754,6 +19842,8 @@ const VIEWS = {
     refresh: () => refreshStore(),
   },
   "sys-retention": {
+    // Rebuilds its form from the server's answer; see the note on sys-ai.
+    manual: true,
     label: "Data retention",
     parent: "system",
     refresh: () => refreshStore(),
@@ -19774,16 +19864,46 @@ const VIEWS = {
     refresh: () => refreshChanged(),
   },
   "sys-ai": {
+    /*
+     * Never on the timer.
+     *
+     * This page rebuilds its form from the server's answer, so a poll landing
+     * while somebody is typing replaces the box they are typing in - which is
+     * exactly what happened: an API key half entered, gone on the next tick.
+     * Opening the page still loads it, and saving redraws from what was
+     * written.
+     */
+    manual: true,
     label: "Lookout",
     parent: "system",
     refresh: () => refreshAiSettings(),
   },
   "scans-account": {
+    /*
+     * Never on the timer.
+     *
+     * This page rebuilds its form from the server's answer, so a poll landing
+     * while somebody is typing replaces the box they are typing in - which is
+     * exactly what happened: an API key half entered, gone on the next tick.
+     * Opening the page still loads it, and saving redraws from what was
+     * written.
+     */
+    manual: true,
     label: "Account scans",
     parent: "system",
     refresh: () => refreshScans("account"),
   },
   "scans-host": {
+    /*
+     * Never on the timer.
+     *
+     * This page rebuilds its form from the server's answer, so a poll landing
+     * while somebody is typing replaces the box they are typing in - which is
+     * exactly what happened: an API key half entered, gone on the next tick.
+     * Opening the page still loads it, and saving redraws from what was
+     * written.
+     */
+    manual: true,
     label: "Host scans",
     parent: "system",
     refresh: () => refreshScans("host"),
@@ -20463,6 +20583,46 @@ for (const id of ["accountScansForm", "hostScansForm", "throttleForm"]) {
     saveScans();
   });
 }
+
+document.addEventListener("click", async event => {
+  if (event.target?.id !== "aiTest") return;
+
+  const button = $("aiTest");
+  const said = $("aiTestResult");
+
+  button.disabled = true;
+  button.textContent = "Testing\u2026";
+  said.className = "muted small";
+  said.textContent = "";
+
+  try {
+    const result = await post("ai-test", {
+      provider: $("aiProvider").value,
+      model: $("aiModel").value.trim(),
+      base_url: $("aiBase").value.trim(),
+      api_key: $("aiKey").value,
+      reasoning_effort: $("aiEffort").value,
+    });
+
+    if (result.ok) {
+      said.className = "band-ok small";
+      said.textContent = `It answered \u201c${result.said}\u201d in ${result.ms} ms`
+        + ` and accepted the tools. ${humanCount(result.tokens.in + result.tokens.out)} tokens`
+        + (result.tokens.reasoning
+          ? `, ${humanCount(result.tokens.reasoning)} of them thinking` : "")
+        + `, about ${result.cost}.`;
+    } else {
+      said.className = "band-crit small";
+      said.textContent = `${result.error}${result.hint ? " — " + result.hint : ""}`;
+    }
+  } catch (error) {
+    said.className = "band-crit small";
+    said.textContent = String(error.message || error);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Test the connection";
+  }
+});
 
 $("aiSessionsRefresh").addEventListener("click", () => {
   refreshAiSessions().catch(error => notice(String(error.message || error)));

@@ -42,12 +42,32 @@ function aiProviders(): array
 {
     return [
         'openai' => [
-            'label' => 'OpenAI',
+            'label' => 'OpenAI (chat completions)',
             'base' => 'https://api.openai.com/v1',
             'auth' => 'bearer',
             'note' => 'Also the shape used by Groq, Together, Fireworks, DeepSeek, '
-                . 'OpenRouter and most others. Point the address at theirs.',
+                . 'OpenRouter and most others. Point the address at theirs. Newer '
+                . 'reasoning models refuse function tools on this endpoint - use the '
+                . 'Responses option below for those.',
             'models' => ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1'],
+        ],
+        /*
+         * The newer endpoint, which is where reasoning models want tools.
+         *
+         * Chat completions answers a model like gpt-5.6-luna with "Function
+         * tools with reasoning_effort are not supported ... use /v1/responses
+         * or set reasoning_effort to 'none'" - and turning the reasoning off to
+         * keep the old endpoint is throwing away the reason for using that
+         * model at all. So the other endpoint is spoken instead.
+         */
+        'openai-responses' => [
+            'label' => 'OpenAI (responses, for reasoning models)',
+            'base' => 'https://api.openai.com/v1',
+            'auth' => 'bearer',
+            'note' => 'For gpt-5 and other reasoning models, which refuse function tools '
+                . 'on the older chat-completions endpoint unless reasoning is turned off '
+                . 'entirely. Same key, same address, different shape.',
+            'models' => ['gpt-5.6-luna', 'gpt-5', 'gpt-5-mini', 'o4-mini'],
         ],
         'anthropic' => [
             'label' => 'Anthropic',
@@ -106,6 +126,19 @@ function aiSettings(array $config): array
         'max_seconds' => max(0, (int)($set['max_seconds'] ?? 3600)),
         'max_cents' => max(0, (float)($set['max_cents'] ?? 50)),
         'max_turns' => max(0, (int)($set['max_turns'] ?? 40)),
+
+        /*
+         * How hard a reasoning model should think, where it has the option.
+         *
+         * Only the Responses endpoint takes this. On chat completions the same
+         * models refuse function tools whenever it is set to anything but
+         * none, which is the error that led to this endpoint being spoken at
+         * all.
+         */
+        'reasoning_effort' => in_array($set['reasoning_effort'] ?? '', 
+            ['', 'minimal', 'low', 'medium', 'high'], true)
+            ? (string)($set['reasoning_effort'] ?? '')
+            : '',
 
         'tools' => $set['tools'] ?? [],
     ];
@@ -190,9 +223,11 @@ function aiAsk(array $settings, array $messages, array $tools, ?string $system =
     $started = microtime(true);
     $provider = $settings['provider'];
 
-    [$url, $headers, $body] = $provider === 'anthropic'
-        ? aiAnthropicRequest($settings, $messages, $tools, $system)
-        : aiOpenAiRequest($settings, $messages, $tools, $system);
+    [$url, $headers, $body] = match ($provider) {
+        'anthropic' => aiAnthropicRequest($settings, $messages, $tools, $system),
+        'openai-responses' => aiResponsesRequest($settings, $messages, $tools, $system),
+        default => aiOpenAiRequest($settings, $messages, $tools, $system),
+    };
 
     $handle = curl_init($url);
     curl_setopt_array($handle, [
@@ -251,9 +286,11 @@ function aiAsk(array $settings, array $messages, array $tools, ?string $system =
         ];
     }
 
-    $parsed = $provider === 'anthropic'
-        ? aiAnthropicReply($decoded)
-        : aiOpenAiReply($decoded);
+    $parsed = match ($provider) {
+        'anthropic' => aiAnthropicReply($decoded),
+        'openai-responses' => aiResponsesReply($decoded),
+        default => aiOpenAiReply($decoded),
+    };
 
     return $parsed + [
         'ok' => true,
@@ -478,5 +515,169 @@ function aiAnthropicReply(array $decoded): array
         'tokens_in' => (int)($usage['input_tokens'] ?? 0),
         'tokens_out' => (int)($usage['output_tokens'] ?? 0),
         'tokens_cached' => (int)($usage['cache_read_input_tokens'] ?? 0),
+    ];
+}
+
+/**
+ * The Responses shape, for models that refuse tools on chat completions.
+ *
+ * Flatter than chat completions in one way and stranger in another: the
+ * conversation is a list of "input items" rather than messages, tools are
+ * described at the top level rather than wrapped in a `function` object, and a
+ * tool result is its own item type instead of a message with a role.
+ *
+ * @return array{0: string, 1: list<string>, 2: array}
+ */
+function aiResponsesRequest(array $settings, array $messages, array $tools, ?string $system): array
+{
+    $input = [];
+
+    foreach ($messages as $message) {
+        if (isset($message['image'])) {
+            $input[] = [
+                'role' => 'user',
+                'content' => [[
+                    'type' => 'input_image',
+                    'image_url' => (string)$message['image'],
+                ]],
+            ];
+            continue;
+        }
+
+        $role = (string)($message['role'] ?? 'user');
+
+        if ($role === 'tool') {
+            $input[] = [
+                'type' => 'function_call_output',
+                'call_id' => (string)($message['tool_call_id'] ?? ''),
+                'output' => (string)($message['content'] ?? ''),
+            ];
+            continue;
+        }
+
+        if ($role === 'assistant' && !empty($message['tool_calls'])) {
+            /*
+             * The text and the calls are separate items here.
+             *
+             * Chat completions carries both on one message; Responses wants the
+             * message and then each call as its own item, in order.
+             */
+            if (($message['content'] ?? '') !== '') {
+                $input[] = [
+                    'role' => 'assistant',
+                    'content' => [['type' => 'output_text',
+                                   'text' => (string)$message['content']]],
+                ];
+            }
+
+            foreach ($message['tool_calls'] as $call) {
+                $input[] = [
+                    'type' => 'function_call',
+                    'call_id' => (string)$call['id'],
+                    'name' => (string)$call['function']['name'],
+                    'arguments' => (string)$call['function']['arguments'],
+                ];
+            }
+            continue;
+        }
+
+        $input[] = [
+            'role' => $role,
+            'content' => [[
+                'type' => $role === 'assistant' ? 'output_text' : 'input_text',
+                'text' => (string)($message['content'] ?? ''),
+            ]],
+        ];
+    }
+
+    $body = [
+        'model' => $settings['model'],
+        'input' => $input,
+    ];
+
+    if ($system !== null) {
+        // Called `instructions` here rather than a message with a system role.
+        $body['instructions'] = $system;
+    }
+
+    if ($tools !== []) {
+        $body['tools'] = array_map(fn(array $tool): array => [
+            'type' => 'function',
+            'name' => $tool['function']['name'],
+            'description' => $tool['function']['description'],
+            'parameters' => $tool['function']['parameters'],
+            /*
+             * Strict mode, since this endpoint offers it.
+             *
+             * The schemas here already say additionalProperties: false and list
+             * every required field, which is what strict mode needs - so the
+             * model is constrained to produce valid arguments rather than being
+             * told off for invalid ones afterwards.
+             */
+            'strict' => true,
+        ], $tools);
+        $body['tool_choice'] = 'auto';
+    }
+
+    if (($settings['reasoning_effort'] ?? '') !== '') {
+        $body['reasoning'] = ['effort' => $settings['reasoning_effort']];
+    }
+
+    $headers = ['Content-Type: application/json'];
+    if ($settings['api_key'] !== '') {
+        $headers[] = 'Authorization: Bearer ' . $settings['api_key'];
+    }
+
+    return [rtrim($settings['base_url'], '/') . '/responses', $headers, $body];
+}
+
+/** @return array<string, mixed> */
+function aiResponsesReply(array $decoded): array
+{
+    $text = '';
+    $calls = [];
+
+    foreach ($decoded['output'] ?? [] as $item) {
+        $type = (string)($item['type'] ?? '');
+
+        if ($type === 'message') {
+            foreach ($item['content'] ?? [] as $block) {
+                if (($block['type'] ?? '') === 'output_text') {
+                    $text .= (string)($block['text'] ?? '');
+                }
+            }
+            continue;
+        }
+
+        if ($type === 'function_call') {
+            $arguments = $item['arguments'] ?? '{}';
+            $calls[] = [
+                'id' => (string)($item['call_id'] ?? $item['id'] ?? uniqid('call_', true)),
+                'name' => (string)($item['name'] ?? ''),
+                'arguments' => is_array($arguments)
+                    ? $arguments
+                    : (json_decode((string)$arguments, true) ?: []),
+            ];
+        }
+    }
+
+    $usage = $decoded['usage'] ?? [];
+
+    return [
+        'text' => $text,
+        'tool_calls' => $calls,
+        'finish' => (string)($decoded['status'] ?? ''),
+        'tokens_in' => (int)($usage['input_tokens'] ?? 0),
+        'tokens_out' => (int)($usage['output_tokens'] ?? 0),
+        /*
+         * Reasoning tokens are billed as output and are invisible otherwise.
+         *
+         * On a reasoning model they can be most of the bill, so an estimate
+         * that ignored them would be wrong by a large factor on exactly the
+         * models this endpoint exists for. They are already inside
+         * output_tokens, so this is reported rather than added.
+         */
+        'tokens_reasoning' => (int)($usage['output_tokens_details']['reasoning_tokens'] ?? 0),
+        'tokens_cached' => (int)($usage['input_tokens_details']['cached_tokens'] ?? 0),
     ];
 }
