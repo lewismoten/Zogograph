@@ -67,6 +67,8 @@ require_once __DIR__ . '/lib/logstream.php';
 require_once __DIR__ . '/lib/diagnose.php';
 require_once __DIR__ . '/lib/labels.php';
 require_once __DIR__ . '/lib/urlwatch.php';
+require_once __DIR__ . '/lib/headers.php';
+require_once __DIR__ . '/lib/pagebits.php';
 require_once __DIR__ . '/lib/domains.php';
 require_once __DIR__ . '/lib/events.php';
 require_once __DIR__ . '/lib/whoami.php';
@@ -168,6 +170,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'url-save' => doUrlSave($pdo, $post),
         'url-delete' => doUrlDelete($pdo, $post),
         'url-run' => doUrlRun($pdo, $post),
+        'url-toggle' => doUrlToggle($pdo, $post),
         'domain-save' => doDomainSave($config, $pdo, $post),
         'domain-delete' => doDomainDelete($config, $pdo, $post),
         'domain-check' => doDomainCheck($config, $pdo, $post),
@@ -1513,7 +1516,8 @@ function fetchView(PDO $pdo, bool $signedIn): array
         throw new ActionRefused('sign in to make a request');
     }
 
-    $url = trim((string)($_GET['url'] ?? ''));
+    // Typed by a person, so it may well have no scheme on it.
+    $url = tidyUrl((string)($_GET['url'] ?? ''));
     if ($url === '') {
         return ['asked' => false];
     }
@@ -1534,10 +1538,14 @@ function fetchView(PDO $pdo, bool $signedIn): array
 
     $headers = (string)($result['headers'] ?? '');
     $type = urlWatchHeader($headers, 'content-type') ?? '';
+    $body = (string)$result['body'];
 
     logAction($pdo, 'fetch_url', $url, 'ok', 0, 0, $method . ' ' . $result['status']);
 
-    return [
+    $isHtml = (bool)preg_match('#^(text/html|application/xhtml)#i', $type);
+    $isJson = (bool)preg_match('#json#i', $type);
+
+    $out = [
         'asked' => true,
         'url' => $url,
         'ok' => true,
@@ -1546,10 +1554,10 @@ function fetchView(PDO $pdo, bool $signedIn): array
         'method' => $result['method'] ?? $method,
         'hops' => $result['hops'] ?? 0,
         'landed' => $result['landed'] ?? null,
-        'headers' => parseHeaderBlock($headers),
+        'headers' => explainHeaderBlock($pdo, $headers),
         'raw_headers' => $headers,
-        'body' => $result['body'],
-        'bytes' => strlen((string)$result['body']),
+        'body' => $body,
+        'bytes' => strlen($body),
         'content_type' => $type,
         /*
          * Whether the browser could reasonably show this as a page.
@@ -1558,9 +1566,78 @@ function fetchView(PDO $pdo, bool $signedIn): array
          * is a convenience and guessing wrong turns it into a way to render
          * something unexpected inside a sandboxed frame.
          */
-        'previewable' => (bool)preg_match('#^(text/html|text/plain|application/xhtml)#i', $type),
-        'looks_json' => (bool)preg_match('#json#i', $type),
+        'previewable' => $isHtml || (bool)preg_match('#^text/plain#i', $type),
+        'looks_json' => $isJson,
+        'looks_html' => $isHtml,
     ];
+
+    if ($isHtml) {
+        $out['meta'] = pageMeta($body);
+        $out['linked_data'] = pageLinkedData($body);
+    }
+
+    if ($isJson) {
+        $out['json'] = formatJson($body);
+    }
+
+    /*
+     * Parked for the preview frame, which loads it from its own URL.
+     *
+     * Only for things a frame will actually be offered, so a JSON API response
+     * is never written to disk here.
+     */
+    if ($out['previewable']) {
+        $out['preview_token'] = storeFetchBody($pdo, $url, $type, $body);
+    }
+
+    return $out;
+}
+
+/**
+ * Keeps one fetched body for the preview frame to collect.
+ *
+ * Pruned on the way in rather than by the cron: this table is a scratch buffer
+ * of somebody else's pages, and the right number of them to be holding is
+ * however many are on screen. An hour is far longer than a preview is looked
+ * at and short enough that nothing accumulates.
+ */
+function storeFetchBody(PDO $pdo, string $url, string $type, string $body): ?string
+{
+    // Well beyond any page worth previewing, and a limit on what one request
+    // can put in the database.
+    if (strlen($body) > 4 * 1024 * 1024) {
+        return null;
+    }
+
+    $pdo->prepare('DELETE FROM fetch_bodies WHERE at < ?')->execute([time() - 3600]);
+
+    $token = bin2hex(random_bytes(16));
+    $pdo->prepare(
+        'INSERT INTO fetch_bodies (token, url, content_type, body, at) VALUES (?, ?, ?, ?, ?)'
+    )->execute([$token, $url, $type, $body, time()]);
+
+    return $token;
+}
+
+/**
+ * A response head, taken apart header by header.
+ *
+ * @return list<array<string, mixed>>
+ */
+function explainHeaderBlock(PDO $pdo, string $block): array
+{
+    $notes = headerNotes($pdo);
+    $out = [];
+
+    foreach (parseHeaderBlock($block) as $header) {
+        $out[] = explainHeader(
+            (string)($header['name'] ?? ''),
+            (string)($header['value'] ?? ''),
+            $notes
+        );
+    }
+
+    return $out;
 }
 
 /**
@@ -1677,6 +1754,36 @@ function doUrlSave(PDO $pdo, bool $post): array
 
     return ['ok' => true, 'id' => $id, 'first' => $result['rows'][0] ?? null]
         + urlsView($pdo, true);
+}
+
+/**
+ * Turns one check on or off without losing it.
+ *
+ * Distinct from deleting, which takes the history with it. A check paused
+ * during a planned outage should come back with its record intact - otherwise
+ * the only way to stop the alerts is to destroy the evidence of what the site
+ * was doing before.
+ */
+function doUrlToggle(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    $stmt = $pdo->prepare('UPDATE url_checks SET enabled = 1 - enabled WHERE id = ?');
+    $stmt->execute([$id]);
+
+    if ($stmt->rowCount() === 0) {
+        throw new ActionRefused('no such check');
+    }
+
+    $now = $pdo->prepare('SELECT enabled, label FROM url_checks WHERE id = ?');
+    $now->execute([$id]);
+    $row = $now->fetch();
+
+    logAction($pdo, 'url_toggle', (string)$row['label'], 'ok', 0, 0,
+        $row['enabled'] ? 'switched on' : 'switched off');
+
+    return ['ok' => true, 'enabled' => (bool)$row['enabled']] + urlsView($pdo, true);
 }
 
 function doUrlDelete(PDO $pdo, bool $post): array
@@ -2018,6 +2125,33 @@ function dnsView(array $config, bool $signedIn): array
             $answer['note'] = $notes[$answer['type']] ?? '';
             if ($answer['type'] === 'TXT') {
                 $answer['txt'] = parseTxtRecord((string)$answer['value']);
+            }
+
+            /*
+             * SOA gets the same treatment, in the same shape.
+             *
+             * Seven unlabelled fields, three of them durations in seconds and
+             * one an email address written with a dot where the @ belongs.
+             * Reusing the pairs shape means the renderer needs no second path.
+             */
+            if ($answer['type'] === 'SOA') {
+                $soa = parseSoaRecord((string)$answer['value']);
+                if ($soa['ok']) {
+                    $answer['txt'] = [
+                        'kind' => 'SOA',
+                        'note' => 'The zone\'s own settings: who runs it, and how long '
+                            . 'everyone else may believe what it says.',
+                        'pairs' => array_map(
+                            fn(array $f): array => [
+                                'name' => $f['name'],
+                                'value' => $f['value'],
+                                'note' => $f['note'],
+                            ],
+                            $soa['fields']
+                        ),
+                        'text' => (string)$answer['value'],
+                    ];
+                }
             }
         }
         unset($answer);

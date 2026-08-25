@@ -158,8 +158,8 @@ function labelForPort(array $labels, int $port): ?array
  */
 function saveLabel(PDO $pdo, string $kind, string $match, string $label, string $note = ''): void
 {
-    $kind = $kind === 'port' ? 'port' : 'address';
-    $match = trim($match);
+    $kind = in_array($kind, ['port', 'header'], true) ? $kind : 'address';
+    $match = $kind === 'header' ? strtolower(trim($match)) : trim($match);
     $label = trim($label);
 
     if ($label === '') {
@@ -172,6 +172,17 @@ function saveLabel(PDO $pdo, string $kind, string $match, string $label, string 
     if ($kind === 'port') {
         if (!ctype_digit($match) || (int)$match < 1 || (int)$match > 65535) {
             throw new ActionRefused('that is not a port number');
+        }
+    } elseif ($kind === 'header') {
+        /*
+         * A field name, by the grammar rather than by a list.
+         *
+         * The whole point of annotating headers is the house ones nobody has
+         * documented, so checking against known names would refuse exactly the
+         * cases worth writing down.
+         */
+        if (!preg_match("/^[!#$%&'*+.^_`|~0-9a-z-]{1,64}$/", $match)) {
+            throw new ActionRefused('that is not a header name');
         }
     } else {
         $bare = explode('/', $match)[0];

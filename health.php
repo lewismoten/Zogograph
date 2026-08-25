@@ -41,6 +41,7 @@ $required = [
     'lib/network.php', 'lib/logstream.php', 'lib/diagnose.php', 'lib/labels.php',
     'lib/urlwatch.php', 'lib/domains.php', 'lib/events.php', 'lib/whoami.php', 'lib/dnsrecords.php', 'lib/external.php',
     'lib/hostdb.php', 'host-cron.php', 'lib/config.sample.php',
+    'lib/headers.php', 'lib/pagebits.php', 'preview.php',
 ];
 
 $files = [];

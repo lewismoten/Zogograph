@@ -31,6 +31,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/actions.php';
+require_once __DIR__ . '/headers.php';
 require_once __DIR__ . '/network.php';
 require_once __DIR__ . '/inspect.php';
 
@@ -526,6 +527,7 @@ function dnsInventory(PDO $pdo, string $domain): array
         $group = dnsRecordGroup((string)$row['type'], (string)$row['value']);
         $row['group'] = $group;
         $row['gone'] = $row['gone_at'] !== null;
+        $row['detail'] = recordDetail((string)$row['type'], (string)$row['value']);
         $groups[$group][] = $row;
     }
 
@@ -840,15 +842,61 @@ function txtTermNote(string $kind, string $term): string
     if (str_starts_with(strtolower($term), 'ip4:') || str_starts_with(strtolower($term), 'ip6:')) {
         return 'This address may send mail for the domain.';
     }
-    if (strtolower($term) === 'a' || strtolower($term) === 'mx') {
-        return 'Whatever the domain\'s own ' . strtoupper($term) . ' records point at may send '
-            . 'mail for it.';
-    }
-    if (str_starts_with(strtolower($term), 'redirect=')) {
-        return 'Use another domain\'s SPF record instead of this one.';
+    /*
+     * A qualifier in front changes what a match means, not what it matches.
+     *
+     * The default is `+`, meaning pass. `-a:mail.example.com` is a mechanism
+     * that *denies* - rare, and the sort of thing that gets read straight past
+     * because it looks like every other term.
+     */
+    $bare = $term;
+    $qualifier = '';
+    if ($term !== '' && str_contains('+-~?', $term[0])) {
+        $qualifier = $term[0];
+        $bare = substr($term, 1);
     }
 
-    return '';
+    $said = match ($qualifier) {
+        '-' => ' Prefixed with -, so a match here fails rather than passes.',
+        '~' => ' Prefixed with ~, so a match here soft-fails.',
+        '?' => ' Prefixed with ?, so a match here is neither a pass nor a fail.',
+        default => '',
+    };
+
+    $lower = strtolower($bare);
+
+    if ($lower === 'a' || $lower === 'mx') {
+        return 'Whatever the domain\'s own ' . strtoupper($lower) . ' records point at may send '
+            . 'mail for it.' . $said;
+    }
+    if (str_starts_with($lower, 'a:')) {
+        return 'Whatever ' . substr($bare, 2) . ' resolves to may send mail for the domain.'
+            . $said;
+    }
+    if (str_starts_with($lower, 'mx:')) {
+        return 'Whatever ' . substr($bare, 3) . '\'s MX records point at may send mail for '
+            . 'the domain.' . $said;
+    }
+    if (str_starts_with($lower, 'exists:')) {
+        return 'Passes if that name resolves at all. Used for per-sender rules, and rarely '
+            . 'by hand.' . $said;
+    }
+    if ($lower === 'ptr' || str_starts_with($lower, 'ptr:')) {
+        return 'Checks the sending address\'s reverse name. Deprecated: it is slow, '
+            . 'unreliable, and receivers are entitled to ignore it.' . $said;
+    }
+    if (str_starts_with($lower, 'redirect=')) {
+        return 'Use another domain\'s SPF record instead of this one. Only takes effect if '
+            . 'no term matched, and there must be no `all` term for it to be reached.';
+    }
+    if (str_starts_with($lower, 'exp=')) {
+        return 'Names a TXT record holding the message to return when mail is rejected.';
+    }
+    if (str_starts_with($lower, 'v=')) {
+        return '';
+    }
+
+    return $said === '' ? '' : trim($said);
 }
 
 /**
@@ -901,4 +949,186 @@ function domainStatusPlain(string $status): array
     }
 
     return ['plain' => trim($status), 'note' => '', 'raw' => trim($status)];
+}
+
+/**
+ * An SOA record as the seven things it actually is.
+ *
+ * `ns1.example.com. hostmaster.example.com. 2026081501 3600 600 1209600 300`
+ * is seven fields with no labels, three of which are durations in seconds and
+ * one of which is an email address written in a form that has confused people
+ * since 1987: the first dot is an @, because @ could not appear in a DNS name.
+ *
+ * The timers are worth translating for a reason beyond readability. A large
+ * expiry with small refresh is a healthy zone; a minimum of a day means a
+ * mistake takes a day to fix everywhere, which is the sort of thing nobody
+ * notices until they need it fixed now.
+ *
+ * @return array{ok: bool, fields: list<array{name: string, value: string, note: string}>}
+ */
+function parseSoaRecord(string $value): array
+{
+    $parts = preg_split('/\s+/', trim($value)) ?: [];
+
+    if (count($parts) < 7) {
+        return ['ok' => false, 'fields' => []];
+    }
+
+    [$primary, $mailbox, $serial, $refresh, $retry, $expire, $minimum] = $parts;
+
+    $fields = [
+        [
+            'name' => 'Primary nameserver',
+            'value' => rtrim($primary, '.'),
+            'note' => 'The server this zone is edited on. The other nameservers copy from it, '
+                . 'so a change made anywhere else is a change that will be overwritten.',
+        ],
+        [
+            'name' => 'Responsible email',
+            'value' => soaMailbox($mailbox),
+            'note' => 'Written as a DNS name, so the first dot stands in for the @ sign. '
+                . 'Sent as ' . rtrim($mailbox, '.') . '.',
+        ],
+        [
+            'name' => 'Serial',
+            'value' => $serial,
+            'note' => soaSerialNote($serial),
+        ],
+        [
+            'name' => 'Refresh',
+            'value' => soaSeconds($refresh),
+            'note' => 'How often the other nameservers check the primary for a new serial.',
+        ],
+        [
+            'name' => 'Retry',
+            'value' => soaSeconds($retry),
+            'note' => 'How long they wait before trying again after a failed check.',
+        ],
+        [
+            'name' => 'Expire',
+            'value' => soaSeconds($expire),
+            'note' => 'How long a secondary keeps answering when it cannot reach the primary '
+                . 'at all. After this it stops answering for the zone, and the domain goes '
+                . 'dark rather than serving stale data.',
+        ],
+        [
+            'name' => 'Negative caching',
+            'value' => soaSeconds($minimum),
+            'note' => 'How long other resolvers remember that a name here does not exist. A '
+                . 'large value here is why a newly added record can take a while to appear '
+                . 'for people who already looked for it.',
+        ],
+    ];
+
+    return ['ok' => true, 'fields' => $fields];
+}
+
+/**
+ * The responsible-party mailbox, as an address.
+ *
+ * The first unescaped dot is the @. A dot that is genuinely part of the local
+ * part is written `\.`, which is rare but real - and getting it wrong produces
+ * a plausible address that belongs to nobody.
+ */
+function soaMailbox(string $name): string
+{
+    $name = rtrim($name, '.');
+    $out = '';
+    $length = strlen($name);
+
+    for ($i = 0; $i < $length; $i++) {
+        if ($name[$i] === '\\' && $i + 1 < $length) {
+            $out .= $name[$i + 1];
+            $i++;
+            continue;
+        }
+        if ($name[$i] === '.') {
+            return $out . '@' . substr($name, $i + 1);
+        }
+        $out .= $name[$i];
+    }
+
+    return $name;
+}
+
+/**
+ * What a serial number says about itself.
+ *
+ * The overwhelmingly common convention is YYYYMMDDnn, and when it holds the
+ * serial tells you the date of the last edit - which is genuinely useful and
+ * invisible as ten digits.
+ */
+function soaSerialNote(string $serial): string
+{
+    $plain = 'The version of the zone. It must increase on every edit, or the other '
+        . 'nameservers will not notice the change.';
+
+    if (!preg_match('/^(\d{4})(\d{2})(\d{2})(\d{1,3})$/', $serial, $m)) {
+        return $plain;
+    }
+
+    [, $year, $month, $day, $revision] = $m;
+    if ((int)$year < 1990 || (int)$year > (int)date('Y') + 1
+        || (int)$month < 1 || (int)$month > 12 || (int)$day < 1 || (int)$day > 31) {
+        return $plain;
+    }
+
+    return sprintf(
+        'Follows the usual date convention: last edited %s-%s-%s, revision %d that day. %s',
+        $year, $month, $day, (int)$revision, $plain
+    );
+}
+
+/** A timer field as a number of seconds and as a length of time. */
+function soaSeconds(string $raw): string
+{
+    if (!ctype_digit($raw)) {
+        return $raw;
+    }
+
+    return $raw . ' (' . headerDuration((int)$raw) . ')';
+}
+
+/**
+ * The parts a record value breaks into, for the ones that have parts.
+ *
+ * A table cell can only ever show the beginning of an SPF record, and the
+ * interesting half - what happens to mail that does not match, which is the
+ * last term - is always the half that gets cut off. So the breakdown travels
+ * with the row and the full value is a click away rather than lost.
+ *
+ * @return array{kind: string, note: string, fields: list<array>}|null
+ */
+function recordDetail(string $type, string $value): ?array
+{
+    $type = strtoupper($type);
+
+    if ($type === 'SOA') {
+        $soa = parseSoaRecord($value);
+        return $soa['ok']
+            ? ['kind' => 'SOA', 'note' => 'The zone\'s own settings: who runs it, and how '
+                . 'long everyone else may believe what it says.', 'fields' => $soa['fields']]
+            : null;
+    }
+
+    if ($type !== 'TXT' && $type !== 'SPF') {
+        return null;
+    }
+
+    $txt = parseTxtRecord($value);
+    $fields = [];
+
+    foreach ($txt['pairs'] as $pair) {
+        $fields[] = [
+            'name' => (string)($pair['name'] ?? ''),
+            'value' => (string)($pair['value'] ?? ''),
+            'note' => (string)($pair['note'] ?? ''),
+        ];
+    }
+
+    if ($fields === [] && $txt['note'] === '') {
+        return null;
+    }
+
+    return ['kind' => $txt['kind'], 'note' => $txt['note'], 'fields' => $fields];
 }

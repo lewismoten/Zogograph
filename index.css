@@ -1462,3 +1462,89 @@ input.narrow { width: 5em; }
 }
 .txt-pairs dt { color: var(--accent); font-family: ui-monospace, Menlo, monospace; }
 .txt-pairs dd { margin: 0; word-break: break-word; }
+
+/* Row actions kept on one line, so the name column is not squeezed. */
+td.row-actions { white-space: nowrap; }
+td.row-actions button { margin-right: 10px; }
+tr.row-off { opacity: .55; }
+
+/* ---------------------------------------------------------- header views -- */
+
+table.headers { width: 100%; border-collapse: collapse; }
+table.headers > tbody > tr > td {
+  vertical-align: top;
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+  word-break: break-word;
+}
+table.headers > tbody > tr > td.name { white-space: nowrap; width: 1%; font-weight: 600; }
+tr.header-break td {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .85em;
+  color: var(--muted);
+  padding-top: 14px;
+}
+
+.help-icon { margin-left: 6px; cursor: help; font-size: .8em; opacity: .75; }
+.help-icon:hover, .help-icon:focus { opacity: 1; }
+
+/* The breakdown of a structured value, indented under the value itself. */
+table.header-parts {
+  margin: 6px 0 2px 14px;
+  border-collapse: collapse;
+  font-size: .92em;
+  border-left: 2px solid var(--line);
+}
+table.header-parts td { padding: 2px 10px; vertical-align: top; }
+td.part-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; color: var(--text); }
+td.part-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+td.part-note { color: var(--muted); }
+
+p.page-title { font-size: 1.2em; margin: 0; }
+p.page-title.muted { font-size: 1em; color: var(--muted); }
+
+/* ------------------------------------------------------------------ json -- */
+
+pre.json-block {
+  margin: 0;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .88em;
+  line-height: 1.5;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 0;
+}
+.json-line { display: flex; white-space: pre; }
+.json-line:hover { background: var(--panel-hover); }
+.json-gutter {
+  flex: 0 0 auto;
+  min-width: 3.5em;
+  padding: 0 10px 0 4px;
+  text-align: right;
+  color: var(--muted);
+  opacity: .6;
+  user-select: none;
+}
+.json-text { flex: 1 1 auto; padding-right: 10px; }
+.json-key { color: var(--accent); }
+.json-string { color: var(--ok); }
+.json-number { color: var(--warn); }
+.json-atom { color: var(--muted); font-style: italic; }
+
+.preview-frame { width: 100%; height: 62vh; border: 1px solid var(--line); border-radius: 6px;
+  background: #fff; }
+
+/* A value that is too long for its cell, offered as the button it becomes. */
+button.value-cell {
+  display: block;
+  max-width: 42ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+pre.record-value { white-space: pre-wrap; word-break: break-all; max-height: 30vh; overflow: auto; }
+.said { margin-left: 12px; }

@@ -9661,26 +9661,39 @@ function renderUrls(data) {
 
   renderTable("urlTable", data.rows, [
     {
+      /*
+       * One mark for the whole verdict.
+       *
+       * How it asked, what came back and why it failed each had a column, and
+       * between them they pushed the name into wrapping - on a table whose
+       * first job is to let you find the check you are looking for. The history
+       * panel below carries all three for whichever one is open, which is where
+       * somebody actually reads them.
+       */
       label: "",
       render: row => {
         const span = document.createElement("span");
+        const parts = [];
+
         if (!row.enabled) {
-          span.className = "muted";
-          span.textContent = "\u25cb";
-          span.title = "Turned off";
+          span.textContent = "\u23f8\ufe0f";
+          parts.push("Switched off.");
         } else if (row.last_ok === null) {
-          span.className = "muted";
-          span.textContent = "\u25cb";
-          span.title = "Not checked yet";
+          span.textContent = "\u2b1c";
+          parts.push("Not checked yet.");
         } else if (Number(row.last_ok) === 1) {
-          span.className = "band-ok";
-          span.textContent = "\u25cf";
-          span.title = "Answering as expected";
+          span.textContent = "\u2705";
+          parts.push(`Answered ${row.last_status} as expected.`);
         } else {
-          span.className = "band-crit";
-          span.textContent = "\u25cf";
-          span.title = row.last_error || "Failing";
+          span.textContent = "\u274c";
+          parts.push(row.last_error || `Answered ${row.last_status}.`);
         }
+
+        parts.push(`${row.method || "GET"}${Number(row.follow_redirects) ? "" : ", no redirects"}`
+          + `${Number(row.send_etag) ? ", conditional" : ""}.`);
+        if (row.last_at) parts.push(`Last checked ${ago(row.last_at)}.`);
+
+        span.title = parts.join(" ");
         return span;
       },
     },
@@ -9695,8 +9708,7 @@ function renderUrls(data) {
          *
          * A plain-HTTP check among a list of HTTPS ones is worth spotting: it
          * is either deliberate - testing the redirect - or something nobody
-         * updated, and the two look identical in a URL column that is usually
-         * truncated.
+         * updated, and the two look identical in a truncated URL column.
          */
         const secure = String(row.url || "").startsWith("https:");
         const mark = document.createElement("span");
@@ -9704,25 +9716,14 @@ function renderUrls(data) {
         mark.title = secure ? "https" : "http \u2014 not encrypted";
         span.appendChild(mark);
 
-        span.appendChild(document.createTextNode(row.label));
+        const name = document.createElement("span");
+        name.textContent = row.label;
+        name.title = row.url;
+        span.appendChild(name);
         return span;
       },
     },
     { label: "How often", render: row => row.interval_label },
-    {
-      label: "How",
-      render: row => {
-        const span = document.createElement("span");
-        span.className = "muted small";
-        const parts = [row.method || "GET"];
-        // Only the non-default is worth a word; every row saying "follows
-        // redirects" is a column of noise.
-        if (!Number(row.follow_redirects)) parts.push("no redirects");
-        if (Number(row.send_etag)) parts.push("conditional");
-        span.textContent = parts.join(" \u00b7 ");
-        return span;
-      },
-    },
     {
       label: "Last checked",
       render: row => {
@@ -9738,73 +9739,60 @@ function renderUrls(data) {
         return span;
       },
     },
-    { label: "Status", className: "size", render: row => row.last_status || "\u2014" },
-    {
-      label: "Says",
-      className: "cmd",
-      render: row => {
-        const span = document.createElement("span");
-        span.className = row.last_ok === 0 ? "band-crit" : "muted";
-        span.textContent = row.last_error || (row.last_ok === 1 ? "as expected" : "");
-        return span;
-      },
-    },
     {
       label: "",
+      className: "row-actions",
       render: row => {
         const wrap = document.createDocumentFragment();
 
-        const open = document.createElement("button");
-        open.className = "link";
-        open.textContent = Number(urlState.selected) === Number(row.id) ? "shown" : "History";
-        open.disabled = Number(urlState.selected) === Number(row.id);
-        open.addEventListener("click", () => {
-          urlState.selected = Number(row.id);
-          refreshUrls().catch(error => notice(String(error.message || error)));
-        });
-        wrap.appendChild(open);
-
-        const now = document.createElement("button");
-        now.className = "link";
-        now.textContent = "Check now";
-        now.addEventListener("click", async () => {
-          now.disabled = true;
-          try {
-            const result = await post("url-run", { id: row.id });
-            notice(result.result.ok
-              ? `${row.label}: answered ${result.result.status} in ${result.result.ms} ms.`
-              : `${row.label}: ${result.result.error || "failed"}.`, result.result.ok);
-            renderUrls(result);
-          } catch (error) {
-            notice(String(error.message || error));
-            now.disabled = false;
+        for (const [text, title, run] of [
+          ["History", "Show this check's history below",
+            () => {
+              urlState.selected = Number(row.id);
+              refreshUrls().catch(error => notice(String(error.message || error)));
+            }],
+          ["Check", "Run it now",
+            async () => {
+              const result = await post("url-run", { id: row.id });
+              notice(result.result.ok
+                ? `${row.label}: answered ${result.result.status} in ${result.result.ms} ms.`
+                : `${row.label}: ${result.result.error || "failed"}.`, result.result.ok);
+              renderUrls(result);
+            }],
+          [row.enabled ? "Pause" : "Resume",
+            row.enabled ? "Stop checking, keeping the history" : "Start checking again",
+            async () => renderUrls(await post("url-toggle", { id: row.id }))],
+          ["Edit", "Change how it is checked", () => openUrlForm(row)],
+          ["Remove", "Stop watching it and discard its history",
+            async () => {
+              if (!confirm(`Stop watching ${row.label}? Its history goes with it.`)) return;
+              renderUrls(await post("url-delete", { id: row.id }));
+            }],
+        ]) {
+          const button = document.createElement("button");
+          button.className = text === "Remove" ? "link danger" : "link";
+          button.textContent = text;
+          button.title = title;
+          if (text === "History" && Number(urlState.selected) === Number(row.id)) {
+            button.disabled = true;
           }
-        });
-        wrap.appendChild(now);
-
-        const edit = document.createElement("button");
-        edit.className = "link";
-        edit.textContent = "Edit";
-        edit.addEventListener("click", () => openUrlForm(row));
-        wrap.appendChild(edit);
-
-        const remove = document.createElement("button");
-        remove.className = "link danger";
-        remove.textContent = "Remove";
-        remove.addEventListener("click", async () => {
-          if (!confirm(`Stop watching ${row.label}? Its history goes with it.`)) return;
-          try {
-            renderUrls(await post("url-delete", { id: row.id }));
-          } catch (error) {
-            notice(String(error.message || error));
-          }
-        });
-        wrap.appendChild(remove);
+          button.addEventListener("click", async () => {
+            button.disabled = true;
+            try {
+              await run();
+            } catch (error) {
+              notice(String(error.message || error));
+            } finally {
+              button.disabled = false;
+            }
+          });
+          wrap.appendChild(button);
+        }
 
         return wrap;
       },
     },
-  ], null, null, row => String(row.id));
+  ], null, row => (row.enabled ? "" : "row-off"), row => String(row.id));
 
   if (data.collector_interval && data.rows.some(r => r.interval_seconds < data.collector_interval)) {
     /*
@@ -10520,7 +10508,7 @@ function openEventForm(row = null) {
 
 /* ------------------------------------------------------------ ask for it -- */
 
-const fetchState = { data: null, showing: "headers" };
+const fetchState = { data: null, showing: "headers", images: false };
 
 async function refreshFetch(params = null) {
   const body = $("fetchBody");
@@ -10576,20 +10564,44 @@ function renderFetch(data) {
   parts.push(section("The response", factGrid(facts)));
 
   /*
-   * Three ways to look at one answer, because they are three questions.
+   * A link out, opened deliberately in a new window.
+   *
+   * `noopener` is not optional: without it the page being opened gets a handle
+   * on this one through window.opener and can navigate it somewhere else. On a
+   * tool whose whole job is to fetch addresses somebody is suspicious of, that
+   * is not a theoretical concern.
+   */
+  const visit = document.createElement("a");
+  visit.className = "link";
+  visit.href = data.landed || data.url;
+  visit.target = "_blank";
+  visit.rel = "noopener noreferrer";
+  visit.textContent = "Visit it \u2197";
+  visit.title = "Open this address in a new window";
+
+  /*
+   * Several ways to look at one answer, because they are several questions.
    *
    * Headers answer "what is the server claiming", raw answers "what did it
-   * literally send", and the preview answers "does it look right" - and only
-   * the first two are ever the whole truth about a page that renders wrongly.
+   * literally send", the preview answers "does it look right", and the parsed
+   * views answer "what does it say about itself". Only the raw body is ever
+   * the whole truth, which is why it is always offered.
    */
   const tabs = document.createElement("div");
   tabs.className = "panel-tools";
 
   const views = [
-    ["headers", "Headers"],
-    ["raw", "Raw body"],
-    ...(data.previewable ? [["preview", "Preview"]] : []),
-  ];
+    ["headers", "Headers", true],
+    ["preview", "Preview", data.previewable],
+    ["meta", "Title & meta", data.looks_html],
+    ["ld", "Structured data", data.looks_html],
+    ["json", "JSON", data.looks_json],
+    ["raw", "Raw body", true],
+  ].filter(([, , show]) => show);
+
+  // A tab that no longer exists for this response - JSON, after asking for a
+  // page - would otherwise leave the panel blank with no way back.
+  if (!views.some(([key]) => key === fetchState.showing)) fetchState.showing = "headers";
 
   for (const [key, label] of views) {
     const button = document.createElement("button");
@@ -10602,53 +10614,481 @@ function renderFetch(data) {
     });
     tabs.appendChild(button);
   }
+  tabs.appendChild(visit);
   parts.push(tabs);
 
-  if (fetchState.showing === "headers") {
-    if (!data.headers.length) {
-      parts.push(note("No headers were captured."));
-    } else {
-      parts.push(simpleTable(
-        ["Header", "Value"],
-        data.headers.map(h => [
-          h.name || `\u2014 response ${h.response} \u2014`,
-          h.value,
-        ]),
-        ["name", "cmd"]
-      ));
-    }
-  } else if (fetchState.showing === "raw") {
-    const pre = document.createElement("pre");
-    pre.className = "paste raw-body";
-    // textContent, never innerHTML: this is somebody else's page and putting
-    // it into this document as markup would hand it the dashboard's session.
-    pre.textContent = data.body || "(no body)";
-    parts.push(pre);
-  } else {
-    /*
-     * The preview is sandboxed and given the body as a blob, not as markup.
-     *
-     * `sandbox` with no allow-* tokens means no scripts, no forms, no top-level
-     * navigation and a unique origin - so a hostile page rendered here can
-     * neither reach this document nor act as the signed-in user. Anything less
-     * would make this feature a way to run somebody else's code inside the
-     * dashboard.
-     */
-    const frame = document.createElement("iframe");
-    frame.className = "preview-frame";
-    frame.setAttribute("sandbox", "");
-    frame.title = "Preview of the response";
-    frame.srcdoc = data.body || "";
-    parts.push(frame);
+  const panel = {
+    headers: () => renderFetchHeaders(data),
+    preview: () => renderFetchPreview(data),
+    meta: () => renderFetchMeta(data),
+    ld: () => renderFetchLinkedData(data),
+    json: () => renderFetchJson(data),
+    raw: () => {
+      const pre = document.createElement("pre");
+      pre.className = "paste raw-body";
+      // textContent, never innerHTML: this is somebody else's page and putting
+      // it into this document as markup would hand it the dashboard's session.
+      pre.textContent = data.body || "(no body)";
+      return pre;
+    },
+  }[fetchState.showing];
 
-    parts.push(note(
-      "Rendered in a sandbox with no scripts, no forms and no access to this page, so it "
-      + "will not look exactly as it does in a browser \u2014 anything the page draws with "
-      + "JavaScript will be missing, and so will anything it loads from elsewhere."
+  parts.push(panel());
+  body.replaceChildren(...parts);
+}
+
+/**
+ * The response head, with each header taken apart as far as it usefully goes.
+ *
+ * A header is a name, a value, and - for the ones that carry their own private
+ * syntax - a small table of what the value is made of. The raw value stays
+ * visible above the breakdown, because an interpretation that hid its source
+ * would make a parsing mistake here indistinguishable from a misconfiguration
+ * there.
+ */
+function renderFetchHeaders(data) {
+  const wrap = document.createDocumentFragment();
+
+  if (!data.headers.length) {
+    wrap.appendChild(note("No headers were captured."));
+    return wrap;
+  }
+
+  const table = document.createElement("table");
+  table.className = "headers";
+  const tbody = document.createElement("tbody");
+
+  for (const header of data.headers) {
+    if (!header.name) {
+      // The status line of an earlier response in a redirect chain.
+      const row = document.createElement("tr");
+      row.className = "header-break";
+      const cell = document.createElement("td");
+      cell.colSpan = 2;
+      cell.textContent = header.value;
+      row.appendChild(cell);
+      tbody.appendChild(row);
+      continue;
+    }
+
+    const row = document.createElement("tr");
+
+    const name = document.createElement("td");
+    name.className = "name";
+    name.appendChild(document.createTextNode(header.name));
+    if (header.title || header.note) name.appendChild(helpIcon(header));
+    row.appendChild(name);
+
+    const value = document.createElement("td");
+    value.appendChild(linkifyText(header.value));
+
+    /*
+     * A date or a duration is one part, and that part is the whole value.
+     *
+     * Repeating it under itself to hang a note off looks like a parsing
+     * failure. The note goes beside the value instead.
+     */
+    const parts = header.parts || [];
+    const restating = parts.length === 1 && !parts[0].name
+      && String(parts[0].value) === String(header.value);
+
+    if (restating) {
+      const said = document.createElement("span");
+      said.className = "muted said";
+      said.textContent = parts[0].note;
+      value.appendChild(said);
+    } else if (parts.length) {
+      value.appendChild(headerParts(header));
+    }
+
+    row.appendChild(value);
+    tbody.appendChild(row);
+  }
+
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+
+  wrap.appendChild(note(
+    "Hover a \u2753 for what a header is for. You can write your own meanings for "
+    + "headers under Settings \u2192 Your own names, which is where the house ones "
+    + "nobody documents belong."
+  ));
+
+  return wrap;
+}
+
+/** The little question mark that carries a header's meaning. */
+function helpIcon(header) {
+  const mark = document.createElement("span");
+  mark.className = "help-icon";
+  mark.textContent = header.mine ? "\u{1F4DD}" : "\u2753";
+  mark.tabIndex = 0;
+  mark.setAttribute("role", "note");
+
+  const text = [header.title, header.note].filter(Boolean).join(" \u2014 ");
+  mark.title = header.mine ? `${text} (your own note)` : text;
+  mark.setAttribute("aria-label", text);
+
+  return mark;
+}
+
+/** The pieces a structured header value breaks into. */
+function headerParts(header) {
+  const table = document.createElement("table");
+  table.className = "header-parts";
+  const tbody = document.createElement("tbody");
+
+  for (const part of header.parts) {
+    const row = document.createElement("tr");
+
+    const name = document.createElement("td");
+    name.className = "part-name";
+    name.textContent = part.name || "";
+    row.appendChild(name);
+
+    const value = document.createElement("td");
+    value.className = "part-value";
+    if (part.url) {
+      value.appendChild(externalLink(part.url));
+    } else {
+      value.textContent = part.value || "";
+    }
+    row.appendChild(value);
+
+    const note = document.createElement("td");
+    note.className = "part-note";
+    note.textContent = part.note || "";
+    row.appendChild(note);
+
+    tbody.appendChild(row);
+  }
+
+  table.appendChild(tbody);
+  return table;
+}
+
+/**
+ * Text with any addresses in it turned into links.
+ *
+ * Headers are full of them - `Link:` is nothing but, and half the friendly
+ * ones ("Want root? Visit join.a8c.com") hide one in a sentence. Built by
+ * splitting and appending nodes rather than by producing markup, so nothing
+ * from the far end is ever parsed as HTML.
+ */
+function linkifyText(text) {
+  const wrap = document.createDocumentFragment();
+  const source = String(text ?? "");
+
+  /*
+   * Full URLs, and bare hostnames that look like invitations.
+   *
+   * The bare-hostname half is deliberately narrow - a known-ish TLD shape and
+   * at least one dot - because being eager here would turn version numbers and
+   * filenames into links.
+   */
+  const pattern = /(https?:\/\/[^\s<>"']+)|(\b(?:[a-z0-9-]+\.)+[a-z]{2,24}\b(?:\/[^\s<>"',;]*)?)/gi;
+
+  let at = 0;
+  for (const match of source.matchAll(pattern)) {
+    if (match.index > at) {
+      wrap.appendChild(document.createTextNode(source.slice(at, match.index)));
+    }
+
+    let found = match[0];
+    // Trailing punctuation belongs to the sentence, not to the address.
+    const trailing = found.match(/[.,;:!?)\]]+$/);
+    let tail = "";
+    if (trailing) {
+      tail = trailing[0];
+      found = found.slice(0, -tail.length);
+    }
+
+    wrap.appendChild(externalLink(found));
+    if (tail) wrap.appendChild(document.createTextNode(tail));
+
+    at = match.index + match[0].length;
+  }
+
+  if (at < source.length) wrap.appendChild(document.createTextNode(source.slice(at)));
+  return wrap;
+}
+
+/** One link out, with the safety attributes that make it safe to offer. */
+function externalLink(target) {
+  const href = /^https?:\/\//i.test(target) ? target : `https://${target}`;
+
+  /*
+   * Only http and https ever become clickable.
+   *
+   * A header value is text from somewhere else. `javascript:` in an href is
+   * script execution in this document, and there is no reason a response
+   * header should ever produce one.
+   */
+  let safe = false;
+  try {
+    safe = ["http:", "https:"].includes(new URL(href).protocol);
+  } catch { safe = false; }
+
+  if (!safe) return document.createTextNode(target);
+
+  const link = document.createElement("a");
+  link.href = href;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = target;
+  return link;
+}
+
+/**
+ * The page as it renders, in a frame that cannot reach this one.
+ *
+ * Loaded from preview.php rather than from srcdoc. A srcdoc frame inherits
+ * this document's Content-Security-Policy, so every inline style in somebody
+ * else's markup was reported as a violation by this site - noise that buries
+ * the violations that are genuinely ours. A real src gets its own policy.
+ */
+function renderFetchPreview(data) {
+  const wrap = document.createDocumentFragment();
+
+  if (!data.preview_token) {
+    wrap.appendChild(note(
+      "That body is too large to preview. The raw view still has all of it."
+    ));
+    return wrap;
+  }
+
+  const tools = document.createElement("div");
+  tools.className = "panel-tools";
+
+  const toggle = document.createElement("button");
+  toggle.className = "link";
+  toggle.textContent = fetchState.images
+    ? "Strip it back to placeholders"
+    : "Load the site's own pictures and styling";
+  toggle.title = fetchState.images
+    ? "Show it with no pictures and no stylesheets, the way a reader without them meets it"
+    : "Fetch the images and stylesheets from the site \u2014 which tells it you are looking";
+  toggle.addEventListener("click", () => {
+    fetchState.images = !fetchState.images;
+    renderFetch(data);
+  });
+  tools.appendChild(toggle);
+  wrap.appendChild(tools);
+
+  const frame = document.createElement("iframe");
+  frame.className = "preview-frame";
+  /*
+   * Sandboxed here as well as in the response's own header.
+   *
+   * Two independent statements of the same rule: the attribute holds even if
+   * the response were somehow served without its header, and the header holds
+   * even if the frame were reached another way. Neither grants
+   * allow-same-origin, so the page sits in an origin of its own and can
+   * neither read this document nor act as the signed-in user.
+   */
+  frame.setAttribute("sandbox", "");
+  frame.title = "Preview of the response";
+  frame.src = `preview.php?token=${encodeURIComponent(data.preview_token)}`
+    + `&images=${fetchState.images ? "1" : "0"}`;
+  wrap.appendChild(frame);
+
+  wrap.appendChild(note(
+    fetchState.images
+      ? "Pictures and stylesheets are being fetched from the site itself, so it can see "
+        + "that somebody is looking. Scripts stay blocked."
+      : "Nothing is being fetched from the site: pictures are replaced with placeholders "
+        + "carrying their alt text and the stylesheets are not loaded, so this is roughly "
+        + "what a reader without either would get. It also means the site is not told that "
+        + "you are looking at it."
+  ));
+  wrap.appendChild(note(
+    "Rendered in a sandbox with no scripts, no forms and no access to this page, so it "
+    + "will not look exactly as it does in a browser \u2014 anything the page draws with "
+    + "JavaScript will be missing."
+  ));
+
+  return wrap;
+}
+
+/** What the page says it is: its title and every meta tag, grouped. */
+function renderFetchMeta(data) {
+  const wrap = document.createDocumentFragment();
+  const meta = data.meta || { tags: [] };
+
+  if (meta.error) {
+    wrap.appendChild(note(meta.error));
+    return wrap;
+  }
+
+  wrap.appendChild(section("Title", (() => {
+    const p = document.createElement("p");
+    p.className = "page-title";
+    p.textContent = meta.title || "";
+    if (!meta.title) {
+      p.className = "page-title muted";
+      p.textContent = "This page has no title, which is a real problem for anyone "
+        + "finding it or bookmarking it.";
+    }
+    return p;
+  })()));
+
+  if (!meta.tags.length) {
+    wrap.appendChild(note("There are no meta tags at all."));
+    return wrap;
+  }
+
+  let group = null;
+  let rows = [];
+  const flush = () => {
+    if (!rows.length) return;
+    wrap.appendChild(section(group, simpleTable(
+      ["Name", "Value", "What it does"],
+      rows,
+      ["name", "", "muted"]
+    )));
+    rows = [];
+  };
+
+  for (const tag of meta.tags) {
+    if (tag.group !== group) { flush(); group = tag.group; }
+    rows.push([tag.key, linkifyText(tag.value), tag.note || ""]);
+  }
+  flush();
+
+  return wrap;
+}
+
+/** Anything the page publishes as application/ld+json. */
+function renderFetchLinkedData(data) {
+  const wrap = document.createDocumentFragment();
+  const found = data.linked_data || { blocks: [] };
+
+  if (found.error) {
+    wrap.appendChild(note(found.error));
+    return wrap;
+  }
+
+  if (!found.blocks.length) {
+    wrap.appendChild(note(
+      "This page publishes no structured data. Sites use application/ld+json to tell "
+      + "search engines what a page is about in machine-readable form \u2014 an article, "
+      + "a product, an organisation \u2014 and plenty of sites simply have none."
+    ));
+    return wrap;
+  }
+
+  for (const block of found.blocks) {
+    const heading = [block.type, block.name].filter(Boolean).join(" \u00b7 ")
+      || "Untyped entity";
+
+    if (block.error) {
+      const bad = document.createDocumentFragment();
+      bad.appendChild(note(block.error));
+      const pre = document.createElement("pre");
+      pre.className = "paste";
+      pre.textContent = block.json;
+      bad.appendChild(pre);
+      wrap.appendChild(section(heading, bad));
+      continue;
+    }
+
+    wrap.appendChild(section(heading, jsonBlock(block.json)));
+  }
+
+  return wrap;
+}
+
+/** A JSON response, formatted, numbered and coloured. */
+function renderFetchJson(data) {
+  const wrap = document.createDocumentFragment();
+  const parsed = data.json || {};
+
+  if (!parsed.ok) {
+    wrap.appendChild(note(
+      `The server called this JSON, but it does not parse: ${parsed.error}. `
+      + "The raw view has exactly what arrived."
+    ));
+    return wrap;
+  }
+
+  if (parsed.truncated) {
+    wrap.appendChild(note(
+      `Showing the first ${count(parsed.lines.length, "line")} of ${parsed.total}. `
+      + "The raw view has all of it."
     ));
   }
 
-  body.replaceChildren(...parts);
+  wrap.appendChild(jsonBlock(parsed.lines));
+  return wrap;
+}
+
+/**
+ * Formatted JSON with line numbers down the side.
+ *
+ * Tokenised here rather than on the server so that a block of linked data and
+ * a whole JSON body render through the same code. Strings are matched before
+ * anything else, because a number or the word `true` inside a string is part
+ * of the string, not a value.
+ */
+function jsonBlock(source) {
+  const lines = Array.isArray(source)
+    ? source
+    : String(source).split("\n").map((text, index) => ({ n: index + 1, text }));
+
+  const pre = document.createElement("pre");
+  pre.className = "json-block";
+
+  for (const line of lines) {
+    const row = document.createElement("div");
+    row.className = "json-line";
+
+    const gutter = document.createElement("span");
+    gutter.className = "json-gutter";
+    gutter.textContent = String(line.n);
+    row.appendChild(gutter);
+
+    const text = document.createElement("span");
+    text.className = "json-text";
+    colourJson(text, line.text);
+    row.appendChild(text);
+
+    pre.appendChild(row);
+  }
+
+  return pre;
+}
+
+function colourJson(into, text) {
+  const pattern = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
+  let at = 0;
+
+  for (const match of String(text).matchAll(pattern)) {
+    if (match.index > at) {
+      into.appendChild(document.createTextNode(text.slice(at, match.index)));
+    }
+
+    const span = document.createElement("span");
+    if (match[1] !== undefined) {
+      // A string followed by a colon is a key, and reads quite differently
+      // from a string that is a value.
+      span.className = match[2] ? "json-key" : "json-string";
+      span.textContent = match[1];
+      into.appendChild(span);
+      if (match[2]) into.appendChild(document.createTextNode(match[2]));
+    } else if (match[3] !== undefined) {
+      span.className = "json-atom";
+      span.textContent = match[3];
+      into.appendChild(span);
+    } else {
+      span.className = "json-number";
+      span.textContent = match[4];
+      into.appendChild(span);
+    }
+
+    at = match.index + match[0].length;
+  }
+
+  if (at < text.length) into.appendChild(document.createTextNode(text.slice(at)));
 }
 
 /*
@@ -10823,7 +11263,7 @@ function renderDnsGroup(id, rows) {
       },
     },
     { label: "Type", render: row => row.type },
-    { label: "Value", className: "cmd", render: row => row.value },
+    { label: "Value", className: "cmd", render: row => recordValueCell(row) },
     {
       label: "TTL",
       className: "size",
@@ -10857,6 +11297,94 @@ function renderDnsGroup(id, rows) {
       },
     },
   ], null, row => (row.gone ? "row-bad" : ""), row => `${row.name}|${row.type}|${row.value}`);
+}
+
+/**
+ * A record's value in a cell, with the whole of it a click away.
+ *
+ * An SPF record is three hundred characters and a table cell is not, so the
+ * cell shows what fits and the rest lives in a dialog. Which matters more than
+ * tidiness: the part that gets cut off is the end, and the end of an SPF
+ * record is the term that decides what happens to mail that matched nothing -
+ * the one thing anybody is reading it to find out.
+ */
+function recordValueCell(row) {
+  const value = String(row.value ?? "");
+  const detailed = row.detail && (row.detail.fields.length || row.detail.note);
+
+  // Short and unremarkable: no reason to make it a button.
+  if (value.length < 60 && !detailed) return value;
+
+  const button = document.createElement("button");
+  button.className = "link value-cell";
+  button.textContent = value;
+  button.title = detailed
+    ? "Show the whole value, broken into its parts"
+    : "Show the whole value";
+  button.addEventListener("click", () => showRecordDialog(row));
+  return button;
+}
+
+/** The whole of one record value, its parts, and a way to copy it. */
+function showRecordDialog(row) {
+  const nodes = [];
+  const value = String(row.value ?? "");
+
+  const whole = document.createElement("pre");
+  whole.className = "paste record-value";
+  whole.textContent = value;
+  nodes.push(whole);
+
+  const tools = document.createElement("div");
+  tools.className = "inspect-actions";
+
+  const copy = document.createElement("button");
+  copy.className = "link";
+  copy.textContent = "Copy it";
+  copy.addEventListener("click", async () => {
+    /*
+     * The clipboard API, with selection as the fallback.
+     *
+     * navigator.clipboard needs a secure context and permission, and this
+     * dashboard is quite reasonably run over plain HTTP on a private network
+     * by some people. Selecting the text leaves them one keystroke away rather
+     * than telling them it did not work.
+     */
+    try {
+      await navigator.clipboard.writeText(value);
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy it"; }, 1500);
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(whole);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      copy.textContent = "Selected — press ⌘C";
+    }
+  });
+  tools.appendChild(copy);
+  nodes.push(tools);
+
+  if (row.detail) {
+    if (row.detail.note) nodes.push(note(row.detail.note));
+
+    if (row.detail.fields.length) {
+      nodes.push(simpleTable(
+        ["", "Value", "What it means"],
+        row.detail.fields.map(field => [field.name, field.value, field.note]),
+        ["name", "cmd", "muted"]
+      ));
+    }
+  }
+
+  showListDialog(
+    `${row.type} record for ${row.name}`,
+    nodes,
+    row.detail && row.detail.kind && row.detail.kind !== "text"
+      ? `This is a ${row.detail.kind} record.`
+      : ""
+  );
 }
 
 function renderDnsChanges(data) {
@@ -11512,7 +12040,11 @@ function renderLabels(data) {
   body.replaceChildren(holder);
 
   renderTable("labelsTable", data.rows, [
-    { label: "Kind", render: row => row.kind },
+    {
+      label: "Kind",
+      render: row => ({ address: "Address", port: "Port", header: "HTTP header" }[row.kind]
+        || row.kind),
+    },
     { label: "Matches", className: "name", render: row => row.match },
     { label: "Shown as", className: "name", render: row => row.label },
     { label: "Note", className: "cmd", render: row => row.note || "" },

@@ -595,6 +595,31 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        23 => [
+            /*
+             * The body of a fetched page, kept just long enough to show it.
+             *
+             * The preview cannot use srcdoc: this page's Content-Security-Policy
+             * is inherited by a srcdoc frame, and every inline style in somebody
+             * else's markup then becomes a console error of ours. Serving the
+             * body from its own URL gives the frame its own policy.
+             *
+             * Which means the body has to survive between the fetch and the
+             * preview request. Kept by token, pruned hard - this is a scratch
+             * buffer, not a history, and holding other people's pages any longer
+             * than the moment they are being looked at is not something this
+             * tool should do.
+             */
+            "CREATE TABLE fetch_bodies (
+                token       TEXT PRIMARY KEY,
+                url         TEXT NOT NULL,
+                content_type TEXT,
+                body        BLOB NOT NULL,
+                at          INTEGER NOT NULL
+            )",
+            'CREATE INDEX fetch_bodies_at ON fetch_bodies (at)',
+        ],
+
         22 => [
             "CREATE TABLE dns_records (
                 id         INTEGER PRIMARY KEY,
