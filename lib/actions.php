@@ -76,10 +76,31 @@ function resolveDeletable(array $config, string $requested): string
         throw new ActionRefused('refusing to delete the monitor\'s own data');
     }
 
-    $category = categoryOf($real . (is_dir($real) ? '/x' : ''), $config['scan'], $root);
-    $allowed = $config['deletable_categories'] ?? [];
-    if ($category === null || !in_array($category, $allowed, true)) {
-        throw new ActionRefused('not in a deletable category');
+    /*
+     * How far deletion reaches, which is a policy and not a property of a file.
+     *
+     * `categories` is the cautious rule this started with: only trash and temp,
+     * so a mis-click can only ever remove something already declared disposable.
+     * `account` allows anything inside the watched directory, which is what an
+     * account owner looking at their own disk generally means by "delete this".
+     *
+     * Everything else above still applies in both modes - never the scan root
+     * itself, never outside it, never a symlink, never the monitor's own data.
+     * Widening the categories does not widen those.
+     */
+    $scope = (string)($config['deletable_scope'] ?? 'account');
+
+    if ($scope !== 'account') {
+        $category = categoryOf($real . (is_dir($real) ? '/x' : ''), $config['scan'], $root);
+        $allowed = $config['deletable_categories'] ?? [];
+        if ($category === null || !in_array($category, $allowed, true)) {
+            throw new ActionRefused(sprintf(
+                'this install only allows deleting from %s. Change deletable_scope to '
+                . "'account' in lib/config.php to allow anything inside the watched "
+                . 'directory',
+                $allowed === [] ? 'nothing' : implode(' and ', $allowed)
+            ));
+        }
     }
 
     return $real;

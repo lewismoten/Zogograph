@@ -87,6 +87,7 @@ function inspectPath(array $config, PDO $pdo, string $requested): array
 
     if ($isDir) {
         $out['contents'] = directoryContents($config, $real);
+        $out['site'] = siteFacts($config, $real);
     } else {
         $out['image'] = imageFacts($real);
         $out['text'] = !$isLink && looksLikeText($real);
@@ -196,14 +197,20 @@ function directoryContents(array $config, string $dir): array
             $entries['files']++;
             $size = (int)(@filesize($full) ?: 0);
             $biggest[$entry] = $size;
-
-            $type = fileTypeOf($full);
-            $types[$type] = ($types[$type] ?? 0) + $size;
         }
         closedir($handle);
     }
 
     arsort($biggest);
+
+    /*
+     * Types from the recursive walk, not from this one directory.
+     *
+     * "What is in here" means the whole subtree - a directory whose immediate
+     * children are all directories would otherwise report no types at all,
+     * which is the case where the question is most worth asking.
+     */
+    $types = $total['types'];
     arsort($types);
 
     return [
@@ -222,6 +229,179 @@ function directoryContents(array $config, string $dir): array
             array_values($types)
         ),
     ];
+}
+
+/*
+ * Which domains, if any, are served out of a directory.
+ *
+ * On cPanel this is knowable without guessing. `~/.cpanel/userdata/main` lists
+ * every domain on the account and `~/.cpanel/userdata/<domain>` gives its
+ * document root, so a directory can be matched against the real configuration
+ * rather than against a naming convention. That file belongs to the account, so
+ * the dashboard can read it without needing root.
+ *
+ * Everything else is a guess and is marked as one. A directory named after a
+ * domain and containing an index file is *probably* a site; a directory called
+ * `public_html` almost certainly is. Neither is evidence, so they are reported
+ * with `confident => false` and the interface says "looks like" rather than
+ * "is".
+ *
+ * @return array{is_site: bool, domains: list<string>, confident: bool, why: string}
+ */
+function siteFacts(array $config, string $path): array
+{
+    $none = ['is_site' => false, 'domains' => [], 'confident' => false, 'why' => ''];
+
+    if (!is_dir($path)) {
+        return $none;
+    }
+
+    $known = cpanelDocumentRoots($config);
+    $real = realpath($path);
+
+    if ($real !== false && isset($known[$real])) {
+        return [
+            'is_site' => true,
+            'domains' => $known[$real],
+            'confident' => true,
+            'why' => 'This is the document root cPanel has recorded for '
+                . (count($known[$real]) === 1 ? 'this domain' : 'these domains') . '.',
+        ];
+    }
+
+    /*
+     * No cPanel data, so fall back to what the directory looks like.
+     *
+     * A document root has an index file in it. Without one, a directory named
+     * `example.com` is just as likely to be a backup of a site as a site, and
+     * calling it a site would put a globe on the wrong rectangle.
+     */
+    $name = basename($path);
+    $looksLikeDomain = (bool)preg_match(
+        '/^(?:www\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i',
+        $name
+    );
+
+    $indexes = ['index.php', 'index.html', 'index.htm', 'index.cgi'];
+    $hasIndex = false;
+    foreach ($indexes as $index) {
+        if (is_file($path . '/' . $index)) {
+            $hasIndex = true;
+            break;
+        }
+    }
+
+    /*
+     * Why the cPanel record did not answer, which is two different things.
+     *
+     * Either it could not be read at all - no cPanel, or a home directory this
+     * is not - or it was read and does not list this directory, which means
+     * cPanel serves nothing from here and whatever is in it is something else.
+     * Saying "not readable" in the second case would be a confident falsehood.
+     */
+    $why = $known === []
+        ? 'cPanel\'s own record of document roots could not be read, so this is a guess '
+            . 'from the name and contents.'
+        : 'cPanel does not serve anything from here, so this is a guess from the name '
+            . 'and contents — quite possibly a copy of a site rather than a live one.';
+
+    if ($name === 'public_html' && $hasIndex) {
+        return [
+            'is_site' => true, 'domains' => [], 'confident' => false,
+            'why' => 'A public_html with an index file in it. ' . $why,
+        ];
+    }
+
+    if ($looksLikeDomain && $hasIndex) {
+        return [
+            'is_site' => true, 'domains' => [strtolower($name)], 'confident' => false,
+            'why' => 'Named like a domain and contains an index file. ' . $why,
+        ];
+    }
+
+    return $none;
+}
+
+/**
+ * Document root to domains, from the account's own cPanel data.
+ *
+ * Read once per request and cached: the treemap asks about every child of a
+ * directory, and re-reading and re-parsing the userdata files for each one
+ * would be dozens of opens to answer the same question.
+ *
+ * Parsed with a deliberately small YAML reader rather than a real one. These
+ * files are flat `key: value` and nothing else, no library is guaranteed to be
+ * present on a shared host, and only one key is wanted.
+ *
+ * @return array<string, list<string>>
+ */
+function cpanelDocumentRoots(array $config): array
+{
+    static $roots = null;
+    if ($roots !== null) {
+        return $roots;
+    }
+
+    $roots = [];
+    $home = (string)($config['scan_root'] ?? '');
+    $dir = rtrim($home, '/') . '/.cpanel/userdata';
+
+    if (!is_dir($dir) || !is_readable($dir)) {
+        return $roots;
+    }
+
+    $handle = @opendir($dir);
+    if ($handle === false) {
+        return $roots;
+    }
+
+    while (($entry = readdir($handle)) !== false) {
+        // main and *.cache are indexes, not per-domain files.
+        if ($entry === '.' || $entry === '..' || $entry === 'main'
+            || str_ends_with($entry, '.cache')) {
+            continue;
+        }
+
+        $file = $dir . '/' . $entry;
+        if (!is_file($file) || !is_readable($file)) {
+            continue;
+        }
+
+        $documentRoot = null;
+        $serverName = null;
+        $aliases = [];
+
+        foreach (preg_split('/\R/', (string)@file_get_contents($file)) ?: [] as $line) {
+            if (preg_match('/^documentroot:\s*(.+)$/i', $line, $m)) {
+                $documentRoot = trim($m[1], " \t'\"");
+            } elseif (preg_match('/^servername:\s*(.+)$/i', $line, $m)) {
+                $serverName = trim($m[1], " \t'\"");
+            } elseif (preg_match('/^serveralias:\s*(.+)$/i', $line, $m)) {
+                $aliases = preg_split('/\s+/', trim($m[1], " \t'\"")) ?: [];
+            }
+        }
+
+        if ($documentRoot === null) {
+            continue;
+        }
+
+        $resolved = realpath($documentRoot);
+        if ($resolved === false) {
+            continue;
+        }
+
+        $names = array_values(array_unique(array_filter(
+            array_merge([$serverName ?? $entry], $aliases),
+            fn(string $n): bool => $n !== ''
+        )));
+
+        $roots[$resolved] = array_values(array_unique(
+            array_merge($roots[$resolved] ?? [], $names)
+        ));
+    }
+
+    closedir($handle);
+    return $roots;
 }
 
 /**

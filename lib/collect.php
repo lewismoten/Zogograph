@@ -740,15 +740,30 @@ function walk(
 function fileTypeGroups(): array
 {
     static $groups = [
-        'images' => ['jpg','jpeg','png','gif','webp','bmp','tif','tiff','svg','ico','heic','avif','psd','raw','cr2','nef'],
+        'images' => ['jpg','jpeg','png','gif','webp','bmp','tif','tiff','svg','ico','heic','avif','psd','raw','cr2','nef','xcf'],
         'video' => ['mp4','m4v','mov','avi','mkv','webm','wmv','flv','mpg','mpeg','ts','3gp'],
         'audio' => ['mp3','wav','flac','aac','ogg','oga','m4a','wma','aiff','opus'],
-        'archives' => ['zip','gz','tgz','bz2','xz','7z','rar','tar','zst','lz','lzma','jar','war','iso','dmg','pkg','deb','rpm','cab'],
-        'web' => ['html','htm','css','js','mjs','cjs','map','woff','woff2','ttf','eot','otf','json','xml','scss','less','vue','ts','tsx','jsx'],
-        'documents' => ['pdf','doc','docx','xls','xlsx','ppt','pptx','odt','ods','odp','rtf','txt','md','csv','tsv','epub','mobi'],
+        // `br` is Brotli, which sits beside gzip in every web server's static
+        // directory; `backup` is what a person names a copy they made by hand.
+        'archives' => ['zip','gz','br','tgz','bz2','xz','7z','rar','tar','zst','lz','lzma','jar','war','iso','dmg','pkg','deb','rpm','cab','backup'],
+        // htaccess has no name before the dot, so pathinfo reports the whole
+        // thing as the extension - which is exactly the string matched here.
+        'web' => ['html','htm','css','js','mjs','cjs','map','woff','woff2','ttf','eot','otf','json','xml','scss','less','vue','ts','tsx','jsx','xsd','xsl','xslt','htaccess','htpasswd','mustache','twig','hbs','ejs','pug'],
+        'documents' => ['pdf','doc','docx','xls','xlsx','ppt','pptx','odt','ods','odp','rtf','txt','md','csv','tsv','epub','mobi','license','manual','readme','changelog','nfo'],
         'code' => ['php','py','rb','pl','sh','bash','c','h','cpp','hpp','go','rs','java','cs','swift','kt','lua','sql','yml','yaml','toml','ini','conf','patch','diff'],
-        'databases' => ['db','sqlite','sqlite3','mdb','frm','ibd','myd','myi','dump','bak'],
+        // `idx` is an index beside the data it indexes - git packs, Bleve,
+        // Sphinx - and belongs with the store rather than on its own.
+        'databases' => ['db','sqlite','sqlite3','mdb','frm','ibd','myd','myi','dump','bak','idx','pack','mmdb','rdb','aof'],
         'logs' => ['log','out','err'],
+        /*
+         * Things that run.
+         *
+         * A named extension is only half of it - on Unix most executables have
+         * no extension at all, and the honest test is the execute bit, which is
+         * applied in classifyFile below. `class` is a compiled Java class,
+         * `exe`/`dll` are Windows binaries that turn up in uploads and backups.
+         */
+        'executables' => ['exe','dll','so','dylib','class','bin','com','msi','app','o','a'],
     ];
     return $groups;
 }
@@ -797,8 +812,24 @@ function classifyFile(string $path): array
      * Anything not made of letters and digits goes the same way, so a filename
      * ending `.tar.gz~` or `.log:2` cannot invent an extension either.
      */
-    if ($extension === '' || strlen($extension) > 8 || !ctype_alnum($extension)) {
-        return ['type' => 'other', 'extension' => ''];
+    if ($extension === '' || strlen($extension) > 12 || !ctype_alnum($extension)) {
+        /*
+         * No usable extension: ask the file whether it runs.
+         *
+         * On Unix most executables are named without one - `httpd`, a compiled
+         * helper, a shell script somebody dropped the .sh from - and they were
+         * all landing in `other`, which is how that slice grows until it means
+         * nothing. The execute bit is a fact about the file rather than a guess
+         * from its name, and it is the same thing the kernel consults.
+         *
+         * Only for files with no extension. A `.log` that happens to be marked
+         * executable is a log with a wrong mode, not a program.
+         */
+        $executable = $extension === '' && @is_executable($path) && @is_file($path);
+        return [
+            'type' => $executable ? 'executables' : 'other',
+            'extension' => '',
+        ];
     }
 
     return ['type' => $index[$extension] ?? 'other', 'extension' => $extension];

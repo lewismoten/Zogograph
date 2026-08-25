@@ -62,6 +62,8 @@ require_once __DIR__ . '/lib/host.php';
 require_once __DIR__ . '/lib/uptime.php';
 require_once __DIR__ . '/lib/limits.php';
 require_once __DIR__ . '/lib/inspect.php';
+// renderConfig, so the email page can save through the same writer setup uses.
+require_once __DIR__ . '/lib/configure.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -107,7 +109,10 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'mounts' => mountsView($config, $signedIn),
         'capability-changes' => capabilityChangesView($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
+        'last-lines' => lastLines($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
+        'host-setup' => hostSetup($config, $signedIn),
+        'email' => emailSettings($config, $pdo, $signedIn),
         'processes' => processList($config, $pdo, $signedIn),
         'busy' => busyMoments($config, $pdo, $signedIn),
         'symlinks' => symlinkCheck($config, $signedIn),
@@ -118,14 +123,15 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'health' => healthCheck($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
-        'signin' => doSignIn($config, $post),
-        'signout' => doSignOut(),
+        'signin' => doSignIn($config, $post, $pdo),
+        'signout' => doSignOut($pdo),
         'delete-file' => doDeleteFile($config, $pdo, $post),
         'delete-dir' => doDeleteDir($config, $pdo, $post),
         'empty' => doEmpty($config, $pdo, $post),
-        'schedule-save' => doScheduleSave($post),
+        'schedule-save' => doScheduleSave($post, $pdo),
         'scan-now' => doScanNow($pdo, $post),
         'test-email' => doTestEmail($config, $pdo, $post),
+        'email-save' => doEmailSave($config, $pdo, $post),
         'clear-problems' => doClearProblems($config, $pdo, $post),
         'alert-action' => doAlertAction($config, $pdo, $post),
         'daemon-watch' => doDaemonWatch($config, $pdo, $post),
@@ -220,6 +226,8 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
          */
         'limits' => accountLimits($vitals, latestHostSample($config)),
         'deletable' => $config['deletable_categories'] ?? [],
+        // What the delete buttons are allowed to reach - see resolveDeletable.
+        'deletable_scope' => (string)($config['deletable_scope'] ?? 'account'),
         // So the dashboard builds its filters and its chart from the rules that
         // are actually in force, rather than a copy of them that goes stale.
         'categories' => categoryNames($config['scan']),
@@ -1095,11 +1103,18 @@ function actionLog(array $config, PDO $pdo, bool $signedIn): array
         }
     }
 
+    $days = (int)(retentionRules($config)['action_days'] ?? 0);
+
     return [
         'rows' => $rows,
         'kinds' => array_values(array_unique(array_column($rows, 'action'))),
         'who' => array_keys($who),
         'identity' => 'address',
+        // So the page can answer "does this ever get cleared" without anybody
+        // having to read the config to find out.
+        'kept_days' => $days,
+        'total' => (int)$pdo->query('SELECT COUNT(*) FROM actions')->fetchColumn(),
+        'oldest_at' => (int)$pdo->query('SELECT MIN(at) FROM actions')->fetchColumn(),
     ];
 }
 
@@ -1110,6 +1125,82 @@ function actionLog(array $config, PDO $pdo, bool $signedIn): array
  * reader never loads the file - see lib/logs.php - which is the difference
  * between this working on a ten gigabyte error log and taking the site down.
  */
+/**
+ * The last line of each of several log files, in one request.
+ *
+ * The single most useful thing about a log at a glance is its most recent line -
+ * "is it still throwing the same error" is answered by one line and does not
+ * need the viewer opened. Batched because the alternative is one request per
+ * row of a table, and a table of forty logs would be forty requests.
+ *
+ * Each file goes through resolveViewable, so this grants nothing the viewer
+ * does not, and a refusal is reported per file rather than failing the batch -
+ * one unreadable log should not blank the other nine.
+ */
+function lastLines(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to read log files');
+    }
+
+    $ids = array_slice(array_filter(array_map(
+        'intval',
+        explode(',', (string)($_GET['path_ids'] ?? ''))
+    )), 0, 60);
+
+    $paths = array_slice(array_filter(
+        explode("\n", (string)($_GET['paths'] ?? '')),
+        fn(string $p): bool => trim($p) !== ''
+    ), 0, 60);
+
+    $wanted = [];
+
+    if ($ids !== []) {
+        $marks = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $pdo->prepare("SELECT id, path FROM paths WHERE id IN ($marks)");
+        $stmt->execute($ids);
+        foreach ($stmt->fetchAll() as $row) {
+            $wanted[] = ['id' => (int)$row['id'], 'path' => (string)$row['path']];
+        }
+    }
+    foreach ($paths as $path) {
+        $wanted[] = ['id' => null, 'path' => trim($path)];
+    }
+
+    $out = [];
+    foreach ($wanted as $entry) {
+        try {
+            $real = resolveViewable($config, $entry['path']);
+            $tail = tailFile($real, 1, 0, '');
+            $line = $tail['lines'][0] ?? null;
+
+            $out[] = [
+                'path_id' => $entry['id'],
+                'path' => $entry['path'],
+                'line' => $line['text'] ?? null,
+                'line_number' => $line['n'] ?? null,
+                'bytes' => $tail['size'],
+                'modified_at' => (int)(@filemtime($real) ?: 0),
+                'error' => null,
+            ];
+        } catch (ActionRefused $e) {
+            // Reported against the row it belongs to. A log that cannot be read
+            // is a fact about that log, not a failure of the request.
+            $out[] = [
+                'path_id' => $entry['id'],
+                'path' => $entry['path'],
+                'line' => null,
+                'line_number' => null,
+                'bytes' => null,
+                'modified_at' => null,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    return ['rows' => $out];
+}
+
 function tailLog(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
@@ -1575,6 +1666,117 @@ function uptimeView(array $config, PDO $pdo, bool $signedIn): array
 }
 
 /** What is in the crontab. Signed in only: it is a list of what runs as you. */
+/**
+ * Everything the host side needs, as instructions rather than as a diagnosis.
+ *
+ * This is the one part of the install the dashboard genuinely cannot do: it
+ * runs as the account, and the collector has to run as somebody who can read
+ * every process's /proc entry. So the useful output is not "not configured" but
+ * the exact lines to paste, with this install's real paths already in them, and
+ * an honest account of what each of them grants.
+ *
+ * Two ways to run it, because two different people install this. A server
+ * administrator adds it to root's crontab. Somebody on shared hosting with no
+ * root at all can still add it to their own crontab - it collects much less,
+ * and saying which parts go missing is more useful than implying it is useless.
+ */
+function hostSetup(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the setup instructions');
+    }
+
+    $root = __DIR__;
+    $dataDir = dirname((string)$config['database']);
+    $hostDb = hostDatabasePath($config);
+    $owner = trim((string)($config['host']['owner'] ?? ''));
+    $me = currentAccountName();
+
+    $exists = is_file($hostDb);
+
+    return [
+        'cron_line' => hostCronLine($root),
+        'command' => hostCronCommand($root),
+        'disk_command' => hostCronCommand($root) . ' --disk',
+        'database' => $hostDb,
+        'database_exists' => $exists,
+        'database_readable' => $exists && is_readable($hostDb),
+        'owner' => $owner,
+        'account' => $me,
+        'data_dir' => $dataDir,
+        /*
+         * Ownership is the step everybody misses.
+         *
+         * Run as root, the collector creates a database root owns, and then the
+         * dashboard - running as the account - cannot open it. The symptom is
+         * "the host database exists but this account cannot read it", which
+         * says nothing about what to do. host.owner is what fixes it, and it
+         * has to be set before the first run or the file has to be chowned
+         * afterwards.
+         */
+        'owner_set' => $owner !== '',
+        'needs_owner' => $owner === '' && $exists && !is_readable($hostDb),
+        'steps' => [
+            [
+                'title' => 'Set who the collector writes for',
+                'body' => $owner !== ''
+                    ? "host.owner is set to \"{$owner}\". The collector chowns what it "
+                        . 'writes to that account, so the dashboard can read it.'
+                    : 'Set host.owner in lib/config.php to ' . ($me !== '' ? "\"{$me}\"" : 'this account')
+                        . ' — the user the dashboard runs as. Running the collector as root '
+                        . 'without it creates a database only root can read, and every host '
+                        . 'panel stays empty with no obvious reason.',
+                'done' => $owner !== '',
+            ],
+            [
+                'title' => 'Run it once by hand, and read what it says',
+                'body' => 'As root: ' . hostCronCommand($root)
+                    . ' — it prints what it could and could not see. Doing this before '
+                    . 'adding the cron line means any permission problem shows up now, '
+                    . 'attached to the command that caused it.',
+                'done' => $exists,
+            ],
+            [
+                'title' => 'Add it to a crontab',
+                'body' => 'Every five minutes. A reading walks every process in /proc, '
+                    . 'which is not free on a busy machine, and nothing it watches moves '
+                    . 'faster than that.',
+                'done' => $exists && (time() - (int)@filemtime($hostDb)) < 3600,
+            ],
+            [
+                'title' => 'Schedule the disk walk separately',
+                'body' => 'The walk of the whole filesystem takes tens of seconds, so it is '
+                    . 'not part of the five-minute collection. Once a night is plenty: '
+                    . '17 3 * * * ' . hostCronCommand($root) . ' --disk --quiet',
+                'done' => false,
+            ],
+        ],
+        /*
+         * What root buys, stated so the decision can be made on facts.
+         *
+         * Somebody on shared hosting has no root and never will, and telling
+         * them only "run this as root" leaves them with nothing. Running it as
+         * the account works and collects a real subset - which is worth having,
+         * and worth being honest about the limits of.
+         */
+        'as_root' => [
+            'Memory for every process on the machine, and per-account totals — '
+                . 'inside CageFS the account sees only its own.',
+            'Device throughput and saturation from /proc/diskstats.',
+            'Space held by deleted files still open, from /proc/<pid>/fd.',
+            'Directories and files outside the account, including other homes and /backup.',
+            'Whether the machine\'s daemons are running, from systemd.',
+            'Why it last restarted, from `last`.',
+        ],
+        'as_account' => [
+            'Its own processes and their memory.',
+            'Load average and total memory, which are not virtualised.',
+            'Anything under the account\'s own home directory.',
+        ],
+        'account_cron_line' => '*/5 * * * * ' . hostCronCommand($root) . ' --quiet',
+    ];
+}
+
 function scheduleRead(bool $signedIn): array
 {
     if (!$signedIn) {
@@ -1583,7 +1785,7 @@ function scheduleRead(bool $signedIn): array
     return scheduleState(__DIR__);
 }
 
-function doScheduleSave(bool $post): array
+function doScheduleSave(bool $post, PDO $pdo): array
 {
     requireWrite($post);
 
@@ -1606,6 +1808,9 @@ function doScheduleSave(bool $post): array
     );
 
     writeCrontab(replaceManagedBlock($crontab['raw'], $lines));
+
+    logAction($pdo, 'schedule_save', 'crontab', 'ok', 0, 0,
+        $lines === [] ? 'schedule removed' : count($lines) . ' line(s) written');
 
     return ['ok' => true, 'lines' => $lines];
 }
@@ -1646,16 +1851,210 @@ function doScanNow(PDO $pdo, bool $post): array
 
     $result = startScan(__DIR__, $binaries[0]);
     if (!$result['started']) {
+        logAction($pdo, 'scan_now', null, 'failed', 0, 0, $result['reason'] ?? null);
         throw new ActionRefused($result['reason'] ?? 'Could not start the scan.');
     }
 
+    logAction($pdo, 'scan_now', null, 'ok', 0, 0, 'started by hand');
     return ['ok' => true, 'started' => true];
+}
+
+/*
+ * Which conditions can raise an email, and what each is set to.
+ *
+ * Built from the config rather than written out, so a rule that is turned off
+ * by having its threshold set to zero shows as off rather than as absent - and
+ * so this cannot drift from what the alerting code actually reads.
+ */
+function emailConditions(array $config): array
+{
+    $a = $config['alerts'] ?? [];
+    $n = fn(string $key, float $fallback = 0.0): float => (float)($a[$key] ?? $fallback);
+
+    return [
+        [
+            'key' => 'disk_percent',
+            'name' => 'The disk is nearly full',
+            'detail' => sprintf('At or above %s%% used.', trimNumber($n('disk_percent', 90))),
+            'on' => $n('disk_percent', 90) > 0,
+        ],
+        [
+            'key' => 'inode_percent',
+            'name' => 'Inodes are nearly gone',
+            'detail' => sprintf('At or above %s%% of inodes used. A disk with free '
+                . 'gigabytes and no inodes still refuses to create a file.',
+                trimNumber($n('inode_percent', 90))),
+            'on' => $n('inode_percent', 90) > 0,
+        ],
+        [
+            'key' => 'cpu_percent',
+            'name' => 'CPU held at the ceiling',
+            'detail' => sprintf(
+                'At least %s%% of readings over %s minutes at or above %s%% — a spike '
+                . 'cannot satisfy that however tall it is.',
+                trimNumber($n('cpu_share', 0.9) * 100),
+                trimNumber($n('cpu_minutes', 15)),
+                trimNumber($n('cpu_percent', 95))
+            ),
+            'on' => $n('cpu_percent', 95) > 0,
+        ],
+        [
+            'key' => 'growth_bytes',
+            'name' => 'Something grew unusually fast',
+            'detail' => 'A file or category growing far beyond its own recent baseline.',
+            'on' => true,
+        ],
+        [
+            'key' => 'anomalies',
+            'name' => 'Anomalies against the baseline',
+            'detail' => 'Memory, process counts, swap, load and process age compared with '
+                . 'what is normal for this machine rather than against a fixed number.',
+            'on' => (bool)($a['anomalies']['enabled'] ?? true),
+        ],
+    ];
+}
+
+function trimNumber(float $value): string
+{
+    return rtrim(rtrim(number_format($value, 2, '.', ''), '0'), '.');
+}
+
+function emailSettings(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the email settings');
+    }
+
+    $a = $config['alerts'] ?? [];
+
+    $last = $pdo->query(
+        "SELECT at, target, outcome, detail FROM actions
+          WHERE action IN ('test_email', 'alert_email')
+          ORDER BY at DESC LIMIT 10"
+    )->fetchAll();
+
+    return [
+        'enabled' => (bool)($a['enabled'] ?? false),
+        'to' => (string)($a['to'] ?? ''),
+        'from' => (string)($a['from'] ?? ''),
+        'cooldown_seconds' => (int)($a['cooldown_seconds'] ?? 21600),
+        'conditions' => emailConditions($config),
+        // Whether the host can send at all, which is the usual reason nothing
+        // arrives and is not something the settings above can fix.
+        'mail_available' => function_exists('mail'),
+        'recent' => $last,
+        'writable' => is_writable(__DIR__ . '/lib/config.php'),
+    ];
+}
+
+/**
+ * Changes only the email settings, through the same renderer setup.php uses.
+ *
+ * Deliberately narrow. It reads the config that is in force, replaces four
+ * values inside `alerts`, and writes the whole file back through renderConfig -
+ * so nothing else in the file can be lost by a form that did not know about it,
+ * and the result is the same shape setup.php produces.
+ */
+function doEmailSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $file = __DIR__ . '/lib/config.php';
+    if (!is_writable($file)) {
+        throw new ActionRefused(
+            'lib/config.php is not writable by the web server, so this cannot save. '
+            . 'Change it in setup.php, or edit the file directly.'
+        );
+    }
+
+    $to = trim((string)($_POST['to'] ?? ''));
+    if ($to !== '' && !filter_var($to, FILTER_VALIDATE_EMAIL)) {
+        throw new ActionRefused('that does not look like an email address');
+    }
+
+    $from = trim((string)($_POST['from'] ?? ''));
+    if ($from !== '' && !filter_var($from, FILTER_VALIDATE_EMAIL)) {
+        throw new ActionRefused('the from address does not look like an email address');
+    }
+
+    $enabled = ($_POST['enabled'] ?? '0') === '1';
+    if ($enabled && $to === '') {
+        throw new ActionRefused('turning email on needs an address to send to');
+    }
+
+    $current = require $file;
+    $current['alerts']['enabled'] = $enabled;
+    $current['alerts']['to'] = $to;
+    $current['alerts']['from'] = $from;
+
+    $cooldown = (int)($_POST['cooldown_seconds'] ?? 0);
+    if ($cooldown > 0) {
+        $current['alerts']['cooldown_seconds'] = min(604800, max(60, $cooldown));
+    }
+
+    /*
+     * A condition is turned off by zeroing its threshold, not by a new flag.
+     *
+     * That is already how the alerting code reads them - `cpu_percent => 0`
+     * means the rule does not run - so the checkbox writes the thing the rules
+     * already consult rather than adding a second switch that could disagree
+     * with the first.
+     */
+    $wanted = array_filter(explode(',', (string)($_POST['conditions'] ?? '')));
+    $defaults = ['disk_percent' => 90.0, 'inode_percent' => 90.0, 'cpu_percent' => 95.0];
+
+    foreach ($defaults as $key => $fallback) {
+        $on = in_array($key, $wanted, true);
+        $existing = (float)($config['alerts'][$key] ?? $fallback);
+        // Turning one back on restores what it was set to, not the default -
+        // unless it was off before, in which case there is nothing to restore.
+        $current['alerts'][$key] = $on ? ($existing > 0 ? $existing : $fallback) : 0;
+    }
+    $current['alerts']['anomalies']['enabled'] = in_array('anomalies', $wanted, true);
+
+    $rendered = renderConfig($current, __DIR__ . '/lib');
+
+    $temporary = $file . '.new';
+    if (@file_put_contents($temporary, $rendered, LOCK_EX) === false) {
+        throw new ActionRefused('could not write into lib/');
+    }
+    @chmod($temporary, 0600);
+    if (!@rename($temporary, $file)) {
+        @unlink($temporary);
+        throw new ActionRefused('could not replace lib/config.php');
+    }
+
+    logAction($pdo, 'email_settings', $to !== '' ? $to : null, 'ok', 0, 0,
+        ($enabled ? 'email on' : 'email off') . ', ' . count($wanted) . ' condition(s)');
+
+    /*
+     * The new settings come back with the write, rather than being fetched.
+     *
+     * PHP caches the result of stat() for the length of a request and beyond,
+     * so a read issued immediately after this returned the *old* file - which
+     * looked exactly like the save having silently failed. Answering with what
+     * was just written removes the race rather than papering over it.
+     */
+    clearstatcache(true, $file);
+    return ['ok' => true, 'settings' => emailSettings($current, $pdo, true)];
 }
 
 function doTestEmail(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
-    return sendTestEmail($config, $pdo);
+
+    $result = sendTestEmail($config, $pdo);
+    logAction(
+        $pdo,
+        'test_email',
+        $result['to'] ?? null,
+        ($result['sent'] ?? false) ? 'ok' : 'failed',
+        0,
+        0,
+        $result['error'] ?? null
+    );
+
+    return $result;
 }
 
 /**
@@ -1953,22 +2352,38 @@ function sessionState(array $config): array
 
 /* ----------------------------------------------------------------- write -- */
 
-function doSignIn(array $config, bool $post): array
+function doSignIn(array $config, bool $post, PDO $pdo): array
 {
     if (!$post) {
         throw new ActionRefused('sign in must be a POST');
     }
     if (!signIn($config, (string)($_POST['password'] ?? ''))) {
+        /*
+         * A failed attempt is recorded; the password is not.
+         *
+         * Repeated failures from one address are the only sign this dashboard
+         * can give that somebody is guessing, and they are worth having. What
+         * is logged is the fact and the address - never the string tried, which
+         * is very often somebody's password for something else.
+         */
+        logAction($pdo, 'sign_in', null, 'refused', 0, 0, 'wrong password');
+
         // One message for every failure, so it cannot be used to learn whether
         // a password has been configured at all.
         http_response_code(401);
         return ['error' => 'Incorrect password.'];
     }
+
+    logAction($pdo, 'sign_in', null, 'ok', 0, 0, null);
     return ['signed_in' => true, 'csrf' => csrfToken()];
 }
 
-function doSignOut(): array
+function doSignOut(PDO $pdo): array
 {
+    // Only worth a line if there was a session to end.
+    if (isSignedIn()) {
+        logAction($pdo, 'sign_out', null, 'ok', 0, 0, null);
+    }
     signOut();
     return ['signed_in' => false];
 }

@@ -166,10 +166,34 @@ function compactVitals(PDO $pdo, array $rules, ?int $now = null): array
         $removed += $stmt->rowCount();
     }
 
+    /*
+     * The record of what happened, on its own much longer clock.
+     *
+     * Both were configurable and neither was applied - the settings existed and
+     * did nothing, so the honest answer to "does this ever get cleared" was no,
+     * for ever, whatever the config said. They still default to keeping
+     * everything, because these are the two tables somebody goes looking for
+     * months later ("when did I delete that", "did it warn me first") and each
+     * row is a few dozen bytes. But the setting now means what it says.
+     */
+    $kept = [];
+    foreach (['alerts' => 'alert_days', 'actions' => 'action_days'] as $table => $key) {
+        $days = (int)($rules[$key] ?? 0);
+        $kept[$table] = $days;
+        if ($days <= 0) {
+            continue;
+        }
+        $column = $table === 'alerts' ? 'raised_at' : 'at';
+        $stmt = $pdo->prepare("DELETE FROM {$table} WHERE {$column} < ?");
+        $stmt->execute([$now - $days * 86400]);
+        $removed += $stmt->rowCount();
+    }
+
     return [
         'compacted' => $compacted,
         'removed' => $removed,
         'tiers' => $tiers,
+        'kept_days' => $kept,
     ];
 }
 

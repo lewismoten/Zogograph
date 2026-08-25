@@ -23,6 +23,8 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/anomalies.php';
 require_once __DIR__ . '/incident.php';
 require_once __DIR__ . '/logwatch.php';
+// logAction lives here: an email that went out is something the monitor did.
+require_once __DIR__ . '/actions.php';
 
 /**
  * How far back a projection looks.
@@ -813,6 +815,26 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
     foreach ($raised as $alert) {
         $update->execute([$sent ? time() : null, $sent ? null : 'mail() returned false', $alert['id']]);
     }
+
+    /*
+     * The send goes in the action log as well as on the alert rows.
+     *
+     * The alert row records what happened to *that alert*; this records that
+     * the machine sent mail at that moment. When somebody asks "did I get told
+     * about this", one place holding everything the monitor did - by hand or on
+     * its own - is the answer, rather than a hunt through two tables.
+     */
+    logAction(
+        $pdo,
+        'alert_email',
+        $to,
+        $sent ? 'ok' : 'failed',
+        0,
+        0,
+        sprintf('%s about %s', $worst, count($raised) === 1
+            ? $raised[0]['subject']
+            : count($raised) . ' alerts')
+    );
 }
 
 /**

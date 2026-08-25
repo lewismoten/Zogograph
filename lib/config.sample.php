@@ -207,6 +207,20 @@ return [
      * be inside scan_root, inside one of these categories, not a symlink, and
      * requested by a signed-in session over POST with a matching token.
      */
+    /*
+     * How far the delete buttons reach.
+     *
+     *   'account'     anything inside scan_root. What an account owner usually
+     *                 means by "delete this" when looking at their own disk.
+     *   'categories'  only the categories listed below, which is the cautious
+     *                 rule: a mis-click can only remove something already
+     *                 declared disposable.
+     *
+     * Neither mode will touch the scan root itself, anything outside it, a
+     * symlink, or this monitor's own database. Those are not policy - they are
+     * the reasons this cannot be turned into a way to delete the machine.
+     */
+    'deletable_scope' => 'account',
     'deletable_categories' => ['trash', 'temp'],
 
     /*

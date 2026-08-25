@@ -35,6 +35,8 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/collect.php';
+// siteFacts, so a document root can carry its domains onto the map.
+require_once __DIR__ . '/inspect.php';
 require_once __DIR__ . '/actions.php';
 
 /** Longest a single treemap request may spend reading the filesystem. */
@@ -164,6 +166,17 @@ function treemapLevel(array $config, string $requested, ?float $budget = null): 
                 'path' => $full,
                 'kind' => 'dir',
                 'bytes' => $measured['bytes'],
+                'type_bytes' => $measured['types'],
+                /*
+                 * The domains served out of it, where that is knowable.
+                 *
+                 * A globe on a rectangle answers "which of these forty
+                 * directories is the live site" without opening any of them,
+                 * which is the question somebody looking at a home directory
+                 * usually has. cpanelDocumentRoots caches, so this is a lookup
+                 * per child rather than a re-read.
+                 */
+                'site' => siteFacts($config, $full),
                 'files' => $measured['files'],
                 'complete' => $measured['complete'],
             ] + statFacts($full, false);
@@ -182,6 +195,14 @@ function treemapLevel(array $config, string $requested, ?float $budget = null): 
             'bytes' => $facts['size_bytes'],
             'files' => 1,
             'complete' => true,
+            /*
+             * Whether it runs, which the browser cannot work out for itself.
+             *
+             * Most Unix executables have no extension, so a map coloured by
+             * type in the browser would put every compiled helper in `other`.
+             * One bit, and it comes from the stat that has already happened.
+             */
+            'executable' => (bool)(((int)octdec((string)($facts['mode'] ?? '0'))) & 0o111),
         ] + $facts;
     }
 
@@ -252,23 +273,29 @@ function treemapLevel(array $config, string $requested, ?float $budget = null): 
  * So `complete` travels with every number, and the browser draws an unfinished
  * one differently.
  *
- * @return array{bytes: int, files: int, complete: bool}
+ * Per-type totals travel with the size, so the map can be filtered to one kind
+ * of file without a second walk. The alternative - filtering in the browser -
+ * cannot work: a directory's rectangle has to shrink to the audio *inside* it,
+ * and only something that walked the tree knows how much that is.
+ *
+ * @return array{bytes: int, files: int, complete: bool, types: array<string,int>}
  */
 function walkSize(string $dir, array $excluded, float $deadline, int $depth = 0): array
 {
     $bytes = 0;
     $files = 0;
     $complete = true;
+    $types = [];
 
     if ($depth > TREEMAP_MAX_DEPTH || microtime(true) > $deadline) {
-        return ['bytes' => 0, 'files' => 0, 'complete' => false];
+        return ['bytes' => 0, 'files' => 0, 'complete' => false, 'types' => []];
     }
 
     $handle = @opendir($dir);
     if ($handle === false) {
         // Unreadable is not empty. Saying so lets the map show a directory that
         // exists and cannot be measured, rather than one that looks empty.
-        return ['bytes' => 0, 'files' => 0, 'complete' => false];
+        return ['bytes' => 0, 'files' => 0, 'complete' => false, 'types' => []];
     }
 
     while (($entry = readdir($handle)) !== false) {
@@ -293,6 +320,9 @@ function walkSize(string $dir, array $excluded, float $deadline, int $depth = 0)
             $below = walkSize($full, $excluded, $deadline, $depth + 1);
             $bytes += $below['bytes'];
             $files += $below['files'];
+            foreach ($below['types'] as $type => $size) {
+                $types[$type] = ($types[$type] ?? 0) + $size;
+            }
             if (!$below['complete']) {
                 $complete = false;
             }
@@ -315,11 +345,19 @@ function walkSize(string $dir, array $excluded, float $deadline, int $depth = 0)
          */
         $bytes += (int)$stat['size'];
         $files++;
+
+        $type = fileTypeOf($full);
+        // A file with no extension is classified by its execute bit, and the
+        // stat is already in hand - no second syscall for the same question.
+        if ($type === 'other' && (((int)$stat['mode']) & 0o111)) {
+            $type = 'executables';
+        }
+        $types[$type] = ($types[$type] ?? 0) + (int)$stat['size'];
     }
 
     closedir($handle);
 
-    return ['bytes' => $bytes, 'files' => $files, 'complete' => $complete];
+    return ['bytes' => $bytes, 'files' => $files, 'complete' => $complete, 'types' => $types];
 }
 
 /**

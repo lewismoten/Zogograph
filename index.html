@@ -94,13 +94,33 @@
     </a>
     <a class="nav-item nav-sub" href="#/host-disk" data-nav="host-disk" data-parent="storage">
       <span class="nav-icon" aria-hidden="true">›</span>
-      <span class="nav-label">Host disk usage</span>
+      <span class="nav-label">Filesystems</span>
       <span class="nav-badge" data-badge="host-disk" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/disk-dirs" data-nav="disk-dirs" data-parent="storage">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Biggest directories</span>
+      <span class="nav-badge" data-badge="disk-dirs" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/disk-deleted" data-nav="disk-deleted" data-parent="storage">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Deleted, still held</span>
+      <span class="nav-badge" data-badge="disk-deleted" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/disk-procs" data-nav="disk-procs" data-parent="storage">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Processes on disk</span>
+      <span class="nav-badge" data-badge="disk-procs" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/host-layout" data-nav="host-layout" data-parent="storage">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Filesystem layout</span>
       <span class="nav-badge" data-badge="host-layout" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/disk-rootfiles" data-nav="disk-rootfiles" data-parent="storage">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Root-only files</span>
+      <span class="nav-badge" data-badge="disk-rootfiles" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/storage-map" data-nav="storage-map" data-parent="storage">
       <span class="nav-icon" aria-hidden="true">›</span>
@@ -111,6 +131,21 @@
       <span class="nav-icon" aria-hidden="true">☁</span>
       <span class="nav-label">Backups</span>
       <span class="nav-badge" data-badge="backups" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/backups-actions" data-nav="backups-actions" data-parent="backups">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">What can be done</span>
+      <span class="nav-badge" data-badge="backups-actions" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/backups-other" data-nav="backups-other" data-parent="backups">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Other probable backups</span>
+      <span class="nav-badge" data-badge="backups-other" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/backups-jetbackup" data-nav="backups-jetbackup" data-parent="backups">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">JetBackup</span>
+      <span class="nav-badge" data-badge="backups-jetbackup" hidden></span>
     </a>
     <a class="nav-item" href="#/host" data-nav="host">
       <span class="nav-icon" aria-hidden="true">▣</span>
@@ -149,8 +184,13 @@
     </a>
     <a class="nav-item" href="#/deletions" data-nav="deletions">
       <span class="nav-icon" aria-hidden="true">⌫</span>
-      <span class="nav-label">Deletions</span>
+      <span class="nav-label">Actions</span>
       <span class="nav-badge" data-badge="deletions" hidden></span>
+    </a>
+    <a class="nav-item" href="#/email" data-nav="email">
+      <span class="nav-icon" aria-hidden="true">✉</span>
+      <span class="nav-label">Email alerts</span>
+      <span class="nav-badge" data-badge="email" hidden></span>
     </a>
     <a class="nav-item" href="#/schedule" data-nav="schedule">
       <span class="nav-icon" aria-hidden="true">⏱</span>
@@ -266,6 +306,19 @@
   </div>
   <div id="scanFacts" class="cards small-cards"></div>
   <p class="muted small sub-note" id="scanNote"></p>
+
+  <h3 class="sub-head">The whole machine</h3>
+  <p class="muted small sub-note">
+    A second walk, run by root, that reaches everything this account cannot —
+    other accounts, <code>/var</code>, <code>/backup</code>, and space held by
+    deleted files still open. It takes tens of seconds, so it is not part of the
+    per-minute collection: pressing this leaves a request that the host collector
+    picks up on its next run. The results are under
+    <a href="#/host-disk">Filesystems</a>,
+    <a href="#/disk-dirs">Biggest directories</a> and
+    <a href="#/disk-deleted">Deleted, still holding</a>.
+  </p>
+  <div id="hostWalk"></div>
 </section>
 
 <section class="panel wide" id="typePanel">
@@ -368,6 +421,7 @@
           <option value="dir">Directories</option>
         </select>
       </label>
+      <button id="offenderDelete" class="danger" disabled hidden>Delete selected</button>
       <label class="inline">
         Show
         <select id="offSort">
@@ -444,14 +498,22 @@
           <option value="age">How recently touched</option>
         </select>
       </label>
+      <label class="inline">
+        Only
+        <select id="treeTypeFilter">
+          <option value="">every type</option>
+        </select>
+      </label>
       <button id="treeUp" class="link">Up one level</button>
     </div>
   </div>
   <p class="muted small sub-note">
     Area is size. A directory full of small files is invisible in a list of the
     biggest paths and obvious here, because forty thousand session files add up
-    to a large rectangle even though not one of them is large. Click to go in,
-    hover for the details.
+    to a large rectangle even though not one of them is large. Click a rectangle
+    for its details, double-click a directory to go into it, hover for a quick
+    summary. Filtering to one type shrinks every directory to just the files of
+    that kind inside it, which is how you find where the audio is.
   </p>
   <div id="treeCrumbs" class="crumbs"></div>
   <div id="treemapHolder" class="treemap-holder">
@@ -481,6 +543,45 @@
     how much space, whose, how old, and what is safe to do about it.
   </p>
   <div id="backupBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="backups-actions" hidden>
+<section class="panel">
+  <h2>What can be done about it</h2>
+  <p class="muted small sub-note">
+    Sorted by how safe each one is, not by how much it would free. Anything
+    marked destructive removes the only copy of something — the whole point of a
+    backup is that it is there on the day nobody expected to need it.
+  </p>
+  <div id="backupActionsBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="backups-other" hidden>
+<section class="panel">
+  <h2>Other probable backups</h2>
+  <p class="muted small sub-note">
+    Directories that look like backups but are not managed by anything: a
+    <code>tar.gz</code> somebody made before an upgrade, a dated copy of a site,
+    a database dump. Nothing rotates these, so they stay for ever and are usually
+    the oldest large thing on the disk. <em>Probable</em> is the operative word —
+    each is a guess from the name and shape, and worth looking at before acting.
+  </p>
+  <div id="backupOtherBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="backups-jetbackup" hidden>
+<section class="panel">
+  <h2>JetBackup</h2>
+  <p class="muted small sub-note">
+    What the backup system says about its own backups, which is the only place
+    the account and date behind a directory called <code>files0000000005</code>
+    can be found. It needs the JetBackup command line tool and usually needs
+    running as root.
+  </p>
+  <div id="backupJetBody"></div>
 </section>
 </section>
 
@@ -580,13 +681,14 @@
 <section class="view" data-view="storage-io" hidden>
 <section class="panel" id="hostIoPanel">
   <div class="panel-head">
-    <h2>Disk I/O across the whole machine</h2>
-    <button id="hostIoRefresh" class="link">Refresh</button>
+    <h2>How hard the disks are working</h2>
   </div>
   <p class="muted small sub-note" id="hostIoIntro">
-    Read by root, so this is every account on the server together — a busy line
-    here says the disk is working, never that this account is the reason. The
-    account's own traffic is on <a href="#/overview">the dashboard</a>.
+    Throughput and saturation per device, read by root — so this is every
+    account on the server together. A busy line here says the disk is working,
+    never that this account is the reason; the account's own traffic is on
+    <a href="#/overview">the dashboard</a>, and
+    <a href="#/disk-procs">which processes are doing it</a> has its own page.
   </p>
   <div id="hostIoBody"></div>
 
@@ -602,22 +704,6 @@
     <canvas id="hostIoChart"></canvas>
     <p class="muted small chart-note" id="hostIoChartNote"></p>
     <div id="hostDisks"></div>
-
-    <h3 class="sub-head">Processes touching the disk</h3>
-    <p class="muted small sub-note">
-      Which processes the throughput above is actually coming from. CPU can sit
-      low while one job makes everything else feel slow by keeping a disk busy,
-      and that job is invisible in every other panel on this page.
-    </p>
-    <div id="hostIoProcs"></div>
-
-    <h3 class="sub-head">Files only root can see</h3>
-    <p class="muted small sub-note">
-      Apache writes each domain's logs under <code>/etc</code> owned by root. A
-      rotated log there costs exactly as much disk as one in the home directory
-      and is invisible to everything the account can run.
-    </p>
-    <div id="hostFiles"></div>
 
   </div>
 </section>
@@ -648,19 +734,73 @@
 
 <section class="view" data-view="host-disk" hidden>
 <section class="panel" id="hostDiskPanel">
-  <h2>Where the disk went — the whole machine</h2>
+  <h2>Filesystems, and the space nothing accounts for</h2>
   <p class="muted small sub-note">
-    For when <code>df</code> reports a number nothing else can explain. This is
-    the root's-eye view: every filesystem, the biggest directories anywhere on
-    the machine, and the space held by files that have been deleted but are
-    still open — which no directory listing anywhere can show you.
-  </p>
-  <p class="muted small sub-note">
-    Run <code>php host-cron.php --disk</code> as root. It takes tens of seconds,
-    so it is deliberately not part of the per-minute collection and has its own
-    schedule.
+    For when <code>df</code> reports a number nothing else can explain. Every
+    filesystem root can see, and the gap between what the filesystem says is used
+    and what walking it actually found. The two usual explanations have pages of
+    their own: <a href="#/disk-deleted">deleted files still held open</a> and
+    <a href="#/disk-dirs">the biggest directories</a>.
   </p>
   <div id="hostDisk"></div>
+</section>
+</section>
+
+<section class="view" data-view="disk-deleted" hidden>
+<section class="panel">
+  <h2>Deleted, still holding space</h2>
+  <p class="muted small sub-note">
+    A file that has been unlinked while a process still has it open keeps its
+    blocks. <code>df</code> counts them; <code>du</code>, <code>ls</code>,
+    <code>find</code> and the tree map cannot see them at all. This is the one
+    kind of missing space no directory walk can ever find, and restarting the
+    process listed is what frees it.
+  </p>
+  <div id="diskDeleted"></div>
+</section>
+</section>
+
+<section class="view" data-view="disk-dirs" hidden>
+<section class="panel">
+  <h2>Biggest directories on the machine</h2>
+  <p class="muted small sub-note">
+    From root's walk of the whole disk, so this reaches the places the account
+    cannot: other accounts' homes, <code>/var</code>, <code>/backup</code>, and
+    anything mounted somewhere unexpected.
+  </p>
+  <div id="diskDirs"></div>
+</section>
+</section>
+
+<section class="view" data-view="disk-procs" hidden>
+<section class="panel" id="diskProcsPanel">
+  <div class="panel-head">
+    <h2>Processes touching the disk</h2>
+    <button id="diskProcsRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note">
+    Which processes the throughput is actually coming from. CPU can sit low
+    while one job makes everything else feel slow by keeping a disk busy, and
+    that job is invisible in every other panel on this site.
+  </p>
+  <div id="diskProcsBody"></div>
+  <div id="hostIoProcs"></div>
+</section>
+</section>
+
+<section class="view" data-view="disk-rootfiles" hidden>
+<section class="panel" id="rootFilesPanel">
+  <div class="panel-head">
+    <h2>Files only root can see</h2>
+    <button id="rootFilesRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note">
+    Apache writes each domain's logs under <code>/etc</code> owned by root. A
+    rotated log there costs exactly as much disk as one in the home directory
+    and is invisible to everything the account can run.
+  </p>
+  <div id="rootFilesBody"></div>
+  <div id="hostFiles"></div>
 </section>
 </section>
 
@@ -854,7 +994,7 @@
 <section class="view" data-view="deletions" hidden>
 <section class="panel" id="actionPanel" hidden>
     <div class="panel-head">
-      <h2>What this dashboard has done</h2>
+      <h2>Everything this monitor has done</h2>
       <div class="panel-tools">
         <label class="pill">What
           <select id="actionKind"><option value="">everything</option></select>
@@ -873,9 +1013,10 @@
       </div>
     </div>
     <p class="muted small sub-note">
-      Every deletion, truncation and setting change this dashboard made, whether
-      it worked or not. A refusal is kept as carefully as a success — knowing
-      what was <em>not</em> done is half of knowing what happened.
+      Every deletion, every scan, every request to the host collector, every
+      email it sent, every configuration change and every sign-in — whether each
+      worked or not. A refusal is kept as carefully as a success: knowing what
+      was <em>not</em> done is half of knowing what happened.
     </p>
     <p class="muted small sub-note" id="actionWhoNote"></p>
     <div id="actionSummary" class="cards small-cards"></div>
@@ -883,11 +1024,26 @@
   </section>
 </section>
 
+<section class="view" data-view="email" hidden>
+<section class="panel" id="emailPanel">
+  <div class="panel-head">
+    <h2>Email alerts</h2>
+    <button id="testEmail">Send a test email</button>
+  </div>
+  <p class="muted small sub-note">
+    Mail goes out through PHP's <code>mail()</code>, which on a cPanel host means
+    the server's own mail queue. There is one message per alerting run rather
+    than one per rule — a disk filling up trips several rules at once, and five
+    separate emails about the same event is how people learn to ignore them.
+  </p>
+  <div id="emailBody"></div>
+</section>
+</section>
+
 <section class="view" data-view="schedule" hidden>
 <section class="panel" id="schedulePanel" hidden>
   <div class="panel-head">
     <h2>Schedule</h2>
-    <button id="testEmail">Send a test email</button>
   </div>
   <p class="muted small sub-note">
     The two jobs run on different clocks: vitals cost milliseconds, a scan costs
@@ -895,6 +1051,18 @@
     touched — anything else in your crontab is left exactly as it is.
   </p>
   <div id="scheduleBody"></div>
+</section>
+
+<section class="panel" id="hostSchedulePanel">
+  <h2>The host collector</h2>
+  <p class="muted small sub-note">
+    Everything on this site that reaches past the account — memory by user, the
+    machine's disks, whether daemons are alive, the space held by deleted files —
+    comes from a second collector that has to run as a user who can read
+    <code>/proc</code> for every process. The dashboard cannot start it and
+    cannot install it; it can only tell you exactly what to run.
+  </p>
+  <div id="hostScheduleBody"></div>
 </section>
 </section>
 

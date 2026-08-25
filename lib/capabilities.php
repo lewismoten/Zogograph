@@ -346,6 +346,49 @@ function capabilityList(array $config): array
  * @param list<string> $names
  * @return array<string, string> name => path, only for those found
  */
+/**
+ * Where to look for a program.
+ *
+ * The inherited PATH first - it is the truth about this process and may contain
+ * something the list below does not - then every place a shared host puts
+ * binaries. Duplicates are dropped so the string stays readable when it is
+ * shown to somebody, and each entry is kept whether or not it exists: a
+ * directory that appears later cannot break a PATH by being absent now.
+ */
+function searchPath(): string
+{
+    $extra = [
+        '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin',
+        '/opt/cpanel/composer/bin', '/usr/local/cpanel/3rdparty/bin',
+        '/opt/puppetlabs/bin', '/usr/local/mysql/bin', '/opt/homebrew/bin',
+    ];
+
+    $home = getenv('HOME');
+    if (is_string($home) && $home !== '') {
+        $extra[] = rtrim($home, '/') . '/bin';
+        $extra[] = rtrim($home, '/') . '/.local/bin';
+    }
+
+    $inherited = (string)(getenv('PATH') ?: '');
+    $parts = array_merge(
+        $inherited === '' ? [] : explode(':', $inherited),
+        $extra
+    );
+
+    $seen = [];
+    foreach ($parts as $part) {
+        $part = rtrim(trim($part), '/');
+        // An empty element in a PATH means the current directory, which is
+        // never what is wanted and is a hazard in its own right.
+        if ($part === '' || isset($seen[$part])) {
+            continue;
+        }
+        $seen[$part] = true;
+    }
+
+    return implode(':', array_keys($seen));
+}
+
 function probePaths(array $names, ?string $asUser = null): array
 {
     $safe = array_values(array_filter(
@@ -356,7 +399,20 @@ function probePaths(array $names, ?string $asUser = null): array
         return [];
     }
 
-    $script = 'for p in ' . implode(' ', $safe) . '; do '
+    /*
+     * An explicit PATH, not whatever the web server happened to inherit.
+     *
+     * This is the difference between "absent" and "absent from the four
+     * directories Apache starts with". A login shell reads /etc/profile and
+     * picks up /usr/local/bin, /opt/..., the ea-php directories and the
+     * account's own bin; a PHP request inherits none of that, so a program the
+     * user runs by name every day was being reported as not installed. Adding
+     * the standard locations to whatever PATH is already set makes the answer
+     * match what the terminal would say, and the searched PATH is reported
+     * alongside the result so the claim can be checked rather than believed.
+     */
+    $script = 'PATH=' . escapeshellarg(searchPath()) . '; export PATH; '
+        . 'for p in ' . implode(' ', $safe) . '; do '
         . 'printf "%s\t%s\n" "$p" "$(command -v "$p" 2>/dev/null || true)"; done';
 
     if ($asUser !== null) {
@@ -1321,6 +1377,13 @@ function capabilityReport(array $config, PDO $pdo, ?PDO $host): array
         'checked_at' => (int)($run['ran_at'] ?? 0),
         'seconds' => (float)($run['seconds'] ?? 0),
         'host_checked_at' => $hostRun ? (int)$hostRun['ran_at'] : null,
+        /*
+         * Where it looked, so "not installed" can be checked rather than
+         * believed. A program on a PATH this did not search is present and
+         * reported absent, and without saying where it searched there is no way
+         * to tell that apart from the program genuinely not being there.
+         */
+        'searched_path' => searchPath(),
     ];
 }
 

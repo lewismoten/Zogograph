@@ -1226,7 +1226,15 @@ function drawPieChart(canvas, slices, options = {}) {
    * chord - 2r·sin(θ/2) - so it can simply be measured against the widest of
    * the two lines, and the answer holds at any canvas size.
    */
-  const textRadius = radius * 0.62;
+  /*
+   * Text goes in the middle of the band it labels.
+   *
+   * With a hole punched for the inner ring, 0.62r is inside the hole - so every
+   * outer label drifted off its own wedge and sat over the ring below it. The
+   * band runs from `hole` to `radius`, and its midpoint is where the words
+   * belong. Set after `hole` is known, which is why this is not a constant.
+   */
+  const textRadius = hole > 0 ? (hole + radius) / 2 : radius * 0.62;
 
   // "both" writes the share and the size, "percent" only the share, "none"
   // leaves both to the list. Degrading through the middle case labels a good
@@ -1238,7 +1246,12 @@ function drawPieChart(canvas, slices, options = {}) {
     }
 
     const sweep = share * Math.PI * 2;
+    // The chord at the text's own radius, which is where the words will sit.
     const available = 2 * textRadius * Math.sin(Math.min(sweep, Math.PI) / 2);
+
+    // A ring is only so thick; two lines of text will not fit in a thin band
+    // however wide the wedge is.
+    const band = hole > 0 ? radius - hole : radius;
 
     ctx.font = "bold 13px system-ui";
     const percentWidth = ctx.measureText(percentText(share)).width;
@@ -1246,7 +1259,7 @@ function drawPieChart(canvas, slices, options = {}) {
     const sizeWidth = ctx.measureText(humanBytes(slice.value)).width;
     ctx.font = "12px system-ui";
 
-    if (available >= Math.max(percentWidth, sizeWidth) + 8) return "both";
+    if (band >= 30 && available >= Math.max(percentWidth, sizeWidth) + 8) return "both";
     if (available >= percentWidth + 8) return "percent";
     return "none";
   });
@@ -1321,7 +1334,7 @@ function drawPieChart(canvas, slices, options = {}) {
   // The list runs down the right in slice order, so the eye can follow it round.
   const labelX = cx + radius + labelGap;
   const lineHeight = 18;
-  const startY = cy - ((slices.length + inner.length - 1) * lineHeight) / 2;
+  const startY = cy - ((slices.length + inner.length) * lineHeight) / 2;
 
   slices.forEach((slice, i) => {
     const y = startY + i * lineHeight;
@@ -1346,7 +1359,9 @@ function drawPieChart(canvas, slices, options = {}) {
      */
     let innerAngle = -Math.PI / 2;
     const named = inner.reduce((sum, slice) => sum + slice.value, 0);
-    const parts = [...inner, { label: "", value: Math.max(0, total - named), quiet: true }];
+    const parts = [...inner, {
+      label: "everything else", value: Math.max(0, total - named), quiet: true,
+    }];
 
     for (const slice of parts) {
       const sweep = (slice.value / total) * Math.PI * 2;
@@ -1356,22 +1371,28 @@ function drawPieChart(canvas, slices, options = {}) {
       ctx.moveTo(cx, cy);
       ctx.arc(cx, cy, hole - 3, innerAngle, innerAngle + sweep);
       ctx.closePath();
-      ctx.fillStyle = slice.quiet ? "#1b2430" : (slice.color || "#8899aa");
+      /*
+       * The remainder is drawn, not left out.
+       *
+       * In the panel background it read as a hole in the page rather than as a
+       * measured quantity, and a hole invites the eye to look through it. A
+       * muted fill of its own says "this is the part none of these cover",
+       * which is what it is.
+       */
+      ctx.fillStyle = slice.quiet ? "#2b3542" : (slice.color || "#8899aa");
       ctx.fill();
 
-      if (!slice.quiet) {
-        ctx.strokeStyle = "#161616";
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      }
+      ctx.strokeStyle = "#161616";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
 
       innerAngle += sweep;
     }
 
     let y = startY + slices.length * lineHeight + 6;
-    for (const slice of inner) {
+    for (const slice of parts) {
       if (y > cssH - 4) break;
-      ctx.fillStyle = slice.color || "#8899aa";
+      ctx.fillStyle = slice.quiet ? "#2b3542" : (slice.color || "#8899aa");
       ctx.fillRect(labelX, y - 8, 10, 10);
       ctx.fillStyle = "#ddd";
       ctx.fillText(
@@ -1505,12 +1526,48 @@ function exportRows(target, rows, columns, format) {
  */
 const TABLE_SHOWN = new Map();
 
+/*
+ * What each table last drew, so an unchanged poll can leave it alone.
+ *
+ * Rebuilding a table that has not changed destroys the reader's text selection,
+ * scroll position inside it and any focus in it - every few seconds, for as
+ * long as they sit on the page. Since the rows are plain data from the server,
+ * "has it changed" is a comparison rather than a guess.
+ */
+const TABLE_DREW = new Map();
+
 function renderTable(target, rows, columns, onRowClick, rowClass) {
   const el = $(target);
   if (!rows || !rows.length) {
-    el.innerHTML = '<p class="muted">Nothing to show.</p>';
+    if (TABLE_DREW.get(target) !== "empty") {
+      TABLE_DREW.set(target, "empty");
+      el.innerHTML = '<p class="muted">Nothing to show.</p>';
+    }
     return;
   }
+
+  /*
+   * The signature covers the data and the shape, not the rendered nodes.
+   *
+   * The column list is part of it because the same target is reused with
+   * different columns - the offender table changes its columns with the view -
+   * and identical rows under different headings are a different table.
+   */
+  /*
+   * The data and the shape, and deliberately not how far it is unfolded.
+   *
+   * Folding the row count in seemed right and was wrong: the count is set by
+   * draw() *after* the signature is taken, so the first render stored 0 and
+   * every render after it computed 25 - a guaranteed mismatch that made the
+   * comparison useless without ever failing visibly. Unfolding further sets
+   * TABLE_DREW to null explicitly, which is the honest way to say "this one
+   * really has changed".
+   */
+  const signature = JSON.stringify([rows, columns.map(c => c.label)]);
+  if (TABLE_DREW.get(target) === signature && el.querySelector("table")) {
+    return;
+  }
+  TABLE_DREW.set(target, signature);
 
   const tools = document.createElement("div");
   tools.className = "table-tools";
@@ -1593,7 +1650,17 @@ function renderTable(target, rows, columns, onRowClick, rowClass) {
   const wanted = Math.min(TABLE_SHOWN.get(target) || 0, rows.length);
   do { draw(); } while (shown < wanted && shown < rows.length);
 
-  more.addEventListener("click", draw);
+  more.addEventListener("click", () => {
+    draw();
+    /*
+     * Only a click invalidates the signature.
+     *
+     * Doing it inside draw() meant every render - including the first - wiped
+     * the record of what had just been drawn, so the "nothing changed" test
+     * could never once succeed and every poll rebuilt every table.
+     */
+    TABLE_DREW.set(target, null);
+  });
 
   el.replaceChildren(tools, table, more);
 }
@@ -1657,6 +1724,7 @@ async function refreshShared() {
   state.signedIn = overview.signed_in;
   state.csrf = overview.csrf;
   state.deletable = overview.deletable || [];
+  state.deletableScope = overview.deletable_scope || "account";
   state.totals = overview.totals || {};
   state.emptied = overview.emptied || {};
   state.viewable = overview.viewable || [];
@@ -1754,6 +1822,7 @@ async function refreshVitals() {
   state.uptime.analysis = vitals.uptime;
   state.restarts = restartMarks(uptime, from, to);
 
+  renderUptime();
   showCompactionNote(vitals);
   renderVitalCharts(vitals.rows, vitals.uptime);
 }
@@ -1835,7 +1904,7 @@ function renderScanFacts(scans) {
 const TYPE_COLORS = {
   images: "#4c9aff", video: "#f2616b", audio: "#c07ce0", archives: "#f0a35e",
   web: "#56c98a", documents: "#5ecbd6", code: "#e0c05c", databases: "#8f8ce0",
-  logs: "#e08a8a", other: "#6f7d8c",
+  logs: "#e08a8a", executables: "#b5895e", other: "#6f7d8c",
 };
 
 /*
@@ -2427,6 +2496,7 @@ async function refreshOffenders() {
   if ($("offKind").value) params.kind = $("offKind").value;
 
   const data = await api("offenders", params);
+  state.offenders = data;
   $("maskNote").hidden = state.signedIn || !data.rows.length;
 
   /*
@@ -2536,12 +2606,34 @@ async function refreshOffenders() {
     });
   }
 
+  /*
+   * The last line, for the rows that have one.
+   *
+   * "Is it still throwing the same error" is answered by one line and does not
+   * need the viewer opened - which for a two-gigabyte log is the difference
+   * between a glance and a decision.
+   */
+  columns.push({ label: "Last line", className: "cmd", render: row => lastLineCell(row) });
+
   // A file that is gone has nothing to press. The deleted view is a report.
   if (view !== "deleted") {
     columns.push({ label: "", className: "size", render: row => rowButtons(row) });
+
+    /*
+     * A picker, for clearing several things in one go.
+     *
+     * Put first so the checkboxes line up down the left where the eye expects
+     * them, and only where deleting is possible at all - a column of boxes that
+     * arm a button nobody may press is furniture.
+     */
+    if (state.signedIn) {
+      columns.unshift({ label: "", render: row => offenderPicker(row) });
+    }
   }
 
   renderTable("offenders", data.rows, columns, row => showHistory(row.path_id));
+  syncOffenderTools(data.rows);
+  fetchLastLines(data.rows);
 }
 
 /*
@@ -2569,6 +2661,178 @@ function growthCell(growth) {
     ? `Grew by ${humanBytes(growth)} since the previous scan \u2014 this is taking space.`
     : `Shrank by ${humanBytes(-growth)} since the previous scan \u2014 this gave space back.`;
   return span;
+}
+
+/*
+ * The most recent line of every readable log in the table.
+ *
+ * One request for all of them rather than one each, and only for the rows the
+ * server has already said are readable - asking about the other forty would be
+ * forty refusals to no purpose. The result is cached by path so paging through
+ * a table does not re-read the same files every time the poll comes round.
+ */
+const lastLines = new Map();
+
+async function fetchLastLines(rows) {
+  const wanted = rows
+    .filter(r => r.viewable && r.path_id && !lastLines.has(r.path_id))
+    .map(r => r.path_id);
+
+  if (!wanted.length) {
+    paintLastLines();
+    return;
+  }
+
+  try {
+    const data = await api("last-lines", { path_ids: wanted.join(",") });
+    for (const row of data.rows) {
+      lastLines.set(row.path_id, row);
+    }
+  } catch {
+    // Not worth a notice: the table is complete without this, and the column
+    // simply stays empty rather than the page reporting a failure nobody asked
+    // for.
+    for (const id of wanted) lastLines.set(id, { line: null, error: null });
+  }
+
+  paintLastLines();
+}
+
+/*
+ * Written into the cells after the fact, rather than by re-rendering.
+ *
+ * Re-rendering the table when the lines arrive would undo the reader's
+ * selection and scroll - the thing this session has been fixing everywhere
+ * else. The cells are placeholders that get filled.
+ */
+function paintLastLines() {
+  for (const cell of document.querySelectorAll("[data-lastline]")) {
+    const row = lastLines.get(Number(cell.dataset.lastline));
+    if (!row) continue;
+
+    if (row.error) {
+      cell.className = "lastline muted";
+      cell.textContent = row.error;
+      cell.title = row.error;
+      continue;
+    }
+    if (!row.line) {
+      cell.className = "lastline muted";
+      cell.textContent = "empty";
+      continue;
+    }
+
+    cell.className = "lastline";
+    cell.textContent = row.line;
+    cell.title = `Line ${row.line_number}: ${row.line}`;
+  }
+}
+
+function lastLineCell(row) {
+  if (!row.viewable || !row.path_id) return "";
+
+  const span = document.createElement("span");
+  span.className = "lastline muted";
+  span.dataset.lastline = String(row.path_id);
+
+  const known = lastLines.get(row.path_id);
+  span.textContent = known ? (known.line ?? known.error ?? "empty") : "\u2026";
+  return span;
+}
+
+/*
+ * Which rows are ticked, by path.
+ *
+ * By path rather than by position, because the table re-sorts and re-filters
+ * under the selection - ticking the third row and then changing the sort order
+ * should not silently arm a different file.
+ */
+const offenderPicked = new Set();
+
+function offenderPicker(row) {
+  if (!mayDelete(row)) return "";
+
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = offenderPicked.has(row.path);
+  box.setAttribute("aria-label", `Select ${row.display}`);
+  box.addEventListener("click", event => event.stopPropagation());
+  box.addEventListener("change", () => {
+    box.checked ? offenderPicked.add(row.path) : offenderPicked.delete(row.path);
+    syncOffenderTools();
+  });
+  return box;
+}
+
+function syncOffenderTools(rows) {
+  if (rows) {
+    // Anything no longer in the table cannot stay armed behind the button.
+    const live = new Set(rows.map(r => r.path));
+    for (const path of [...offenderPicked]) {
+      if (!live.has(path)) offenderPicked.delete(path);
+    }
+  }
+
+  const button = $("offenderDelete");
+  if (!button) return;
+
+  const picked = offenderPicked.size;
+  button.hidden = !state.signedIn;
+  button.disabled = !picked;
+  button.textContent = picked ? `Delete ${count(picked, "selected item")}` : "Delete selected";
+}
+
+/*
+ * Removes everything ticked, one request at a time.
+ *
+ * Sequential rather than parallel: each one is a deletion, the failures matter
+ * individually, and firing twenty concurrent writes at a shared host to save a
+ * second is a poor trade. Directories go through the recursive action and files
+ * through the single-file one, decided per row rather than per batch.
+ */
+async function deletePicked() {
+  const rows = (state.offenders?.rows || []).filter(r => offenderPicked.has(r.path));
+  if (!rows.length) return;
+
+  const bytes = rows.reduce((sum, r) => sum + Number(r.bytes || 0), 0);
+  const dirs = rows.filter(r => r.kind === "dir").length;
+
+  const question = `Delete ${count(rows.length, "item")} permanently?\n\n`
+    + rows.slice(0, 12).map(r => `${r.kind === "dir" ? "[dir] " : ""}${r.display}`).join("\n")
+    + (rows.length > 12 ? `\n\u2026and ${rows.length - 12} more` : "")
+    + `\n\nThat is ${humanBytes(bytes)}`
+    + (dirs ? `, and ${count(dirs, "directory", "directories")} will be emptied recursively` : "")
+    + ". This cannot be undone.";
+
+  if (!confirm(question)) return;
+
+  const button = $("offenderDelete");
+  button.disabled = true;
+
+  let freed = 0;
+  let done = 0;
+  const failed = [];
+
+  for (const row of rows) {
+    try {
+      const result = row.kind === "dir"
+        ? await post("delete-dir", { path: row.path })
+        : await post("delete-file", { path: row.path });
+      freed += Number(result.bytes ?? result.bytes_freed ?? 0);
+      done++;
+      offenderPicked.delete(row.path);
+    } catch (error) {
+      failed.push(`${row.display}: ${error.message || error}`);
+    }
+  }
+
+  notice(
+    `Removed ${count(done, "item")}, freeing ${humanBytes(freed)}.`
+      + (failed.length ? ` ${count(failed.length, "item")} could not be removed: ${failed[0]}` : ""),
+    !failed.length
+  );
+
+  await refreshAll();
 }
 
 /** The buttons for one row: view a log, delete a file, or neither. */
@@ -2625,8 +2889,22 @@ function rowButtons(row) {
  * in a category the config allows. The server checks all of it again anyway -
  * this is about not offering something that will be refused.
  */
+/*
+ * Whether the interface should offer to delete this row.
+ *
+ * The server decides for real - resolveDeletable is the authority and this
+ * cannot grant anything it refuses. This only decides whether to draw a button
+ * that would work, because a Delete that always answers "not allowed" is worse
+ * than no Delete at all.
+ */
+function mayDelete(row) {
+  if (!state.signedIn || row.deleted_at) return false;
+  if (state.deletableScope === "account") return true;
+  return state.deletable.includes(row.category);
+}
+
 function deleteButton(row) {
-  if (!state.signedIn || row.kind !== "file" || !state.deletable.includes(row.category)) {
+  if (!mayDelete(row)) {
     return "";
   }
 
@@ -2639,10 +2917,29 @@ function deleteButton(row) {
   button.className = "danger";
   button.textContent = "Delete";
   button.addEventListener("click", async () => {
-    if (!confirm(`Delete this file permanently?\n\n${row.display}\n${humanBytes(row.bytes)}`)) return;
+    const directory = row.kind === "dir";
+    const question = directory
+      ? `Delete this directory and everything inside it?\n\n${row.display}\n`
+        + `${humanBytes(row.bytes)} in ${count(row.files || 0, "file")}\n\nThis cannot be undone.`
+      : `Delete this file permanently?\n\n${row.display}\n${humanBytes(row.bytes)}`;
+    if (!confirm(question)) return;
     button.disabled = true;
     try {
-      const result = await post("delete-file", { path: row.path });
+      const result = directory
+        ? await post("delete-dir", { path: row.path })
+        : await post("delete-file", { path: row.path });
+
+      if (directory) {
+        notice(
+          `Removed ${humanBytes(result.bytes)} in ${count(result.files, "file")}`
+            + (result.skipped?.length
+              ? `. ${count(result.skipped.length, "path")} could not be removed.`
+              : "."),
+          !result.skipped?.length
+        );
+        await refreshAll();
+        return;
+      }
       notice(
         result.bytes_freed > 0
           ? `Deleted ${humanBytes(result.bytes_freed)}.`
@@ -3336,6 +3633,16 @@ async function refreshBusy() {
  * toggle: it opens with the keyboard, it prints open, and find-in-page reaches
  * inside it.
  */
+/*
+ * Which moments the reader has opened, by the time they happened at.
+ *
+ * The poll rebuilds this list from scratch, which threw away every open
+ * disclosure - so reading one meant racing the next refresh. Keyed on taken_at
+ * rather than on position, because a new spike arriving at the top would
+ * otherwise shift the open one down and open its neighbour instead.
+ */
+const busyOpen = new Set();
+
 function renderBusyMoments(moments) {
   const holder = $("processHistory");
 
@@ -3350,6 +3657,10 @@ function renderBusyMoments(moments) {
   holder.replaceChildren(...moments.map(moment => {
     const section = document.createElement("details");
     section.className = "busy-moment";
+    section.open = busyOpen.has(moment.taken_at);
+    section.addEventListener("toggle", () => {
+      section.open ? busyOpen.add(moment.taken_at) : busyOpen.delete(moment.taken_at);
+    });
 
     const summary = document.createElement("summary");
 
@@ -3468,20 +3779,25 @@ async function refreshHost() {
    * for the "no host readings" message and its own content wrapper, so whichever
    * one is open shows the state of the collector rather than an empty panel.
    */
-  const bodies = ["hostBody", "hostIoBody", "hostDaemonBody"];
+  const bodies = ["hostBody", "hostIoBody", "hostDaemonBody", "diskProcsBody", "rootFilesBody"];
   const contents = ["hostMemory", "hostIoContent", "hostDaemonContent"];
   const showAll = hidden => contents.forEach(id => { const el = $(id); if (el) el.hidden = hidden; });
   const sayAll = build => bodies.forEach(id => { const el = $(id); if (el) build(el); });
 
+  for (const id of ["hostBody", "hostIoBody", "hostDaemonBody", "diskProcsBody", "rootFilesBody"]) {
+    const el = $(id);
+    if (el && !el.childElementCount) el.replaceChildren(spinner("Reading the host collector\u2026"));
+  }
+
   const panel = $("hostPanel");
   if (!state.signedIn) {
-    for (const id of ["hostPanel", "hostIoPanel", "hostDaemonPanel"]) {
+    for (const id of ["hostPanel", "hostIoPanel", "hostDaemonPanel", "diskProcsPanel", "rootFilesPanel"]) {
       const el = $(id);
       if (el) el.hidden = true;
     }
     return;
   }
-  for (const id of ["hostPanel", "hostIoPanel", "hostDaemonPanel"]) {
+  for (const id of ["hostPanel", "hostIoPanel", "hostDaemonPanel", "diskProcsPanel", "rootFilesPanel"]) {
     const el = $(id);
     if (el) el.hidden = false;
   }
@@ -3956,18 +4272,53 @@ async function refreshHostDisk() {
   const holder = $("hostDisk");
   if (!holder) return;
 
+  // Whatever goes wrong, it goes wrong on all four pages - each of them is a
+  // view of this one reading, and three of them silently showing nothing would
+  // be worse than three of them saying why.
+  const everywhere = text => {
+    for (const id of ["hostDisk", "diskDeleted", "diskDirs"]) {
+      const el = $(id);
+      if (el) el.replaceChildren(note(text));
+    }
+    const walk = $("hostWalk");
+    if (walk) walk.replaceChildren();
+  };
+
+  for (const id of ["hostDisk", "diskDeleted", "diskDirs"]) {
+    const el = $(id);
+    // Only when there is nothing there yet: replacing a drawn page with a
+    // spinner every poll would be worse than the blank it replaces.
+    if (el && !el.childElementCount) el.replaceChildren(spinner("Reading the last walk\u2026"));
+  }
+
   let data;
   try {
     data = await api("host-disk");
   } catch (error) {
-    holder.replaceChildren(note(String(error.message || error)));
+    everywhere(String(error.message || error));
     return;
   }
 
   if (!data.available) {
-    holder.replaceChildren(note(data.reason || "No disk walk recorded."));
+    everywhere(data.reason || "No disk walk recorded.");
+    renderWalkButton(data);
     return;
   }
+
+  /*
+   * One reading, several pages.
+   *
+   * The walk produces four separate findings - the gap, the filesystems, the
+   * space held by deleted files, the biggest directories - and each was a
+   * heading in a page long enough that the last of them was never reached. They
+   * are pages now, filled from the one request, so moving between them costs
+   * nothing and each one opens on the thing it is named after.
+   */
+  const into = (id, ...nodes) => {
+    const el = $(id);
+    if (!el) return;
+    el.replaceChildren(...nodes.filter(Boolean));
+  };
 
   const body = document.createDocumentFragment();
 
@@ -4057,6 +4408,9 @@ async function refreshHostDisk() {
     body.appendChild(section("Filesystems", wrap));
   }
 
+  const deleted = document.createDocumentFragment();
+  const dirs = document.createDocumentFragment();
+
   if (data.deleted.length) {
     /*
      * Before the directories, deliberately.
@@ -4065,7 +4419,7 @@ async function refreshHostDisk() {
      * here it is very likely the answer - and somebody scrolling a list of
      * directories will not think to look further down for it.
      */
-    body.appendChild(section(
+    deleted.appendChild(section(
       `Deleted, still holding ${humanBytes(data.deleted_bytes)}`,
       (() => {
         const wrap = document.createDocumentFragment();
@@ -4084,25 +4438,46 @@ async function refreshHostDisk() {
       })()
     ));
   } else if (data.deleted_readable) {
-    body.appendChild(section("Deleted, still open",
-      note("None — no process is holding space in a deleted file.")));
+    deleted.appendChild(note("None \u2014 no process is holding space in a deleted file."));
+  } else {
+    deleted.appendChild(note("This needs /proc/<pid>/fd, which only root can read. "
+      + "Run the host collector to fill it in."));
   }
 
   if (data.dirs.length) {
-    body.appendChild(section(`Biggest directories under ${data.root}`, simpleTable(
+    dirs.appendChild(simpleTable(
       ["Directory", "Size", "Files"],
       data.dirs.map(d => [d.path, humanBytes(d.bytes), humanCount(d.files)]),
       ["name", "size", "size"]
-    )));
+    ));
+  } else {
+    dirs.appendChild(note("Nothing recorded. Ask for a walk from the Storage page."));
   }
 
   const when = [`Walked ${humanTime(data.taken_at)} (${ago(data.taken_at)})`];
   if (data.dirs_scanned) when.push(`${humanCount(data.dirs_scanned)} directories in ${data.seconds}s.`);
   if (data.note) when.push(data.note);
-  body.appendChild(note(when.join(" · ")));
 
-  body.appendChild(walkButton(data));
-  holder.replaceChildren(body);
+  body.appendChild(note(when.join(" \u00b7 ")));
+
+  // The same "when was this measured" line under each page built from it, so
+  // no page can quietly show last week's walk as though it were current.
+  into("hostDisk", body);
+  into("diskDeleted", deleted, note(when.join(" \u00b7 ")));
+  into("diskDirs", dirs, note(when.join(" \u00b7 ")));
+  renderWalkButton(data);
+}
+
+/*
+ * The walk request, which lives on the Storage page now.
+ *
+ * It is the control that produces everything on these four pages, so it belongs
+ * where somebody starts rather than at the bottom of one of the four things it
+ * feeds.
+ */
+function renderWalkButton(data) {
+  const holder = $("hostWalk");
+  if (holder) holder.replaceChildren(walkButton(data));
 }
 
 /*
@@ -4824,7 +5199,33 @@ function outageBands(uptime) {
  * for. Merging them would let a cron job that stopped running look exactly like
  * a server that keeps falling over.
  */
-function refreshUptime() {
+/*
+ * Fetches its own readings when it is the page being looked at.
+ *
+ * This used to render from whatever the dashboard had already loaded, which
+ * worked only if you arrived here from there - opening Uptime directly, or
+ * reloading on it, drew nothing at all. The vitals call comes with it because
+ * the shading and the line have to describe the same window, and the analysis
+ * that decides which holes are outages arrives with the vitals rather than with
+ * the uptime record.
+ */
+async function refreshUptime() {
+  const to = state.frozenAt || Math.floor(Date.now() / 1000);
+  const from = to - state.range;
+
+  const [uptime, vitals] = await Promise.all([
+    api("uptime", { from, to }),
+    api("vitals", { from, to, limit: 900 }),
+  ]);
+
+  state.uptime = uptime;
+  state.uptime.analysis = vitals.uptime;
+  state.restarts = restartMarks(uptime, from, to);
+
+  renderUptime();
+}
+
+function renderUptime() {
   const data = state.uptime;
   if (!data) {
     return;
@@ -5670,6 +6071,16 @@ async function saveSchedule(remove) {
  * dot is not.
  */
 const SEVERITY_ICON = { critical: "\u{1F534}", warning: "\u{1F7E0}", info: "\u{1F535}" };
+
+/*
+ * Declared before the object that reads it on the way up.
+ *
+ * `const` is in the temporal dead zone until its own line runs, so reading this
+ * from alertState's initialiser threw - and the try/catch around localStorage,
+ * there for private browsing, quietly turned that into "nothing was dismissed".
+ * The dismissal was being written correctly and discarded on every load.
+ */
+const DISMISS_KEY = "hostscope.alertsDismissedThrough";
 const severityIcon = severity => SEVERITY_ICON[severity] || "\u26AA";
 
 const alertState = {
@@ -5684,9 +6095,33 @@ const alertState = {
    * otherwise one dismissal silences every future alert. Keying on the newest
    * id gets both: the banner stays down until an alert arrives that the reader
    * has not already seen.
+   *
+   * Kept in localStorage, because a reload is exactly when somebody expects a
+   * thing they dismissed to stay dismissed. It is a per-browser preference, not
+   * a fact about the alert - marking one read is the server-side act, and that
+   * is a different button.
    */
-  dismissedThrough: 0,
+  dismissedThrough: readDismissed(),
 };
+
+function readDismissed() {
+  try {
+    return Number(localStorage.getItem(DISMISS_KEY)) || 0;
+  } catch {
+    // Private browsing, or storage turned off. The banner simply comes back,
+    // which is the safe direction to fail in.
+    return 0;
+  }
+}
+
+function writeDismissed(id) {
+  alertState.dismissedThrough = id;
+  try {
+    localStorage.setItem(DISMISS_KEY, String(id));
+  } catch {
+    /* Nothing to do: the in-memory value still holds for this page. */
+  }
+}
 
 /*
  * The banner, which appears above every view rather than only on Alerts.
@@ -5699,8 +6134,16 @@ function renderAlertBanner(unread) {
   const banner = $("alertBanner");
   if (!banner) return;
 
+  /*
+   * The dashboard only.
+   *
+   * A banner on all eighteen pages is a banner you scroll past, and it pushes
+   * whatever you actually came for below the fold every time. The nav badge is
+   * what carries the warning everywhere else - it is always visible, it counts,
+   * and it does not take a third of the screen to do it.
+   */
   const newest = unread.reduce((max, row) => Math.max(max, row.id), 0);
-  if (!unread.length || newest <= alertState.dismissedThrough) {
+  if (!unread.length || state.view !== "overview" || newest <= alertState.dismissedThrough) {
     banner.hidden = true;
     return;
   }
@@ -5733,7 +6176,7 @@ function renderAlertBanner(unread) {
   close.setAttribute("aria-label", "Dismiss");
   close.textContent = "\u00d7";
   close.addEventListener("click", () => {
-    alertState.dismissedThrough = newest;
+    writeDismissed(newest);
     banner.hidden = true;
   });
   frag.appendChild(close);
@@ -5768,8 +6211,23 @@ function syncAlertTools() {
 }
 
 async function refreshAlerts() {
-  const data = await api("alerts", { limit: 200 });
+  const to = state.frozenAt || Math.floor(Date.now() / 1000);
+
+  /*
+   * Restarts alongside the alerts, because half of them are about the restart.
+   *
+   * A cluster of warnings just after the machine came back is a machine coming
+   * back, not a machine in trouble - and the same cluster with no restart under
+   * it is something else entirely. Without the boot marks the chart cannot tell
+   * those two apart, and neither can the person reading it.
+   */
+  const [data, uptime] = await Promise.all([
+    api("alerts", { limit: 200 }),
+    api("uptime", { from: to - Math.max(state.range, 7 * 86400), to }).catch(() => null),
+  ]);
+
   alertState.rows = data.rows;
+  alertState.uptime = uptime;
 
   // Selections that no longer exist - deleted, or filtered away - must not
   // keep the buttons lit for rows nobody can see.
@@ -5846,6 +6304,37 @@ function alertRowActions(row) {
  * to end. Bucketed by hour or by day depending on how far back the alerts
  * actually go, so a quiet fortnight is not drawn as 336 empty columns.
  */
+/*
+ * Every moment the machine is known to have come up, from either record.
+ *
+ * Two sources that overlap and neither of which is complete: `last` on the host
+ * knows about reboots from before this tool existed, and the readings know
+ * about ones on a machine where `last` cannot be read. Merged and deduplicated
+ * to the minute, because the same restart recorded twice would draw two lines
+ * a few seconds apart and read as two reboots.
+ */
+function bootTimes(uptime) {
+  if (!uptime) return [];
+
+  const seen = new Set();
+  const out = [];
+
+  const add = at => {
+    const when = Number(at);
+    if (!when) return;
+    const minute = Math.floor(when / 60);
+    if (seen.has(minute)) return;
+    seen.add(minute);
+    out.push(when);
+  };
+
+  for (const boot of uptime.boots || []) add(boot.booted_at ?? boot.boot_at);
+  for (const outage of uptime.analysis?.outages || []) add(outage.booted_at);
+  add(uptime.boot_at);
+
+  return out.sort((a, b) => a - b);
+}
+
 function drawAlertTimeline(rows) {
   const canvas = $("alertTimeline");
   rememberDraw(canvas, () => drawAlertTimeline(alertState.rows));
@@ -5942,6 +6431,29 @@ function drawAlertTimeline(rows) {
     }
   });
 
+  /*
+   * Each restart as a dashed line, drawn over the bars.
+   *
+   * Over rather than under: the question is "did this fire around a reboot",
+   * and a line hidden behind a bar answers it for every case except the one
+   * that matters.
+   */
+  const boots = bootTimes(alertState.uptime).filter(at => at >= from && at <= now);
+  if (boots.length) {
+    ctx.save();
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = "#5ecbd6";
+    ctx.lineWidth = 1.5;
+    for (const at of boots) {
+      const x = pad.left + ((at - from) / Math.max(1, now - from)) * plotW;
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, pad.top + plotH);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   ctx.fillStyle = "#8b98a8";
   ctx.textAlign = "left";
   ctx.fillText(humanTime(from), pad.left, height - 6);
@@ -5955,6 +6467,12 @@ function drawAlertTimeline(rows) {
     const span = document.createElement("span");
     span.style.setProperty("--dot", colour[level]);
     span.textContent = `${level} (${total})`;
+    legend.appendChild(span);
+  }
+  if (boots.length) {
+    const span = document.createElement("span");
+    span.style.setProperty("--dot", "#5ecbd6");
+    span.textContent = `${count(boots.length, "restart")} (dashed)`;
     legend.appendChild(span);
   }
   $("alertLegend").replaceChildren(legend);
@@ -6142,6 +6660,28 @@ function section(title, contents) {
   wrap.appendChild(heading);
   wrap.appendChild(contents);
 
+  return wrap;
+}
+
+/*
+ * Something on screen while a request is in flight.
+ *
+ * A panel that is blank for four seconds and then full is indistinguishable
+ * from a panel that is broken, and the pages that take longest - the backup
+ * analysis, a disk walk being read back - are exactly the ones where somebody
+ * concludes it does not work and goes away.
+ */
+function spinner(text = "Loading\u2026") {
+  const wrap = document.createElement("p");
+  wrap.className = "loading";
+
+  const ring = document.createElement("span");
+  ring.className = "loading-ring";
+  ring.setAttribute("aria-hidden", "true");
+  wrap.appendChild(ring);
+
+  wrap.appendChild(document.createTextNode(text));
+  wrap.setAttribute("role", "status");
   return wrap;
 }
 
@@ -6453,7 +6993,7 @@ setInterval(renderLastSeen, 1000);
  * that is the right trade rather than a nightly job that records the tree.
  */
 const treeState = { path: "", source: "account", level: null, boxes: [], hover: null,
-                    colourBy: "type", selected: null };
+                    colourBy: "type", selected: null, typeFilter: "" };
 
 async function refreshTreemap(path = treeState.path) {
   if (!state.signedIn) {
@@ -6465,12 +7005,19 @@ async function refreshTreemap(path = treeState.path) {
     return;
   }
 
-  $("treeNote").textContent = "Measuring…";
+  $("treeNote").textContent = "Measuring\u2026";
+  if (!treeState.level) {
+    // The first walk of a large directory is the slow one, and an empty canvas
+    // with no explanation is where people conclude it is broken.
+    $("treeNote").replaceChildren(spinner("Measuring this directory\u2026"));
+  }
 
   try {
     const level = await api("treemap", { path, source: treeState.source });
     treeState.level = level;
     treeState.path = level.path;
+    fillFilter($("treeTypeFilter"), [...Object.keys(TYPE_EXTENSIONS), "other"],
+      treeState.typeFilter);
     drawTreemap();
     renderCrumbs();
     renderTreeNote();
@@ -6511,6 +7058,13 @@ function renderTreeNote() {
       + "rectangle; its area is still their true total.");
   }
   if (level.seconds) parts.push(`Measured in ${level.seconds}s.`);
+
+  if (treeState.typeFilter) {
+    const shown = treeState.boxes.reduce((sum, b) => sum + Number(b.bytes || 0), 0);
+    parts.push(`Showing only ${treeState.typeFilter}: ${humanBytes(shown)} of the `
+      + `${humanBytes(level.bytes)} here. Directories are sized by how much `
+      + `${treeState.typeFilter} is inside them, not by their whole contents.`);
+  }
 
   $("treeNote").textContent = parts.join(" ");
 }
@@ -6637,7 +7191,7 @@ function treeColour(node) {
     // A directory has no type of its own. Colouring it by its heaviest child
     // would be inventing a fact; it gets the neutral blue it always had.
     if (node.kind === "dir") return "#2f6f8f";
-    return typeColor(fileTypeOfName(node.name || ""));
+    return typeColor(fileTypeOfNode(node) || "other");
   }
 
   if (node.kind === "dir") return "#2f6f8f";
@@ -6660,15 +7214,16 @@ function treeColour(node) {
  * disagree, the map is coloured by one rule and the pie by another.
  */
 const TYPE_EXTENSIONS = {
-  images: "jpg jpeg png gif webp bmp tif tiff svg ico heic avif psd raw cr2 nef",
+  images: "jpg jpeg png gif webp bmp tif tiff svg ico heic avif psd raw cr2 nef xcf",
   video: "mp4 m4v mov avi mkv webm wmv flv mpg mpeg ts 3gp",
   audio: "mp3 wav flac aac ogg oga m4a wma aiff opus",
-  archives: "zip gz tgz bz2 xz 7z rar tar zst lz lzma jar war iso dmg pkg deb rpm cab",
-  web: "html htm css js mjs cjs map woff woff2 ttf eot otf json xml scss less vue ts tsx jsx",
-  documents: "pdf doc docx xls xlsx ppt pptx odt ods odp rtf txt md csv tsv epub mobi",
+  archives: "zip gz br tgz bz2 xz 7z rar tar zst lz lzma jar war iso dmg pkg deb rpm cab backup",
+  web: "html htm css js mjs cjs map woff woff2 ttf eot otf json xml scss less vue ts tsx jsx xsd xsl xslt htaccess htpasswd mustache twig hbs ejs pug",
+  documents: "pdf doc docx xls xlsx ppt pptx odt ods odp rtf txt md csv tsv epub mobi license manual readme changelog nfo",
   code: "php py rb pl sh bash c h cpp hpp go rs java cs swift kt lua sql yml yaml toml ini conf patch diff",
-  databases: "db sqlite sqlite3 mdb frm ibd myd myi dump bak",
+  databases: "db sqlite sqlite3 mdb frm ibd myd myi dump bak idx pack mmdb rdb aof",
   logs: "log out err",
+  executables: "exe dll so dylib class bin com msi app o a",
 };
 
 const EXTENSION_TYPE = (() => {
@@ -6679,11 +7234,29 @@ const EXTENSION_TYPE = (() => {
   return index;
 })();
 
-function fileTypeOfName(name) {
+/*
+ * The type of a node, from the server's word where there is one.
+ *
+ * The scanner decides types by extension *and*, for a file with no extension,
+ * by whether it is executable - which is a fact the browser cannot see. So a
+ * treemap node carrying an `executable` flag is trusted, and the name is only
+ * consulted when there is nothing better.
+ */
+function fileTypeOfNode(node) {
+  if (node.kind === "dir" || node.kind === "pool" || node.kind === "link") return null;
+  const name = node.name || "";
   const dot = name.lastIndexOf(".");
-  if (dot <= 0) return "other";
+  if (dot <= 0) return node.executable ? "executables" : "other";
+  return fileTypeOfName(name);
+}
+
+function fileTypeOfName(name) {
+  // A leading dot is not a separator - `.htaccess` is named entirely by what
+  // follows it, which is what PHP's pathinfo reports as the extension too.
+  const dot = name.lastIndexOf(".");
+  if (dot < 0) return "other";
   const extension = name.slice(dot + 1).toLowerCase();
-  if (!extension || extension.length > 8 || !/^[a-z0-9]+$/.test(extension)) return "other";
+  if (!extension || extension.length > 12 || !/^[a-z0-9]+$/.test(extension)) return "other";
   return EXTENSION_TYPE.get(extension) || "other";
 }
 
@@ -6745,7 +7318,28 @@ function drawTreemap() {
     return;
   }
 
-  treeState.boxes = squarify(level.children, 0, 0, width, height);
+  /*
+   * Filtering shrinks directories, it does not hide them.
+   *
+   * "Show me only audio" has to answer "and which directories hold it", so a
+   * directory keeps its rectangle sized by the audio *inside* it rather than
+   * vanishing because it is not itself an audio file. That number comes from
+   * the server, which walked the tree; the browser only knows the totals.
+   */
+  const children = filteredChildren(level.children);
+
+  if (!children.length) {
+    ctx.fillStyle = "#9a9a9a";
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(
+      `Nothing of that type in this directory`,
+      width / 2, height / 2);
+    treeState.boxes = [];
+    return;
+  }
+
+  treeState.boxes = squarify(children, 0, 0, width, height);
 
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
@@ -6793,6 +7387,35 @@ function drawTreemap() {
       ctx.fillStyle = "rgba(255,255,255,.72)";
       ctx.font = "10px system-ui, sans-serif";
       ctx.fillText(humanBytes(box.bytes), box.x + 5, box.y + 18);
+
+      /*
+       * A globe on the directory a website is served from.
+       *
+       * The one question somebody staring at a home directory usually has is
+       * "which of these forty is the live site", and it is answerable without
+       * opening any of them. The domain goes beside it only if it fits - a name
+       * clipped to "exam" is worse than no name, and the details panel has it
+       * in full either way.
+       */
+      if (box.site?.is_site) {
+        ctx.font = "12px system-ui, sans-serif";
+        const globe = "\u{1F310}";
+        ctx.fillStyle = "rgba(255,255,255,.95)";
+        ctx.fillText(globe, box.x + 5, box.y + 32);
+
+        const domain = (box.site.domains || [])[0];
+        if (domain) {
+          const at = box.x + 5 + ctx.measureText(globe).width + 4;
+          ctx.font = "10px system-ui, sans-serif";
+          if (at + ctx.measureText(domain).width + 5 <= box.x + box.w) {
+            ctx.fillStyle = box.site.confident
+              ? "rgba(255,255,255,.85)"
+              : "rgba(255,255,255,.55)";
+            ctx.fillText(domain, at, box.y + 34);
+          }
+        }
+      }
+
       ctx.restore();
     }
   }
@@ -6804,6 +7427,31 @@ function outlineBox(ctx, box) {
   ctx.strokeStyle = "#ffffff";
   ctx.lineWidth = 2;
   ctx.strokeRect(box.x + 1, box.y + 1, box.w - 2, box.h - 2);
+}
+
+/*
+ * The children that match the chosen type, resized to just that part of them.
+ *
+ * A file either is the type or it is not. A directory carries a per-type
+ * breakdown from the walk, so it keeps a rectangle proportional to how much of
+ * that type it contains - which is the whole point: the directory holding the
+ * audio is the answer, not the individual mp3s.
+ */
+function filteredChildren(children) {
+  const wanted = treeState.typeFilter;
+  if (!wanted) return children;
+
+  const out = [];
+  for (const node of children) {
+    if (node.kind === "dir") {
+      const bytes = Number(node.type_bytes?.[wanted] || 0);
+      if (bytes > 0) out.push({ ...node, bytes });
+      continue;
+    }
+    if (node.kind === "pool") continue;
+    if (fileTypeOfNode(node) === wanted) out.push(node);
+  }
+  return out;
 }
 
 function boxAt(x, y) {
@@ -6943,6 +7591,12 @@ $("treeColourBy").addEventListener("change", () => {
   renderTreeLegend();
 });
 
+$("treeTypeFilter").addEventListener("change", () => {
+  treeState.typeFilter = $("treeTypeFilter").value;
+  drawTreemap();
+  renderTreeNote();
+});
+
 $("inspectClose").addEventListener("click", () => {
   $("inspectPanel").hidden = true;
   treeState.selected = null;
@@ -6987,7 +7641,16 @@ async function inspect(path) {
 
   state.inspected = data;
   renderInspect(data);
-  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  /*
+   * The page does not move.
+   *
+   * Scrolling to the panel takes the map out from under the pointer mid-hunt,
+   * which reads as the page having jumped somewhere on its own. The panel is
+   * directly below the map and the map shrinks nothing, so it is already
+   * findable; if it happens to be off-screen the reader scrolls, which is the
+   * one action they were not expecting to have done for them.
+   */
 }
 
 function renderInspect(data) {
@@ -7029,12 +7692,21 @@ function renderInspect(data) {
     // file manager that labels ctime "created" is repeating the same mistake.
     ["Inode last changed", f.changed_at ? humanTime(f.changed_at) : "unknown"],
     ["Owner", f.owner ?? "unknown"],
-    ["Permissions", f.mode ?? "unknown"],
+    ["Permissions", f.mode ? `${f.mode} \u2014 ${modeInWords(f.mode, data.kind === "dir")}` : "unknown"],
   );
 
-  if (f.links > 1) {
+  /*
+   * Only for files. A directory's link count is not what it looks like.
+   *
+   * Every subdirectory holds a `..` pointing back at its parent, so a directory
+   * with three children has an nlink of five - and reporting that as "the same
+   * bytes are reachable by five paths" is nonsense dressed up as a warning.
+   */
+  if (data.kind === "file" && f.links > 1) {
     facts.push(["Hard links", `${f.links} \u2014 the same bytes are reachable by ${f.links} paths, `
       + "and removing this one frees nothing until the last goes"]);
+  } else if (data.kind === "dir" && f.links > 2) {
+    facts.push(["Subdirectories", `${f.links - 2}, counted from the link count`]);
   }
   if (data.inode) facts.push(["Inode", String(data.inode)]);
 
@@ -7054,6 +7726,30 @@ function renderInspect(data) {
   body.replaceChildren(...parts);
 }
 
+/*
+ * A mode like 0750, said out loud.
+ *
+ * Four octal digits are a fact nobody should have to decode in their head, and
+ * the meaning genuinely differs between a file and a directory: x on a file
+ * means "may be run", x on a directory means "may be entered", and r on a
+ * directory without x lists the names and opens none of them.
+ */
+function modeInWords(mode, isDir) {
+  const digits = String(mode).padStart(4, "0").slice(-3);
+  const who = ["owner", "group", "everyone else"];
+
+  const said = [...digits].map((d, i) => {
+    const bits = Number(d);
+    const can = [];
+    if (bits & 4) can.push("read");
+    if (bits & 2) can.push("write");
+    if (bits & 1) can.push(isDir ? "enter" : "run");
+    return `${who[i]}: ${can.length ? can.join(" and ") : "nothing"}`;
+  });
+
+  return said.join(", ");
+}
+
 function inspectDirectory(data) {
   const c = data.contents;
   const out = [];
@@ -7068,25 +7764,72 @@ function inspectDirectory(data) {
     facts.push(["Measurement", "The walk ran out of time. The size above is a lower "
       + "bound \u2014 at least that much, not exactly that much."]);
   }
+  if (data.site?.is_site) {
+    facts.push([
+      "Serves",
+      data.site.domains.length
+        ? `\u{1F310} ${data.site.domains.join(", ")}`
+        : "\u{1F310} a website, domain unknown",
+    ]);
+    // Whether this is read from cPanel's own record or inferred from the name,
+    // because those are very different levels of certainty.
+    facts.push(["How that is known", data.site.why]);
+  }
   out.push(section("What is in it", factGrid(facts)));
 
+  /*
+   * Two questions, two pies, side by side.
+   *
+   * "Which file is the big one" and "what kind of thing is this directory" are
+   * both answered by area, and side by side you can see when they disagree -
+   * one enormous archive next to a directory that is nine-tenths images means
+   * something different from either chart alone.
+   */
+  const pair = document.createElement("div");
+  pair.className = "pie-pair";
+
   if (c.biggest.length) {
-    out.push(section("The biggest files directly inside", simpleTable(
-      ["Name", "Size"],
-      c.biggest.map(b => [b.name, humanBytes(b.bytes)]),
-      ["name", "size"]
-    )));
+    pair.appendChild(inspectPie(
+      "The biggest files directly inside",
+      c.biggest.map(b => ({ label: b.name, value: Number(b.bytes) })),
+      c.entries.files > c.biggest.length
+        ? `The ${c.biggest.length} biggest of ${count(c.entries.files, "file")} directly `
+          + "inside. Subdirectories are not counted here."
+        : "Every file directly inside. Subdirectories are not counted here."
+    ));
   }
 
-  if (c.types.length > 1) {
-    out.push(section("By type, directly inside", simpleTable(
-      ["Type", "Size"],
-      c.types.map(t => [t.type, humanBytes(t.bytes)]),
-      ["name", "size"]
-    )));
+  if (c.types.length) {
+    pair.appendChild(inspectPie(
+      "By type, everything below",
+      c.types.map(t => ({
+        label: t.type, value: Number(t.bytes), color: typeColor(t.type),
+      })),
+      "The whole subtree, not just this level."
+    ));
   }
+
+  if (pair.children.length) out.push(section("What it is made of", pair));
 
   return out;
+}
+
+/** One titled pie in the details panel, drawn once it has a width. */
+function inspectPie(title, slices, note_) {
+  const box = document.createElement("div");
+  box.className = "pie-half";
+
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  box.appendChild(heading);
+
+  const canvas = document.createElement("canvas");
+  canvas.className = "pie small";
+  box.appendChild(canvas);
+  box.appendChild(note(note_));
+
+  requestAnimationFrame(() => drawPieChart(canvas, slices, { empty: "Nothing to show" }));
+  return box;
 }
 
 /*
@@ -7181,7 +7924,9 @@ function inspectActions(data) {
       showLogPath(data.path);
     });
     wrap.appendChild(view);
-  } else if (p.view_reason) {
+  } else if (p.view_reason && data.kind !== "dir") {
+    // Not for directories: "a directory has no contents to read" is answering a
+    // question nobody asked and reads as a claim that the directory is empty.
     wrap.appendChild(note(p.view_reason));
   }
 
@@ -7229,6 +7974,315 @@ async function deleteFromInspect(data) {
     // Back to the parent: the thing that was being looked at is gone, and
     // redrawing the level it was in is what you want to see next.
     await refreshTreemap(data.kind === "dir" ? data.parent : treeState.path);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+}
+
+/*
+ * How to set the host collector up, for whoever has to do it.
+ *
+ * Written as steps with a tick against the ones already done, because the
+ * failure this replaces is a panel that says "no host readings" and leaves the
+ * reader to work out which of five things is missing.
+ */
+async function refreshHostSchedule() {
+  const body = $("hostScheduleBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see the setup instructions."));
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner());
+
+  let data;
+  try {
+    data = await api("host-setup");
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  const parts = [];
+
+  const state_ = document.createElement("p");
+  state_.className = data.database_readable ? "ok" : "muted";
+  state_.textContent = data.database_readable
+    ? `Working. The collector's database is at ${data.database} and this account can read it.`
+    : data.database_exists
+      ? `The database exists at ${data.database} but this account cannot read it — `
+        + "which is the ownership step below."
+      : "The collector has never run. Nothing on this site that describes the whole "
+        + "machine will have anything in it until it does.";
+  parts.push(state_);
+
+  const list = document.createElement("ol");
+  list.className = "steps";
+  for (const step of data.steps) {
+    const li = document.createElement("li");
+    li.className = step.done ? "step done" : "step";
+
+    const title = document.createElement("strong");
+    title.textContent = `${step.done ? "\u2713 " : ""}${step.title}`;
+    li.appendChild(title);
+
+    const p = document.createElement("p");
+    p.className = "muted small";
+    p.textContent = step.body;
+    li.appendChild(p);
+
+    list.appendChild(li);
+  }
+  parts.push(section("What has to happen", list));
+
+  parts.push(section("The line to paste, as root", paste(data.cron_line)));
+
+  /*
+   * The no-root path, said plainly rather than left out.
+   *
+   * Plenty of people running this have shared hosting and will never have root.
+   * Telling them only "run this as root" leaves them stuck; telling them what
+   * the account-side run does and does not collect lets them decide.
+   */
+  const without = document.createDocumentFragment();
+  without.appendChild(note("No root? The collector runs as an ordinary account too. It "
+    + "collects less, and here is exactly what less means."));
+
+  const compare = document.createElement("div");
+  compare.className = "compare";
+  compare.appendChild(compareColumn("Only as root", data.as_root));
+  compare.appendChild(compareColumn("Also as your own account", data.as_account));
+  without.appendChild(compare);
+
+  without.appendChild(paste(data.account_cron_line));
+  parts.push(section("If you do not have a host account", without));
+
+  body.replaceChildren(...parts);
+}
+
+function compareColumn(title, items) {
+  const box = document.createElement("div");
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  box.appendChild(heading);
+  box.appendChild(listOf(items));
+  return box;
+}
+
+/** A block of text meant to be copied, with a button that copies it. */
+function paste(text) {
+  const wrap = document.createElement("div");
+  wrap.className = "paste-wrap";
+
+  const pre = document.createElement("pre");
+  pre.className = "paste";
+  pre.textContent = text;
+  wrap.appendChild(pre);
+
+  const button = document.createElement("button");
+  button.className = "link";
+  button.textContent = "Copy";
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      button.textContent = "Copied";
+      setTimeout(() => { button.textContent = "Copy"; }, 1500);
+    } catch {
+      // Clipboard access is refused outside a secure context, which is exactly
+      // where somebody runs this over plain HTTP on a LAN. The text is on
+      // screen and selectable either way.
+      button.textContent = "Select it and copy";
+    }
+  });
+  wrap.appendChild(button);
+
+  return wrap;
+}
+
+/*
+ * What gets emailed, and to whom.
+ *
+ * The conditions are checkboxes over the thresholds the alerting code already
+ * reads - unticking one sets its threshold to zero, which is exactly how the
+ * rules have always been turned off. A second flag beside the threshold could
+ * disagree with it, and then no answer on this page would be trustworthy.
+ */
+async function refreshEmail() {
+  const body = $("emailBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to change the email settings."));
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner());
+
+  let data;
+  try {
+    data = await api("email");
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  renderEmail(data);
+}
+
+function renderEmail(data) {
+  const body = $("emailBody");
+  state.email = data;
+  const parts = [];
+
+  if (!data.mail_available) {
+    parts.push(note("This PHP has no mail() function, so nothing can be sent from here "
+      + "whatever is set below. That is a host setting, not one of these."));
+  }
+
+  const form = document.createElement("div");
+  form.className = "settings";
+
+  form.appendChild(fieldRow("Send alerts by email", (() => {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = "emailEnabled";
+    box.checked = data.enabled;
+    return box;
+  })(), "Nothing is sent while this is off, however bad things get."));
+
+  form.appendChild(fieldRow("Send to", (() => {
+    const input = document.createElement("input");
+    input.type = "email";
+    input.id = "emailTo";
+    input.value = data.to;
+    input.placeholder = "you@example.com";
+    input.size = 34;
+    return input;
+  })(), "Where the alerts go."));
+
+  form.appendChild(fieldRow("Send from", (() => {
+    const input = document.createElement("input");
+    input.type = "email";
+    input.id = "emailFrom";
+    input.value = data.from;
+    input.placeholder = "monitor@example.com";
+    input.size = 34;
+    return input;
+  })(), "Optional. Some hosts reject mail with no From header; others rewrite it "
+    + "whatever you put here."));
+
+  form.appendChild(fieldRow("Do not repeat within", (() => {
+    const select = document.createElement("select");
+    select.id = "emailCooldown";
+    for (const [seconds, label] of [
+      [3600, "an hour"], [21600, "six hours"], [43200, "twelve hours"], [86400, "a day"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = String(seconds);
+      option.textContent = label;
+      option.selected = Number(data.cooldown_seconds) === seconds;
+      select.appendChild(option);
+    }
+    return select;
+  })(), "However bad things get. An alert that arrives every minute becomes a filter rule."));
+
+  parts.push(section("Where to send", form));
+
+  const list = document.createElement("div");
+  list.className = "conditions";
+  for (const condition of data.conditions) {
+    const label = document.createElement("label");
+    label.className = "condition";
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = condition.on;
+    box.dataset.condition = condition.key;
+    label.appendChild(box);
+
+    const text = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = condition.name;
+    text.appendChild(name);
+
+    const detail = document.createElement("span");
+    detail.className = "muted small";
+    detail.textContent = condition.detail;
+    text.appendChild(detail);
+
+    label.appendChild(text);
+    list.appendChild(label);
+  }
+  parts.push(section("What to send about", list));
+
+  const save = document.createElement("div");
+  save.className = "inspect-actions";
+  const button = document.createElement("button");
+  button.id = "emailSave";
+  button.textContent = "Save these settings";
+  button.disabled = !data.writable;
+  save.appendChild(button);
+
+  if (!data.writable) {
+    save.appendChild(note("lib/config.php is not writable by the web server, so this page "
+      + "can show the settings but not change them. Use setup.php, or edit the file."));
+  }
+  parts.push(save);
+
+  if (data.recent.length) {
+    parts.push(section("Recently sent", simpleTable(
+      ["When", "To", "Result", "About"],
+      data.recent.map(r => [
+        humanTime(r.at), r.target || "\u2014", r.outcome, r.detail || "\u2014",
+      ]),
+      [null, "name", null, null]
+    )));
+  }
+
+  body.replaceChildren(...parts);
+  button.addEventListener("click", saveEmailSettings);
+}
+
+function fieldRow(label, control, hint) {
+  const row = document.createElement("div");
+  row.className = "settings-row";
+
+  const name = document.createElement("label");
+  name.className = "settings-label";
+  name.textContent = label;
+  name.htmlFor = control.id;
+  row.appendChild(name);
+
+  const wrap = document.createElement("div");
+  wrap.appendChild(control);
+  if (hint) {
+    const small = document.createElement("div");
+    small.className = "muted small";
+    small.textContent = hint;
+    wrap.appendChild(small);
+  }
+  row.appendChild(wrap);
+
+  return row;
+}
+
+async function saveEmailSettings() {
+  const conditions = [...document.querySelectorAll("[data-condition]")]
+    .filter(box => box.checked)
+    .map(box => box.dataset.condition)
+    .join(",");
+
+  try {
+    const result = await post("email-save", {
+      enabled: $("emailEnabled").checked ? "1" : "0",
+      to: $("emailTo").value.trim(),
+      from: $("emailFrom").value.trim(),
+      cooldown_seconds: $("emailCooldown").value,
+      conditions,
+    });
+    notice("Saved. New settings apply from the next alerting run.", true);
+    // Rendered from what the save wrote, not from a fresh read - see the note
+    // on clearstatcache in doEmailSave.
+    if (result.settings) renderEmail(result.settings);
+    else await refreshEmail();
   } catch (error) {
     notice(String(error.message || error));
   }
@@ -8019,20 +9073,74 @@ function showChangesIn(bar) {
  * account holding 4.5 GiB" is the same disk described in a way that says what
  * to do next.
  */
+/*
+ * What JetBackup reports about its own backups.
+ *
+ * Worth having beside the directory sizes because the directories are named
+ * `files0000000005` and say nothing at all - which account, which date, whether
+ * it is still current. Only JetBackup knows that, and only when it can be run.
+ */
+function renderJetBackup(jet) {
+  const out = document.createDocumentFragment();
+
+  if (jet.backups?.length) {
+    out.appendChild(section(`${count(jet.backups.length, "backup")} JetBackup knows about`,
+      simpleTable(
+        ["Account", "When", "Type", "Size", "Destination"],
+        jet.backups.map(b => [
+          b.account ?? "\u2014",
+          b.created_at ? humanTime(b.created_at) : "\u2014",
+          b.type ?? "\u2014",
+          b.bytes ? humanBytes(b.bytes) : "not reported",
+          b.destination ?? "\u2014",
+        ]),
+        ["name", null, null, "size", null]
+      )));
+  }
+
+  if (jet.destinations?.length) {
+    out.appendChild(section("Destinations", simpleTable(
+      ["Name", "Type", "Path"],
+      jet.destinations.map(d => [d.name ?? "\u2014", d.type ?? "\u2014", d.path ?? "\u2014"]),
+      ["name", null, "name"]
+    )));
+  }
+
+  if (!out.childElementCount) {
+    out.appendChild(note("JetBackup answered, but listed no backups and no destinations."));
+  }
+
+  return out;
+}
+
 async function refreshBackups() {
   const holder = $("backupBody");
   if (!holder) return;
+
+  const targets = ["backupBody", "backupActionsBody", "backupOtherBody", "backupJetBody"];
+  const everywhere = text => {
+    for (const id of targets) {
+      const el = $(id);
+      if (el) el.replaceChildren(note(text));
+    }
+  };
+
+  for (const id of targets) {
+    const el = $(id);
+    // Something has to be on screen while a walk of /backup is being read.
+    if (el && !el.childElementCount) el.replaceChildren(spinner("Reading the last walk\u2026"));
+  }
 
   let data;
   try {
     data = await api("backups");
   } catch (error) {
-    holder.replaceChildren(note(String(error.message || error)));
+    everywhere(String(error.message || error));
     return;
   }
 
   if (!data.available) {
-    holder.replaceChildren(note(data.reason || "Nothing recorded."));
+    everywhere(data.reason || "Nothing recorded.");
     return;
   }
 
@@ -8120,10 +9228,14 @@ async function refreshBackups() {
     body.appendChild(section("By account", wrap));
   }
 
-  // What JetBackup itself says, or plainly that it did not say.
-  const jet = data.jetbackup;
-  if (!jet.available) {
-    body.appendChild(section("JetBackup", note(jet.reason)));
+  // What JetBackup itself says, or plainly that it did not say - on its own
+  // page, because it is a question about one product rather than about backups.
+  const jetBody = $("backupJetBody");
+  if (jetBody) {
+    const jet = data.jetbackup;
+    jetBody.replaceChildren(jet.available
+      ? renderJetBackup(jet)
+      : note(jet.reason));
   }
 
   for (const root of data.roots) {
@@ -8177,10 +9289,16 @@ async function refreshBackups() {
       data.other.map(r => [r.path, humanBytes(r.bytes), humanCount(r.files), r.matched]),
       ["name", "size", "size", null]
     ));
-    body.appendChild(section("Other probable backups", wrap));
+    const otherBody = $("backupOtherBody");
+    if (otherBody) otherBody.replaceChildren(wrap);
   }
 
-  if (data.actions) body.appendChild(section("What can be done", backupActionList(data)));
+  const actionsBody = $("backupActionsBody");
+  if (actionsBody) {
+    actionsBody.replaceChildren(data.actions
+      ? backupActionList(data)
+      : note("Nothing to suggest from this reading."));
+  }
 
   holder.replaceChildren(body);
 }
@@ -8325,7 +9443,7 @@ const VIEWS = {
   overview: { label: "Overview", refresh: () => refreshVitals() },
 
   storage: { label: "Storage", parent: null, refresh: () => refreshScans() },
-  "storage-io": { label: "Disk I/O", parent: "storage", refresh: () => refreshHost() },
+  "storage-io": { label: "How hard the disks are working", parent: "storage", refresh: () => refreshHost() },
   "storage-files": {
     label: "Largest & growth", parent: "storage",
     refresh: async () => {
@@ -8344,8 +9462,15 @@ const VIEWS = {
   },
 
   backups: { label: "Backups", refresh: () => refreshBackups() },
+  "backups-actions": { label: "What can be done", parent: "backups", refresh: () => refreshBackups() },
+  "backups-other": { label: "Other probable backups", parent: "backups", refresh: () => refreshBackups() },
+  "backups-jetbackup": { label: "JetBackup", parent: "backups", refresh: () => refreshBackups() },
 
-  "host-disk": { label: "Host disk usage", parent: "storage", refresh: () => refreshHostDisk() },
+  "host-disk": { label: "Filesystems", parent: "storage", refresh: () => refreshHostDisk() },
+  "disk-dirs": { label: "Biggest directories", parent: "storage", refresh: () => refreshHostDisk() },
+  "disk-deleted": { label: "Deleted, still held", parent: "storage", refresh: () => refreshHostDisk() },
+  "disk-procs": { label: "Processes on disk", parent: "storage", refresh: () => refreshHost() },
+  "disk-rootfiles": { label: "Root-only files", parent: "storage", refresh: () => refreshHost() },
   "host-layout": { label: "Filesystem layout", parent: "storage", refresh: () => refreshMounts() },
 
   host: { label: "Memory", refresh: () => refreshHost() },
@@ -8364,8 +9489,15 @@ const VIEWS = {
 
   alerts: { label: "Alerts", refresh: () => refreshAlerts() },
   uptime: { label: "Uptime", refresh: () => refreshUptime() },
-  deletions: { label: "Deletions", refresh: () => refreshActionLog() },
-  schedule: { label: "Schedule", refresh: () => refreshSchedule() },
+  deletions: { label: "Actions", refresh: () => refreshActionLog() },
+  email: { label: "Email alerts", refresh: () => refreshEmail() },
+  schedule: {
+    label: "Schedule",
+    refresh: async () => {
+      await refreshSchedule();
+      await refreshHostSchedule();
+    },
+  },
   system: {
     label: "System",
     refresh: async () => {
@@ -8474,6 +9606,10 @@ function showView(view, push = true) {
    */
   const section = document.querySelector(`[data-view="${view}"]`);
   if (section) redrawCharts(section);
+
+  // The banner is the dashboard's, so leaving the dashboard has to take it away
+  // rather than waiting for the next poll to notice.
+  renderAlertBanner((alertState.rows || []).filter(row => !row.acknowledged_at));
 
   /*
    * And again once the refresh has landed.
@@ -8960,10 +10096,13 @@ for (const [id, key] of [["actionKind", "kind"], ["actionWho", "who"], ["actionR
   });
 }
 
-for (const id of ["hostIoRefresh", "hostDaemonRefresh"]) {
+for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh"]) {
   $(id).addEventListener("click",
     () => refreshHost().catch(error => notice(String(error.message || error))));
 }
+
+$("offenderDelete").addEventListener("click",
+  () => deletePicked().catch(error => notice(String(error.message || error))));
 
 $("hostLogRefresh").addEventListener("click",
   () => refreshHostLogs().catch(error => notice(String(error.message || error))));
@@ -8971,6 +10110,8 @@ $("hostLogRefresh").addEventListener("click",
 $("busyExpand").addEventListener("click", () => {
   const all = [...document.querySelectorAll("#processHistory details")];
   const opening = all.some(d => !d.open);
+  // Set .open and let the toggle listener record it, so the remembered set and
+  // what is on screen cannot drift apart.
   for (const d of all) d.open = opening;
   $("busyExpand").textContent = opening ? "Close all" : "Open all";
 });

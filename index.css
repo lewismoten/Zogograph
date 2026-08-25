@@ -176,7 +176,15 @@ button:disabled { opacity: .5; cursor: default; }
 .panel-head h2 { margin: 0; }
 /* A line of prose under a chart title, saying what the numbers are. Cheaper
    than a tooltip and it survives a screenshot. */
-.sub-note { margin: -6px 0 10px; max-width: 60ch; }
+/*
+ * A readable measure, but not half a panel.
+ *
+ * 60ch was chosen for prose and looked, on a 1400px panel, exactly like text
+ * that had failed to lay out - a hard wrap two-thirds of the way across an
+ * empty box. 90ch is still inside the range where the eye finds the next line
+ * without effort, and it fills a panel rather than appearing to give up on one.
+ */
+.sub-note { margin: -6px 0 10px; max-width: 90ch; }
 /*
  * A note that follows a chart rather than a heading.
  *
@@ -184,7 +192,7 @@ button:disabled { opacity: .5; cursor: default; }
  * that lands it on top of the legend, which drawLineChart inserts directly
  * after the canvas - so this is the same note with the margin the other way up.
  */
-.chart-note { margin: 10px 0 14px; max-width: 70ch; }
+.chart-note { margin: 10px 0 14px; max-width: 90ch; }
 .sub-head { font-size: .95rem; margin: 22px 0 4px; color: #cfcfcf; }
 /* A command line is long and must not push the numbers off the screen. */
 td.cmd {
@@ -1128,3 +1136,64 @@ img.thumb {
   background: var(--bg-raised); display: block;
 }
 .ok { color: var(--ok); }
+
+/* Two pies, side by side, stacking when there is not room for both. */
+.pie-pair {
+  display: grid; gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+.pie-half h4 { margin: 0 0 8px; font-size: .92rem; }
+.pie-half canvas.pie.small { height: 260px; }
+.pie-half .muted { margin: 6px 0 0; font-size: .82rem; }
+
+/* Loading ------------------------------------------------------------ */
+
+.loading { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+.loading-ring {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* Respect a reader who has asked the system to stop animating things. */
+@media (prefers-reduced-motion: reduce) { .loading-ring { animation-duration: 3s; } }
+
+/* Settings forms ----------------------------------------------------- */
+
+.settings-row {
+  display: grid; grid-template-columns: 190px 1fr; gap: 10px 18px;
+  align-items: start; padding: 10px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.settings-row:first-child { border-top: 0; }
+.settings-label { color: var(--muted); font-size: .9rem; padding-top: 4px; }
+.settings input[type="email"], .settings select {
+  background: var(--bg-raised); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 8px; font: inherit;
+}
+@media (max-width: 620px) { .settings-row { grid-template-columns: 1fr; } }
+
+.conditions { display: flex; flex-direction: column; gap: 12px; }
+.condition { display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: start; }
+.condition strong { display: block; margin-bottom: 2px; }
+
+/* Setup steps -------------------------------------------------------- */
+
+ol.steps { margin: 0; padding-left: 22px; }
+ol.steps .step { margin-bottom: 14px; }
+ol.steps .step p { margin: 4px 0 0; }
+ol.steps .step.done strong { color: var(--ok); }
+
+.compare { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.compare h4 { margin: 0 0 6px; font-size: .92rem; }
+
+.paste-wrap { display: flex; align-items: flex-start; gap: 10px; }
+.paste-wrap .paste { flex: 1; margin: 0; }
+
+/* The most recent line of a log, in a cell that must not widen the table. */
+.lastline {
+  display: block; max-width: 46ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem;
+}
