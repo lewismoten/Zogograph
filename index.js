@@ -299,9 +299,17 @@ function bandOf(value, warn, crit) {
 const BAND_WORD = { ok: "healthy", warn: "watch", crit: "urgent" };
 const BAND_COLOR = { ok: "#56c98a", warn: "#f0a35e", crit: "#f2616b" };
 
-function renderGauges(overview) {
+function renderGauges(overview, rows = null) {
   const v = overview.vitals;
   const holder = $("gauges");
+
+  /*
+   * The history behind each dial, from the readings already fetched.
+   *
+   * Passed in rather than fetched: refreshVitals has them, and asking for the
+   * same series again to draw a 32-pixel strip would double every poll.
+   */
+  const readings = rows ?? state.vitalRows ?? [];
 
   if (!v) {
     holder.replaceChildren(Object.assign(document.createElement("p"), {
@@ -327,17 +335,22 @@ function renderGauges(overview) {
   const dials = [
     {
       label: "Disk used", value: usedPercent, warn: 88, crit: 95,
+      series: gaugeSeries(readings, row => (row.disk_total_bytes
+        ? (row.disk_used_bytes / row.disk_total_bytes) * 100 : null)),
       sub: v.disk_total_bytes
         ? `${humanBytes(v.disk_free_bytes)} free of ${humanBytes(v.disk_total_bytes)}`
         : "not reported",
     },
     {
       label: "Inodes used", value: inodePercent, warn: 88, crit: 95,
+      series: gaugeSeries(readings, row => (row.inodes_total
+        ? (row.inodes_used / row.inodes_total) * 100 : null)),
       sub: v.inodes_total ? `${humanCount(v.inodes_free)} free` : "not reported",
     },
     {
       label: "CPU", value: v.cpu_percent == null ? null : Number(v.cpu_percent),
       warn: 70, crit: 90,
+      series: gaugeSeries(readings, row => row.cpu_percent),
       // The account's allowance, with the machine's own figure under it - see
       // the limits panel for why they are not the same measurement.
       sub: v.cpu_percent == null
@@ -349,12 +362,15 @@ function renderGauges(overview) {
     {
       label: "Memory", value: v.mem_used_percent == null ? null : Number(v.mem_used_percent),
       warn: 80, crit: 92,
+      series: gaugeSeries(readings, row => row.mem_used_percent),
       sub: v.mem_total_bytes
         ? `${humanBytes(v.mem_available_bytes)} available of ${humanBytes(v.mem_total_bytes)}`
         : "not reported",
     },
     {
       label: "Load", value: perCore, warn: 100, crit: 150, max: 200,
+      series: gaugeSeries(readings, row => (row.load1 != null && row.cpu_cores
+        ? (Number(row.load1) / Number(row.cpu_cores)) * 100 : null)),
       sub: v.load1 == null
         ? "not reported"
         : cores
@@ -448,6 +464,24 @@ function buildGauge(dial) {
     : (dial.plain != null ? "no ceiling to measure against" : "not measured");
   box.appendChild(state);
 
+  /*
+   * A strip of history under the dial.
+   *
+   * The gauge says where this is now, which on its own is half a fact: 88% is
+   * fine if it has been 88% all year and alarming if it was 60% on Tuesday.
+   * No numbers and no axis - the five full charts are one click away for that.
+   * This exists to answer "is it moving, and has it been bad recently" at a
+   * glance, which is the question somebody opening the overview actually has.
+   */
+  if (dial.series && dial.series.length > 1) {
+    const spark = document.createElement("canvas");
+    spark.className = "gauge-spark";
+    box.appendChild(spark);
+
+    requestAnimationFrame(() => drawSparkline(spark, dial));
+    rememberDraw(spark, () => drawSparkline(spark, dial));
+  }
+
   const sub = document.createElement("div");
   sub.className = "gauge-sub";
   sub.textContent = dial.sub;
@@ -459,6 +493,115 @@ function buildGauge(dial) {
   rememberDraw(canvas, () => drawGauge(canvas, dial, bandOf(dial.value, dial.warn, dial.crit)));
 
   return box;
+}
+
+/**
+ * One measurement over the selected range, in a strip the width of the gauge.
+ *
+ * The background is banded by health rather than the line being coloured: a
+ * coloured line says "this point was critical", which is true but hard to see
+ * at two pixels; a coloured background says "this period was critical", which
+ * is the shape of the answer somebody wants. It also survives a line that
+ * crosses a threshold repeatedly, where colouring segments produces a dashed
+ * mess.
+ *
+ * Deliberately nothing else. No axis, no ticks, no numbers - anything more and
+ * it stops being readable at a glance, which is the only reason it is here
+ * rather than being the chart on the next page.
+ */
+function drawSparkline(canvas, dial) {
+  const width = canvas.clientWidth;
+  if (!width) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const height = 32;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const points = dial.series.filter(point => point.value != null);
+  if (points.length < 2) return;
+
+  const t0 = points[0].at;
+  const t1 = points[points.length - 1].at;
+  const span = Math.max(1, t1 - t0);
+
+  /*
+   * The scale runs to the critical threshold, not to the highest reading.
+   *
+   * Scaling to the data makes a quiet week look as dramatic as a bad one -
+   * a line wobbling between 3% and 4% would fill the strip. Against the
+   * threshold, flat and low reads as flat and low.
+   */
+  const ceiling = Math.max(
+    dial.max ?? 100,
+    ...points.map(point => Number(point.value))
+  );
+
+  const x = at => ((at - t0) / span) * width;
+  const y = value => height - (Math.min(value, ceiling) / ceiling) * (height - 3) - 1.5;
+
+  /*
+   * Bands drawn as spans, from one reading to the next.
+   *
+   * Per-point rectangles leave gaps where readings are sparse and overlap
+   * where they are dense; a span between consecutive readings is what the
+   * measurement actually covers.
+   */
+  for (let i = 0; i < points.length - 1; i++) {
+    const band = bandOf(Number(points[i].value), dial.warn, dial.crit);
+    if (!band || band === "ok") continue;
+
+    ctx.fillStyle = band === "crit"
+      ? "rgba(242, 97, 107, 0.22)"
+      : "rgba(240, 163, 94, 0.18)";
+    const from = x(points[i].at);
+    const to = x(points[i + 1].at);
+    ctx.fillRect(from, 0, Math.max(1, to - from), height);
+  }
+
+  ctx.beginPath();
+  points.forEach((point, i) => {
+    const at = x(point.at);
+    const value = y(Number(point.value));
+    if (i === 0) ctx.moveTo(at, value);
+    else ctx.lineTo(at, value);
+  });
+  ctx.strokeStyle = "rgba(140, 180, 235, 0.9)";
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+
+  /*
+   * A dot on the last reading, tying the strip to the dial above it.
+   *
+   * Without it the right-hand end is just where the line stops, and on a
+   * collector that has been quiet for an hour that is not the same place as
+   * "now" - which is exactly the case worth noticing.
+   */
+  const last = points[points.length - 1];
+  ctx.beginPath();
+  ctx.arc(x(last.at), y(Number(last.value)), 2, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(200, 220, 245, 0.95)";
+  ctx.fill();
+}
+
+/**
+ * Readings for one gauge, as {at, value} pairs over the selected range.
+ *
+ * Reads the same series the full charts draw, so the strip and the chart can
+ * never disagree - which they would within a week if this had its own idea of
+ * how to turn a reading into a percentage.
+ */
+function gaugeSeries(rows, pick) {
+  if (!Array.isArray(rows)) return [];
+
+  return rows
+    .map(row => ({ at: Number(row.taken_at), value: pick(row) }))
+    .filter(point => Number.isFinite(point.at) && point.value != null
+      && Number.isFinite(Number(point.value)));
 }
 
 /*
@@ -965,6 +1108,335 @@ function redrawCharts(root = document) {
   }
 }
 
+/* ------------------------------------------------------------- time axis -- */
+
+/*
+ * Where the marks go along the bottom of a chart, and what they say.
+ *
+ * The old rule was three labels - start, middle, end - each a full date-time.
+ * That is wrong in both directions at once. Over an hour, all three said the
+ * same date and differed only in the minutes, so two thirds of every label was
+ * noise. Over a year they were arbitrary instants: "14 Mar 09:22" is not a
+ * place on a calendar, it is wherever the range happened to begin, and reading
+ * a yearly chart against it means doing arithmetic for every point.
+ *
+ * A time axis should land on boundaries a person recognises - the hour, midnight,
+ * the first of the month - and say only the part that distinguishes one from the
+ * next. So: pick the largest sensible unit that still gives enough marks, step
+ * along real calendar boundaries, and choose the wording from the step rather
+ * than from the span.
+ *
+ * Calendar boundaries, not epoch arithmetic. A day is not always 86400 seconds
+ * where clocks change, and stepping by that number puts every mark after a
+ * spring forward an hour off midnight - visibly wrong, and wrong in a way that
+ * looks like a data problem rather than an axis problem.
+ */
+
+/**
+ * The steps this will consider, coarsest last.
+ *
+ * `every` is in whichever unit `unit` names. Fixed-length steps are in seconds;
+ * days, months and years are stepped through the calendar.
+ */
+const TIME_STEPS = [
+  { unit: "second", every: 1, approx: 1 },
+  { unit: "second", every: 5, approx: 5 },
+  { unit: "second", every: 15, approx: 15 },
+  { unit: "second", every: 30, approx: 30 },
+  { unit: "minute", every: 1, approx: 60 },
+  { unit: "minute", every: 5, approx: 300 },
+  { unit: "minute", every: 15, approx: 900 },
+  { unit: "minute", every: 30, approx: 1800 },
+  { unit: "hour", every: 1, approx: 3600 },
+  { unit: "hour", every: 3, approx: 10800 },
+  { unit: "hour", every: 6, approx: 21600 },
+  { unit: "hour", every: 12, approx: 43200 },
+  { unit: "day", every: 1, approx: 86400 },
+  { unit: "day", every: 7, approx: 604800 },
+  { unit: "month", every: 1, approx: 2629746 },
+  { unit: "month", every: 3, approx: 7889238 },
+  { unit: "month", every: 6, approx: 15778476 },
+  { unit: "year", every: 1, approx: 31556952 },
+  { unit: "year", every: 2, approx: 63113904 },
+  { unit: "year", every: 5, approx: 157784760 },
+  { unit: "year", every: 10, approx: 315569520 },
+];
+
+/**
+ * Marks along a time axis, chosen to fit the width available.
+ *
+ * Returns `{at, label, ends}` for each. `ends` marks the two added for the
+ * start and end of the range itself - they are drawn as ticks whatever
+ * happens, because the range is a fact about the chart, but their labels are
+ * the first to be dropped when something has to give.
+ *
+ * @return {{ticks: Array, step: Object}}
+ */
+function timeTicks(t0, t1, plotW, measure) {
+  const span = Math.max(1, t1 - t0);
+
+  /*
+   * How wide a label needs to be, measured rather than guessed.
+   *
+   * The formats here range from "09:22" to "Wed 14:00", and a fixed guess
+   * either wastes half the axis on the short ones or overlaps the long ones.
+   * Plus a gap, so neighbours do not touch.
+   */
+  const widthOf = text => (measure ? measure(text) : text.length * 7) + 18;
+
+  let chosen = TIME_STEPS[TIME_STEPS.length - 1];
+  let marks = [];
+
+  for (const step of TIME_STEPS) {
+    // Four or fewer over the whole span is not an axis, it is three labels
+    // again - so a step that coarse is skipped unless nothing finer fits.
+    const at = stepThrough(t0, t1, step);
+    if (at.length < 2) continue;
+
+    const format = timeFormatFor(step, t0, t1);
+    const needed = at.reduce((sum, when) => sum + widthOf(format(when)), 0);
+
+    if (needed <= plotW) {
+      chosen = step;
+      marks = at;
+      break;
+    }
+  }
+
+  if (marks.length === 0) {
+    // Nothing fits, which happens on a very narrow panel. One mark in the
+    // middle beats a row of overlapping ones.
+    chosen = TIME_STEPS[TIME_STEPS.length - 1];
+    marks = [Math.round((t0 + t1) / 2)];
+  }
+
+  const format = timeFormatFor(chosen, t0, t1);
+  const x = when => ((when - t0) / span) * plotW;
+
+  const ticks = marks.map(when => ({
+    at: when,
+    label: format(when),
+    ends: false,
+    x: x(when),
+  }));
+
+  /*
+   * The ends of the range, always ticked and sometimes labelled.
+   *
+   * "This chart covers 03:27 to 15:17" is a different fact from "here are the
+   * hours in it", and both are wanted. The label goes only if it fits without
+   * crowding the neighbour it would sit beside.
+   */
+  /*
+   * The stepped marks as they were, before either end is added.
+   *
+   * Searching `ticks` while appending to it found the start tick as the end
+   * tick's nearest neighbour - it sits at x=0 but was pushed on last, and a
+   * reversed find walks insertion order rather than position. The result was
+   * an end label compared against the wrong label, so "Aug 25" printed twice.
+   */
+  const inner = [...ticks];
+
+  for (const [when, edge] of [[t0, "start"], [t1, "end"]]) {
+    const label = timeFormatFor(chosen, t0, t1, true)(when);
+    const mine = x(when);
+
+    const neighbour = edge === "start"
+      ? inner.find(tick => tick.x > mine)
+      : [...inner].reverse().find(tick => tick.x < mine);
+
+    const room = neighbour === undefined
+      ? plotW
+      : Math.abs(neighbour.x - mine);
+
+    /*
+     * Dropped when it will not fit, and also when it says nothing new.
+     *
+     * A range ending at 15:17 on the 25th, next to a daily mark reading "Aug
+     * 25", would print "Aug 25" twice in a row - which looks like a rendering
+     * fault rather than the two different facts it actually is.
+     */
+    const fits = room >= (widthOf(label) + widthOf(neighbour?.label ?? "")) / 2;
+    const repeats = neighbour !== undefined && neighbour.label === label;
+
+    ticks.push({
+      at: when,
+      label: fits && !repeats ? label : "",
+      ends: true,
+      x: mine,
+    });
+  }
+
+  ticks.sort((a, b) => a.x - b.x);
+  return { ticks, step: chosen };
+}
+
+/**
+ * Walks the calendar from t0 to t1 in steps of one unit.
+ *
+ * Starts at the first boundary at or after t0, so the marks land on the hour
+ * and on midnight rather than wherever the range happened to begin.
+ */
+function stepThrough(t0, t1, step) {
+  const out = [];
+  const at = new Date(t0 * 1000);
+
+  // Zero everything below the step's own unit, then round up to the next
+  // multiple of it.
+  if (step.unit !== "second") at.setSeconds(0, 0);
+  if (step.unit === "hour" || step.unit === "day" || step.unit === "month"
+      || step.unit === "year") {
+    at.setMinutes(0);
+  }
+  if (step.unit === "day" || step.unit === "month" || step.unit === "year") {
+    at.setHours(0);
+  }
+  if (step.unit === "month" || step.unit === "year") at.setDate(1);
+  if (step.unit === "year") at.setMonth(0);
+
+  const round = (value, every) => Math.ceil(value / every) * every;
+
+  if (step.unit === "second") at.setSeconds(round(at.getSeconds(), step.every), 0);
+  if (step.unit === "minute") at.setMinutes(round(at.getMinutes(), step.every));
+  if (step.unit === "hour") at.setHours(round(at.getHours(), step.every));
+  if (step.unit === "month") at.setMonth(round(at.getMonth(), step.every));
+  if (step.unit === "year") {
+    at.setFullYear(Math.ceil(at.getFullYear() / step.every) * step.every);
+  }
+
+  // A bound on the loop as well as on the time: a step of one second across a
+  // decade would otherwise try to build three hundred million marks.
+  for (let guard = 0; guard < 400; guard++) {
+    const when = Math.round(at.getTime() / 1000);
+    if (when > t1) break;
+    if (when >= t0) out.push(when);
+
+    switch (step.unit) {
+      case "second": at.setSeconds(at.getSeconds() + step.every); break;
+      case "minute": at.setMinutes(at.getMinutes() + step.every); break;
+      case "hour": at.setHours(at.getHours() + step.every); break;
+      case "day": at.setDate(at.getDate() + step.every); break;
+      case "month": at.setMonth(at.getMonth() + step.every); break;
+      default: at.setFullYear(at.getFullYear() + step.every); break;
+    }
+  }
+
+  return out;
+}
+
+/**
+ * How a mark at this step should read.
+ *
+ * The step decides, not the span. A mark every hour says the hour; a mark every
+ * month says the month. The exceptions are where the coarser part changes
+ * inside the range - a range crossing midnight needs the weekday on its hourly
+ * marks, or two marks read "14:00" and mean different days.
+ *
+ * `full` asks for the version used on the range's own two ends, which carry a
+ * little more because there is nothing either side of them for context.
+ */
+function timeFormatFor(step, t0, t1, full = false) {
+  const span = t1 - t0;
+  const sameDay = new Date(t0 * 1000).toDateString() === new Date(t1 * 1000).toDateString();
+  const sameYear = new Date(t0 * 1000).getFullYear() === new Date(t1 * 1000).getFullYear();
+
+  const at = when => new Date(when * 1000);
+
+  switch (step.unit) {
+    case "second":
+      return when => at(when).toLocaleTimeString([],
+        { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+    case "minute":
+    case "hour":
+      /*
+       * Within one day the date is the same on every mark, so it is the part
+       * to drop - including on the ends.
+       *
+       * `full` exists to give the range's own ends the context the inner marks
+       * get from their neighbours. Where there is no context to give, it must
+       * not invent any: a fifteen-minute range labelled "Tue 03:02 PM" at one
+       * end and "03:05 PM" at the next reads as two different kinds of thing.
+       */
+      if (sameDay) {
+        return when => at(when).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+      if (span <= 8 * 86400) {
+        // Weekday and hour: over a few days, "Wed 14:00" places a mark better
+        // than a numeric date does.
+        return when => at(when).toLocaleString([],
+          { weekday: "short", hour: "2-digit", minute: "2-digit" });
+      }
+      return when => at(when).toLocaleString([],
+        { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+    case "day":
+      if (full && !sameYear) {
+        return when => at(when).toLocaleDateString([],
+          { year: "numeric", month: "short", day: "numeric" });
+      }
+      return when => at(when).toLocaleDateString([], { month: "short", day: "numeric" });
+
+    case "month":
+      /*
+       * The month alone, unless the range crosses a year.
+       *
+       * Twelve marks reading Jan to Dec need no year on any of them. A range
+       * from October to March needs it on all of them, or the two halves are
+       * indistinguishable.
+       */
+      if (sameYear) {
+        return when => at(when).toLocaleDateString([], { month: "short" });
+      }
+      return when => at(when).toLocaleDateString([], { month: "short", year: "numeric" });
+
+    default:
+      return when => String(at(when).getFullYear());
+  }
+}
+
+/**
+ * Draws the time axis: a faint line and a tick at each mark, label beneath.
+ *
+ * The vertical lines are what make a chart readable across a wide panel -
+ * without them the eye has to travel from a point down to the axis with nothing
+ * to follow. Faint, because they are scaffolding rather than data.
+ */
+function drawTimeAxis(ctx, ticks, pad, plotW, h, cssH) {
+  ctx.save();
+
+  for (const tick of ticks) {
+    const at = pad.left + tick.x;
+
+    // Faint vertical, skipped on the range's own ends where the plot border
+    // already draws one.
+    if (!tick.ends) {
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(at, pad.top);
+      ctx.lineTo(at, pad.top + h);
+      ctx.stroke();
+    }
+
+    // The tick itself, below the plot.
+    ctx.strokeStyle = tick.ends ? "rgba(255, 255, 255, 0.35)" : "rgba(255, 255, 255, 0.18)";
+    ctx.beginPath();
+    ctx.moveTo(at, pad.top + h);
+    ctx.lineTo(at, pad.top + h + (tick.ends ? 6 : 4));
+    ctx.stroke();
+
+    if (!tick.label) continue;
+
+    ctx.fillStyle = tick.ends ? "#8b98a8" : "#66717f";
+    ctx.textAlign = "center";
+    ctx.fillText(tick.label, at, cssH - 8);
+  }
+
+  ctx.textAlign = "left";
+  ctx.restore();
+}
+
 function drawLineChart(canvas, rows, series, options = {}) {
   rememberDraw(canvas, () => drawLineChart(canvas, rows, series, options));
 
@@ -1335,27 +1807,26 @@ function drawLineChart(canvas, rows, series, options = {}) {
   }
 
   /*
-   * Time labels sized to the span, not to a fixed format.
+   * The time axis: marks on calendar boundaries, worded to suit the step.
    *
-   * Three full date-times do not fit across a panel four hundred pixels wide -
-   * they ran into each other and read as one long string. Within a day the date
-   * is the same on every tick anyway, so it is the part to drop.
+   * See timeTicks. The short version is that "start, middle, end" was three
+   * arbitrary instants, and an axis should land on places a person recognises -
+   * the hour, midnight, the first of the month.
    */
-  const sameDay = span < 86400;
-  const stamp = t => new Date(t * 1000).toLocaleString([], sameDay
-    ? { hour: "2-digit", minute: "2-digit" }
-    : { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-
-  const marks = single ? [t0] : [t0, t0 + span / 2, t1];
-  marks.forEach((t, i) => {
-    const label = stamp(t);
-    const at = x(t);
-    ctx.textAlign = marks.length === 1
-      ? "center"
-      : i === 0 ? "left" : i === marks.length - 1 ? "right" : "center";
-    ctx.fillText(label, Math.min(Math.max(pad.left, at), pad.left + plotW), cssH - 10);
-  });
-  ctx.textAlign = "left";
+  if (single) {
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#8b98a8";
+    ctx.fillText(
+      new Date(t0 * 1000).toLocaleString([],
+        { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
+      pad.left + plotW / 2,
+      cssH - 8
+    );
+    ctx.textAlign = "left";
+  } else {
+    const axis = timeTicks(t0, t1, plotW, text => ctx.measureText(text).width);
+    drawTimeAxis(ctx, axis.ticks, pad, plotW, h, cssH);
+  }
 
   /*
    * The lines stay inside the plot.
@@ -2214,7 +2685,10 @@ async function refreshVitals() {
   const overview = state.overview || await api("overview");
   overview.trend = vitals.trend;
   state.limits = overview.limits;
-  renderGauges(overview);
+  // Kept so a redraw - a resize, a theme change - can rebuild the sparklines
+  // without a second fetch.
+  state.vitalRows = vitals.rows;
+  renderGauges(overview, vitals.rows);
   renderLimits(overview.limits);
   renderCards(overview, vitals.rows);
 
@@ -4352,27 +4826,40 @@ function renderSnapshotFiles(data) {
 const storeState = { data: null };
 
 async function refreshStore() {
-  const body = $("storeBody");
+  const bodies = ["accountDataBody", "hostDataBody", "retentionBody"]
+    .map(id => $(id))
+    .filter(Boolean);
 
   if (!state.signedIn) {
-    body.replaceChildren(note("Sign in to see this."));
-    $("retentionBody").replaceChildren();
+    for (const body of bodies) body.replaceChildren(note("Sign in to see this."));
     return;
   }
 
-  if (!storeState.data) body.replaceChildren(spinner("Measuring…"));
+  // Only the page being looked at gets a spinner; the other two are hidden.
+  if (!storeState.data) {
+    for (const body of bodies) body.replaceChildren(spinner("Measuring\u2026"));
+  }
 
   try {
     renderStore(await api("store"));
   } catch (error) {
-    body.replaceChildren(note(String(error.message || error)));
+    for (const body of bodies) body.replaceChildren(note(String(error.message || error)));
   }
 }
 
 function renderStore(data) {
   storeState.data = data;
 
-  renderStoreFiles(data);
+  /*
+   * Three pages from one fetch.
+   *
+   * They are three questions - what is in the account database, what is in the
+   * host one, and what the rules are - but one measurement, and splitting the
+   * fetch as well as the pages would mean three round trips to answer them
+   * from the same numbers.
+   */
+  renderAccountData(data);
+  renderHostData(data);
   renderRetention(data);
 }
 
@@ -4384,7 +4871,7 @@ function renderStore(data) {
  * hundred, and only the retention settings and the measured growth rate
  * together can answer that.
  */
-function renderStoreFiles(data) {
+function renderAccountData(data) {
   const parts = [];
   const account = data.account;
 
@@ -4444,17 +4931,50 @@ function renderStoreFiles(data) {
     ));
   }
 
-  if (data.host) {
-    parts.push(section("The host collector's database", databaseCard(data.host.file, null)));
-    parts.push(note(
-      "Read-only from here. It belongs to root's collector, and a rewrite started by this "
-      + "account would leave a file the collector could no longer write."
-    ));
-  } else if (data.host_why) {
-    parts.push(section("The host collector's database", note(data.host_why)));
+  const target = $("accountDataBody");
+  if (target) target.replaceChildren(...parts);
+}
+
+/** The host collector's database, which this account reads and never writes. */
+function renderHostData(data) {
+  const body = $("hostDataBody");
+  if (!body) return;
+
+  if (!data.host) {
+    body.replaceChildren(note(data.host_why
+      || "There is no host database here, or this account cannot open it."));
+    return;
   }
 
-  $("storeBody").replaceChildren(...parts);
+  const parts = [section("The file", databaseCard(data.host.file, null))];
+
+  if (!data.host.measured) {
+    parts.push(note(data.host.why));
+  } else {
+    const tables = Object.entries(data.host.tables)
+      .map(([name, facts]) => ({ table: name, ...facts }))
+      .sort((a, b) => b.total_bytes - a.total_bytes);
+
+    parts.push(section("Where the space goes", simpleTable(
+      ["Table", "Rows", "Data", "Indexes", "Total"],
+      tables.map(row => [
+        row.table,
+        humanCount(row.rows ?? 0),
+        humanBytes(row.bytes),
+        humanBytes(row.index_bytes),
+        humanBytes(row.total_bytes),
+      ]),
+      ["name", "size", "size", "size", "size"]
+    )));
+  }
+
+  parts.push(note(
+    "Nothing here can be changed from this account. The host collector owns this file and "
+    + "its retention is set in the host's own configuration \u2014 a rewrite started here "
+    + "would leave a file owned by the web user that the collector could no longer write."
+  ));
+
+  body.replaceChildren(...parts);
 }
 
 /** Per-table figures for a table named in the catalogue. */
@@ -16229,6 +16749,15 @@ const VIEWS = {
       await refreshDiagnosis();
     },
   },
+  /*
+   * The same fetch as the overview, drawing the other half of it.
+   *
+   * refreshVitals draws the gauges and their sparklines when the overview is
+   * showing and the five full charts when this is - it is one set of readings
+   * either way, and fetching them twice to split the page would be a round
+   * trip for nothing.
+   */
+  charts: { label: "Over time", parent: "overview", refresh: () => refreshVitals() },
 
   storage: { label: "Storage", parent: null, refresh: () => refreshScans() },
   "storage-io": { label: "How hard the disks are working", parent: "storage", refresh: () => refreshHost() },
@@ -16304,8 +16833,8 @@ const VIEWS = {
     parent: "network",
     refresh: () => refreshUrls(),
   },
-  "net-labels": { label: "Your own names", parent: "settings", refresh: () => refreshLabels() },
-  settings: { label: "Settings", refresh: () => renderSettings() },
+  "net-labels": { label: "Your own names", parent: "system", refresh: () => refreshLabels() },
+  settings: { label: "Settings", parent: "system", refresh: () => renderSettings() },
   whoami: { label: "Who am I?", parent: "network", refresh: () => refreshWhoAmI() },
   "dns-records": {
     label: "What a domain publishes",
@@ -16323,7 +16852,8 @@ const VIEWS = {
   "log-stream": { label: "Every log at once", parent: "storage", refresh: () => refreshLogStream() },
 
   capabilities: {
-    label: "Capabilities",
+    label: "What the host allows",
+    parent: "system",
     refresh: async () => {
       await refreshCapabilities();
       await refreshCapabilityChanges();
@@ -16333,9 +16863,10 @@ const VIEWS = {
   alerts: { label: "Alerts", refresh: () => refreshAlerts() },
   uptime: { label: "Uptime", refresh: () => refreshUptime() },
   deletions: { label: "Actions", refresh: () => refreshActionLog() },
-  email: { label: "Email alerts", refresh: () => refreshEmail() },
+  email: { label: "Email alerts", parent: "system", refresh: () => refreshEmail() },
   schedule: {
     label: "Schedule",
+    parent: "system",
     refresh: async () => {
       await refreshSchedule();
       await refreshHostSchedule();
@@ -16348,8 +16879,18 @@ const VIEWS = {
       await refreshHealth();
     },
   },
-  "sys-store": {
-    label: "What it is keeping",
+  "sys-account": {
+    label: "Account data",
+    parent: "system",
+    refresh: () => refreshStore(),
+  },
+  "sys-host-data": {
+    label: "Host data",
+    parent: "system",
+    refresh: () => refreshStore(),
+  },
+  "sys-retention": {
+    label: "Data retention",
     parent: "system",
     refresh: () => refreshStore(),
   },

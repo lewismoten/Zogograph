@@ -1686,3 +1686,17 @@ svg.dial.is-dead { animation: none; }
   vertical-align: middle;
 }
 .legend-note { cursor: help; }
+
+/*
+ * A strip of history under each gauge.
+ *
+ * The dial says where a measurement is now, which on its own is half a fact:
+ * 88% is fine if it has been 88% all year and alarming if it was 60% on
+ * Tuesday. No axis and no numbers — the full charts are one click away.
+ */
+canvas.gauge-spark {
+  display: block;
+  width: 100%;
+  height: 32px;
+  margin: 6px 0 2px;
+}
