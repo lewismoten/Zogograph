@@ -107,6 +107,64 @@ function humanCount(value) {
   return new Intl.NumberFormat().format(Number(value));
 }
 
+/**
+ * A length of time as at most two parts.
+ *
+ * "3411 days" is arithmetically correct and unreadable - nobody carries a
+ * sense of how long three thousand days is, and everybody knows what nine
+ * years is. The units follow the size: years and months for a decade, weeks
+ * and days for a fortnight. Two parts, never three: the third is noise, and
+ * anybody who cares about the exact day is reading a date, not a span.
+ *
+ * The twin of plainSpan() in lib/spans.php. Both exist because some of these
+ * spans are written into alert emails by the cron, which has no browser.
+ */
+const SPAN_MINUTE = 60;
+const SPAN_HOUR = 3600;
+const SPAN_DAY = 86400;
+const SPAN_WEEK = 604800;
+// The average kind of month and year. Wrong for any particular span and right
+// for describing one - "9y 4m" is not a claim about which day.
+const SPAN_MONTH = 2629746;
+const SPAN_YEAR = 31556952;
+
+function humanSpan(seconds, long = false) {
+  if (!Number.isFinite(seconds)) return "—";
+  const total = Math.round(Math.abs(seconds));
+  if (total < 1) return long ? "no time at all" : "0s";
+
+  // Threshold, the unit at that size, and the unit that fills the second slot.
+  const ladder = [
+    [SPAN_YEAR, SPAN_YEAR, SPAN_MONTH, "y", "m", "year", "month"],
+    [2 * SPAN_MONTH, SPAN_MONTH, SPAN_DAY, "m", "d", "month", "day"],
+    [SPAN_WEEK, SPAN_WEEK, SPAN_DAY, "w", "d", "week", "day"],
+    [SPAN_DAY, SPAN_DAY, SPAN_HOUR, "d", "h", "day", "hour"],
+    [SPAN_HOUR, SPAN_HOUR, SPAN_MINUTE, "h", "m", "hour", "minute"],
+    [SPAN_MINUTE, SPAN_MINUTE, 1, "m", "s", "minute", "second"],
+  ];
+
+  for (const [at, big, small, bigShort, smallShort, bigLong, smallLong] of ladder) {
+    if (total < at) continue;
+
+    const whole = Math.floor(total / big);
+    const rest = Math.floor((total % big) / small);
+
+    if (!long) return rest > 0 ? `${whole}${bigShort} ${rest}${smallShort}` : `${whole}${bigShort}`;
+
+    const said = `${whole} ${bigLong}${whole === 1 ? "" : "s"}`;
+    return rest > 0 ? `${said} ${rest} ${smallLong}${rest === 1 ? "" : "s"}` : said;
+  }
+
+  return long ? `${total} second${total === 1 ? "" : "s"}` : `${total}s`;
+}
+
+/** The same span with its direction said out loud, because a minus sign is missable. */
+function humanWhen(seconds, long = false) {
+  if (!Number.isFinite(seconds)) return "—";
+  if (Math.abs(seconds) < 60) return "now";
+  return seconds > 0 ? `in ${humanSpan(seconds, long)}` : `${humanSpan(seconds, long)} ago`;
+}
+
 function humanDuration(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return "—";
   if (seconds < 90) return `${Math.round(seconds)}s`;
@@ -3485,6 +3543,357 @@ function highlightMatches(text, needle) {
   return out;
 }
 
+/* ------------------------------------------------------------ keeping it -- */
+
+const storeState = { data: null };
+
+async function refreshStore() {
+  const body = $("storeBody");
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see this."));
+    $("retentionBody").replaceChildren();
+    return;
+  }
+
+  if (!storeState.data) body.replaceChildren(spinner("Measuring…"));
+
+  try {
+    renderStore(await api("store"));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderStore(data) {
+  storeState.data = data;
+
+  renderStoreFiles(data);
+  renderRetention(data);
+}
+
+/**
+ * The two files, what is in them, and what they will become.
+ *
+ * The projection is the point of this page. "12 MB" says nothing on its own:
+ * the question is whether it is 12 MB and settled or 12 MB on the way to two
+ * hundred, and only the retention settings and the measured growth rate
+ * together can answer that.
+ */
+function renderStoreFiles(data) {
+  const parts = [];
+  const account = data.account;
+
+  parts.push(section("This account's database", databaseCard(account.file, {
+    projected: account.projected_total,
+    known: account.projected_known,
+    growth: account.growth_per_year,
+  })));
+
+  if (!account.measured) parts.push(note(account.why));
+
+  /*
+   * Every table, not just the ones with a retention setting.
+   *
+   * Leaving the rest out meant the parts of the page never added up to the
+   * file size, and an accounting that does not add up is one nobody trusts the
+   * rest of.
+   */
+  if (account.measured) {
+    const rows = [
+      ...account.entries
+        .filter(entry => !entry.shares_table || entry.key === "raw_days")
+        .map(entry => [
+          entry.shares_table ? "vitals" : entry.table,
+          entry.shares_table ? "all reading tiers" : entry.label,
+        ]),
+      ...account.others.map(other => [other.table, ""]),
+    ];
+
+    const byTable = new Map();
+    for (const [table] of rows) byTable.set(table, true);
+
+    const table = [...byTable.keys()].map(name => {
+      const other = account.others.find(row => row.table === name);
+      const facts = other || tableFactsFor(account, name);
+      return facts;
+    }).filter(Boolean);
+
+    parts.push(section("Where the space goes", simpleTable(
+      ["Table", "Rows", "Data", "Indexes", "Total"],
+      table
+        .sort((a, b) => b.total_bytes - a.total_bytes)
+        .map(row => [
+          row.table,
+          humanCount(row.rows ?? 0),
+          humanBytes(row.bytes),
+          humanBytes(row.index_bytes),
+          humanBytes(row.total_bytes),
+        ]),
+      ["name", "size", "size", "size", "size"]
+    )));
+
+    parts.push(note(
+      "Indexes are counted against the table they belong to. On a busy table an index can be "
+      + "close to half the total, and listing them separately makes every table look cheaper "
+      + "than it is."
+    ));
+  }
+
+  if (data.host) {
+    parts.push(section("The host collector's database", databaseCard(data.host.file, null)));
+    parts.push(note(
+      "Read-only from here. It belongs to root's collector, and a rewrite started by this "
+      + "account would leave a file the collector could no longer write."
+    ));
+  } else if (data.host_why) {
+    parts.push(section("The host collector's database", note(data.host_why)));
+  }
+
+  $("storeBody").replaceChildren(...parts);
+}
+
+/** Per-table figures for a table named in the catalogue. */
+function tableFactsFor(account, name) {
+  const rows = account.entries.filter(entry => entry.table === name);
+  if (!rows.length) return null;
+
+  // Tiers share one table, so their bytes are one table's bytes, not a sum.
+  const total = rows.reduce((sum, row) => sum + Number(row.bytes || 0), 0);
+  const count = rows.reduce((sum, row) => sum + Number(row.rows || 0), 0);
+
+  return { table: name, rows: count, bytes: total, index_bytes: 0, total_bytes: total };
+}
+
+function databaseCard(file, projection) {
+  const facts = [
+    ["File", `${humanBytes(file.bytes)}${file.wal_bytes
+      ? ` + ${humanBytes(file.wal_bytes)} write-ahead log` : ""}`],
+    ["Empty space inside it",
+      `${humanBytes(file.free_bytes)} (${Math.round(file.free_share * 100)}% of it)`],
+    ["Pages", `${humanCount(file.pages)} of ${humanBytes(file.page_size)}`],
+    ["Journal", file.journal],
+  ];
+
+  if (projection) {
+    facts.push(["Settles near", projection.known
+      ? humanBytes(projection.projected)
+      : `${humanBytes(projection.projected)}, plus about ${humanBytes(projection.growth)} `
+        + "a year that nothing expires"]);
+  }
+
+  const wrap = document.createDocumentFragment();
+  wrap.appendChild(factGrid(facts));
+
+  const where = document.createElement("p");
+  where.className = "muted small";
+  where.textContent = file.path;
+  wrap.appendChild(where);
+
+  if (file.wal_bytes > file.bytes) {
+    wrap.appendChild(note(
+      "The write-ahead log is larger than the database itself, which means it has not been "
+      + "checkpointed for a while. It is not lost data — it is the database — but it is worth "
+      + "knowing when comparing this page against what ls says."
+    ));
+  }
+
+  return wrap;
+}
+
+/**
+ * Every retained thing, with what it costs and what it is set to.
+ *
+ * The recommendation sits beside the setting rather than in the documentation,
+ * and where the recommendation is "for ever" it says why - because a zero with
+ * no explanation reads as an oversight rather than a decision.
+ */
+function renderRetention(data) {
+  const body = $("retentionBody");
+  const account = data.account;
+  const parts = [];
+
+  if (!data.writable) {
+    parts.push(note(
+      "lib/config.php is not writable by the web server, so these cannot be changed from "
+      + "here. Edit the file directly, or change it in setup.php."
+    ));
+  }
+
+  const table = document.createElement("table");
+  table.className = "retention";
+
+  const head = table.createTHead().insertRow();
+  for (const label of ["What", "Holding now", "Covers", "Keep for", "Recommended",
+                       "Settles at", ""]) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    head.appendChild(th);
+  }
+
+  const tbody = table.createTBody();
+
+  for (const entry of account.entries) {
+    const row = tbody.insertRow();
+
+    const what = row.insertCell();
+    what.className = "name";
+    what.appendChild(document.createTextNode(entry.label));
+    what.appendChild(helpIcon({
+      title: entry.what,
+      note: entry.why,
+      mine: false,
+    }));
+
+    const holding = row.insertCell();
+    holding.className = "size";
+    holding.textContent = entry.rows === null
+      ? "—"
+      : `${humanCount(entry.rows)}${entry.bytes === null ? "" : ` · ${humanBytes(entry.bytes)}`}`;
+    if (entry.shares_table) {
+      holding.title = "These tiers share one table, so their sizes are parts of it rather "
+        + "than separate files.";
+    }
+
+    const covers = row.insertCell();
+    covers.textContent = entry.covers ? humanSpan(entry.covers) : "—";
+
+    const keep = row.insertCell();
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "3650";
+    input.className = "days";
+    input.name = entry.key;
+    input.value = String(entry.days);
+    input.disabled = !data.writable;
+    input.title = "Days. 0 means keep for ever.";
+    keep.appendChild(input);
+
+    const forever = document.createElement("span");
+    forever.className = "muted small";
+    forever.textContent = entry.days === 0 ? " for ever" : " days";
+    keep.appendChild(forever);
+    input.addEventListener("input", () => {
+      forever.textContent = Number(input.value) === 0 ? " for ever" : " days";
+    });
+
+    const suggested = row.insertCell();
+    suggested.className = "muted";
+    suggested.textContent = entry.recommended === 0 ? "for ever" : `${entry.recommended} days`;
+    /*
+     * The ones where "for ever" is the recommendation get it marked.
+     *
+     * Several of these default to zero and it looks like nobody filled them in.
+     * Saying so beside the number is the difference between a default and a
+     * decision.
+     */
+    if (entry.never_recommended) {
+      suggested.className = "band-ok";
+      suggested.title = "Keeping this for ever is the recommendation, not an oversight. "
+        + entry.why;
+    }
+    if (entry.days !== entry.recommended) {
+      suggested.textContent += " (recommended)";
+    }
+
+    const settles = row.insertCell();
+    settles.className = "size";
+    if (entry.projected !== null) {
+      settles.textContent = humanBytes(entry.projected);
+      settles.title = entry.at_rest
+        ? "Already holding its full window, so this is roughly what it is now."
+        : "Not full yet. This is what it grows to once it has been collecting long enough.";
+      if (!entry.at_rest) settles.className = "size grew";
+    } else if (entry.per_year) {
+      settles.textContent = `+${humanBytes(entry.per_year)}/yr`;
+      settles.title = "Kept for ever, so it does not settle. This is what a year of it costs.";
+    } else {
+      settles.textContent = "—";
+      settles.title = "Not enough history yet to measure a rate.";
+    }
+
+    const clear = row.insertCell();
+    clear.className = "row-actions";
+    clear.appendChild(purgeButton(entry));
+  }
+
+  parts.push(table);
+
+  const total = document.createElement("p");
+  total.className = "muted small";
+  total.textContent = account.projected_known
+    ? `Left as it is, the database settles near ${humanBytes(account.projected_total)}.`
+    : `Left as it is, the database settles near ${humanBytes(account.projected_total)} `
+      + `plus about ${humanBytes(account.growth_per_year)} a year from the things set to be `
+      + "kept for ever.";
+  parts.push(total);
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.textContent = "Save these";
+  save.disabled = !data.writable;
+  actions.appendChild(save);
+  parts.push(actions);
+
+  body.replaceChildren(...parts);
+}
+
+/** Clearing one kind of record, which always asks first. */
+function purgeButton(entry) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "link danger";
+  button.textContent = "Clear";
+  button.title = `Delete ${entry.label.toLowerCase()} older than a given age`;
+
+  button.addEventListener("click", async () => {
+    const asked = prompt(
+      `Delete ${entry.label.toLowerCase()} older than how many days?\n\n`
+      + "0 deletes all of them."
+      + (entry.table === "vitals"
+        ? "\n\nReadings within a couple of hours of an alert are never deleted, whatever "
+          + "you put here."
+        : ""),
+      String(entry.days || 30)
+    );
+    if (asked === null) return;
+
+    const days = Number(asked);
+    if (!Number.isInteger(days) || days < 0) {
+      notice("That is not a number of days.");
+      return;
+    }
+
+    if (days === 0 && !confirm(
+      `Delete every one of ${entry.label.toLowerCase()}?\n\n${entry.why}\n\n`
+      + "This cannot be undone."
+    )) return;
+
+    button.disabled = true;
+    try {
+      const result = await post("store-purge", { key: entry.key, days });
+      notice(
+        `${humanCount(result.result.removed)} removed from ${result.result.label}.`
+        + (result.result.protected
+          ? ` ${humanCount(result.result.protected)} kept because they sit beside an alert.`
+          : ""),
+        true
+      );
+      renderStore(result);
+    } catch (error) {
+      notice(String(error.message || error));
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  return button;
+}
+
 /* --------------------------------------------------------------- symlinks -- */
 
 /** What each finding means, in the order that matters. */
@@ -3501,72 +3910,333 @@ const SYMLINK_KINDS = {
  * On a button rather than on the poll: it is a whole extra walk of the tree,
  * and the answer only changes when somebody makes a link.
  */
+const linkState = { data: null, sweep: null };
+
+/**
+ * Checks the tree for symlinks that will send something into a loop.
+ *
+ * On a button rather than on the poll: it is a whole extra walk of the tree,
+ * and the answer only changes when somebody makes a link.
+ */
 async function checkSymlinks() {
   const button = $("symlinkCheck");
   const holder = $("symlinkBody");
 
   button.disabled = true;
-  button.textContent = "Checking\u2026";
-  holder.replaceChildren();
+  button.textContent = "Checking…";
+  holder.replaceChildren(spinner("Walking the tree…"));
 
   try {
-    const data = await api("symlinks", { budget: 15 });
-
-    const summary = document.createElement("p");
-    summary.className = "muted small";
-    summary.textContent =
-      `${humanCount(data.links)} link${data.links === 1 ? "" : "s"} across `
-      + `${humanCount(data.dirs)} directories in ${data.seconds}s. `
-      + (data.complete
-        ? "The whole tree was checked."
-        : "Stopped before the end of the tree \u2014 there may be more.");
-    holder.appendChild(summary);
-
-    if (!data.problems.length) {
-      holder.appendChild(Object.assign(document.createElement("p"), {
-        className: "shrank",
-        textContent: data.complete
-          ? "No symlink loops, dangling links or escapes found."
-          : "Nothing wrong in the part that was checked.",
-      }));
-      return;
-    }
-
-    const table = document.createElement("table");
-    const head = table.createTHead().insertRow();
-    for (const label of ["", "Link", "Points at", "Why it matters"]) {
-      const th = document.createElement("th");
-      th.textContent = label;
-      head.appendChild(th);
-    }
-
-    const body = table.createTBody();
-    for (const problem of data.problems) {
-      const tr = body.insertRow();
-      const [label, tone] = SYMLINK_KINDS[problem.kind] ?? [problem.kind, ""];
-
-      const kind = tr.insertCell();
-      kind.textContent = label;
-      kind.className = tone;
-
-      tr.insertCell().className = "name";
-      tr.cells[1].textContent = problem.path;
-
-      tr.insertCell().className = "name";
-      tr.cells[2].textContent = problem.target || "—";
-
-      const note = tr.insertCell();
-      note.className = "muted small";
-      note.textContent = problem.note;
-    }
-
-    holder.appendChild(table);
+    linkState.data = await api("symlinks", { budget: 15 });
+    renderSymlinks();
   } catch (error) {
-    holder.textContent = String(error.message || error);
+    holder.replaceChildren(note(String(error.message || error)));
   } finally {
     button.disabled = false;
-    button.textContent = "Check for symlink loops";
+    button.textContent = "Check again";
   }
+}
+
+function renderSymlinks() {
+  const holder = $("symlinkBody");
+  const data = linkState.data;
+
+  if (!data) {
+    holder.replaceChildren(note(
+      "Nothing has been checked yet. This walks the whole watched directory, which takes a "
+      + "few seconds, so it runs when you ask rather than on every poll."
+    ));
+    $("linkSweepPanel").hidden = true;
+    return;
+  }
+
+  const parts = [];
+
+  const summary = document.createElement("p");
+  summary.className = "muted small";
+  summary.textContent =
+    `${humanCount(data.links)} link${data.links === 1 ? "" : "s"} across `
+    + `${humanCount(data.dirs)} directories in ${data.seconds}s. `
+    + (data.complete
+      ? "The whole tree was checked."
+      : "Stopped before the end of the tree — there may be more.");
+  parts.push(summary);
+
+  /*
+   * What changed since last time, which is the only part worth an alarm.
+   *
+   * Eleven problems is fine if it has been eleven for a year and alarming if it
+   * was three yesterday, and the count on its own cannot tell you which.
+   */
+  if (data.first_walk) {
+    parts.push(note(
+      "This is the first complete check, so nothing counts as new. From now on anything "
+      + "that appears will be called out here and will raise an alert."
+    ));
+  } else if (data.new && data.new.length) {
+    const said = document.createElement("p");
+    said.className = "band-crit";
+    said.textContent = `${count(data.new.length, "problem")} here for the first time. `
+      + "An alert has been raised.";
+    parts.push(said);
+  } else if (data.gone > 0) {
+    parts.push(note(`Nothing new, and ${count(data.gone, "problem")} gone since last time.`));
+  } else if (data.problems.length) {
+    parts.push(note("Nothing new since the last check."));
+  }
+
+  if (!data.problems.length) {
+    const good = document.createElement("p");
+    good.className = "shrank";
+    good.textContent = data.complete
+      ? "No symlink loops, dangling links or escapes found."
+      : "Nothing wrong in the part that was checked.";
+    parts.push(good);
+    holder.replaceChildren(...parts);
+    $("linkSweepPanel").hidden = true;
+    return;
+  }
+
+  const table = document.createElement("div");
+  table.id = "symlinkTable";
+  parts.push(table);
+  holder.replaceChildren(...parts);
+
+  const fresh = new Set((data.new || []).map(problem => `${problem.path} ${problem.kind}`));
+
+  renderTable("symlinkTable", data.problems, [
+    {
+      label: "",
+      render: row => {
+        const [label, tone] = SYMLINK_KINDS[row.kind] ?? [row.kind, ""];
+        const span = document.createElement("span");
+        span.textContent = label;
+        span.className = tone;
+        return span;
+      },
+    },
+    {
+      label: "Link",
+      className: "name",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.path;
+        if (fresh.has(`${row.path} ${row.kind}`)) {
+          const mark = document.createElement("span");
+          mark.className = "band-crit small";
+          mark.textContent = " new";
+          span.appendChild(mark);
+        }
+        return span;
+      },
+    },
+    { label: "Points at", className: "name", render: row => row.target || "—" },
+    { label: "Why it matters", className: "muted", render: row => row.note },
+    { label: "", className: "row-actions", render: row => linkActions(row) },
+  ], null, row => (fresh.has(`${row.path} ${row.kind}`) ? "row-bad" : ""),
+     row => `${row.path}|${row.kind}`);
+
+  // Only worth offering once there is something a sweep could take.
+  $("linkSweepPanel").hidden = !data.problems.some(problem => problem.kind === "broken");
+}
+
+/**
+ * The three things somebody wants to do to a bad link.
+ *
+ * Point it somewhere else, replace it with a real directory, or remove it.
+ * Nothing here follows the link - `unlink` on a symlink removes the link and
+ * never what it pointed at, which is the whole reason deleting one is safe in
+ * a way that deleting a file is not.
+ */
+function linkActions(row) {
+  const wrap = document.createDocumentFragment();
+
+  const act = async (how, extra = {}) => {
+    const result = await post("link-fix", { path: row.path, how, ...extra });
+    notice(linkSaid(how, result.result), true);
+    await checkSymlinks();
+  };
+
+  for (const [text, title, run, danger] of [
+    ["Repoint", "Point this link somewhere else", async () => {
+      const target = prompt(
+        `Where should ${basenameOf(row.path)} point?\n\n`
+        + "A path, absolute or relative to the directory the link is in. It does not have to "
+        + "exist yet — a link into a filesystem that mounts later is a normal thing to want.",
+        row.target || ""
+      );
+      if (target === null || target.trim() === "") return;
+      await act("repoint", { target: target.trim() });
+    }, false],
+    ["Make it a folder", "Remove the link and create a real, empty directory in its place",
+      async () => {
+        if (!confirm(
+          `Replace ${row.path} with a real, empty directory?\n\n`
+          + "The link goes; whatever it pointed at is untouched."
+        )) return;
+        await act("directory");
+      }, false],
+    ["Remove", "Delete the link itself", async () => {
+      if (!confirm(
+        `Delete the link ${row.path}?\n\n`
+        + "Only the link is removed. Whatever it points at is not touched."
+      )) return;
+      await act("delete");
+    }, true],
+  ]) {
+    const button = document.createElement("button");
+    button.className = danger ? "link danger" : "link";
+    button.textContent = text;
+    button.title = title;
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await run();
+      } catch (error) {
+        notice(String(error.message || error));
+      } finally {
+        button.disabled = false;
+      }
+    });
+    wrap.appendChild(button);
+  }
+
+  return wrap;
+}
+
+function linkSaid(how, result) {
+  if (how === "repoint") {
+    return `Now points at ${result.now}.`
+      + (result.exists ? "" : " That is not there yet, which may be deliberate.");
+  }
+  if (how === "directory") return "Replaced with an empty directory.";
+  return "Link removed. What it pointed at was not touched.";
+}
+
+function basenameOf(path) {
+  const parts = String(path).split("/");
+  return parts[parts.length - 1] || path;
+}
+
+/**
+ * Deletes every broken link under a pattern, shown before it is done.
+ *
+ * Two steps always: the first asks the server what would match and shows the
+ * list, the second does it. A pattern is easy to write too broadly, and the
+ * only honest way to make that safe is to show the consequence first.
+ */
+async function sweepLinks(pattern, confirmed = false) {
+  const body = $("linkSweepBody");
+  body.replaceChildren(spinner(confirmed ? "Removing…" : "Looking…"));
+
+  let data;
+  try {
+    data = await post("link-sweep", { pattern, confirm: confirmed ? "1" : "0" });
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  const result = data.result;
+  linkState.sweep = { pattern, result };
+  const parts = [];
+
+  if (!result.matched) {
+    parts.push(note(
+      "No link with a problem matches that. The pattern is matched against the whole path "
+      + "and * does not cross a slash, so previews/* matches what is directly in it \u2014 "
+      + "use previews/*/* to go a level deeper. Healthy links are never matched, so a "
+      + "pattern over a directory of working links finds nothing here by design."
+    ));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  const said = document.createElement("p");
+  said.className = confirmed ? "band-ok" : "muted small";
+  said.textContent = confirmed
+    ? `${count(result.deleted.length, "link")} removed.`
+      + (result.skipped ? ` ${count(result.skipped, "link")} left alone.` : "")
+    /*
+     * "Matched" means matched among the problems, not among all links.
+     *
+     * The sweep only ever looks at what the check found wrong, so a healthy
+     * link under the same pattern is never a candidate and is never counted.
+     * Saying "6 links match" would imply the pattern had been tested against
+     * every link in the tree, which it has not been.
+     */
+    : `${count(result.matched, "link with a problem")} under that pattern. `
+      + `${count(result.deleted.length, "broken")} would be removed`
+      + (result.skipped
+        ? `, and ${count(result.skipped, "with other problems")} left alone \u2014 `
+          + "a loop or an escape is never removed on a pattern alone."
+        : ".");
+  parts.push(said);
+
+  if (!confirmed) {
+    parts.push(note(
+      "Working links are not considered at all, whatever the pattern says. Only links this "
+      + "check found dangling can be removed here."
+    ));
+  }
+
+  if (!result.complete) {
+    parts.push(note(
+      "The walk ran out of time before reaching the end of the tree, so there may be more "
+      + "matching links it never saw. Run it again afterwards."
+    ));
+  }
+
+  if (result.remaining > 0) {
+    parts.push(note(
+      `Capped at ${count(result.deleted.length, "link")} in one go. `
+      + `${count(result.remaining, "more")} would be left — run it again.`
+    ));
+  }
+
+  if (result.deleted.length) {
+    parts.push(simpleTable(
+      ["Link", "Pointed at"],
+      result.deleted.slice(0, 200).map(row => [row.path, row.target || "—"]),
+      ["name", "name"]
+    ));
+
+    if (result.deleted.length > 200) {
+      parts.push(note(`Showing the first 200 of ${result.deleted.length}.`));
+    }
+  }
+
+  if (!confirmed && result.deleted.length) {
+    const actions = document.createElement("div");
+    actions.className = "inspect-actions";
+
+    const go = document.createElement("button");
+    go.className = "danger";
+    go.textContent = `Remove ${count(result.deleted.length, "broken link")}`;
+    go.addEventListener("click", async () => {
+      if (!confirm(
+        `Delete ${result.deleted.length} broken symlinks?\n\n`
+        + "Only the links are removed. Nothing they point at is touched — they point at "
+        + "nothing, which is why they are on this list."
+      )) return;
+      go.disabled = true;
+      await sweepLinks(pattern, true);
+      await checkSymlinks();
+    });
+    actions.appendChild(go);
+    parts.push(actions);
+  }
+
+  body.replaceChildren(...parts);
+}
+
+async function refreshLinks() {
+  if (!state.signedIn) {
+    $("symlinkBody").replaceChildren(note("Sign in to check symlinks."));
+    $("linkSweepPanel").hidden = true;
+    return;
+  }
+  renderSymlinks();
 }
 
 /* -------------------------------------------------------------- processes -- */
@@ -6087,7 +6757,10 @@ async function refreshHealth() {
   $("healthBody").replaceChildren(table, facts);
   // The check reports paths, so it is offered only to somebody who may see them.
   $("symlinkCheck").hidden = !state.signedIn;
-  if (!state.signedIn) $("symlinkBody").replaceChildren();
+  if (!state.signedIn) {
+    $("symlinkBody").replaceChildren();
+    linkState.data = null;
+  }
 }
 
 async function refreshProblems() {
@@ -11678,11 +12351,13 @@ function renderDomains(data) {
       label: "Left",
       className: "size",
       render: row => {
-        if (row.days_left === null) return "\u2014";
+        if (row.seconds_left === null) return "\u2014";
         const span = document.createElement("span");
-        span.textContent = row.days_left < 0
-          ? `${Math.abs(row.days_left)} days ago`
-          : count(row.days_left, "day");
+        span.textContent = humanWhen(row.seconds_left);
+        // The exact date is what somebody reaches for once the span has told
+        // them to care, and it is one hover away rather than a sixth column.
+        span.title = `${humanSpan(row.seconds_left, true)}`
+          + `${row.seconds_left < 0 ? " ago" : " from now"} \u2014 ${humanTime(row.expires_at)}`;
         if (row.state === "expired" || row.state === "urgent") span.className = "band-crit";
         else if (row.state === "soon") span.className = "band-warn";
         return span;
@@ -11967,7 +12642,10 @@ async function refreshWhois(name = "") {
       parts.push(section("What those locks mean", simpleTable(
         ["Status", "Means", "As the registry writes it"],
         data.status_plain.filter(entry => entry.note)
-          .map(entry => [entry.plain, entry.note, entry.raw]),
+          // Every spelling the registry used, not just the first: some list the
+          // same code twice in different case, and that is worth seeing once
+          // the two rows it used to make have been collapsed into one.
+          .map(entry => [entry.plain, entry.note, (entry.seen || [entry.raw]).join(", ")]),
         ["name", null, "cmd"]
       )));
     }
@@ -14399,8 +15077,31 @@ const VIEWS = {
     refresh: async () => {
       await refreshSelf();
       await refreshHealth();
-      await refreshProblems();
     },
+  },
+  "sys-store": {
+    label: "What it is keeping",
+    parent: "system",
+    refresh: () => refreshStore(),
+  },
+  "sys-problems": {
+    label: "Recent problems",
+    parent: "system",
+    refresh: () => refreshProblems(),
+  },
+  "storage-links": {
+    label: "Symlinks",
+    parent: "storage",
+    /*
+     * Never on the timer.
+     *
+     * The check is a whole extra walk of the tree - seconds of disk work - and
+     * the answer only changes when somebody makes a link. Polling it would turn
+     * an occasional diagnostic into constant background load on the disk this
+     * tool exists to look after.
+     */
+    manual: true,
+    refresh: () => refreshLinks(),
   },
 };
 
@@ -14986,7 +15687,106 @@ $("patternForm").addEventListener("submit", event => {
 });
 
 $("symlinkCheck").addEventListener("click", () => {
-  checkSymlinks().catch(e => notice(String(e.message || e)));
+  checkSymlinks().catch(error => notice(String(error.message || error)));
+});
+
+$("linkSweepForm").addEventListener("submit", event => {
+  event.preventDefault();
+  const pattern = $("linkSweepPattern").value.trim();
+  if (pattern === "") return;
+  sweepLinks(pattern, false).catch(error => notice(String(error.message || error)));
+});
+
+$("retentionForm").addEventListener("submit", async event => {
+  event.preventDefault();
+
+  const values = {};
+  for (const input of $("retentionForm").querySelectorAll("input.days")) {
+    values[input.name] = input.value;
+  }
+
+  try {
+    const result = await post("store-save", values);
+    notice("Saved. The next collector run will use these.", true);
+    renderStore(result);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
+$("retentionReset").addEventListener("click", () => {
+  const data = storeState.data;
+  if (!data) return;
+
+  /*
+   * Fills the boxes rather than saving.
+   *
+   * Somebody clicking this wants to see what the recommendations are as much as
+   * they want them applied, and saving straight away would take away the chance
+   * to change their mind about one of them.
+   */
+  for (const entry of data.account.entries) {
+    const input = $("retentionForm").querySelector(`input[name="${entry.key}"]`);
+    if (input) {
+      input.value = String(entry.recommended);
+      input.dispatchEvent(new Event("input"));
+    }
+  }
+  notice("Filled in with the recommended settings. Press Save to apply them.", true);
+});
+
+$("storeCompact").addEventListener("click", async () => {
+  const data = storeState.data;
+  const free = data ? data.account.file.free_bytes : 0;
+
+  if (!confirm(
+    `Rewrite the database to give back ${humanBytes(free)} of empty pages?\n\n`
+    + "It needs room for a second copy of the file while it runs, and the site will pause "
+    + "for the few seconds it takes."
+  )) return;
+
+  const button = $("storeCompact");
+  button.disabled = true;
+  button.textContent = "Rewriting\u2026";
+
+  try {
+    const result = await post("store-compact");
+    notice(
+      `Reclaimed ${humanBytes(result.result.saved)} in ${result.result.seconds}s.`,
+      true
+    );
+    renderStore(result);
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    button.disabled = false;
+    button.textContent = "Reclaim empty space";
+  }
+});
+
+$("storeRollup").addEventListener("click", async () => {
+  const button = $("storeRollup");
+  button.disabled = true;
+  button.textContent = "Rolling up\u2026";
+
+  try {
+    const result = await post("store-rollup");
+    const said = result.result;
+    notice(
+      `${humanCount(said.removed)} readings merged into ${humanCount(said.compacted)}.`
+      + (said.protected
+        ? ` ${humanCount(said.protected)} left at full detail because they sit beside an alert.`
+        : "")
+      + " The space they used is inside the file until you reclaim it.",
+      true
+    );
+    renderStore(result);
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    button.disabled = false;
+    button.textContent = "Roll up old readings now";
+  }
 });
 
 $("healthRefresh").addEventListener("click", () => {

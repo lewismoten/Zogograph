@@ -106,6 +106,11 @@
       <span class="nav-label">Every log at once</span>
       <span class="nav-badge" data-badge="log-stream" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/storage-links" data-nav="storage-links" data-parent="storage">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Symlinks</span>
+      <span class="nav-badge" data-badge="storage-links" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/storage-io" data-nav="storage-io" data-parent="storage">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Disk I/O</span>
@@ -330,6 +335,16 @@
       <span class="nav-icon" aria-hidden="true">⚒</span>
       <span class="nav-label">System</span>
       <span class="nav-badge" data-badge="system" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/sys-store" data-nav="sys-store" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">What it is keeping</span>
+      <span class="nav-badge" data-badge="sys-store" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/sys-problems" data-nav="sys-problems" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Recent problems</span>
+      <span class="nav-badge" data-badge="sys-problems" hidden></span>
     </a>
     <div class="nav-foot">
       <button id="shareLink" class="link">Copy link to this view</button>
@@ -1774,10 +1789,13 @@
     fresh deployment returns errors.
   </p>
   <div id="healthBody"></div>
-  <div id="symlinkBody"></div>
 </section>
 
-<section class="panel" id="problemPanel" hidden>
+
+</section>
+
+<section class="view" data-view="sys-problems" hidden>
+<section class="panel" id="problemPanel">
   <div class="panel-head">
     <h2>Recent problems</h2>
     <div class="panel-controls">
@@ -1792,6 +1810,85 @@
     poll calls the API, and one broken function becomes forty lines in a minute.
   </p>
   <div id="problemBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="sys-store" hidden>
+<section class="panel" id="storePanel">
+  <div class="panel-head">
+    <h2>What it is keeping</h2>
+    <div class="panel-controls">
+      <button id="storeRollup" class="link">Roll up old readings now</button>
+      <button id="storeCompact" class="link">Reclaim empty space</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    A monitor that fills the disk it is watching has failed in the most
+    embarrassing way available to it. This is what the two databases hold, what
+    each part of it costs, and — the part that is usually missing — what the
+    file will settle at if nobody touches the settings again. A table with a
+    400-day setting that has been collecting for thirty days is at less than a
+    tenth of its eventual size, and nothing else here says so.
+  </p>
+  <div id="storeBody"></div>
+</section>
+
+<section class="panel" id="retentionPanel">
+  <div class="panel-head">
+    <h2>How long it keeps things</h2>
+    <button id="retentionReset" class="link">Use the recommended settings</button>
+  </div>
+  <p class="muted small sub-note">
+    Zero means <strong>keep for ever</strong>, and for several of these that is
+    the recommendation rather than an oversight — the note beside each one says
+    what it is protecting. Readings are kept in tiers: full detail for the first
+    stretch, then five-minute buckets, then hourly, then daily, each holding the
+    worst moment in its bucket rather than an average. Nothing within a couple
+    of hours of an alert is ever rolled up or cleared, whatever these say.
+  </p>
+  <form id="retentionForm">
+    <div id="retentionBody"></div>
+  </form>
+</section>
+</section>
+
+<section class="view" data-view="storage-links" hidden>
+<section class="panel" id="linkPanel">
+  <div class="panel-head">
+    <h2>Symlinks that eat things</h2>
+    <button id="symlinkCheck">Check for symlink loops</button>
+  </div>
+  <p class="muted small sub-note">
+    The scanner steps over every symlink it meets, deliberately — following one
+    double-counts at best and walks out of the watched directory at worst. The
+    consequence is that a bad link is invisible to this tool while still being
+    the thing that ruins everything else: a link pointing at one of its own
+    ancestors is an infinitely deep directory to anything that <em>does</em>
+    follow links, and backups, <code>du</code>, <code>tar</code> and web
+    crawlers all do. That is how a disk fills up with one file copied ten
+    thousand times.
+  </p>
+  <div id="symlinkBody"></div>
+</section>
+
+<section class="panel" id="linkSweepPanel" hidden>
+  <div class="panel-head">
+    <h2>Clear out a whole path</h2>
+  </div>
+  <p class="muted small sub-note">
+    When a directory of dangling links is the problem, ticking four hundred
+    boxes is not a workflow. Give a pattern and everything <em>broken</em> under
+    it goes. Working links matching the same pattern are left alone and counted
+    — the destructive half is bounded by a fact about each link, not by how
+    carefully the pattern was written. You are always shown exactly what would
+    go before anything does.
+  </p>
+  <form id="linkSweepForm" class="pattern-row">
+    <input type="text" id="linkSweepPattern" spellcheck="false" autocomplete="off"
+           placeholder="/home/you/public_html/previews/*">
+    <button type="submit">Show me what matches</button>
+  </form>
+  <div id="linkSweepBody"></div>
 </section>
 </section>
   </main>

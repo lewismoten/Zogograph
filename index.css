@@ -1548,3 +1548,32 @@ button.value-cell {
 }
 pre.record-value { white-space: pre-wrap; word-break: break-all; max-height: 30vh; overflow: auto; }
 .said { margin-left: 12px; }
+
+/* ------------------------------------------------------------ keeping it -- */
+
+table.retention { width: 100%; border-collapse: collapse; }
+table.retention th {
+  text-align: left;
+  font-weight: 600;
+  font-size: .78rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+table.retention td {
+  padding: 8px 10px 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: middle;
+}
+input.days {
+  width: 5em;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font: inherit;
+}
+input.days:disabled { opacity: .5; }

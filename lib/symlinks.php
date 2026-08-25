@@ -274,3 +274,351 @@ function tidyPath(string $path): string
 
     return ($absolute ? '/' : '') . implode('/', $out);
 }
+
+/* ------------------------------------------------------- repairing them -- */
+
+/**
+ * The most links one bulk operation will touch.
+ *
+ * A pattern is easy to write and easy to write too broadly. A limit means a
+ * mistake is a hundred links rather than everything under the account, and the
+ * page says how many were left so nobody thinks it finished.
+ */
+const SYMLINK_BULK_MAX = 500;
+
+/**
+ * A path a repair may touch, resolved and checked.
+ *
+ * Everything here rewrites the filesystem, so the rule is the one used for
+ * deletions elsewhere: inside the watched directory, no `..` surviving
+ * resolution, and never through a symlink in the middle of the path. The last
+ * one matters more here than anywhere else in this tool, because the thing
+ * being operated on *is* a symlink and following the path to reach it is
+ * exactly the mistake.
+ */
+function resolveLinkPath(array $config, string $path): string
+{
+    $root = realpath((string)$config['scan_root']);
+    if ($root === false) {
+        throw new ActionRefused('the watched directory does not resolve');
+    }
+
+    $path = tidyPath(trim($path));
+    if ($path === '' || $path[0] !== '/') {
+        throw new ActionRefused('that is not an absolute path');
+    }
+
+    /*
+     * The parent is resolved; the last component never is.
+     *
+     * realpath() on the link itself would follow it - returning the target, or
+     * false for a broken or looping link, which is every link this page exists
+     * to fix. Resolving the directory it sits in gives the containment check
+     * something real to test while leaving the link untouched.
+     */
+    $parent = realpath(dirname($path));
+    if ($parent === false) {
+        throw new ActionRefused('the directory that link is in does not exist');
+    }
+
+    $inside = rtrim($root, '/') . '/';
+    if ($parent . '/' !== $inside && !str_starts_with($parent . '/', $inside)) {
+        throw new ActionRefused('that is outside the watched directory');
+    }
+
+    return $parent . '/' . basename($path);
+}
+
+/**
+ * Deletes one symlink.
+ *
+ * `unlink` on a symlink removes the link and never the target - that is what
+ * the call does, and it is the reason no check of the target is needed. The
+ * `is_link` test is here to refuse a regular file that happens to be named in
+ * a pattern, not to protect the target.
+ *
+ * @return array{path: string, target: string}
+ */
+function deleteLink(array $config, string $path): array
+{
+    $full = resolveLinkPath($config, $path);
+
+    if (!is_link($full)) {
+        throw new ActionRefused('that is not a symlink');
+    }
+
+    $target = (string)@readlink($full);
+
+    if (!@unlink($full)) {
+        throw new ActionRefused('could not remove it - check the directory is writable');
+    }
+
+    return ['path' => $full, 'target' => $target];
+}
+
+/**
+ * Points an existing symlink somewhere else.
+ *
+ * Written as a new link beside the old one and renamed over it, so there is no
+ * moment where the name does not exist. A program that opens this path every
+ * second sees the old target or the new one, never nothing.
+ *
+ * The new target is not required to exist. That sounds wrong and is not: a link
+ * into a filesystem that mounts later, or to a file a deploy is about to write,
+ * is a normal thing to want, and refusing it would make this unable to create
+ * the arrangement it is being used to restore. What it does do is say so.
+ *
+ * @return array{path: string, was: string, now: string, exists: bool}
+ */
+function repointLink(array $config, string $path, string $target): array
+{
+    $full = resolveLinkPath($config, $path);
+
+    if (!is_link($full)) {
+        throw new ActionRefused('that is not a symlink');
+    }
+
+    $target = trim($target);
+    if ($target === '') {
+        throw new ActionRefused('a link needs somewhere to point');
+    }
+    if (strlen($target) > 4096) {
+        throw new ActionRefused('that target is too long');
+    }
+
+    $was = (string)@readlink($full);
+
+    /*
+     * Refuse to build the problem this page reports.
+     *
+     * A link pointing at one of its own ancestors is an infinitely deep tree to
+     * anything that follows links. Creating one here, from the page whose job
+     * is to find them, would be absurd.
+     */
+    $resolved = $target[0] === '/' ? $target : dirname($full) . '/' . $target;
+    $resolved = tidyPath($resolved);
+    if (str_starts_with($full . '/', rtrim($resolved, '/') . '/')) {
+        throw new ActionRefused(
+            'that points at a directory containing the link itself, which is the loop this '
+            . 'page exists to find'
+        );
+    }
+
+    $temporary = $full . '.relink-' . bin2hex(random_bytes(4));
+    if (!@symlink($target, $temporary)) {
+        throw new ActionRefused('could not create the new link - check the directory is writable');
+    }
+
+    if (!@rename($temporary, $full)) {
+        @unlink($temporary);
+        throw new ActionRefused('could not put the new link in place');
+    }
+
+    return [
+        'path' => $full,
+        'was' => $was,
+        'now' => $target,
+        'exists' => file_exists($resolved),
+    ];
+}
+
+/**
+ * Replaces a symlink with a real, empty directory.
+ *
+ * The usual fix for a link that pointed at something now gone, where whatever
+ * writes into it only needs somewhere to write. The link goes first and the
+ * directory is created in its place; if the second step fails the link is put
+ * back, because leaving neither would be worse than leaving the broken one.
+ *
+ * @return array{path: string, was: string}
+ */
+function replaceLinkWithDirectory(array $config, string $path): array
+{
+    $full = resolveLinkPath($config, $path);
+
+    if (!is_link($full)) {
+        throw new ActionRefused('that is not a symlink');
+    }
+
+    $was = (string)@readlink($full);
+
+    if (!@unlink($full)) {
+        throw new ActionRefused('could not remove the link - check the directory is writable');
+    }
+
+    if (!@mkdir($full, 0755)) {
+        // Put it back rather than leaving the name missing entirely.
+        @symlink($was, $full);
+        throw new ActionRefused('could not create the directory, so the link was left as it was');
+    }
+
+    return ['path' => $full, 'was' => $was];
+}
+
+/**
+ * Deletes every broken link matching a pattern.
+ *
+ * A pattern rather than a list of ticked boxes, because the actual case is
+ * "everything under previews/ is dangling" and ticking four hundred boxes is
+ * not a workflow. `fnmatch` semantics, so `*` and `?` behave the way they do in
+ * a shell.
+ *
+ * Only ever links that are *broken*, and only ones the check already flagged.
+ * A healthy link is not in findSymlinkProblems() at all, so it is never a
+ * candidate here regardless of what the pattern says - the destructive half is
+ * bounded by a fact about each link rather than by how carefully somebody wrote
+ * the pattern. A matching link with a *different* problem, a loop or an escape,
+ * is counted and left alone: those want a decision, not a sweep.
+ *
+ * @return array{
+ *   deleted: list<array>, skipped: int, matched: int,
+ *   remaining: int, complete: bool
+ * }
+ */
+function deleteBrokenMatching(
+    array $config,
+    string $pattern,
+    bool $dryRun = true,
+    float $budgetSeconds = 20.0
+): array {
+    $root = realpath((string)$config['scan_root']);
+    if ($root === false) {
+        throw new ActionRefused('the watched directory does not resolve');
+    }
+
+    $pattern = trim($pattern);
+    if ($pattern === '') {
+        throw new ActionRefused('a pattern is needed');
+    }
+
+    /*
+     * The pattern has to name somewhere inside the watched directory.
+     *
+     * Checked on the literal prefix before the first wildcard, so `/*` and
+     * `/home/*` are refused rather than matching the whole account by accident.
+     */
+    $literal = $pattern;
+    $star = strcspn($pattern, '*?[');
+    $literal = substr($pattern, 0, $star);
+
+    $inside = rtrim($root, '/') . '/';
+    if (!str_starts_with($literal, $inside) || strlen($literal) <= strlen($inside)) {
+        throw new ActionRefused(
+            'the pattern has to start with a real path inside ' . $root
+            . ', so that a stray wildcard cannot match the whole account'
+        );
+    }
+
+    $found = findSymlinkProblems($config, $budgetSeconds);
+
+    $deleted = [];
+    $matched = 0;
+    $skipped = 0;
+
+    foreach ($found['problems'] as $problem) {
+        if (!fnmatch($pattern, $problem['path'], FNM_PATHNAME)) {
+            continue;
+        }
+        $matched++;
+
+        if ($problem['kind'] !== 'broken') {
+            // Matched, but not broken. Never deleted on a pattern alone.
+            $skipped++;
+            continue;
+        }
+
+        if (count($deleted) >= SYMLINK_BULK_MAX) {
+            continue;
+        }
+
+        if ($dryRun) {
+            $deleted[] = ['path' => $problem['path'], 'target' => $problem['target']];
+            continue;
+        }
+
+        try {
+            $deleted[] = deleteLink($config, $problem['path']);
+        } catch (ActionRefused $e) {
+            $skipped++;
+        }
+    }
+
+    return [
+        'deleted' => $deleted,
+        'skipped' => $skipped,
+        'matched' => $matched,
+        'remaining' => max(0, $matched - $skipped - count($deleted)),
+        // The walk itself may have run out of time, in which case there may be
+        // matching links it never reached.
+        'complete' => $found['complete'],
+        'dry_run' => $dryRun,
+    ];
+}
+
+/**
+ * Records what the last check found, so a new problem can be noticed.
+ *
+ * A loop that has been there for two years is a job for a rainy afternoon. One
+ * that appeared this morning is a deploy that went wrong, and the difference
+ * between the two is the only thing worth an alert - so what matters is the
+ * comparison against last time, not the count.
+ *
+ * @return array{added: list<array>, gone: int, first: bool}
+ */
+function recordSymlinkState(PDO $pdo, array $found): array
+{
+    $now = time();
+    $seen = [];
+
+    foreach ($found['problems'] as $problem) {
+        $seen[$problem['path'] . "\0" . $problem['kind']] = $problem;
+    }
+
+    try {
+        $before = $pdo->query('SELECT path, kind FROM symlink_problems')->fetchAll();
+    } catch (Throwable) {
+        return ['added' => [], 'gone' => 0, 'first' => true];
+    }
+
+    $first = $before === [];
+    $known = [];
+    foreach ($before as $row) {
+        $known[(string)$row['path'] . "\0" . (string)$row['kind']] = true;
+    }
+
+    $added = [];
+    foreach ($seen as $key => $problem) {
+        if (!isset($known[$key])) {
+            $added[] = $problem;
+        }
+    }
+
+    /*
+     * Only rewritten when the walk finished.
+     *
+     * A walk that ran out of time saw part of the tree. Storing that as the new
+     * state would mark everything it did not reach as "gone", and then report
+     * all of it as newly appeared on the next complete run.
+     */
+    if ($found['complete']) {
+        $pdo->beginTransaction();
+        $pdo->exec('DELETE FROM symlink_problems');
+        $insert = $pdo->prepare(
+            'INSERT INTO symlink_problems (path, kind, target, first_seen, last_seen)
+             VALUES (?, ?, ?, ?, ?)'
+        );
+        foreach ($seen as $problem) {
+            $insert->execute([
+                $problem['path'], $problem['kind'], $problem['target'], $now, $now,
+            ]);
+        }
+        $pdo->commit();
+    }
+
+    return [
+        'added' => $added,
+        'gone' => max(0, count($known) - count($seen)),
+        // Nothing to compare against yet, so nothing counts as new.
+        'first' => $first,
+    ];
+}

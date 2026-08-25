@@ -22,6 +22,7 @@ declare(strict_types=1);
  * and whois servers throttle anybody who asks more often than that.
  */
 
+require_once __DIR__ . '/spans.php';
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/network.php';
@@ -62,12 +63,14 @@ function domainList(PDO $pdo): array
             ? null
             : (int)floor(((int)$row['expires_at'] - $now) / 86400);
 
+        // Seconds as well as days, so the browser can say "9y 4m" rather than
+        // "3411 days" without doing the arithmetic back the other way.
+        $row['seconds_left'] = $row['expires_at'] === null
+            ? null
+            : (int)$row['expires_at'] - $now;
+
         $row['state'] = domainState($row);
-        // The EPP codes in readable form; see domainStatusPlain.
-        $row['status_plain'] = array_map(
-            'domainStatusPlain',
-            array_filter(array_map('trim', explode(',', (string)($row['status'] ?? ''))))
-        );
+        $row['status_plain'] = statusList((string)($row['status'] ?? ''));
         $row['due_at'] = (int)($row['last_checked_at'] ?? 0) + (int)$row['interval_seconds'];
         $row['auto_renew'] = $row['auto_renew'] === null ? null : (bool)$row['auto_renew'];
     }
@@ -561,4 +564,56 @@ function domainsNeedingAttention(PDO $pdo): array
         domainList($pdo),
         fn(array $row): bool => in_array($row['state'], ['expired', 'urgent', 'soon'], true)
     ));
+}
+
+/**
+ * A whois status field as a list of distinct, readable states.
+ *
+ * Registries are inconsistent about case, and some list the same code twice
+ * with different capitalisation - `clientTransferProhibited` beside
+ * `clienttransferprohibited`. Translated separately they became two identical
+ * rows saying the same thing, which reads as though the domain is locked
+ * against transfer in two different ways.
+ *
+ * So the list is keyed on the meaning rather than on the spelling. The raw
+ * codes are kept, all of them, because "what did the registry actually send"
+ * is the question the moment a translation looks wrong.
+ *
+ * @return list<array{plain: string, note: string, raw: string, seen: list<string>}>
+ */
+function statusList(string $field): array
+{
+    $out = [];
+
+    foreach (preg_split('/[,\n]+/', $field) ?: [] as $code) {
+        $code = trim($code);
+        if ($code === '') {
+            continue;
+        }
+
+        /*
+         * Registries append a URL explaining the code, which is not part of it.
+         *
+         * `clientTransferProhibited https://icann.org/epp#clientTransferProhibited`
+         * arrives as one field from several registries, and left alone it makes
+         * every such code unique and untranslatable.
+         */
+        $code = (string)preg_replace('#\s+https?://\S+$#i', '', $code);
+
+        $said = domainStatusPlain($code);
+        $key = strtolower($said['plain']);
+
+        if (isset($out[$key])) {
+            // Same meaning, different spelling. Keep the spelling, drop the row.
+            if (!in_array($code, $out[$key]['seen'], true)) {
+                $out[$key]['seen'][] = $code;
+            }
+            continue;
+        }
+
+        $said['seen'] = [$code];
+        $out[$key] = $said;
+    }
+
+    return array_values($out);
 }

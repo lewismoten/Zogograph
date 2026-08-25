@@ -595,6 +595,25 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        24 => [
+            /*
+             * What the last complete symlink walk found.
+             *
+             * Kept so that a *new* problem can be told from an old one. A loop
+             * that has been there two years is a job for a rainy afternoon; one
+             * that appeared this morning is a deploy that went wrong, and only
+             * the second is worth waking anybody about.
+             */
+            "CREATE TABLE symlink_problems (
+                path       TEXT NOT NULL,
+                kind       TEXT NOT NULL,
+                target     TEXT,
+                first_seen INTEGER NOT NULL,
+                last_seen  INTEGER NOT NULL,
+                PRIMARY KEY (path, kind)
+            )",
+        ],
+
         23 => [
             /*
              * The body of a fetched page, kept just long enough to show it.

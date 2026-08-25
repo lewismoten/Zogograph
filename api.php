@@ -67,6 +67,8 @@ require_once __DIR__ . '/lib/logstream.php';
 require_once __DIR__ . '/lib/diagnose.php';
 require_once __DIR__ . '/lib/labels.php';
 require_once __DIR__ . '/lib/urlwatch.php';
+require_once __DIR__ . '/lib/spans.php';
+require_once __DIR__ . '/lib/storekeep.php';
 require_once __DIR__ . '/lib/headers.php';
 require_once __DIR__ . '/lib/pagebits.php';
 require_once __DIR__ . '/lib/domains.php';
@@ -128,6 +130,11 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'dns-records' => dnsRecordsView($config, $pdo, $signedIn),
         'urls' => urlsView($pdo, $signedIn),
         'fetch' => fetchView($pdo, $signedIn),
+        'store' => storeView($config, $pdo, $signedIn),
+        'store-save' => doStoreSave($config, $pdo, $post),
+        'store-purge' => doStorePurge($config, $pdo, $post),
+        'store-compact' => doStoreCompact($config, $pdo, $post),
+        'store-rollup' => doStoreRollup($config, $pdo, $post),
         'domains' => domainsView($config, $pdo, $signedIn),
         'whois' => whoisView($config, $pdo, $signedIn),
         'calendar' => calendarView($config, $pdo, $signedIn),
@@ -140,7 +147,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'email' => emailSettings($config, $pdo, $signedIn),
         'processes' => processList($config, $pdo, $signedIn),
         'busy' => busyMoments($config, $pdo, $signedIn),
-        'symlinks' => symlinkCheck($config, $signedIn),
+        'symlinks' => symlinkCheck($config, $pdo, $signedIn),
+        'link-fix' => doLinkFix($config, $pdo, $post),
+        'link-sweep' => doLinkSweep($config, $pdo, $post),
         'host' => hostView($config, $signedIn, $pdo),
         'host-series' => hostSeries($config, $signedIn),
         'host-io' => hostIoSeries($config, $signedIn),
@@ -1360,11 +1369,8 @@ function whoisView(array $config, PDO $pdo, bool $signedIn): array
         'ok' => $answer['ok'],
         'error' => $answer['error'],
         'from_host' => $askedFor,
-        // EPP status codes in plain language; see domainStatusPlain.
-        'status_plain' => array_map(
-            'domainStatusPlain',
-            array_filter(array_map('trim', explode(',', (string)($parsed['status'] ?? ''))))
-        ),
+        // EPP status codes in plain language, one row per meaning; see statusList.
+        'status_plain' => statusList((string)($parsed['status'] ?? '')),
         'text' => substr($answer['text'], 0, WHOIS_MAX_BYTES),
         'parsed' => $parsed,
         'have_whois' => whichBinary('whois') !== null,
@@ -2808,13 +2814,162 @@ function processList(array $config, PDO $pdo, bool $signedIn): array
  * back - a check that quietly gave up and said "nothing wrong" would be worse
  * than not having one.
  */
-function symlinkCheck(array $config, bool $signedIn): array
+function symlinkCheck(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
         throw new ActionRefused('sign in to check symlinks');
     }
 
-    return findSymlinkProblems($config, (float)clampInt($_GET['budget'] ?? 10, 1, 60));
+    $found = findSymlinkProblems($config, (float)clampInt($_GET['budget'] ?? 10, 1, 60));
+
+    /*
+     * Compared against the last complete walk before being returned.
+     *
+     * The count alone says nothing: eleven problems is fine if it has been
+     * eleven for a year, and alarming if it was three yesterday. What is new
+     * is the answerable question, so it is answered here rather than left for
+     * somebody to remember.
+     */
+    $change = recordSymlinkState($pdo, $found);
+
+    if ($change['added'] !== [] && !$change['first']) {
+        raiseSymlinkAlert($pdo, $config, $change['added']);
+    }
+
+    return $found + [
+        'new' => $change['added'],
+        'gone' => $change['gone'],
+        'first_walk' => $change['first'],
+        'root' => (string)$config['scan_root'],
+        'bulk_max' => SYMLINK_BULK_MAX,
+    ];
+}
+
+/**
+ * Raises an alert for links that were not there last time.
+ *
+ * Only for a walk that completed, and only against a previous walk that
+ * existed - the first ever check would otherwise report every link on the
+ * machine as newly appeared, which is both useless and the kind of thing that
+ * teaches people to ignore the alerts.
+ */
+function raiseSymlinkAlert(PDO $pdo, array $config, array $added): void
+{
+    $worst = 'broken';
+    foreach ($added as $problem) {
+        if (in_array($problem['kind'], ['loop', 'ancestor'], true)) {
+            $worst = $problem['kind'];
+            break;
+        }
+    }
+
+    /*
+     * A dangling link is untidy; a loop breaks the next backup. Only the
+     * second is worth a critical, or the first time one appears everybody
+     * learns the alert means nothing.
+     */
+    $severity = $worst === 'broken' ? 'warning' : 'critical';
+    $first = $added[0];
+
+    recordAlert($pdo, $config['alerts'] ?? [], [
+        'rule' => 'symlink_new',
+        'severity' => $severity,
+        'subject' => count($added) === 1
+            ? 'A new ' . $first['kind'] . ' symlink appeared'
+            : count($added) . ' new symlink problems appeared',
+        'detail' => $first['note'] . ' First one: ' . $first['path']
+            . ($first['target'] === '' ? '' : ' -> ' . $first['target'])
+            . (count($added) > 1 ? ' (and ' . (count($added) - 1) . ' more).' : ''),
+        // Linked to the path row where there is one, so the alert can be
+        // masked for a signed-out visitor like every other path-bearing alert.
+        'path_id' => pathIdIfKnown($pdo, $first['path']),
+    ]);
+}
+
+/**
+ * The id of a path already known to the scanner, or null.
+ *
+ * Deliberately does not create one. A symlink is not something the scanner
+ * counts - it steps over every link it meets - so inserting a row here would
+ * put a path into the size tables that has no size and never will.
+ */
+function pathIdIfKnown(PDO $pdo, string $path): ?int
+{
+    $stmt = $pdo->prepare('SELECT id FROM paths WHERE path = ?');
+    $stmt->execute([$path]);
+    $id = $stmt->fetchColumn();
+
+    return $id === false ? null : (int)$id;
+}
+
+/**
+ * One repair to one link.
+ *
+ * Three verbs, because there are three things somebody actually wants: point
+ * it somewhere else, replace it with a real directory, or remove it. All three
+ * refuse anything outside the watched directory and anything that is not a
+ * symlink.
+ */
+function doLinkFix(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    if (!($config['allow_delete'] ?? false)) {
+        throw new ActionRefused(
+            'this install is set up to look but not touch. Turn on deletions in setup.php '
+            . 'to repair links from here.'
+        );
+    }
+
+    $path = (string)($_POST['path'] ?? '');
+    $how = (string)($_POST['how'] ?? '');
+
+    $result = match ($how) {
+        'repoint' => repointLink($config, $path, (string)($_POST['target'] ?? '')),
+        'directory' => replaceLinkWithDirectory($config, $path),
+        'delete' => deleteLink($config, $path),
+        default => throw new ActionRefused('that is not something this can do to a link'),
+    };
+
+    logAction($pdo, 'symlink_' . $how, $result['path'], 'ok', 0, 0,
+        $how === 'repoint'
+            ? ($result['was'] . ' -> ' . $result['now']
+                . ($result['exists'] ? '' : ' (which is not there yet)'))
+            : ($result['was'] ?? $result['target'] ?? ''));
+
+    return ['ok' => true, 'result' => $result, 'how' => $how];
+}
+
+/**
+ * Deletes every broken link under a pattern.
+ *
+ * Always previewed first: the browser asks with `confirm=0`, shows exactly what
+ * would go, and only then asks again for real. A pattern is easy to write too
+ * broadly and this is the one operation here that could take four hundred
+ * things at once.
+ */
+function doLinkSweep(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $confirmed = ($_POST['confirm'] ?? '0') === '1';
+
+    if ($confirmed && !($config['allow_delete'] ?? false)) {
+        throw new ActionRefused(
+            'this install is set up to look but not touch. Turn on deletions in setup.php '
+            . 'to remove links from here.'
+        );
+    }
+
+    $pattern = (string)($_POST['pattern'] ?? '');
+    $result = deleteBrokenMatching($config, $pattern, !$confirmed);
+
+    if ($confirmed) {
+        logAction($pdo, 'symlink_sweep', $pattern, 'ok', count($result['deleted']), 0,
+            count($result['deleted']) . ' removed, ' . $result['skipped'] . ' left alone');
+    }
+
+    return ['ok' => true, 'result' => $result, 'pattern' => $pattern];
 }
 
 /**
@@ -3522,12 +3677,53 @@ function emailSettings(array $config, PDO $pdo, bool $signedIn): array
  * so nothing else in the file can be lost by a form that did not know about it,
  * and the result is the same shape setup.php produces.
  */
+
+/**
+ * Replaces lib/config.php with a new set of values.
+ *
+ * Written to a neighbour and renamed, because a half-written config file is a
+ * site that will not start - and `rename` within a directory is atomic, so
+ * there is no moment at which the file is partial.
+ *
+ * PHP caches stat() results for the length of a request and beyond, so anything
+ * reading the file immediately afterwards gets the old one. Callers are
+ * expected to answer with what they just wrote rather than re-reading; the
+ * clearstatcache here is for anything that reads it later in the same request.
+ */
+function writeConfigFile(array $config): void
+{
+    $file = __DIR__ . '/lib/config.php';
+
+    if (!is_writable($file)) {
+        throw new ActionRefused(
+            'lib/config.php is not writable by the web server, so this cannot save. '
+            . 'Change it in setup.php, or edit the file directly.'
+        );
+    }
+
+    $rendered = renderConfig($config, __DIR__ . '/lib');
+
+    $temporary = $file . '.new';
+    if (@file_put_contents($temporary, $rendered, LOCK_EX) === false) {
+        throw new ActionRefused('could not write into lib/');
+    }
+    @chmod($temporary, 0600);
+
+    if (!@rename($temporary, $file)) {
+        @unlink($temporary);
+        throw new ActionRefused('could not replace lib/config.php');
+    }
+
+    clearstatcache(true, $file);
+}
+
 function doEmailSave(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
 
-    $file = __DIR__ . '/lib/config.php';
-    if (!is_writable($file)) {
+    // Refused before anything is validated, so the form does not walk somebody
+    // through a dozen fields to fail on the write.
+    if (!is_writable(__DIR__ . '/lib/config.php')) {
         throw new ActionRefused(
             'lib/config.php is not writable by the web server, so this cannot save. '
             . 'Change it in setup.php, or edit the file directly.'
@@ -3639,17 +3835,7 @@ function doEmailSave(array $config, PDO $pdo, bool $post): array
         }
     }
 
-    $rendered = renderConfig($current, __DIR__ . '/lib');
-
-    $temporary = $file . '.new';
-    if (@file_put_contents($temporary, $rendered, LOCK_EX) === false) {
-        throw new ActionRefused('could not write into lib/');
-    }
-    @chmod($temporary, 0600);
-    if (!@rename($temporary, $file)) {
-        @unlink($temporary);
-        throw new ActionRefused('could not replace lib/config.php');
-    }
+    writeConfigFile($current);
 
     logAction($pdo, 'email_settings', $to !== '' ? $to : null, 'ok', 0, 0,
         ($enabled ? 'email on' : 'email off') . ', ' . count($wanted) . ' condition(s)');
@@ -3662,7 +3848,6 @@ function doEmailSave(array $config, PDO $pdo, bool $post): array
      * looked exactly like the save having silently failed. Answering with what
      * was just written removes the race rather than papering over it.
      */
-    clearstatcache(true, $file);
     return ['ok' => true, 'settings' => emailSettings($current, $pdo, true)];
 }
 
@@ -4488,4 +4673,148 @@ function clampInt(mixed $value, int $min, int $max): int
 {
     $n = is_numeric($value) ? (int)$value : $min;
     return max($min, min($max, $n));
+}
+
+/* ----------------------------------------------------------- keeping it -- */
+
+/**
+ * What both databases hold, what it costs, and what it will cost.
+ *
+ * The host database is reported beside the account one where it can be read.
+ * It is written by root's collector and this process usually cannot open it,
+ * which is not a fault - so it says so rather than showing zeros.
+ */
+function storeView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see this');
+    }
+
+    $out = [
+        'account' => retentionReport($pdo, $config),
+        'host' => null,
+        'host_why' => null,
+        'writable' => is_writable(__DIR__ . '/lib/config.php'),
+    ];
+
+    // hostDatabasePath() lives in lib/hostdb.php and already knows the default.
+    $hostPath = ($config['host']['enabled'] ?? false) ? hostDatabasePath($config) : null;
+
+    if ($hostPath === null || !is_file($hostPath)) {
+        $out['host_why'] = 'The host collector has no database here yet.';
+        return $out;
+    }
+
+    try {
+        $host = new PDO('sqlite:' . $hostPath, null, null, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+
+        $store = storeTables($host);
+        $out['host'] = [
+            'file' => databaseFacts($host, $config, $hostPath),
+            'tables' => $store['tables'],
+            'measured' => $store['measured'],
+            'why' => $store['why'],
+            /*
+             * Read-only from here, on purpose.
+             *
+             * The host database belongs to root's collector. This account can
+             * usually open it to read and should never be the thing that
+             * rewrites it - a VACUUM from here would leave a file owned by the
+             * web user that the collector then cannot write.
+             */
+            'writable' => false,
+        ];
+    } catch (Throwable $e) {
+        $out['host_why'] = 'Present, but this account cannot open it: ' . $e->getMessage();
+    }
+
+    return $out;
+}
+
+/** New retention settings, written to the config file. */
+function doStoreSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $wanted = retentionSettings($_POST);
+    if ($wanted === []) {
+        throw new ActionRefused('nothing was changed');
+    }
+
+    $current = require __DIR__ . '/lib/config.php';
+    foreach ($wanted as $key => $value) {
+        $current['retention'][$key] = $value;
+    }
+
+    writeConfigFile($current);
+
+    logAction($pdo, 'retention_settings', null, 'ok', 0, 0, implode(', ', array_map(
+        fn(string $k, int $v): string => $k . '=' . ($v === 0 ? 'ever' : $v . 'd'),
+        array_keys($wanted),
+        $wanted
+    )));
+
+    return ['ok' => true] + storeView($current, $pdo, true);
+}
+
+/**
+ * Clears one kind of record older than a given age.
+ *
+ * The confirmation lives in the browser; what lives here is the refusal to
+ * touch anything not in the catalogue, and the note in the action log - which
+ * is itself one of the things that can be cleared, so the entry is written
+ * before the deletion rather than after it.
+ */
+function doStorePurge(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $key = (string)($_POST['key'] ?? '');
+    $days = clampInt($_POST['days'] ?? 0, 0, 3650);
+
+    logAction($pdo, 'retention_purge', $key, 'ok', 0, 0,
+        $days > 0 ? 'older than ' . $days . ' days' : 'everything');
+
+    $result = purgeEntry($pdo, $config, $key, $days);
+
+    return ['ok' => true, 'result' => $result] + storeView($config, $pdo, true);
+}
+
+/** Rewrites the database to hand its empty pages back to the disk. */
+function doStoreCompact(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $result = compactNow($pdo, $config);
+
+    logAction($pdo, 'database_compact', null, 'ok', 0, 0,
+        'reclaimed ' . humanBytes($result['saved']) . ' in ' . $result['seconds'] . 's');
+
+    return ['ok' => true, 'result' => $result] + storeView($config, $pdo, true);
+}
+
+/**
+ * Rolls up readings now rather than waiting for the cron.
+ *
+ * The same compaction the nightly run does. Offered by hand because the reason
+ * somebody is on this page is usually that the file is larger than they expected
+ * and they would like it smaller today.
+ */
+function doStoreRollup(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $result = compactVitals($pdo, retentionRules($config));
+
+    logAction($pdo, 'retention_rollup', null, 'ok', 0, 0, sprintf(
+        '%d rows became %d, %d protected',
+        $result['removed'] + $result['compacted'],
+        $result['compacted'],
+        $result['protected']
+    ));
+
+    return ['ok' => true, 'result' => $result] + storeView($config, $pdo, true);
 }
