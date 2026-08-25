@@ -169,6 +169,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-settings' => aiSettingsView($config, $pdo, $signedIn),
         'ai-settings-save' => doAiSettingsSave($config, $pdo, $post),
         'ai-sessions' => aiSessionsView($config, $signedIn),
+        'charts' => chartCatalogueView($signedIn),
+        'chart-series' => chartSeriesView($pdo, $signedIn),
         'rdns-ask' => doRdnsAsk($config, $pdo, $post),
         'rdns-cancel' => doRdnsCancel($config, $pdo, $post),
         'rdns-now' => doRdnsNow($config, $pdo, $post),
@@ -5795,7 +5797,7 @@ function doRdnsNow(array $config, PDO $pdo, bool $post): array
 function aiView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
-        throw new ActionRefused('sign in to use the assistant');
+        throw new ActionRefused('sign in to ask Lookout');
     }
 
     $ready = aiReady($config);
@@ -5870,7 +5872,7 @@ function doAiSay(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('the assistant is not available');
+        throw new ActionRefused('Lookout is not available');
     }
 
     $text = trim((string)($_POST['text'] ?? ''));
@@ -5909,7 +5911,7 @@ function doAiStep(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('the assistant is not available');
+        throw new ActionRefused('Lookout is not available');
     }
 
     $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
@@ -5925,7 +5927,7 @@ function doAiStep(array $config, PDO $pdo, bool $post): array
 function aiPollView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
-        throw new ActionRefused('sign in to use the assistant');
+        throw new ActionRefused('sign in to ask Lookout');
     }
 
     $ai = aiDb($config, false);
@@ -5944,7 +5946,7 @@ function doAiPermit(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('the assistant is not available');
+        throw new ActionRefused('Lookout is not available');
     }
 
     $runId = clampInt($_POST['run'] ?? 0, 1, PHP_INT_MAX);
@@ -6017,7 +6019,7 @@ function doAiToolResult(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('the assistant is not available');
+        throw new ActionRefused('Lookout is not available');
     }
 
     $runId = clampInt($_POST['run'] ?? 0, 1, PHP_INT_MAX);
@@ -6081,6 +6083,68 @@ function aiBrowserResult(PDO $ai, int $session, array $run): array
         return ['opened' => (string)($arguments['page'] ?? '')];
     }
 
+    if ($tool === 'show_chart') {
+        /*
+         * The model is told it was shown, not what it looked like.
+         *
+         * It named the chart and it can have the numbers; a picture of its own
+         * request tells it nothing and costs a great deal. The picture is kept
+         * here instead - what this person was actually shown, at that moment,
+         * for a transcript that may be read back months later.
+         */
+        $arguments = json_decode((string)$run['arguments'], true) ?: [];
+        $shown = (string)($_POST['shown'] ?? '');
+
+        aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+            'shown' => true,
+            'chart' => (string)($arguments['chart'] ?? ''),
+            'note' => 'The chart is now visible in the conversation. You have not been '
+                . 'sent it - if you need its numbers, call get_chart_data.',
+        ]);
+
+        if (preg_match('#^data:image/(webp|png|jpeg);base64,#', $shown)
+            && strlen($shown) < 2 * 1024 * 1024) {
+            /*
+             * Kept out of the transcript the model reads.
+             *
+             * visible = 0 keeps it out of the chat panel too: it is already on
+             * screen as a real chart, and a second copy as an image would be
+             * confusing. This row exists purely as the record.
+             */
+            aiAddMessage($ai, $session, 'shown', $shown, [
+                'visible' => 0,
+                'tool_name' => 'show_chart',
+                'tool_args' => $arguments,
+            ]);
+        }
+
+        return ['shown' => true];
+    }
+
+    if ($tool === 'get_chart_image') {
+        $image = (string)($_POST['image'] ?? '');
+
+        if (!preg_match('#^data:image/(webp|png|jpeg);base64,#', $image)) {
+            aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+                'error' => 'The browser could not render that chart.',
+            ]);
+            return ['error' => 'not an image'];
+        }
+
+        aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+            'rendered' => true,
+            'note' => 'The chart follows as an image. Read only what is legible in it; '
+                . 'for exact values call get_chart_data.',
+        ]);
+
+        aiAddMessage($ai, $session, 'user', $image, [
+            'visible' => 0,
+            'tool_name' => 'chart_image',
+        ]);
+
+        return ['rendered' => true, 'bytes' => strlen($image)];
+    }
+
     if ($tool === 'take_screenshot') {
         $image = (string)($_POST['image'] ?? '');
 
@@ -6127,7 +6191,7 @@ function doAiStop(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('the assistant is not available');
+        throw new ActionRefused('Lookout is not available');
     }
 
     $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
@@ -6362,4 +6426,47 @@ function aiSessionsView(array $config, bool $signedIn): array
         ],
         'database' => aiDatabaseFacts($config),
     ];
+}
+
+/**
+ * The chart catalogue, for the interface to name them with.
+ *
+ * The same definitions the model is given, from the same file - so the id
+ * somebody reads off a chart and the id the model accepts are the same string
+ * by construction rather than by discipline.
+ */
+function chartCatalogueView(bool $signedIn): array
+{
+    if (!$signedIn) {
+        return ['charts' => []];
+    }
+
+    $out = [];
+    foreach (aiChartCatalogue() as $id => $chart) {
+        $out[$id] = [
+            'name' => $chart['name'],
+            'view' => $chart['view'],
+            'what' => $chart['what'],
+            'units' => implode(', ', array_map(
+                fn(array $series): string => $series[1] . ' (' . $series[2] . ')',
+                $chart['series']
+            )),
+        ];
+    }
+
+    return ['charts' => $out];
+}
+
+/** One chart's numbers, for drawing it somewhere other than its own page. */
+function chartSeriesView(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see this');
+    }
+
+    return aiChartData(
+        $pdo,
+        (string)($_GET['chart'] ?? ''),
+        clampInt($_GET['hours'] ?? 24, 1, 8760)
+    );
 }

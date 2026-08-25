@@ -315,7 +315,23 @@ function aiTranscript(PDO $ai, int $session): array
 
         if ($role === 'user') {
             $flushText();
-            $out[] = ['role' => 'user', 'content' => (string)($row['content'] ?? '')];
+            $content = (string)($row['content'] ?? '');
+
+            /*
+             * A picture is not a very long string.
+             *
+             * Screenshots and rendered charts are stored as data URLs in the
+             * same column as everything else, and sending one as text would be
+             * a megabyte of base64 the model reads as gibberish and is billed
+             * for. Marked here and turned into whatever content block the
+             * provider wants by the request builder.
+             */
+            if (str_starts_with($content, 'data:image/')) {
+                $out[] = ['role' => 'user', 'image' => $content];
+                continue;
+            }
+
+            $out[] = ['role' => 'user', 'content' => $content];
         }
     }
 
@@ -603,9 +619,18 @@ function aiSessionView(array $config, PDO $ai, int $id, array $views): array
 
     $settings = aiSettings($config);
 
+    /*
+     * visible = 0 is a record, not a message.
+     *
+     * Screenshots and the pictures of charts that were shown live in the same
+     * table so that the transcript is complete, but they are not things to draw
+     * in a chat panel - one is already on screen as a real chart, and the other
+     * is a megabyte of base64 that was rendered as text until this filter
+     * existed.
+     */
     $messages = $ai->prepare(
         'SELECT id, at, role, content, tool_name, tool_args FROM ai_messages
-          WHERE session_id = ? ORDER BY id'
+          WHERE session_id = ? AND visible = 1 ORDER BY id'
     );
     $messages->execute([$id]);
 

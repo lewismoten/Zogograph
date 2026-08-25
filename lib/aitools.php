@@ -33,6 +33,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/spans.php';
 require_once __DIR__ . '/actions.php';
+require_once __DIR__ . '/aicharts.php';
 
 /**
  * Every tool, with its schema and how it runs.
@@ -437,6 +438,119 @@ function aiToolCatalogue(): array
             ],
         ],
 
+        /* ------------------------------------------------------- the charts -- */
+
+        'get_chart_data' => [
+            'group' => 'diagnostic',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'The numbers behind one named chart.',
+            'description' =>
+                "Returns the measurements a named chart is drawn from, bucketed over a "
+                . "period, with the lowest, highest and average of each bucket.\n\n"
+                . "PREFER THIS OVER EVERY OTHER WAY OF LOOKING AT A CHART. A chart is a "
+                . "rendering of data you can have directly; asking for a picture of it "
+                . "instead is asking for a worse copy at roughly fifty times the cost in "
+                . "tokens, and you cannot read exact values off an image.\n\n"
+                . "USE THIS when the user names a chart, or describes something a chart "
+                . "shows, or when you want a measurement over time rather than right now.\n\n"
+                . "Each bucket carries its highest value as well as its average, because "
+                . "the average of an hour containing a two-minute spike hides the spike - "
+                . "and the spike is usually the thing being looked for.",
+            'parameters' => [
+                'chart' => [
+                    'type' => 'string',
+                    'enum' => [],
+                    'required' => true,
+                    'description' => 'Which chart. The user may name one; every chart on '
+                        . 'this dashboard shows its own id when hovered, so they can tell '
+                        . 'you exactly which one they mean.',
+                ],
+                'hours' => [
+                    'type' => 'integer', 'minimum' => 1, 'maximum' => 8760,
+                    'required' => true,
+                    'description' => 'How far back. 24 for today, 168 for a week.',
+                ],
+            ],
+        ],
+
+        'show_chart' => [
+            'group' => 'navigation',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'draw a chart inside this conversation.',
+            'description' =>
+                "Draws a named chart in the chat itself, where the user can see it without "
+                . "leaving the page they are on.\n\n"
+                . "USE THIS whenever you are talking about something a chart shows and it "
+                . "would help the user to see it. It is far better than open_page for this: "
+                . "it does not move them away from whatever they were doing, and the chart "
+                . "appears right next to the sentence about it.\n\n"
+                . "This shows the user a picture. It does NOT show you one - you get "
+                . "nothing back but a confirmation. If you need the numbers, call "
+                . "get_chart_data; if you genuinely need to see the rendering, call "
+                . "get_chart_image.\n\n"
+                . "Say what you want them to notice in the same message. A chart with no "
+                . "sentence attached is a shrug.",
+            'parameters' => [
+                'chart' => [
+                    'type' => 'string', 'enum' => [], 'required' => true,
+                    'description' => 'Which chart to draw.',
+                ],
+                'hours' => [
+                    'type' => 'integer', 'minimum' => 1, 'maximum' => 8760,
+                    'required' => true,
+                    'description' => 'The period it should cover.',
+                ],
+                'why' => [
+                    'type' => 'string', 'maxLength' => 200, 'required' => true,
+                    'description' => 'One short line shown as the chart\'s caption, saying '
+                        . 'what to look at. Written for the reader: "the step at 09:20 is '
+                        . 'where it jumped" rather than "displaying disk usage".',
+                ],
+            ],
+        ],
+
+        'get_chart_image' => [
+            'group' => 'navigation',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'get a picture of one chart.',
+            'description' =>
+                "Renders one named chart and returns the image to YOU.\n\n"
+                . "THIS IS A LAST RESORT. Call get_chart_data first, always. The data is "
+                . "exact, cheap, and answers almost every question a chart can. An image "
+                . "costs roughly fifty times as many tokens and you cannot read a value "
+                . "off it.\n\n"
+                . "USE THIS ONLY when the user is describing something about a chart's "
+                . "SHAPE that the numbers do not settle: a pattern they can see and you "
+                . "cannot infer, something they say looks wrong, or a disagreement between "
+                . "what they describe and what the data says. In that last case the point "
+                . "is to find out whether you are both looking at the same thing.\n\n"
+                . "STILL BETTER THAN take_screenshot. This gives you one chart at a known "
+                . "size with nothing else in the frame; a screenshot gives you the whole "
+                . "window, costs more, and may contain things the user would rather not "
+                . "send. Only fall back to a screenshot when what matters is not a chart "
+                . "at all.",
+            'parameters' => [
+                'chart' => [
+                    'type' => 'string', 'enum' => [], 'required' => true,
+                    'description' => 'Which chart to render.',
+                ],
+                'hours' => [
+                    'type' => 'integer', 'minimum' => 1, 'maximum' => 8760,
+                    'required' => true,
+                    'description' => 'The period it should cover.',
+                ],
+                'why' => [
+                    'type' => 'string', 'maxLength' => 200, 'required' => true,
+                    'description' => 'What you expect to see and why the numbers from '
+                        . 'get_chart_data did not settle it. If you cannot answer that, '
+                        . 'call get_chart_data instead.',
+                ],
+            ],
+        ],
+
         /* ---------------------------------------------------- the browser -- */
 
         'open_page' => [
@@ -525,6 +639,27 @@ function aiToolCatalogue(): array
 function aiTools(array $views): array
 {
     $catalogue = aiToolCatalogue();
+
+    /*
+     * The chart list, injected rather than duplicated.
+     *
+     * Same reasoning as the page list below: one definition, in
+     * lib/aicharts.php, and three tools that read it - otherwise a chart added
+     * there is a chart the model cannot name.
+     */
+    $charts = aiChartCatalogue();
+    $chartNames = implode("\n", array_map(
+        fn(string $id, array $chart): string => sprintf('  %s - "%s", on the %s page. %s',
+            $id, $chart['name'], $chart['view'], $chart['what']),
+        array_keys($charts),
+        array_values($charts)
+    ));
+
+    foreach (['get_chart_data', 'show_chart', 'get_chart_image'] as $name) {
+        $catalogue[$name]['parameters']['chart']['enum'] = array_keys($charts);
+        $catalogue[$name]['parameters']['chart']['description'] .=
+            "\n\nThe charts:\n" . $chartNames;
+    }
 
     $catalogue['open_page']['parameters']['page']['enum'] = array_keys($views);
     $catalogue['open_page']['parameters']['page']['description'] .=

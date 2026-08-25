@@ -1803,6 +1803,17 @@ button.link.tiny:hover { opacity: 1; }
  * It follows you between views on purpose: the assistant's most useful move is
  * to take you somewhere and keep talking about what you are now looking at.
  */
+/*
+ * `hidden` has to win over these.
+ *
+ * The browser's own [hidden] { display: none } is an author-stylesheet loss
+ * waiting to happen: any class selector that sets display beats it, and both
+ * of these do. The panel was therefore visible from the moment the page
+ * loaded and the Hide button did nothing at all.
+ */
+.chat-panel[hidden],
+.corner-choices[hidden] { display: none; }
+
 .chat-panel {
   position: fixed;
   right: 22px;
@@ -1895,3 +1906,61 @@ input.wide-field { width: 100%; max-width: 34em; }
   .chat-panel { right: 10px; left: 10px; width: auto; bottom: 74px; }
   .corner-menu { right: 14px; bottom: 14px; }
 }
+
+/* ------------------------------------------------------------ chart names -- */
+
+/*
+ * A chart says what it is, quietly.
+ *
+ * Three parties need a shared word for a chart — the person looking at it, the
+ * model reasoning about it, and the code drawing it — but a chart covered in
+ * identifiers is worse for the ninety-nine per cent of the time nobody is
+ * talking about it. So: small, faint, in the corner, and legible on hover.
+ */
+.holds-chart { position: relative; }
+.chart-id {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: .8rem;
+  line-height: 1;
+  color: var(--dim);
+  cursor: pointer;
+  opacity: .45;
+  user-select: none;
+}
+.chart-id:hover, .chart-id:focus { opacity: 1; color: var(--accent); }
+
+/* ------------------------------------------------- pictures for the model -- */
+
+.chat-chart {
+  align-self: stretch;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+  background: var(--bg);
+}
+.chat-chart-head { font-size: .85em; font-weight: 600; margin-bottom: 4px; }
+canvas.chat-chart-canvas { width: 100%; height: 150px; display: block; }
+
+/* Rendered for the model, never shown: off-screen but laid out, or a canvas
+   with no width produces a stretched 300x150 default. */
+.offscreen-chart {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  width: 720px;
+}
+.offscreen-chart canvas { width: 720px; height: 300px; display: block; }
+
+.shot-dialog { max-width: min(96vw, 1100px); width: 96vw; }
+.shot-tools { display: flex; gap: 14px; align-items: baseline; margin: 6px 0; }
+.shot-tools button.chosen { color: var(--text); text-decoration: underline; }
+.shot-stage {
+  max-height: 62vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #000;
+}
+#shotCanvas { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: none; }

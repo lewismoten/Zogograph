@@ -338,7 +338,7 @@
     </a>
     <a class="nav-item nav-sub" href="#/sys-ai" data-nav="sys-ai" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
-      <span class="nav-label">The assistant</span>
+      <span class="nav-label">Lookout</span>
       <span class="nav-badge" data-badge="sys-ai" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/sys-changed" data-nav="sys-changed" data-parent="system">
@@ -1888,11 +1888,12 @@
 <section class="view" data-view="sys-ai" hidden>
 <section class="panel" id="aiSettingsPanel">
   <div class="panel-head">
-    <h2>The assistant</h2>
+    <h2>Lookout</h2>
   </div>
   <p class="muted small sub-note">
-    A model you configure, given a fixed set of read-only tools for looking at
-    this machine. It is off until you set it up, and when it is on this tool
+    Lookout is a model you configure, given a fixed set of read-only tools for
+    looking at this machine — the name is the job: somebody on watch who tells
+    you what they can see. It is off until you set it up, and when it is on this tool
     sends parts of your logs, your disk figures and your process list to
     whichever service you point it at — which is worth deciding deliberately
     rather than discovering. A local model needs no key and nothing leaves the
@@ -1924,7 +1925,7 @@
 
 <section class="panel" id="aiSessionsPanel">
   <div class="panel-head">
-    <h2>What it has cost</h2>
+    <h2>What Lookout has cost</h2>
     <button id="aiSessionsRefresh" class="link">Refresh</button>
   </div>
   <p class="muted small sub-note">
@@ -2134,11 +2135,11 @@
   <div class="corner-menu" id="cornerMenu">
     <div class="corner-choices" id="cornerChoices" hidden>
       <button type="button" id="cornerNote">✎ Write a note</button>
-      <button type="button" id="cornerChat">💬 Ask the assistant</button>
+      <button type="button" id="cornerChat">🔭 Ask Lookout</button>
     </div>
-    <button id="noteButton" class="note-button" title="Write a note, or ask the assistant"
+    <button id="noteButton" class="note-button" title="Write a note, or ask Lookout"
             aria-haspopup="true" aria-expanded="false"
-            aria-label="Write a note, or ask the assistant">✎</button>
+            aria-label="Write a note, or ask Lookout">✎</button>
   </div>
 
   <!--
@@ -2148,9 +2149,9 @@
     to take you somewhere and keep talking about what you are now looking at,
     and a chat that lived on its own page could not do that.
   -->
-  <aside id="chatPanel" class="chat-panel" hidden aria-label="The assistant">
+  <aside id="chatPanel" class="chat-panel" hidden aria-label="Lookout, the troubleshooting assistant">
     <div class="chat-head">
-      <strong id="chatTitle">The assistant</strong>
+      <strong id="chatTitle">Lookout</strong>
       <span class="muted small" id="chatCost"></span>
       <button id="chatNew" class="link" title="Start a fresh conversation">New</button>
       <button id="chatStop" class="link danger" title="Stop this conversation">Stop</button>
@@ -2165,6 +2166,34 @@
     </form>
   </aside>
 </div>
+
+<!--
+  Nothing leaves this machine until somebody has looked at it.
+
+  A screenshot of this dashboard contains paths, addresses, domain names and
+  whatever a log line happened to say. Two tools, both by dragging a box: keep
+  only this part, or black out this part.
+-->
+<dialog id="shotDialog" class="shot-dialog">
+  <div class="panel-head">
+    <h2>Before this is sent</h2>
+    <button id="shotCancel" class="link danger">Do not send it</button>
+  </div>
+  <p class="muted small" id="shotWhy"></p>
+  <div class="shot-tools" id="shotTools">
+    <button type="button" id="shotRedactMode" class="link chosen">Black something out</button>
+    <button type="button" id="shotCropMode" class="link">Keep only part of it</button>
+    <button type="button" id="shotUndo" class="link">Undo</button>
+    <span class="muted small" id="shotCount"></span>
+  </div>
+  <p class="muted small" id="shotHint"></p>
+  <div class="shot-stage">
+    <canvas id="shotCanvas"></canvas>
+  </div>
+  <div class="inspect-actions">
+    <button type="button" id="shotSend">Send this</button>
+  </div>
+</dialog>
 
 <dialog id="noteDialog">
   <div class="panel-head">

@@ -2591,6 +2591,9 @@ async function refreshShared() {
   state.lastReadingAt = overview.vitals ? Number(overview.vitals.taken_at) : null;
   renderLastSeen();
   renderBroadcasts(overview.broadcasts || []);
+  // Once per session; the definitions come from the server so the names the
+  // user sees and the names the model is given cannot drift.
+  loadChartNames().catch(() => {});
 
   /*
    * The host collector's clock, and whether anything it owes has arrived.
@@ -4223,7 +4226,7 @@ function collectorDial(collector) {
   return svg;
 }
 
-/* --------------------------------------------------- setting the assistant -- */
+/* --------------------------------------------------------- setting lookout -- */
 
 const aiSetState = { data: null };
 
@@ -4263,14 +4266,14 @@ function renderAiSettings(data) {
   const form = document.createElement("div");
   form.className = "settings";
 
-  form.appendChild(fieldRow("Use an assistant", (() => {
+  form.appendChild(fieldRow("Use Lookout", (() => {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.id = "aiEnabled";
     box.checked = data.enabled;
     return box;
   })(),
-    "Off means the chat is unavailable and nothing is ever sent anywhere. Turning it on "
+    "Off means Lookout is unavailable and nothing is ever sent anywhere. Turning it on "
     + "does not send anything by itself — only asking it something does."));
 
   const provider = document.createElement("select");
@@ -4630,7 +4633,572 @@ async function refreshAiSessions() {
   }
 }
 
-/* ------------------------------------------------------------ the assistant -- */
+/* ------------------------------------------------- pictures for the model -- */
+
+/**
+ * A chart drawn inside the conversation.
+ *
+ * The point is that Lookout can show somebody something without moving them
+ * off whatever page they are on, and without needing to know anything about
+ * how the page is laid out. It names a chart; the browser draws it.
+ */
+async function drawChatChart(args) {
+  /*
+   * Rendered off-screen, only to produce the record.
+   *
+   * The visible card is built by renderChat from the tool call itself, so that
+   * it survives every re-render - appending it here meant the next poll's
+   * replaceChildren threw it away, which is exactly what happened. Both go
+   * through renderNamedChart, so the picture kept and the picture shown are
+   * the same picture.
+   */
+  const holder = document.createElement("div");
+  holder.className = "offscreen-chart";
+  const canvas = document.createElement("canvas");
+  holder.appendChild(canvas);
+  document.body.appendChild(holder);
+
+  try {
+    await renderNamedChart(canvas, args.chart, Number(args.hours) || 24);
+    return { image: canvas.toDataURL("image/webp", 0.8) };
+  } finally {
+    holder.remove();
+  }
+}
+
+/**
+ * The visible card for a show_chart call, cached by the message it belongs to.
+ *
+ * Cached because renderChat runs on every poll - several times a second while a
+ * turn is in flight - and refetching a series and redrawing a canvas at that
+ * rate would be absurd. The element is simply moved back into place.
+ */
+function chatChartCard(message) {
+  const cached = chatState.charts.get(message.id);
+  if (cached) return cached;
+
+  const card = document.createElement("div");
+  card.className = "chat-chart";
+  card.dataset.message = String(message.id);
+
+  const head = document.createElement("div");
+  head.className = "chat-chart-head";
+  head.textContent = "…";
+  card.appendChild(head);
+
+  const canvas = document.createElement("canvas");
+  canvas.className = "chat-chart-canvas";
+  card.appendChild(canvas);
+
+  const caption = document.createElement("div");
+  caption.className = "muted small";
+  caption.textContent = message.arguments.why || "";
+  card.appendChild(caption);
+
+  chatState.charts.set(message.id, card);
+
+  /*
+   * Drawn after it is in the document.
+   *
+   * drawLineChart measures the element, and a canvas with no width produces a
+   * 300x150 default that is then stretched - the one mistake this codebase has
+   * made four times now.
+   */
+  requestAnimationFrame(async () => {
+    try {
+      const drawn = await renderNamedChart(
+        canvas,
+        message.arguments.chart,
+        Number(message.arguments.hours) || 24
+      );
+      head.textContent = `${drawn.name} · `
+        + `${humanSpan(Number(message.arguments.hours) * 3600, true)}`;
+    } catch (error) {
+      head.textContent = "That chart could not be drawn";
+      caption.textContent = String(error.message || error);
+    }
+  });
+
+  return card;
+}
+
+/**
+ * One chart, rendered off-screen, as an image for the model.
+ *
+ * Off-screen because the user is not being shown this - it is an answer to a
+ * question the model asked, and moving the page around to produce it would be
+ * a strange thing to do to somebody mid-sentence.
+ */
+async function renderChartImage(args) {
+  const holder = document.createElement("div");
+  holder.className = "offscreen-chart";
+  const canvas = document.createElement("canvas");
+  holder.appendChild(canvas);
+  document.body.appendChild(holder);
+
+  try {
+    await renderNamedChart(canvas, args.chart, Number(args.hours) || 24);
+    // WebP: a chart is flat colour and hard edges, which is the case WebP
+    // handles far better than JPEG and rather better than PNG.
+    return canvas.toDataURL("image/webp", 0.82);
+  } finally {
+    holder.remove();
+  }
+}
+
+/**
+ * A picture of the page, without a browser extension.
+ *
+ * There is no API that hands a page an image of itself - getDisplayMedia is the
+ * only route, and it asks which surface to share, which is the permission
+ * prompt doing its job rather than an obstacle. The frame is grabbed and the
+ * track stopped immediately, so nothing keeps capturing afterwards.
+ */
+async function captureScreen() {
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    throw new Error("this browser cannot take a screenshot from a page");
+  }
+
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: { displaySurface: "browser" },
+    audio: false,
+    preferCurrentTab: true,
+  });
+
+  try {
+    const video = document.createElement("video");
+    video.srcObject = stream;
+    video.muted = true;
+    await video.play();
+
+    // One frame, once there is one: a capture started before the first frame
+    // arrives produces a blank image.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth || 1280;
+    canvas.height = video.videoHeight || 720;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+
+    video.pause();
+    video.srcObject = null;
+
+    return canvas;
+  } finally {
+    // Always, including on failure: a capture left running shows the browser's
+    // sharing indicator for ever and is alarming.
+    for (const track of stream.getTracks()) track.stop();
+  }
+}
+
+/**
+ * Lets somebody crop and censor a screenshot before it is sent anywhere.
+ *
+ * This is the difference between a feature people can use and one they cannot.
+ * A screenshot of this dashboard contains paths, addresses, domain names and
+ * whatever a log line happened to say, and it is about to go to somebody else's
+ * service. Two tools, both by dragging a box: keep only this part, or black out
+ * this part. Undo until it looks right, then send - or do not.
+ *
+ * Redactions are painted, not overlaid. What is sent is a flattened image with
+ * black rectangles in it; there is no layer anybody could peel back.
+ *
+ * Resolves to a data URL, or null if the user changed their mind.
+ */
+function editScreenshot(source, why) {
+  return new Promise(resolve => {
+    const dialog = $("shotDialog");
+    const canvas = $("shotCanvas");
+    const ctx = canvas.getContext("2d");
+
+    /*
+     * Scaled down on the way in, once.
+     *
+     * A capture of a large display is several megabytes and a model reads a
+     * 1400-pixel image about as well as a 3000-pixel one. Doing it here rather
+     * than at the end means the editing happens at the size that will be sent,
+     * so what somebody blacked out is exactly what is black.
+     */
+    const width = Math.min(1400, source.width);
+    const scale = width / source.width;
+    const height = Math.round(source.height * scale);
+
+    canvas.width = width;
+    canvas.height = height;
+
+    const base = document.createElement("canvas");
+    base.width = width;
+    base.height = height;
+    base.getContext("2d").drawImage(source, 0, 0, width, height);
+
+    // Every step, so undo can walk back through them.
+    const steps = [];
+    let mode = "redact";
+    let dragging = null;
+
+    const draw = () => {
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(base, 0, 0);
+
+      for (const step of steps) {
+        if (step.kind !== "redact") continue;
+        paintRedaction(ctx, step);
+      }
+
+      if (dragging) {
+        ctx.save();
+        ctx.strokeStyle = mode === "redact" ? "#f2616b" : "#4c9aff";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(dragging.x, dragging.y, dragging.w, dragging.h);
+        ctx.restore();
+      }
+    };
+
+    const at = event => {
+      const box = canvas.getBoundingClientRect();
+      return {
+        x: ((event.clientX - box.left) / box.width) * width,
+        y: ((event.clientY - box.top) / box.height) * height,
+      };
+    };
+
+    const onDown = event => {
+      event.preventDefault();
+      const point = at(event);
+      dragging = { x: point.x, y: point.y, w: 0, h: 0, from: point };
+      canvas.setPointerCapture(event.pointerId);
+    };
+
+    const onMove = event => {
+      if (!dragging) return;
+      const point = at(event);
+      dragging.x = Math.min(dragging.from.x, point.x);
+      dragging.y = Math.min(dragging.from.y, point.y);
+      dragging.w = Math.abs(point.x - dragging.from.x);
+      dragging.h = Math.abs(point.y - dragging.from.y);
+      draw();
+    };
+
+    const onUp = () => {
+      if (!dragging) return;
+      const box = { x: dragging.x, y: dragging.y, w: dragging.w, h: dragging.h };
+      dragging = null;
+
+      // A stray click is not a selection. Anything smaller than this is one.
+      if (box.w < 8 || box.h < 8) {
+        draw();
+        return;
+      }
+
+      if (mode === "redact") {
+        steps.push({ kind: "redact", ...box });
+      } else {
+        /*
+         * Redactions are burned in BEFORE the crop.
+         *
+         * Without this, cropping cropped the untouched base image and every
+         * blacked-out area came back - silently, because the preview redraws
+         * from the same base and looked correct until the crop. That is the
+         * worst possible shape for a bug in this particular feature, so the
+         * flattening happens first and the steps are cleared afterwards
+         * because they are now part of the picture.
+         */
+        for (const step of steps) paintRedaction(base.getContext("2d"), step);
+
+        /*
+         * Cropping is destructive and immediate.
+         *
+         * It rewrites the base image rather than being another step, because
+         * everything after it is measured in the new coordinate space - and
+         * undo of a crop is not offered for the same reason: it would have to
+         * put the earlier redactions somewhere, and there is no right answer.
+         */
+        cropInto(base, box);
+        canvas.width = base.width;
+        canvas.height = base.height;
+        steps.length = 0;
+        mode = "redact";
+        syncTools();
+      }
+
+      draw();
+      syncTools();
+    };
+
+    canvas.addEventListener("pointerdown", onDown);
+    canvas.addEventListener("pointermove", onMove);
+    canvas.addEventListener("pointerup", onUp);
+
+    const tools = $("shotTools");
+
+    const syncTools = () => {
+      $("shotUndo").disabled = steps.length === 0;
+      $("shotRedactMode").classList.toggle("chosen", mode === "redact");
+      $("shotCropMode").classList.toggle("chosen", mode === "crop");
+      $("shotHint").textContent = mode === "redact"
+        ? "Drag a box over anything that should not be sent. It will be blacked out and "
+          + "labelled."
+        : "Drag a box around the part worth sending. Everything outside it is discarded.";
+      $("shotCount").textContent = steps.length
+        ? `${count(steps.length, "area")} blacked out`
+        : "";
+    };
+
+    const finish = value => {
+      canvas.removeEventListener("pointerdown", onDown);
+      canvas.removeEventListener("pointermove", onMove);
+      canvas.removeEventListener("pointerup", onUp);
+      dialog.close();
+      resolve(value);
+    };
+
+    $("shotRedactMode").onclick = () => { mode = "redact"; syncTools(); };
+    $("shotCropMode").onclick = () => { mode = "crop"; syncTools(); };
+    $("shotUndo").onclick = () => { steps.pop(); draw(); syncTools(); };
+    $("shotCancel").onclick = () => finish(null);
+
+    $("shotSend").onclick = () => {
+      /*
+       * Flattened before it leaves.
+       *
+       * The redactions are painted into the pixels rather than kept as a layer,
+       * so what is sent has no version of the hidden content in it at all.
+       * WebP because a screenshot of a dashboard is flat colour and hard edges,
+       * which it compresses far better than JPEG - typically a third the size
+       * at a quality nobody reading it would question.
+       */
+      const out = document.createElement("canvas");
+      out.width = base.width;
+      out.height = base.height;
+      const flat = out.getContext("2d");
+      flat.drawImage(base, 0, 0);
+      for (const step of steps) paintRedaction(flat, step);
+
+      const webp = out.toDataURL("image/webp", 0.8);
+      // A browser without WebP encoding silently returns a PNG; either is fine
+      // and the server accepts both.
+      finish(webp.startsWith("data:image/webp") ? webp : out.toDataURL("image/png"));
+    };
+
+    $("shotWhy").textContent = why
+      ? `Lookout asked for this: “${why}”`
+      : "Lookout asked for a screenshot.";
+
+    draw();
+    syncTools();
+    dialog.showModal();
+  });
+}
+
+/**
+ * One blacked-out area, with a border and the word so nobody has to guess.
+ *
+ * Labelled because an unexplained black rectangle in an image sent to a model
+ * reads as a rendering fault, and a model that thinks the page is broken will
+ * say so. "Redacted" tells it something was deliberately withheld, which is
+ * both true and useful to it.
+ */
+function paintRedaction(ctx, box) {
+  ctx.save();
+
+  ctx.fillStyle = "#000";
+  ctx.fillRect(box.x, box.y, box.w, box.h);
+
+  ctx.strokeStyle = "#f2616b";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(box.x + 1, box.y + 1, box.w - 2, box.h - 2);
+
+  // Only where it fits; a label spilling out of its box is worse than none.
+  const size = Math.min(16, Math.max(9, box.h * 0.4));
+  ctx.font = `${size}px system-ui, sans-serif`;
+  const label = "Redacted";
+
+  if (ctx.measureText(label).width + 10 < box.w && box.h > size + 4) {
+    ctx.fillStyle = "#f2616b";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, box.x + box.w / 2, box.y + box.h / 2);
+  }
+
+  ctx.restore();
+}
+
+/** Replaces a canvas's contents with one rectangle of it. */
+function cropInto(canvas, box) {
+  const x = Math.max(0, Math.round(box.x));
+  const y = Math.max(0, Math.round(box.y));
+  const w = Math.min(canvas.width - x, Math.round(box.w));
+  const h = Math.min(canvas.height - y, Math.round(box.h));
+
+  const piece = document.createElement("canvas");
+  piece.width = w;
+  piece.height = h;
+  piece.getContext("2d").drawImage(canvas, x, y, w, h, 0, 0, w, h);
+
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(piece, 0, 0);
+}
+
+/* ------------------------------------------------------------ chart names -- */
+
+/*
+ * Every chart says what it is, if you ask it.
+ *
+ * Three parties need a shared word for a chart: the person looking at it, the
+ * model reasoning about it, and the code drawing it. Without one, a
+ * conversation goes "the memory graph" - and there are four of those - or the
+ * model asks for a picture of the whole window because it has no way to name
+ * the part it wants.
+ *
+ * So each chart carries a small mark that names it on hover, along with the
+ * range it is currently showing. It is deliberately quiet: a chart covered in
+ * identifiers is worse for the ninety-nine per cent of the time nobody is
+ * talking to anybody about it.
+ *
+ * The catalogue is fetched once from the server, which is where the definitions
+ * live - the same list the model is given, so the two cannot drift.
+ */
+const chartNames = { known: null };
+
+async function loadChartNames() {
+  if (chartNames.known || !state.signedIn) return chartNames.known;
+
+  try {
+    chartNames.known = (await api("charts")).charts;
+  } catch {
+    chartNames.known = {};
+  }
+
+  return chartNames.known;
+}
+
+/**
+ * Puts the identity mark on every chart that has a name.
+ *
+ * Called after a view renders. Idempotent, because a redraw does not
+ * necessarily rebuild the DOM around a canvas and a second mark would be worse
+ * than none.
+ */
+function markCharts() {
+  const known = chartNames.known;
+  if (!known) return;
+
+  const view = document.querySelector(".view:not([hidden])");
+  if (!view) return;
+
+  for (const canvas of view.querySelectorAll("canvas[id]")) {
+    const chart = known[canvas.id];
+    if (!chart) continue;
+
+    const holder = canvas.parentElement;
+    if (!holder || holder.querySelector(`.chart-id[data-for="${canvas.id}"]`)) continue;
+
+    const mark = document.createElement("span");
+    mark.className = "chart-id";
+    mark.dataset.for = canvas.id;
+    mark.textContent = "ⓘ";
+    mark.tabIndex = 0;
+    mark.setAttribute("role", "note");
+    mark.title = chartIdentity(canvas.id, chart);
+    mark.setAttribute("aria-label", mark.title);
+
+    /*
+     * Clicking copies the id.
+     *
+     * Because the point of naming a chart is telling somebody else which one,
+     * and retyping "diskUsedChart" from a tooltip is exactly the friction that
+     * stops people bothering.
+     */
+    mark.addEventListener("click", async event => {
+      event.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(canvas.id);
+        mark.textContent = "✓";
+        setTimeout(() => { mark.textContent = "ⓘ"; }, 1200);
+      } catch {
+        notice(`This chart is called ${canvas.id}.`, true);
+      }
+    });
+
+    // Positioned against the panel, so it sits in the corner of the chart.
+    if (getComputedStyle(holder).position === "static") {
+      holder.classList.add("holds-chart");
+    }
+    holder.appendChild(mark);
+  }
+}
+
+/** What the mark says: the id, the name, the range, and what it plots. */
+function chartIdentity(id, chart) {
+  const to = state.frozenAt || Math.floor(Date.now() / 1000);
+  const from = to - state.range;
+
+  return [
+    `${chart.name}`,
+    `id: ${id}`,
+    `showing: ${humanTime(from)} to ${humanTime(to)} (${humanSpan(state.range, true)})`,
+    `units: ${chart.units}`,
+    state.frozenAt ? "pinned to a moment" : "up to now",
+    "",
+    chart.what,
+    "",
+    "Click to copy the id. You can tell Lookout which chart you mean by name.",
+  ].join("\n");
+}
+
+/**
+ * Draws one of the named charts into a canvas, from data fetched for it.
+ *
+ * Shared by the in-chat card and the image tool, so what the model is told it
+ * showed and what the user actually saw are the same picture.
+ */
+async function renderNamedChart(canvas, chartId, hours) {
+  const known = await loadChartNames();
+  const chart = known?.[chartId];
+  if (!chart) throw new Error(`there is no chart called ${chartId}`);
+
+  const data = await api("chart-series", { chart: chartId, hours });
+  if (data.error) throw new Error(data.error);
+
+  /*
+   * Rebuilt into the shape drawLineChart wants.
+   *
+   * The server returns one list of points per measurement; the chart wants one
+   * list of rows with a key per measurement. Merged on the timestamp, which is
+   * the same bucket boundary for every series because they were bucketed
+   * together.
+   */
+  const rows = new Map();
+  const series = [];
+
+  for (const one of data.series) {
+    series.push({ key: one.measurement, label: one.label });
+    for (const point of one.points) {
+      const at = point.at;
+      if (!rows.has(at)) rows.set(at, { at });
+      // The highest in the bucket, not the average: a chart drawn from averages
+      // hides exactly the spikes somebody is looking for.
+      rows.get(at)[one.measurement] = point.high;
+    }
+  }
+
+  const ordered = [...rows.values()].sort((a, b) => a.at - b.at);
+
+  drawLineChart(canvas, ordered, series, {
+    xKey: "at",
+    axis: data.units === "bytes" ? undefined : plainAxis,
+    empty: "Nothing recorded in this period",
+    // No note marks on a chart drawn for a conversation: they belong to the
+    // page, and here they would be unexplained.
+    notes: [],
+  });
+
+  return { name: chart.name, points: ordered.length };
+}
+
+/* ----------------------------------------------------------------- lookout -- */
 
 /*
  * The chat, and the loop that drives it.
@@ -4656,6 +5224,9 @@ const chatState = {
    * would already have flashed.
    */
   handled: new Set(),
+  // Chart cards by the message that asked for them, so a poll does not redraw
+  // every chart in the conversation several times a second.
+  charts: new Map(),
 };
 
 /** How often to ask, by what the session is doing. */
@@ -4671,7 +5242,7 @@ function chatPollDelay(state) {
 
 function openChat() {
   if (!state.signedIn) {
-    notice("Sign in to use the assistant.");
+    notice("Sign in to ask Lookout.");
     return;
   }
 
@@ -4717,7 +5288,7 @@ async function refreshChat() {
 function renderChatUnavailable(why) {
   const log = $("chatLog");
   log.replaceChildren(note(
-    why + " The assistant is set up under System → The assistant."
+    why + " Lookout is set up under System → Lookout."
   ));
 
   const go = document.createElement("button");
@@ -4824,7 +5395,20 @@ async function runBrowserTool(run) {
   let result = {};
 
   try {
-    if (run.tool === "open_page") {
+    if (run.tool === "show_chart") {
+      /*
+       * Drawn for the user, and recorded as what they were shown.
+       *
+       * The model gets no image back - it gets a confirmation. What it showed
+       * somebody is worth having in the transcript though, so a picture of the
+       * card goes into the database rather than to the provider: months later,
+       * "what did it actually show me" is answerable.
+       */
+      const card = await drawChatChart(run.arguments);
+      result = { shown: card.image };
+    } else if (run.tool === "get_chart_image") {
+      result = { image: await renderChartImage(run.arguments) };
+    } else if (run.tool === "open_page") {
       const page = String(run.arguments.page || "");
       if (!VIEWS[page]) throw new Error(`there is no page called ${page}`);
 
@@ -4843,7 +5427,18 @@ async function runBrowserTool(run) {
       location.hash = `#/${page}?range=${range}`;
       result = {};
     } else if (run.tool === "take_screenshot") {
-      result = { image: await captureScreen() };
+      /*
+       * Through an editor, never straight out.
+       *
+       * A screenshot of this dashboard can contain paths, addresses, domain
+       * names and whatever happens to be in a log line - and it is about to be
+       * sent to somebody else's service. The user picks the part that matters
+       * and blacks out anything that does not, and nothing leaves until they
+       * press send.
+       */
+      const edited = await editScreenshot(await captureScreen(), run.why);
+      if (edited === null) throw new Error("the user decided not to send a screenshot");
+      result = { image: edited };
     } else {
       throw new Error(`this browser does not know how to ${run.tool}`);
     }
@@ -4862,70 +5457,13 @@ async function runBrowserTool(run) {
   renderChat();
 }
 
-/**
- * A picture of the page, without a browser extension.
- *
- * There is no API that hands a page an image of itself - getDisplayMedia is the
- * only route, and it asks the user which surface to share, which is the
- * permission prompt doing its job rather than an obstacle. The frame is grabbed
- * and the track stopped immediately, so nothing keeps capturing afterwards.
- *
- * Scaled down hard on the way out. A screenshot of a large display is several
- * megabytes, and megabytes of base64 is a very expensive way to say very
- * little - a model reads a 1200-pixel-wide image about as well as a 3000-pixel
- * one and at a fraction of the tokens.
- */
-async function captureScreen() {
-  if (!navigator.mediaDevices?.getDisplayMedia) {
-    throw new Error("this browser cannot take a screenshot from a page");
-  }
-
-  const stream = await navigator.mediaDevices.getDisplayMedia({
-    video: { displaySurface: "browser" },
-    audio: false,
-    // A hint, not a guarantee: the user still chooses what to share.
-    preferCurrentTab: true,
-  });
-
-  try {
-    const video = document.createElement("video");
-    video.srcObject = stream;
-    video.muted = true;
-    await video.play();
-
-    // One frame, once there is one. A capture started before the first frame
-    // arrives produces a blank image.
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-
-    const width = Math.min(1280, video.videoWidth || 1280);
-    const scale = width / (video.videoWidth || width);
-    const height = Math.round((video.videoHeight || 720) * scale);
-
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    canvas.getContext("2d").drawImage(video, 0, 0, width, height);
-
-    video.pause();
-    video.srcObject = null;
-
-    // JPEG rather than PNG: a screenshot of a dashboard compresses to a
-    // quarter of the size with no loss anybody reading it would notice.
-    return canvas.toDataURL("image/jpeg", 0.72);
-  } finally {
-    // Always, including on failure - a capture left running shows the browser's
-    // sharing indicator for ever and is alarming.
-    for (const track of stream.getTracks()) track.stop();
-  }
-}
-
 function renderChat() {
   const session = chatState.session;
   const log = $("chatLog");
 
   if (!session?.exists) {
     log.replaceChildren(note(
-      "Describe what is going wrong and the assistant will look into it. It can read "
+      "Describe what is going wrong and Lookout will look into it. It can read "
       + "this machine's measurements and logs, and can take you to the page that shows "
       + "what it found."
     ));
@@ -4940,6 +5478,12 @@ function renderChat() {
 
   for (const message of session.messages) {
     if (message.role === "tool_call") {
+      // A chart the model asked to show is the chart, not a line about it.
+      if (message.tool === "show_chart") {
+        parts.push(chatChartCard(message));
+        continue;
+      }
+
       const line = document.createElement("div");
       line.className = "chat-tool";
       line.textContent = `⚙ ${chatToolPhrase(message.tool, message.arguments)}`;
@@ -5084,6 +5628,8 @@ function chatToolPhrase(tool, args) {
     get_network_summary: "Looked at ports and connections",
     get_recent_changes: "Checked what software has changed",
     get_action_history: "Read the action log",
+    get_chart_data: `Read the numbers behind ${chartNames.known?.[args.chart]?.name ?? args.chart}`,
+    get_chart_image: `Looked at ${chartNames.known?.[args.chart]?.name ?? args.chart}`,
     open_page: `Opened ${VIEWS[args.page]?.label ?? args.page}`,
     take_screenshot: "Took a screenshot",
   }[tool];
@@ -5094,6 +5640,7 @@ function chatToolPhrase(tool, args) {
 async function startChat() {
   try {
     chatState.handled.clear();
+    chatState.charts.clear();
     chatState.session = (await post("ai-start", { from: state.view })).session;
     renderChat();
     scheduleChatPoll();
@@ -18905,7 +19452,7 @@ const VIEWS = {
     refresh: () => refreshChanged(),
   },
   "sys-ai": {
-    label: "The assistant",
+    label: "Lookout",
     parent: "system",
     refresh: () => refreshAiSettings(),
   },
@@ -19217,6 +19764,8 @@ async function refreshCurrent(fromPoll = false) {
       await loadNoteMarks(state.view);
       await view.refresh();
       state.rendered.add(state.view);
+      // After the view has drawn, so the canvases exist to be marked.
+      markCharts();
     }
     clearStaleNotice();
   } catch (error) {
@@ -19535,7 +20084,7 @@ $("noteButton").addEventListener("click", event => {
   event.stopPropagation();
 
   if (!state.signedIn) {
-    notice("Sign in to write a note or use the assistant.");
+    notice("Sign in to write a note or ask Lookout.");
     return;
   }
 

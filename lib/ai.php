@@ -117,7 +117,7 @@ function aiReady(array $config): array
     $set = aiSettings($config);
 
     if (!$set['enabled']) {
-        return ['ok' => false, 'why' => 'The assistant is switched off in Settings.'];
+        return ['ok' => false, 'why' => 'Lookout is switched off in Settings.'];
     }
     if ($set['model'] === '') {
         return ['ok' => false, 'why' => 'No model has been chosen in Settings.'];
@@ -288,11 +288,28 @@ function aiErrorText(array $decoded, int $status): string
 /** @return array{0: string, 1: list<string>, 2: array} */
 function aiOpenAiRequest(array $settings, array $messages, array $tools, ?string $system): array
 {
+    $out = [];
+
+    foreach ($messages as $message) {
+        // An image is a content block, not a string; see aiTranscript.
+        if (isset($message['image'])) {
+            $out[] = [
+                'role' => 'user',
+                'content' => [[
+                    'type' => 'image_url',
+                    'image_url' => ['url' => (string)$message['image']],
+                ]],
+            ];
+            continue;
+        }
+        $out[] = $message;
+    }
+
     $body = [
         'model' => $settings['model'],
         'messages' => $system === null
-            ? $messages
-            : array_merge([['role' => 'system', 'content' => $system]], $messages),
+            ? $out
+            : array_merge([['role' => 'system', 'content' => $system]], $out),
     ];
 
     if ($tools !== []) {
@@ -357,6 +374,24 @@ function aiAnthropicRequest(array $settings, array $messages, array $tools, ?str
      */
     $out = [];
     foreach ($messages as $message) {
+        if (isset($message['image'])) {
+            /*
+             * Anthropic wants the bytes and the type separately, not a data URL.
+             */
+            $url = (string)$message['image'];
+            if (preg_match('#^data:(image/[a-z]+);base64,(.*)$#s', $url, $m)) {
+                $out[] = ['role' => 'user', 'content' => [[
+                    'type' => 'image',
+                    'source' => [
+                        'type' => 'base64',
+                        'media_type' => $m[1],
+                        'data' => $m[2],
+                    ],
+                ]]];
+            }
+            continue;
+        }
+
         if (($message['role'] ?? '') === 'tool') {
             $out[] = ['role' => 'user', 'content' => [[
                 'type' => 'tool_result',

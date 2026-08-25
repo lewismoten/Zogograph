@@ -27,6 +27,7 @@ require_once __DIR__ . '/spans.php';
 require_once __DIR__ . '/aitools.php';
 require_once __DIR__ . '/logstream.php';
 require_once __DIR__ . '/logwatch.php';
+require_once __DIR__ . '/aicharts.php';
 
 /** How much text one tool may return. Beyond this the reply is trimmed and says so. */
 const AI_RESULT_MAX = 12000;
@@ -61,6 +62,8 @@ function aiRunTool(
             'get_collector_health' => aiCollectorHealth($config, $pdo),
             'get_recent_changes' => aiRecentChanges($pdo, $values),
             'get_action_history' => aiActionHistory($pdo, $values),
+            'get_chart_data' => aiChartData($pdo, (string)$values['chart'],
+                (int)$values['hours']),
             default => ['error' => 'That tool does not run on the server.'],
         };
     } catch (Throwable $e) {
