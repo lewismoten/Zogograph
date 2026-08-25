@@ -66,6 +66,7 @@ require_once __DIR__ . '/lib/network.php';
 require_once __DIR__ . '/lib/logstream.php';
 require_once __DIR__ . '/lib/diagnose.php';
 require_once __DIR__ . '/lib/labels.php';
+require_once __DIR__ . '/lib/urlwatch.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
@@ -116,6 +117,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'dns' => dnsView($config, $signedIn),
         'captures' => capturesView($config, $pdo, $signedIn),
         'labels' => labelsView($pdo, $signedIn),
+        'urls' => urlsView($pdo, $signedIn),
         'capability-changes' => capabilityChangesView($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'last-lines' => lastLines($config, $pdo, $signedIn),
@@ -151,6 +153,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'request-capture' => doRequestCapture($config, $pdo, $post),
         'label-save' => doLabelSave($pdo, $post),
         'label-delete' => doLabelDelete($pdo, $post),
+        'url-save' => doUrlSave($pdo, $post),
+        'url-delete' => doUrlDelete($pdo, $post),
+        'url-run' => doUrlRun($pdo, $post),
         'check-capabilities' => doCheckCapabilities($config, $pdo, $post),
         'request-host-task' => doRequestHostTask($config, $pdo, $post),
         'match-processes' => doMatchProcesses($config, $post),
@@ -921,7 +926,8 @@ function networkView(array $config, PDO $account, bool $signedIn): array
      * because there is no *sample* hid them completely, which is how a capture
      * somebody had just taken could vanish on a reload.
      */
-    $capture = latestCapture($host, $pdo);
+    // Passing the account's database is what applies your own labels here.
+    $capture = latestCapture($host, $account);
 
     $latest = (int)$host->query('SELECT MAX(id) FROM host_samples')->fetchColumn();
     if ($latest <= 0) {
@@ -959,7 +965,7 @@ function networkView(array $config, PDO $account, bool $signedIn): array
     );
     $peers->execute([$latest]);
 
-    $labels = loadLabels($pdo);
+    $labels = loadLabels($account);
     $portRows = applyLabels($labels, $portRows, 'port', 'port');
 
     return [
@@ -1174,6 +1180,124 @@ function capturesView(array $config, PDO $account, bool $signedIn): array
         'capture' => latestCapture($host, $account, $wanted),
         'filters' => captureFilters(),
     ];
+}
+
+/**
+ * The URL checks, and the history of whichever one is being looked at.
+ *
+ * The list is cheap and always sent; the history is only for the selected
+ * check, because a month of minute-by-minute results for forty checks is a
+ * great deal of data to move in order to draw one chart.
+ */
+function urlsView(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the URL checks');
+    }
+
+    $rows = urlWatchList($pdo);
+    $selected = isset($_GET['id']) ? clampInt($_GET['id'], 1, PHP_INT_MAX) : null;
+
+    if ($selected === null && $rows !== []) {
+        /*
+         * Something failing is shown first, without being asked.
+         *
+         * Opening a monitoring page and being shown a healthy check while
+         * another is down is the page working against its own purpose.
+         */
+        foreach ($rows as $row) {
+            if ($row['enabled'] && $row['last_ok'] !== null && (int)$row['last_ok'] === 0) {
+                $selected = (int)$row['id'];
+                break;
+            }
+        }
+        $selected ??= (int)$rows[0]['id'];
+    }
+
+    [$from, $to] = window();
+
+    return [
+        'rows' => $rows,
+        'selected' => $selected,
+        'history' => $selected === null ? null : urlWatchHistory($pdo, $selected, $from, $to),
+        'intervals' => urlWatchIntervals(),
+        'checks' => urlWatchChecks(),
+        'max' => URLWATCH_MAX,
+        /*
+         * Whether the cron can actually deliver the shortest interval.
+         *
+         * A check set to run every minute on an account whose cron runs every
+         * five will run every five, and saying so beats letting somebody
+         * conclude the monitoring is broken.
+         */
+        'collector_interval' => medianGap($pdo->query(
+            'SELECT taken_at FROM vitals ORDER BY taken_at DESC LIMIT 20'
+        )->fetchAll(PDO::FETCH_COLUMN)),
+    ];
+}
+
+function doUrlSave(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = urlWatchSave($pdo, [
+        'id' => $_POST['id'] ?? 0,
+        'url' => $_POST['url'] ?? '',
+        'label' => $_POST['label'] ?? '',
+        'interval_seconds' => $_POST['interval_seconds'] ?? 300,
+        'expect_status' => $_POST['expect_status'] ?? 200,
+        'check_kind' => $_POST['check_kind'] ?? 'none',
+        'check_value' => $_POST['check_value'] ?? '',
+        'enabled' => ($_POST['enabled'] ?? '1') === '1',
+    ]);
+
+    logAction($pdo, 'url_save', (string)($_POST['url'] ?? ''), 'ok', 0, 0, null);
+
+    /*
+     * Run once immediately, so the answer is on screen before they look away.
+     *
+     * A check that says nothing until the next cron tick is a check nobody can
+     * tell they configured correctly - and a typo in a selector is best found
+     * while the person who typed it is still there.
+     */
+    $result = urlWatchRunDue($pdo, $id);
+
+    return ['ok' => true, 'id' => $id, 'first' => $result['rows'][0] ?? null]
+        + urlsView($pdo, true);
+}
+
+function doUrlDelete(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    $stmt = $pdo->prepare('DELETE FROM url_checks WHERE id = ?');
+    $stmt->execute([$id]);
+
+    if ($stmt->rowCount() === 0) {
+        throw new ActionRefused('no such check');
+    }
+
+    // The results are cascaded away with it, which is what deleting a check
+    // means - keeping orphaned history would be keeping a chart of nothing.
+    $pdo->prepare('DELETE FROM url_results WHERE check_id = ?')->execute([$id]);
+
+    logAction($pdo, 'url_delete', (string)$id, 'ok', 0, 0, null);
+    return ['ok' => true] + urlsView($pdo, true);
+}
+
+function doUrlRun(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    $result = urlWatchRunDue($pdo, $id);
+
+    if ($result['ran'] === 0) {
+        throw new ActionRefused('no such check');
+    }
+
+    return ['ok' => true, 'result' => $result['rows'][0]] + urlsView($pdo, true);
 }
 
 function labelsView(PDO $pdo, bool $signedIn): array

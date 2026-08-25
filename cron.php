@@ -42,6 +42,8 @@ require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/incident.php';
 require_once __DIR__ . '/lib/retention.php';
 require_once __DIR__ . '/lib/processes.php';
+// Outbound URL checks, which need no privilege and so ride the account's cron.
+require_once __DIR__ . '/lib/urlwatch.php';
 
 $flags = array_slice($argv, 1);
 $quiet = in_array('--quiet', $flags, true);
@@ -60,6 +62,7 @@ if (in_array('--help', $jobs, true) || in_array('-h', $jobs, true)) {
 
       php cron.php --vitals     take one cheap reading (disk, memory, cpu)
       php cron.php --scan       walk the tree and record what is where
+      php cron.php --urls       run the URL checks that are due (also part of --vitals)
       php cron.php --alerts     evaluate the rules, email if anything tripped
       php cron.php --prune      thin readings older than the retention window
       php cron.php              all of the above
@@ -104,6 +107,36 @@ try {
             $result['kept'],
             $result['error'] ? ' (partial: ' . $result['error'] . ')' : ''
         ));
+    }
+
+    /*
+     * The URL checks that are due.
+     *
+     * Part of --vitals rather than a flag of its own, because they belong to
+     * the same minute-by-minute rhythm and asking somebody to add a third cron
+     * line is asking for two of the three to be installed. Each check decides
+     * its own interval; this only asks which are due.
+     *
+     * Failures here must not take the vitals run down with them: a URL that
+     * hangs is exactly the condition being watched for, and losing the disk
+     * reading to it would be the monitor breaking in sympathy.
+     */
+    if ($wants('--vitals') || $wants('--urls')) {
+        try {
+            $urls = urlWatchRunDue($pdo);
+            if ($urls['ran'] > 0) {
+                $say(sprintf('urls    checked %d, %d failing', $urls['ran'], $urls['failed']));
+                foreach ($urls['rows'] as $row) {
+                    if (!$row['ok']) {
+                        $say(sprintf('        FAIL %s: %s', $row['label'],
+                            $row['error'] ?? 'status ' . $row['status']));
+                    }
+                }
+            }
+        } catch (Throwable $e) {
+            logProblem('warning', 'url checks: ' . $e->getMessage());
+            $say('urls    could not run: ' . $e->getMessage());
+        }
     }
 
     if ($wants('--alerts')) {

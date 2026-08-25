@@ -219,6 +219,11 @@
       <span class="nav-label">Network</span>
       <span class="nav-badge" data-badge="network" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/net-urls" data-nav="net-urls" data-parent="network">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Is the site answering?</span>
+      <span class="nav-badge" data-badge="net-urls" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/net-ports" data-nav="net-ports" data-parent="network">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Open ports</span>
@@ -1185,6 +1190,44 @@
     any other way.
   </p>
   <div id="captureHistoryBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="net-urls" hidden>
+<section class="panel" id="urlPanel">
+  <div class="panel-head">
+    <h2>Is the site answering?</h2>
+    <button id="urlAdd" class="link">Add a check</button>
+  </div>
+  <p class="muted small sub-note">
+    Everything else here watches the machine from the inside, which cannot
+    answer the question a visitor is asking. A server can be healthy by every
+    internal measure and still return 500 because a config file is wrong, or
+    return 200 with an empty page because a database is down — nothing in
+    <code>/proc</code> knows. These are checked from this machine, so they
+    cannot tell you the site is unreachable from somewhere else.
+  </p>
+  <div id="urlBody"></div>
+</section>
+
+<section class="panel" id="urlFormPanel" hidden>
+  <div class="panel-head">
+    <h2 id="urlFormTitle">Add a check</h2>
+    <button id="urlFormClose" class="link">Close</button>
+  </div>
+  <div id="urlForm" class="settings"></div>
+</section>
+
+<section class="panel" id="urlHistoryPanel" hidden>
+  <div class="panel-head">
+    <h2 id="urlHistoryTitle">History</h2>
+    <span class="muted small" id="urlHistorySummary"></span>
+  </div>
+  <canvas id="urlChart"></canvas>
+  <p class="muted small chart-note" id="urlChartNote"></p>
+  <canvas id="urlValueChart"></canvas>
+  <p class="muted small chart-note" id="urlValueNote"></p>
+  <div id="urlFailures"></div>
 </section>
 </section>
 

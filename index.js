@@ -687,6 +687,39 @@ function bytesAxis(step, magnitude = step) {
  * label than "82,701,000" - the abbreviation is supposed to save you reading
  * digits and there it adds two. Past two decimals it gives up and groups.
  */
+/*
+ * An axis in milliseconds, which is neither bytes nor a plain count.
+ *
+ * Without this the response-time chart came out labelled "15.0 KiB", because
+ * drawLineChart defaults to bytes - a number formatted in the wrong unit is
+ * more misleading than one with no unit at all, since it reads as a fact.
+ */
+function msAxis(step, magnitude = step) {
+  if (Math.abs(magnitude) >= 2000) {
+    return {
+      scale: 1000,
+      unit: "s",
+      format: v => `${(v / 1000).toFixed(v / 1000 >= 10 ? 0 : 1)}s`,
+    };
+  }
+  return {
+    scale: 1,
+    unit: "ms",
+    format: v => `${Math.round(v)} ms`,
+  };
+}
+
+/** A bare number, for anything whose unit is whatever the page says it is. */
+function plainAxis(step, magnitude = step) {
+  return {
+    scale: 1,
+    unit: "",
+    format: v => new Intl.NumberFormat().format(
+      Math.abs(v) >= 100 ? Math.round(v) : Number(v.toFixed(2))
+    ),
+  };
+}
+
 function countAxis(step, magnitude = step) {
   const units = [["", 1], ["K", 1e3], ["M", 1e6], ["B", 1e9]];
   let at = 0;
@@ -9447,6 +9480,389 @@ async function refreshCaptures() {
   renderCapture(data.capture, detail);
 }
 
+/* ------------------------------------------------------------ url checks -- */
+
+const urlState = { data: null, selected: null, editing: null };
+
+async function refreshUrls() {
+  const body = $("urlBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to watch a URL."));
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner());
+
+  let data;
+  try {
+    data = await api("urls", urlState.selected ? { id: urlState.selected } : {});
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  renderUrls(data);
+}
+
+function renderUrls(data) {
+  urlState.data = data;
+  urlState.selected = data.selected;
+  const body = $("urlBody");
+
+  if (!data.rows.length) {
+    body.replaceChildren(note(
+      "Nothing is being watched. Add the address somebody would actually type \u2014 the "
+      + "home page, or a health endpoint that touches the database."
+    ));
+    $("urlHistoryPanel").hidden = true;
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.id = "urlTable";
+  body.replaceChildren(holder);
+
+  renderTable("urlTable", data.rows, [
+    {
+      label: "",
+      render: row => {
+        const span = document.createElement("span");
+        if (!row.enabled) {
+          span.className = "muted";
+          span.textContent = "\u25cb";
+          span.title = "Turned off";
+        } else if (row.last_ok === null) {
+          span.className = "muted";
+          span.textContent = "\u25cb";
+          span.title = "Not checked yet";
+        } else if (Number(row.last_ok) === 1) {
+          span.className = "band-ok";
+          span.textContent = "\u25cf";
+          span.title = "Answering as expected";
+        } else {
+          span.className = "band-crit";
+          span.textContent = "\u25cf";
+          span.title = row.last_error || "Failing";
+        }
+        return span;
+      },
+    },
+    { label: "What", className: "name", render: row => row.label },
+    { label: "How often", render: row => row.interval_label },
+    {
+      label: "Last checked",
+      render: row => {
+        if (!row.last_at) return "never";
+        const span = document.createElement("span");
+        span.textContent = ago(row.last_at);
+        // Overdue means the cron is not running, which is a different failure
+        // from the site being down and must not look like one.
+        if (row.overdue) {
+          span.className = "band-warn";
+          span.title = "Due before now. The account's cron may not be running.";
+        }
+        return span;
+      },
+    },
+    { label: "Status", className: "size", render: row => row.last_status || "\u2014" },
+    {
+      label: "Says",
+      className: "cmd",
+      render: row => {
+        const span = document.createElement("span");
+        span.className = row.last_ok === 0 ? "band-crit" : "muted";
+        span.textContent = row.last_error || (row.last_ok === 1 ? "as expected" : "");
+        return span;
+      },
+    },
+    {
+      label: "",
+      render: row => {
+        const wrap = document.createDocumentFragment();
+
+        const open = document.createElement("button");
+        open.className = "link";
+        open.textContent = Number(urlState.selected) === Number(row.id) ? "shown" : "History";
+        open.disabled = Number(urlState.selected) === Number(row.id);
+        open.addEventListener("click", () => {
+          urlState.selected = Number(row.id);
+          refreshUrls().catch(error => notice(String(error.message || error)));
+        });
+        wrap.appendChild(open);
+
+        const now = document.createElement("button");
+        now.className = "link";
+        now.textContent = "Check now";
+        now.addEventListener("click", async () => {
+          now.disabled = true;
+          try {
+            const result = await post("url-run", { id: row.id });
+            notice(result.result.ok
+              ? `${row.label}: answered ${result.result.status} in ${result.result.ms} ms.`
+              : `${row.label}: ${result.result.error || "failed"}.`, result.result.ok);
+            renderUrls(result);
+          } catch (error) {
+            notice(String(error.message || error));
+            now.disabled = false;
+          }
+        });
+        wrap.appendChild(now);
+
+        const edit = document.createElement("button");
+        edit.className = "link";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", () => openUrlForm(row));
+        wrap.appendChild(edit);
+
+        const remove = document.createElement("button");
+        remove.className = "link danger";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", async () => {
+          if (!confirm(`Stop watching ${row.label}? Its history goes with it.`)) return;
+          try {
+            renderUrls(await post("url-delete", { id: row.id }));
+          } catch (error) {
+            notice(String(error.message || error));
+          }
+        });
+        wrap.appendChild(remove);
+
+        return wrap;
+      },
+    },
+  ], null, null, row => String(row.id));
+
+  if (data.collector_interval && data.rows.some(r => r.interval_seconds < data.collector_interval)) {
+    /*
+     * A check cannot run more often than the cron that runs it.
+     *
+     * Saying so beats letting somebody set a one-minute check on a five-minute
+     * cron and conclude the monitoring is broken when it answers every five.
+     */
+    body.appendChild(note(
+      `The account's cron runs about every ${humanDuration(data.collector_interval)}, so a `
+      + "check set to run more often than that will run at that rate instead."
+    ));
+  }
+
+  renderUrlHistory(data);
+}
+
+function renderUrlHistory(data) {
+  const panel = $("urlHistoryPanel");
+  const history = data.history;
+  const check = data.rows.find(r => Number(r.id) === Number(data.selected));
+
+  if (!history || !check) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  $("urlHistoryTitle").textContent = check.label;
+  $("urlHistorySummary").textContent = history.checks === 0
+    ? "Nothing recorded in this range yet."
+    : `${humanCount(history.checks)} checks \u00b7 ${history.uptime_percent}% as expected `
+      + `\u00b7 ${history.average_ms} ms typical, ${history.slowest_ms} ms slowest`;
+
+  /*
+   * Response time and status on one chart, with failures marked.
+   *
+   * They belong together: a site that gets slower and then starts returning 502
+   * is telling one story, and two charts would make it two coincidences.
+   */
+  const rows = history.rows.map(r => ({
+    at: Number(r.at),
+    ms: Number(r.ms),
+    // Drawn as a band rather than a line: a status code is not a quantity, and
+    // a line from 200 to 500 would imply the values in between mean something.
+    failed: Number(r.ok) === 1 ? null : Number(r.ms),
+  }));
+
+  drawLineChart($("urlChart"), rows, [
+    { key: "ms", label: "Response time" },
+    { key: "failed", label: "Failed" },
+  ], { xKey: "at", axis: msAxis, zeroBased: true, empty: "No checks in this range yet" });
+
+  $("urlChartNote").textContent = history.checks
+    ? "Every check in this range. A gap is the cron not running rather than the site "
+      + "being down \u2014 the two look identical on a chart and are opposite problems."
+    : "";
+
+  const valueChart = $("urlValueChart");
+  if (history.has_value) {
+    valueChart.hidden = false;
+    drawLineChart(valueChart, history.rows.map(r => ({
+      at: Number(r.at),
+      value: r.value === null ? null : Number(r.value),
+    })), [{ key: "value", label: check.check_value || "extracted value" }],
+      // Whatever was extracted is a number in somebody else's unit; this chart
+      // has no business claiming it is bytes.
+      { xKey: "at", axis: plainAxis, empty: "Nothing extracted yet" });
+
+    $("urlValueNote").textContent = `Taken from the response by the ${check.check_kind} rule. `
+      + "This is the check that catches a page returning 200 with the wrong content, which "
+      + "nothing else here can see.";
+  } else {
+    valueChart.hidden = true;
+    $("urlValueNote").textContent = "";
+  }
+
+  const failures = history.rows.filter(r => Number(r.ok) === 0);
+  if (failures.length) {
+    const holder = document.createElement("div");
+    holder.id = "urlFailureTable";
+    $("urlFailures").replaceChildren(holder);
+    renderTable("urlFailureTable", failures.slice(-40).reverse(), [
+      { label: "When", render: row => humanTime(row.at) },
+      { label: "Status", className: "size", render: row => row.status || "no answer" },
+      { label: "Took", className: "size", render: row => `${row.ms} ms` },
+      { label: "Why", className: "cmd", render: row => row.error || "" },
+    ], null, null, row => String(row.at));
+  } else {
+    $("urlFailures").replaceChildren();
+  }
+}
+
+/*
+ * The add and edit form, built rather than written out.
+ *
+ * The body-check options carry their own hints, and which fields matter depends
+ * on which is chosen - a static form would either show a value box that does
+ * nothing for "just the status code", or hide it and leave nowhere to type.
+ */
+function openUrlForm(row = null) {
+  const data = urlState.data;
+  if (!data) return;
+
+  urlState.editing = row;
+  $("urlFormPanel").hidden = false;
+  $("urlFormTitle").textContent = row ? `Editing ${row.label}` : "Add a check";
+
+  const form = $("urlForm");
+  const parts = [];
+
+  const field = (id, label, control, hint) => {
+    control.id = id;
+    parts.push(fieldRow(label, control, hint));
+    return control;
+  };
+
+  const url = document.createElement("input");
+  url.type = "url";
+  url.size = 46;
+  url.placeholder = "https://example.com/";
+  url.value = row?.url ?? "";
+  field("urlUrl", "Address", url, "The address somebody would actually type.");
+
+  const label = document.createElement("input");
+  label.type = "text";
+  label.size = 30;
+  label.placeholder = "left blank, the host is used";
+  label.value = row?.label ?? "";
+  field("urlLabel", "Called", label, "");
+
+  const interval = document.createElement("select");
+  for (const [seconds, text] of Object.entries(data.intervals)) {
+    const option = document.createElement("option");
+    option.value = seconds;
+    option.textContent = text;
+    option.selected = Number(row?.interval_seconds ?? 300) === Number(seconds);
+    interval.appendChild(option);
+  }
+  field("urlInterval", "How often", interval, "");
+
+  const expect = document.createElement("input");
+  expect.type = "number";
+  expect.min = "0";
+  expect.max = "599";
+  expect.value = String(row?.expect_status ?? 200);
+  field("urlExpect", "Expected status", expect,
+    "0 accepts anything from 200 to 399. A URL that should redirect, or an endpoint that "
+    + "correctly answers 401, is working \u2014 insisting on 200 would report it broken for ever.");
+
+  const kind = document.createElement("select");
+  for (const [key, meta] of Object.entries(data.checks)) {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = meta.label;
+    option.selected = (row?.check_kind ?? "none") === key;
+    kind.appendChild(option);
+  }
+  field("urlKind", "Also check", kind, "");
+
+  const value = document.createElement("input");
+  value.type = "text";
+  value.size = 46;
+  value.value = row?.check_value ?? "";
+  const valueRow = field("urlValue", "Looking for", value, "");
+
+  const enabled = document.createElement("input");
+  enabled.type = "checkbox";
+  enabled.checked = row ? Boolean(row.enabled) : true;
+  field("urlEnabled", "Run it", enabled, "");
+
+  form.replaceChildren(...parts);
+
+  const hint = document.createElement("div");
+  hint.className = "muted small";
+  const sync = () => {
+    const meta = data.checks[kind.value];
+    const wrap = value.closest(".settings-row");
+    if (wrap) wrap.hidden = !meta.needs_value;
+    hint.innerHTML = meta.hint;
+  };
+  kind.addEventListener("change", sync);
+  form.appendChild(hint);
+  sync();
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const save = document.createElement("button");
+  save.textContent = row ? "Save it" : "Add it";
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    try {
+      const result = await post("url-save", {
+        id: row?.id ?? 0,
+        url: url.value.trim(),
+        label: label.value.trim(),
+        interval_seconds: interval.value,
+        expect_status: expect.value,
+        check_kind: kind.value,
+        check_value: value.value.trim(),
+        enabled: enabled.checked ? "1" : "0",
+      });
+
+      /*
+       * The first result is reported straight away.
+       *
+       * A check that says nothing until the next cron tick is one nobody can
+       * tell they configured correctly, and a typo in a selector is best found
+       * while the person who typed it is still looking at it.
+       */
+      const first = result.first;
+      notice(first
+        ? (first.ok
+          ? `Saved, and it answered ${first.status} in ${first.ms} ms.`
+          : `Saved, but the first check failed: ${first.error || "status " + first.status}.`)
+        : "Saved.", !first || first.ok);
+
+      $("urlFormPanel").hidden = true;
+      urlState.selected = result.id;
+      renderUrls(result);
+    } catch (error) {
+      notice(String(error.message || error));
+      save.disabled = false;
+    }
+  });
+  actions.appendChild(save);
+  form.appendChild(actions);
+
+  $("urlFormPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
 /* --------------------------------------------------------------- labels -- */
 
 async function refreshLabels() {
@@ -11684,6 +12100,11 @@ const VIEWS = {
     parent: "network",
     refresh: () => refreshCaptures(),
   },
+  "net-urls": {
+    label: "Is the site answering?",
+    parent: "network",
+    refresh: () => refreshUrls(),
+  },
   "net-labels": { label: "Your own names", parent: "network", refresh: () => refreshLabels() },
   "net-dns": {
     label: "Name lookups",
@@ -12399,6 +12820,9 @@ for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh",
 
 $("offenderDelete").addEventListener("click",
   () => deletePicked().catch(error => notice(String(error.message || error))));
+
+$("urlAdd").addEventListener("click", () => openUrlForm(null));
+$("urlFormClose").addEventListener("click", () => { $("urlFormPanel").hidden = true; });
 
 $("captureHistoryRefresh").addEventListener("click",
   () => refreshCaptures().catch(error => notice(String(error.message || error))));

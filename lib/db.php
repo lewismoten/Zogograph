@@ -560,6 +560,47 @@ function migrations(): array
          * are the operator's notes and should survive the host collector being
          * reinstalled, moved or run by somebody else.
          */
+        /*
+         * Watching a URL from the outside.
+         *
+         * The only check here that leaves the machine, and the only one that
+         * can answer the question a visitor is asking. Results are kept
+         * separately from the definition so a check can be edited without
+         * losing its history - the history is usually the reason you are
+         * looking at it.
+         */
+        19 => [
+            "CREATE TABLE url_checks (
+                id               INTEGER PRIMARY KEY,
+                url              TEXT NOT NULL,
+                label            TEXT NOT NULL,
+                interval_seconds INTEGER NOT NULL,
+                expect_status    INTEGER NOT NULL DEFAULT 200,
+                check_kind       TEXT NOT NULL DEFAULT 'none',
+                check_value      TEXT,
+                enabled          INTEGER NOT NULL DEFAULT 1,
+                added_at         INTEGER NOT NULL,
+                last_at          INTEGER,
+                last_ok          INTEGER,
+                last_status      INTEGER,
+                last_error       TEXT
+            )",
+
+            "CREATE TABLE url_results (
+                id       INTEGER PRIMARY KEY,
+                check_id INTEGER NOT NULL REFERENCES url_checks(id) ON DELETE CASCADE,
+                at       INTEGER NOT NULL,
+                status   INTEGER,
+                ms       INTEGER,
+                bytes    INTEGER,
+                value    REAL,
+                matched  INTEGER,
+                ok       INTEGER NOT NULL DEFAULT 0,
+                error    TEXT
+            )",
+            'CREATE INDEX url_results_check_at ON url_results (check_id, at)',
+        ],
+
         18 => [
             "CREATE TABLE labels (
                 id       INTEGER PRIMARY KEY,

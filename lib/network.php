@@ -1033,6 +1033,31 @@ function finishCapture(array $state): array
     ];
 }
 
+/**
+ * An absolute path to a binary, searched rather than assumed.
+ *
+ * The standard sbin directories first, because tcpdump and ss live there and a
+ * web server's PATH almost never includes them - which is the difference
+ * between "not installed" and "not on the four directories Apache starts with".
+ */
+function whichBinary(string $name): ?string
+{
+    if (!preg_match('/^[a-z0-9_-]{1,32}$/i', $name)) {
+        return null;
+    }
+
+    foreach (['/usr/sbin/', '/sbin/', '/usr/bin/', '/bin/',
+              '/usr/local/sbin/', '/usr/local/bin/', '/opt/homebrew/bin/'] as $dir) {
+        if (@is_executable($dir . $name)) {
+            return $dir . $name;
+        }
+    }
+
+    $found = shellRead('command -v ' . escapeshellarg($name) . ' 2>/dev/null');
+    $found = $found === null ? '' : trim($found);
+    return $found !== '' && @is_executable($found) ? $found : null;
+}
+
 /* ------------------------------------------------------------------ DNS -- */
 
 /**
