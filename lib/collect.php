@@ -413,6 +413,7 @@ function runScan(array $config, PDO $pdo): array
     $dirFiles = [];
     $fileBytes = [];
     $totals = [];
+    $types = [];
     $seenFiles = 0;
     $seenDirs = 0;
     $seenBytes = 0;
@@ -423,7 +424,7 @@ function runScan(array $config, PDO $pdo): array
 
     try {
         walk($root, $root, $rules, $excluded, $dirBytes, $dirFiles, $fileBytes,
-             $totals, $seenFiles, $seenDirs, $seenBytes, $seenInodes, $linkCounts);
+             $totals, $types, $seenFiles, $seenDirs, $seenBytes, $seenInodes, $linkCounts);
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
@@ -492,6 +493,15 @@ function runScan(array $config, PDO $pdo): array
                 $category,
                 (int)($totals[$category]['bytes'] ?? 0),
                 (int)($totals[$category]['files'] ?? 0),
+            ]);
+        }
+
+        $insertType = $pdo->prepare(
+            'INSERT INTO scan_file_types (scan_id, type, bytes, files) VALUES (?, ?, ?, ?)'
+        );
+        foreach ($types as $type => $tally) {
+            $insertType->execute([
+                $scanId, $type, (int)$tally['bytes'], (int)$tally['files'],
             ]);
         }
 
@@ -566,6 +576,7 @@ function walk(
     array &$dirFiles,
     array &$fileBytes,
     array &$totals,
+    array &$types,
     int &$seenFiles,
     int &$seenDirs,
     int &$seenBytes,
@@ -601,7 +612,7 @@ function walk(
         if (is_dir($full)) {
             [$childBytes, $childFiles] = walk(
                 $full, $root, $rules, $excluded, $dirBytes, $dirFiles, $fileBytes,
-                $totals, $seenFiles, $seenDirs, $seenBytes, $seenInodes, $linkCounts,
+                $totals, $types, $seenFiles, $seenDirs, $seenBytes, $seenInodes, $linkCounts,
                 $depth + 1
             );
             $bytes += $childBytes;
@@ -652,6 +663,11 @@ function walk(
         $seenFiles++;
         $seenBytes += $size;
 
+        // Every file, unlike the categories - see fileTypeOf.
+        $type = fileTypeOf($full);
+        $types[$type]['bytes'] = ($types[$type]['bytes'] ?? 0) + $size;
+        $types[$type]['files'] = ($types[$type]['files'] ?? 0) + 1;
+
         $category = categoryOf($full, $rules, $root);
         if ($category !== null) {
             $totals[$category]['bytes'] = ($totals[$category]['bytes'] ?? 0) + $size;
@@ -665,6 +681,69 @@ function walk(
     $dirFiles[$dir] = $files;
 
     return [$bytes, $files];
+}
+
+/*
+ * What kind of file this is, by extension.
+ *
+ * Every file lands in exactly one group and nothing is left out, which is the
+ * only reason a pie of these is honest: the slices are the whole disk rather
+ * than the part somebody thought to write a rule for. `other` is a real answer
+ * and usually a large one - an account is mostly things with no extension, or
+ * extensions nobody has heard of - and pretending otherwise by dropping it
+ * would make every other slice look bigger than it is.
+ *
+ * Extension only. Reading magic bytes would be more accurate and would mean
+ * opening every file on the disk to draw a chart, which is not a trade worth
+ * making for a picture.
+ */
+function fileTypeGroups(): array
+{
+    static $groups = [
+        'images' => ['jpg','jpeg','png','gif','webp','bmp','tif','tiff','svg','ico','heic','avif','psd','raw','cr2','nef'],
+        'video' => ['mp4','m4v','mov','avi','mkv','webm','wmv','flv','mpg','mpeg','ts','3gp'],
+        'audio' => ['mp3','wav','flac','aac','ogg','oga','m4a','wma','aiff','opus'],
+        'archives' => ['zip','gz','tgz','bz2','xz','7z','rar','tar','zst','lz','lzma','jar','war','iso','dmg','pkg','deb','rpm','cab'],
+        'web' => ['html','htm','css','js','mjs','cjs','map','woff','woff2','ttf','eot','otf','json','xml','scss','less','vue','ts','tsx','jsx'],
+        'documents' => ['pdf','doc','docx','xls','xlsx','ppt','pptx','odt','ods','odp','rtf','txt','md','csv','tsv','epub','mobi'],
+        'code' => ['php','py','rb','pl','sh','bash','c','h','cpp','hpp','go','rs','java','cs','swift','kt','lua','sql','yml','yaml','toml','ini','conf','patch','diff'],
+        'databases' => ['db','sqlite','sqlite3','mdb','frm','ibd','myd','myi','dump','bak'],
+        'logs' => ['log','out','err'],
+    ];
+    return $groups;
+}
+
+function fileTypeNames(): array
+{
+    return [...array_keys(fileTypeGroups()), 'other'];
+}
+
+function fileTypeOf(string $path): string
+{
+    static $index = null;
+    if ($index === null) {
+        $index = [];
+        foreach (fileTypeGroups() as $group => $extensions) {
+            foreach ($extensions as $extension) {
+                $index[$extension] = $group;
+            }
+        }
+    }
+
+    $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+
+    /*
+     * A long "extension" is not one.
+     *
+     * `backup.2026-08-18-full-nightly` has a dot in it and nothing after the
+     * dot is a file type. Without a cap every such name invents its own group
+     * and the tally fills with rubbish nobody asked for.
+     */
+    if ($extension === '' || strlen($extension) > 8) {
+        return 'other';
+    }
+
+    return $index[$extension] ?? 'other';
 }
 
 /**

@@ -82,6 +82,16 @@
       <span class="nav-label">Storage</span>
       <span class="nav-badge" data-badge="storage" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/storage-files" data-nav="storage-files" data-parent="storage">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Largest & growth</span>
+      <span class="nav-badge" data-badge="storage-files" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/storage-map" data-nav="storage-map" data-parent="storage">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Tree map</span>
+      <span class="nav-badge" data-badge="storage-map" hidden></span>
+    </a>
     <a class="nav-item" href="#/backups" data-nav="backups">
       <span class="nav-icon" aria-hidden="true">☁</span>
       <span class="nav-label">Backups</span>
@@ -92,10 +102,25 @@
       <span class="nav-label">Whole machine</span>
       <span class="nav-badge" data-badge="host" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/host-disk" data-nav="host-disk" data-parent="host">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Disk & I/O</span>
+      <span class="nav-badge" data-badge="host-disk" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/host-layout" data-nav="host-layout" data-parent="host">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Filesystem layout</span>
+      <span class="nav-badge" data-badge="host-layout" hidden></span>
+    </a>
     <a class="nav-item" href="#/processes" data-nav="processes">
       <span class="nav-icon" aria-hidden="true">⚙</span>
       <span class="nav-label">Processes</span>
       <span class="nav-badge" data-badge="processes" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/busy" data-nav="busy" data-parent="processes">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Last busy</span>
+      <span class="nav-badge" data-badge="busy" hidden></span>
     </a>
     <a class="nav-item" href="#/capabilities" data-nav="capabilities">
       <span class="nav-icon" aria-hidden="true">✓</span>
@@ -106,6 +131,21 @@
       <span class="nav-icon" aria-hidden="true">⚠</span>
       <span class="nav-label">Alerts</span>
       <span class="nav-badge" data-badge="alerts" hidden></span>
+    </a>
+    <a class="nav-item" href="#/uptime" data-nav="uptime">
+      <span class="nav-icon" aria-hidden="true">◷</span>
+      <span class="nav-label">Uptime</span>
+      <span class="nav-badge" data-badge="uptime" hidden></span>
+    </a>
+    <a class="nav-item" href="#/deletions" data-nav="deletions">
+      <span class="nav-icon" aria-hidden="true">⌫</span>
+      <span class="nav-label">Deletions</span>
+      <span class="nav-badge" data-badge="deletions" hidden></span>
+    </a>
+    <a class="nav-item" href="#/schedule" data-nav="schedule">
+      <span class="nav-icon" aria-hidden="true">⏱</span>
+      <span class="nav-label">Schedule</span>
+      <span class="nav-badge" data-badge="schedule" hidden></span>
     </a>
     <a class="nav-item" href="#/system" data-nav="system">
       <span class="nav-icon" aria-hidden="true">⚒</span>
@@ -123,15 +163,36 @@
     <div id="notice"></div>
     <section id="alertBanner" hidden></section>
 
+
 <section class="view" data-view="overview" hidden>
+<div class="gauges" id="gauges"></div>
+
+<section class="panel" id="limitsPanel">
+  <div class="panel-head">
+    <h2>What the host allows this account</h2>
+    <span class="muted" id="limitsWhen"></span>
+  </div>
+  <p class="muted small sub-note">
+    On a shared host the numbers above are the <em>cage's</em> answers. Inside
+    CageFS this account is shown a <code>/proc</code> written for it: its CPU
+    allowance looks like the machine's cores and its memory limit looks like the
+    machine's RAM. Comparing both readings is the only way to tell a limit from
+    the size of the server.
+  </p>
+  <div id="limitsBody"></div>
+</section>
+
+<!--
+  Only what the gauges above do not already say.
+
+  Disk, inodes, CPU, memory and load are all dials now, and printing each of
+  them a second time as a card three inches lower is how a dashboard becomes a
+  wall. What is left is the three that have no percentage to draw: how long it
+  has been up, when it is projected to fill, and what the network is doing.
+-->
 <div class="cards">
   <div class="card" id="cardUptime"><div class="label">Up for</div><div class="value">—</div><div class="sub muted"></div></div>
-  <div class="card" id="cardDisk"><div class="label">Disk free</div><div class="value">—</div><div class="sub muted"></div></div>
   <div class="card" id="cardTrend"><div class="label">Projected full</div><div class="value">—</div><div class="sub muted"></div></div>
-  <div class="card" id="cardInodes"><div class="label">Inodes free</div><div class="value">—</div><div class="sub muted"></div></div>
-  <div class="card" id="cardCpu"><div class="label">CPU</div><div class="value">—</div><div class="sub muted"></div></div>
-  <div class="card" id="cardMem"><div class="label">Memory used</div><div class="value">—</div><div class="sub muted"></div></div>
-  <div class="card" id="cardLoad"><div class="label">Load average</div><div class="value">—</div><div class="sub muted"></div></div>
   <div class="card" id="cardNet"><div class="label">Network</div><div class="value">—</div><div class="sub muted"></div></div>
 </div>
 
@@ -150,7 +211,7 @@
   <section class="panel">
     <h2>CPU and memory</h2>
     <p class="muted small sub-note" id="cpuNote">
-      Share of the machine in use, since the previous reading.
+      Share of what this account may use, since the previous reading.
     </p>
     <canvas id="cpuChart"></canvas>
   </section>
@@ -182,7 +243,30 @@
     <canvas id="netChart"></canvas>
   </section>
 
-  <section class="panel wide">
+  
+</div>
+</section>
+
+<section class="view" data-view="storage" hidden>
+<div class="grid">
+<section class="panel wide" id="typePanel">
+    <div class="panel-head">
+      <h2>What the space is made of</h2>
+      <span class="muted" id="typeWhen"></span>
+    </div>
+    <p class="muted small sub-note">
+      Every file counted once, by extension, from the last completed scan. This
+      is a different question from the categories below: those are the rules that
+      raise alerts and let you empty things, and most files match none of them.
+      These add up to the whole account, which is what makes the pie mean
+      anything. <code>other</code> is files with no extension or an unfamiliar
+      one, and on most accounts it is large.
+    </p>
+    <div id="typeCards" class="cards type-cards"></div>
+    <canvas id="typePie" class="pie"></canvas>
+  </section>
+
+<section class="panel wide">
     <h2>Categories over time</h2>
     <p class="muted small sub-note">
       Totals from each completed scan. <code>error_log</code> files are counted
@@ -193,7 +277,7 @@
 </div>
 </section>
 
-<section class="view" data-view="storage" hidden>
+<section class="view" data-view="storage-files" hidden>
 <section class="panel" id="offenderPanel">
   <div class="panel-head">
     <h2>What is taking the space</h2>
@@ -238,34 +322,6 @@
   <div id="offenders"></div>
 </section>
 
-<section class="panel" id="treemapPanel">
-  <div class="panel-head">
-    <h2>Where the space is</h2>
-    <div class="panel-controls">
-      <label class="inline">
-        Source
-        <select id="treeSource">
-          <option value="account">This account</option>
-          <option value="host">Host (root only)</option>
-        </select>
-      </label>
-      <button id="treeUp" class="link">Up one level</button>
-    </div>
-  </div>
-  <p class="muted small sub-note">
-    Area is size. A directory full of small files is invisible in a list of the
-    biggest paths and obvious here, because forty thousand session files add up
-    to a large rectangle even though not one of them is large. Click to go in,
-    hover for the details.
-  </p>
-  <div id="treeCrumbs" class="crumbs"></div>
-  <div id="treemapHolder" class="treemap-holder">
-    <canvas id="treemap"></canvas>
-    <div id="treeTip" class="treemap-tip" hidden></div>
-  </div>
-  <p class="muted small chart-note" id="treeNote"></p>
-</section>
-
 <section class="panel" id="historyPanel" hidden>
   <div class="panel-head">
     <h2 id="historyTitle">History</h2>
@@ -298,6 +354,36 @@
   </div>
   <p class="muted small" id="logStatus"></p>
   <pre id="logBody" class="logview"></pre>
+</section>
+</section>
+
+<section class="view" data-view="storage-map" hidden>
+<section class="panel" id="treemapPanel">
+  <div class="panel-head">
+    <h2>Where the space is</h2>
+    <div class="panel-controls">
+      <label class="inline">
+        Source
+        <select id="treeSource">
+          <option value="account">This account</option>
+          <option value="host">Host (root only)</option>
+        </select>
+      </label>
+      <button id="treeUp" class="link">Up one level</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    Area is size. A directory full of small files is invisible in a list of the
+    biggest paths and obvious here, because forty thousand session files add up
+    to a large rectangle even though not one of them is large. Click to go in,
+    hover for the details.
+  </p>
+  <div id="treeCrumbs" class="crumbs"></div>
+  <div id="treemapHolder" class="treemap-holder">
+    <canvas id="treemap"></canvas>
+    <div id="treeTip" class="treemap-tip" hidden></div>
+  </div>
+  <p class="muted small chart-note" id="treeNote"></p>
 </section>
 </section>
 
@@ -441,7 +527,9 @@
     </div>
   </div>
 </section>
+</section>
 
+<section class="view" data-view="host-disk" hidden>
 <section class="panel" id="hostDiskPanel">
   <h2>Where the disk went — the whole machine</h2>
   <p class="muted small sub-note">
@@ -457,7 +545,9 @@
   </p>
   <div id="hostDisk"></div>
 </section>
+</section>
 
+<section class="view" data-view="host-layout" hidden>
 <section class="panel" id="mountPanel">
   <div class="panel-head">
     <h2>Filesystem layout</h2>
@@ -510,7 +600,15 @@
   </form>
   <div id="patternBody"></div>
 
-  <h3 class="sub-head">When it was last busy</h3>
+</section>
+</section>
+
+<section class="view" data-view="busy" hidden>
+<section class="panel" id="busyPanel" hidden>
+  <div class="panel-head">
+    <h2>When it was last busy</h2>
+    <button id="busyExpand" class="link">Open all</button>
+  </div>
   <p class="muted small sub-note">
     Recorded automatically whenever a reading crosses the CPU or memory
     threshold — so an overnight spike still has an answer in the morning. The
@@ -523,8 +621,8 @@
     account's own CPU allowance, so one PHP request working hard can cross 70%
     while the server as a whole is idle. Raise
     <code>processes.record_when_cpu_above</code> if these are too frequent to be
-    interesting; the <em>whole machine</em> panel is where the server's own load
-    lives.
+    interesting; <a href="#/host">Whole machine</a> is where the server's own
+    load lives.
   </p>
   <div id="processHistory"></div>
 </section>
@@ -568,17 +666,27 @@
 </section>
 
 <section class="view" data-view="alerts" hidden>
-<div class="grid">
-  <section class="panel">
-    <h2>Alerts</h2>
-    <div id="alerts"></div>
+<section class="panel">
+    <div class="panel-head">
+      <h2>When alerts fired</h2>
+      <span class="muted" id="alertRange"></span>
+    </div>
+    <canvas id="alertTimeline"></canvas>
+    <div class="legend" id="alertLegend"></div>
   </section>
 
-  <section class="panel" id="actionPanel" hidden>
-    <h2>What has been deleted</h2>
-    <div id="actionLog"></div>
+<section class="panel">
+    <div class="panel-head">
+      <h2>Alerts</h2>
+      <div class="panel-tools">
+        <label class="pill"><input type="checkbox" id="alertUnreadOnly"> Unread only</label>
+        <button class="link" id="alertAckAll">Mark all read</button>
+        <button class="link" id="alertAckSome" disabled>Mark read</button>
+        <button class="link danger" id="alertDeleteSome" disabled>Delete</button>
+      </div>
+    </div>
+    <div id="alerts"></div>
   </section>
-</div>
 
 <section class="panel" id="incidentPanel" hidden>
   <div class="panel-head">
@@ -588,7 +696,9 @@
   <p class="muted" id="incidentWhen"></p>
   <div id="incidentBody"></div>
 </section>
+</section>
 
+<section class="view" data-view="uptime" hidden>
 <section class="panel" id="uptimePanel" hidden>
   <div class="panel-head">
     <h2>Uptime and outages</h2>
@@ -624,6 +734,53 @@
 </section>
 </section>
 
+<section class="view" data-view="deletions" hidden>
+<section class="panel" id="actionPanel" hidden>
+    <div class="panel-head">
+      <h2>What this dashboard has done</h2>
+      <div class="panel-tools">
+        <label class="pill">What
+          <select id="actionKind"><option value="">everything</option></select>
+        </label>
+        <label class="pill">Who
+          <select id="actionWho"><option value="">anyone</option></select>
+        </label>
+        <label class="pill">Result
+          <select id="actionResult">
+            <option value="">any result</option>
+            <option value="ok">succeeded</option>
+            <option value="refused">refused</option>
+            <option value="failed">failed</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <p class="muted small sub-note">
+      Every deletion, truncation and setting change this dashboard made, whether
+      it worked or not. A refusal is kept as carefully as a success — knowing
+      what was <em>not</em> done is half of knowing what happened.
+    </p>
+    <p class="muted small sub-note" id="actionWhoNote"></p>
+    <div id="actionSummary" class="cards small-cards"></div>
+    <div id="actionLog"></div>
+  </section>
+</section>
+
+<section class="view" data-view="schedule" hidden>
+<section class="panel" id="schedulePanel" hidden>
+  <div class="panel-head">
+    <h2>Schedule</h2>
+    <button id="testEmail">Send a test email</button>
+  </div>
+  <p class="muted small sub-note">
+    The two jobs run on different clocks: vitals cost milliseconds, a scan costs
+    minutes of disk work. Only the lines between this dashboard's markers are
+    touched — anything else in your crontab is left exactly as it is.
+  </p>
+  <div id="scheduleBody"></div>
+</section>
+</section>
+
 <section class="view" data-view="system" hidden>
 <section class="panel" id="healthPanel">
   <div class="panel-head">
@@ -656,19 +813,6 @@
     poll calls the API, and one broken function becomes forty lines in a minute.
   </p>
   <div id="problemBody"></div>
-</section>
-
-<section class="panel" id="schedulePanel" hidden>
-  <div class="panel-head">
-    <h2>Schedule</h2>
-    <button id="testEmail">Send a test email</button>
-  </div>
-  <p class="muted small sub-note">
-    The two jobs run on different clocks: vitals cost milliseconds, a scan costs
-    minutes of disk work. Only the lines between this dashboard's markers are
-    touched — anything else in your crontab is left exactly as it is.
-  </p>
-  <div id="scheduleBody"></div>
 </section>
 </section>
   </main>

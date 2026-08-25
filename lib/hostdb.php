@@ -746,6 +746,22 @@ function hostMigrations(): array
         17 => [
             'ALTER TABLE host_dirs ADD COLUMN measured INTEGER NOT NULL DEFAULT 1',
         ],
+
+        /*
+         * The machine's own CPU, which the account cannot measure.
+         *
+         * Inside CageFS `/proc/stat` is virtualised to the account's CPU
+         * allowance, so the percentage on the dashboard answers "how much of
+         * what I am allowed am I using" and nothing else. Read by root, the
+         * same file answers "how busy is the server" - a different question
+         * with a different answer, and the gap between the two is the whole
+         * point of showing them side by side.
+         */
+        18 => [
+            'ALTER TABLE host_samples ADD COLUMN cpu_total_ticks INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN cpu_idle_ticks INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN cpu_percent REAL',
+        ],
     ];
 }
 

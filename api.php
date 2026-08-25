@@ -60,6 +60,7 @@ require_once __DIR__ . '/lib/hostdb.php';
 // swapPressure and the host collectors live here, not in hostdb.php.
 require_once __DIR__ . '/lib/host.php';
 require_once __DIR__ . '/lib/uptime.php';
+require_once __DIR__ . '/lib/limits.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -105,6 +106,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'tail' => tailLog($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
         'processes' => processList($config, $pdo, $signedIn),
+        'busy' => busyMoments($config, $pdo, $signedIn),
         'symlinks' => symlinkCheck($config, $signedIn),
         'host' => hostView($config, $signedIn, $pdo),
         'host-series' => hostSeries($config, $signedIn),
@@ -121,6 +123,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'scan-now' => doScanNow($pdo, $post),
         'test-email' => doTestEmail($config, $pdo, $post),
         'clear-problems' => doClearProblems($config, $pdo, $post),
+        'alert-action' => doAlertAction($config, $pdo, $post),
         'daemon-watch' => doDaemonWatch($config, $pdo, $post),
         'request-host-walk' => doRequestHostWalk($config, $pdo, $post),
         'check-capabilities' => doCheckCapabilities($config, $pdo, $post),
@@ -134,6 +137,31 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
 }
 
 /* ------------------------------------------------------------------ read -- */
+
+/**
+ * The newest host reading, or null when there is not one to be had.
+ *
+ * Every reason for there not being one - collection turned off, the cron never
+ * run, the file unreadable by this account - is the same answer here: no
+ * comparison. The host panel is where those are told apart and explained; this
+ * one only needs to know whether it can compare.
+ */
+function latestHostSample(array $config): ?array
+{
+    if (!($config['host']['enabled'] ?? true)) {
+        return null;
+    }
+
+    try {
+        $pdo = hostDb($config, false);
+        if ($pdo === null) {
+            return null;
+        }
+        return $pdo->query('SELECT * FROM host_samples ORDER BY id DESC LIMIT 1')->fetch() ?: null;
+    } catch (Throwable) {
+        return null;
+    }
+}
 
 function overview(array $config, PDO $pdo, bool $signedIn): array
 {
@@ -182,6 +210,15 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
         'open_alerts' => (int)$pdo->query(
             'SELECT COUNT(*) FROM alerts WHERE raised_at >= ' . (time() - 86400)
         )->fetchColumn(),
+        /*
+         * What the host allows, when there is a host reading to say.
+         *
+         * Folded into the overview rather than given an endpoint of its own
+         * because it changes nothing and is needed on the page that opens: a
+         * dashboard that reports 94% CPU without saying that is 94% of two
+         * cores out of thirty-two has told you the wrong thing first.
+         */
+        'limits' => accountLimits($vitals, latestHostSample($config)),
         'deletable' => $config['deletable_categories'] ?? [],
         // So the dashboard builds its filters and its chart from the rules that
         // are actually in force, rather than a copy of them that goes stale.
@@ -439,7 +476,37 @@ function scanSeries(array $config, PDO $pdo): array
     );
     $stmt->execute($params);
 
-    return ['rows' => $stmt->fetchAll(), 'categories' => $categories];
+    /*
+     * The type breakdown from the newest scan in the window, not a series.
+     *
+     * What a disk is made of changes over months, not between two scans an hour
+     * apart, so a line per type would be nine flat lines. The interesting form
+     * is the composition right now, and one row of it is far cheaper than
+     * carrying every scan's copy of it to the browser to draw one pie.
+     */
+    $rows = $stmt->fetchAll();
+    $types = [];
+    $typeScan = null;
+
+    if ($rows !== []) {
+        $latest = (int)end($rows)['id'];
+        $byType = $pdo->prepare(
+            'SELECT type, bytes, files FROM scan_file_types WHERE scan_id = ? ORDER BY bytes DESC'
+        );
+        $byType->execute([$latest]);
+        $types = $byType->fetchAll();
+        $typeScan = $types === [] ? null : $latest;
+    }
+
+    return [
+        'rows' => $rows,
+        'categories' => $categories,
+        'file_types' => $types,
+        // Null when the newest scan predates the tally, so the panel can say
+        // "not measured yet" rather than drawing an empty pie as though the
+        // account contained nothing.
+        'file_types_scan_id' => $typeScan,
+    ];
 }
 
 /**
@@ -623,7 +690,7 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
     $limit = clampInt($_GET['limit'] ?? 50, 1, 500);
     $stmt = $pdo->prepare(
         'SELECT a.id, a.raised_at, a.rule, a.severity, a.subject, a.detail,
-                a.emailed_at, a.path_id, a.incident_id, p.path, p.kind
+                a.emailed_at, a.path_id, a.incident_id, a.acknowledged_at, p.path, p.kind
          FROM alerts a LEFT JOIN paths p ON p.id = a.path_id
          ORDER BY a.raised_at DESC LIMIT :limit'
     );
@@ -892,7 +959,32 @@ function actionLog(array $config, PDO $pdo, bool $signedIn): array
     if (!$signedIn) {
         throw new ActionRefused('sign in to see the action log');
     }
-    return ['rows' => $pdo->query('SELECT * FROM actions ORDER BY at DESC LIMIT 100')->fetchAll()];
+
+    $rows = $pdo->query('SELECT * FROM actions ORDER BY at DESC LIMIT 500')->fetchAll();
+
+    /*
+     * Who did it, as far as anything here can honestly say.
+     *
+     * There is one password, so there is one identity, and the only thing that
+     * distinguishes two uses of it is the address they came from. Calling that
+     * "who" would be a lie - an address is a place, not a person - so it is
+     * labelled as what it is and the interface says so. When accounts exist
+     * this becomes a real name and the column stops needing the caveat.
+     */
+    $who = [];
+    foreach ($rows as $row) {
+        $address = (string)($row['remote_addr'] ?? '');
+        if ($address !== '') {
+            $who[$address] = true;
+        }
+    }
+
+    return [
+        'rows' => $rows,
+        'kinds' => array_values(array_unique(array_column($rows, 'action'))),
+        'who' => array_keys($who),
+        'identity' => 'address',
+    ];
 }
 
 /**
@@ -951,6 +1043,51 @@ function tailLog(array $config, PDO $pdo, bool $signedIn): array
  * sometimes a password somebody put where they should not have, which is also
  * why the arguments are redacted before they get this far.
  */
+/**
+ * The moments the machine was busy, and what fired at the same time.
+ *
+ * Its own endpoint rather than a corner of the process list, because that one
+ * shells out to `ps` on every call and this needs none of it - opening the page
+ * about last night should not start a process listing today.
+ *
+ * The alerts are matched by clock, and that is all the claim being made. A rule
+ * that fired within a couple of minutes of a recorded spike is worth putting a
+ * link to; saying it fired *because* of the spike would be asserting a cause
+ * nothing here measured.
+ */
+function busyMoments(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see what the machine was doing');
+    }
+
+    $moments = recordedProcesses($pdo, clampInt($_GET['limit'] ?? 25, 1, 100));
+    if ($moments === []) {
+        return ['moments' => [], 'window_seconds' => BUSY_ALERT_WINDOW];
+    }
+
+    $times = array_column($moments, 'taken_at');
+    $stmt = $pdo->prepare(
+        'SELECT id, raised_at, severity, subject, rule, incident_id
+           FROM alerts
+          WHERE raised_at BETWEEN ? AND ?
+          ORDER BY raised_at'
+    );
+    $stmt->execute([min($times) - BUSY_ALERT_WINDOW, max($times) + BUSY_ALERT_WINDOW]);
+    $alerts = $stmt->fetchAll();
+
+    foreach ($moments as &$moment) {
+        $moment['alerts'] = array_values(array_filter(
+            $alerts,
+            fn(array $a): bool =>
+                abs((int)$a['raised_at'] - (int)$moment['taken_at']) <= BUSY_ALERT_WINDOW
+        ));
+    }
+    unset($moment);
+
+    return ['moments' => $moments, 'window_seconds' => BUSY_ALERT_WINDOW];
+}
+
 function processList(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
@@ -972,7 +1109,6 @@ function processList(array $config, PDO $pdo, bool $signedIn): array
         'rows' => $stopping['available']
             ? annotateEligibility($config, $live['rows'])
             : $live['rows'],
-        'recorded' => recordedProcesses($pdo, 8),
         // So the Stop buttons are only drawn where they could actually work.
         'can_stop' => $stopping['available'],
         'stop_reason' => $stopping['reason'],
@@ -1610,6 +1746,56 @@ function doDaemonWatch(array $config, PDO $pdo, bool $post): array
     logAction($pdo, 'daemon_watch', $name, 'ok', 0, 0, $watched ? 'monitored' : 'not monitored');
 
     return ['ok' => true, 'name' => $name, 'watched' => $watched];
+}
+
+/**
+ * Marks alerts read, or removes them.
+ *
+ * Two different things and both are wanted. Acknowledging stops an alert
+ * counting towards the badge while leaving it in the history - which is what
+ * you want for something you have seen and dealt with. Deleting is for the
+ * ones that were noise, and it is per-row rather than a "clear all" because
+ * clearing everything is how a real alert gets swept away with the rest.
+ */
+function doAlertAction(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $what = (string)($_POST['what'] ?? '');
+    $ids = array_values(array_filter(
+        array_map('intval', explode(',', (string)($_POST['ids'] ?? ''))),
+        fn(int $id): bool => $id > 0
+    ));
+
+    if ($ids === [] && $what !== 'ack-all') {
+        throw new ActionRefused('no alerts named');
+    }
+
+    if ($what === 'ack-all') {
+        $stmt = $pdo->prepare('UPDATE alerts SET acknowledged_at = ? WHERE acknowledged_at IS NULL');
+        $stmt->execute([time()]);
+        logAction($pdo, 'ack_alerts', 'all', 'ok', 0, 0, $stmt->rowCount() . ' marked read');
+        return ['ok' => true, 'changed' => $stmt->rowCount()];
+    }
+
+    $marks = implode(',', array_fill(0, count($ids), '?'));
+
+    if ($what === 'ack') {
+        $stmt = $pdo->prepare("UPDATE alerts SET acknowledged_at = ? WHERE id IN ($marks)");
+        $stmt->execute([time(), ...$ids]);
+        logAction($pdo, 'ack_alerts', implode(',', $ids), 'ok', 0, 0, 'marked read');
+        return ['ok' => true, 'changed' => $stmt->rowCount()];
+    }
+
+    if ($what === 'delete') {
+        $stmt = $pdo->prepare("DELETE FROM alerts WHERE id IN ($marks)");
+        $stmt->execute($ids);
+        logAction($pdo, 'delete_alerts', implode(',', $ids), 'ok', 0, 0,
+            $stmt->rowCount() . ' removed');
+        return ['ok' => true, 'changed' => $stmt->rowCount()];
+    }
+
+    throw new ActionRefused('unknown alert action');
 }
 
 function doClearProblems(array $config, PDO $pdo, bool $post): array

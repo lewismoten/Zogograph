@@ -794,6 +794,13 @@ body {
 .badge-warn { background: rgba(240, 163, 94, .18); color: var(--warn); }
 .badge-crit { background: rgba(242, 97, 107, .2); color: var(--crit); }
 
+.nav-sub {
+  padding-left: 30px;
+  font-size: .84rem;
+}
+.nav-sub .nav-icon { opacity: .5; font-size: .8em; }
+.nav-sub[hidden] { display: none; }
+
 .nav-foot { margin-top: auto; padding: 10px 12px 4px; border-top: 1px solid var(--line-soft); }
 
 .scrim { display: none; }
@@ -940,15 +947,24 @@ tr.clickable:hover { background: var(--panel-hover); }
   .brand-text strong { font-size: .95rem; }
 }
 
+/*
+ * A table that cannot shrink scrolls inside its own panel, at every width.
+ *
+ * This used to apply only on a phone, which was the wrong place to draw the
+ * line: the process list has a whole command line in its last column and
+ * pushes a 1440px window sideways just as readily. A page that scrolls
+ * horizontally moves the navigation off the screen, so the table is the thing
+ * that gives.
+ */
+.panel > div:has(> table) { overflow-x: auto; }
+.scroll-x { overflow-x: auto; }
+
 @media (max-width: 620px) {
   .cards { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
   .panel { padding: 14px; border-radius: 10px; }
   .panel-head { flex-wrap: wrap; gap: 8px; }
   .panel-controls { flex-wrap: wrap; }
-  /* A table that cannot shrink scrolls inside its own panel rather than
-     stretching the page sideways. */
   .panel > div > table, .scroll-x > table { min-width: 520px; }
-  .panel > div:has(> table) { overflow-x: auto; }
 }
 
 
@@ -968,3 +984,112 @@ tr.clickable:hover { background: var(--panel-hover); }
 }
 .table-tools .spacer { flex: 1; }
 .table-more { margin-top: 8px; }
+
+/* Alerts ------------------------------------------------------------- */
+
+.panel-tools { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.panel-tools .pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .85rem; color: var(--muted);
+}
+.link.danger { color: var(--crit); }
+.link[disabled] { opacity: .4; cursor: default; }
+
+.sev { margin-right: 6px; }
+tr.unread .alert-subject { font-weight: 600; }
+tr.read { opacity: .62; }
+
+#alertBanner .dismiss {
+  position: absolute; top: 8px; right: 10px;
+  background: none; border: 0; color: inherit;
+  font-size: 1.1rem; line-height: 1; cursor: pointer; opacity: .6;
+}
+#alertBanner .dismiss:hover { opacity: 1; }
+#alertBanner { position: relative; }
+
+/* Deletions ---------------------------------------------------------- */
+
+/* A summary above a log, not the headline of a page - so smaller than the
+   cards the dashboard opens with. */
+.cards.small-cards { margin-bottom: 14px; }
+.cards.small-cards .value { font-size: 1.35rem; }
+
+tr.row-bad td:first-child { box-shadow: inset 2px 0 var(--warn); }
+
+.panel-tools select {
+  background: var(--bg-raised); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 3px 6px; font: inherit; font-size: .85rem;
+}
+
+/* Last busy ---------------------------------------------------------- */
+
+.busy-moment { border-top: 1px solid var(--line-soft); padding: 4px 0; }
+.busy-moment:first-child { border-top: 0; }
+.busy-moment > summary {
+  display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  padding: 10px 4px; cursor: pointer;
+}
+/* A flex summary loses its disclosure marker, and without one nothing on the
+   row says it opens. Drawn rather than restored, so it turns with the state. */
+.busy-moment > summary { list-style: none; }
+.busy-moment > summary::-webkit-details-marker { display: none; }
+.busy-moment > summary::before {
+  content: "\203A"; color: var(--dim); width: 10px;
+  transition: transform .12s ease; display: inline-block;
+}
+.busy-moment[open] > summary::before { transform: rotate(90deg); }
+.busy-moment > summary:hover { background: var(--panel-hover); }
+.busy-when { font-variant-numeric: tabular-nums; }
+.busy-level { color: var(--warn); font-weight: 600; }
+.busy-top { font-size: .88rem; }
+.busy-alert { font-size: .85rem; }
+.busy-moment table { margin: 0 0 14px 22px; }
+
+/* What the space is made of ------------------------------------------ */
+
+.cards.type-cards {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  margin-bottom: 16px;
+}
+.cards.type-cards .value { font-size: 1.25rem; }
+.cards.type-cards .card { padding: 12px 14px; }
+/* The swatch ties a card to its wedge without a legend between them. */
+.cards.type-cards .label::before {
+  content: "●"; margin-right: 6px; color: var(--dot, var(--dim));
+}
+
+/* Gauges ------------------------------------------------------------- */
+
+.gauges {
+  display: grid; gap: 14px; margin-bottom: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.gauge {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 14px 10px;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.gauge canvas { width: 100%; max-width: 170px; }
+.gauge .gauge-label { color: var(--muted); font-size: .85rem; }
+.gauge .gauge-sub { color: var(--dim); font-size: .78rem; text-align: center; }
+/* The band is named as well as coloured: a red arc and a green one are the
+   same arc to anyone who cannot tell them apart. */
+.gauge .gauge-band { font-size: .78rem; font-weight: 600; }
+.band-ok { color: var(--ok); }
+.band-warn { color: var(--warn); }
+.band-crit { color: var(--crit); }
+
+/* What the host allows ----------------------------------------------- */
+
+.limit-row {
+  display: grid; gap: 4px 16px; padding: 12px 0;
+  grid-template-columns: 130px 1fr 1fr;
+  border-top: 1px solid var(--line-soft);
+}
+.limit-row:first-child { border-top: 0; }
+.limit-name { font-weight: 600; }
+.limit-pair { font-variant-numeric: tabular-nums; }
+.limit-pair .muted { font-size: .82rem; }
+.limit-note { grid-column: 1 / -1; color: var(--muted); font-size: .85rem; max-width: 80ch; }
+@media (max-width: 620px) { .limit-row { grid-template-columns: 1fr; } }

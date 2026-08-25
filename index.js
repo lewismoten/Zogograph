@@ -185,9 +185,256 @@ function clearStaleNotice() {
 
 function setCard(id, value, sub, level = "") {
   const card = $(id);
+  // The gauges took several of these over, and a caller that still computes a
+  // figure for one is not a fault - it is just no longer drawn here.
+  if (!card) return;
   card.querySelector(".value").textContent = value;
   card.querySelector(".sub").textContent = sub ?? "";
   card.className = `card ${level}`.trim();
+}
+
+/*
+ * The dials at the top of the landing page.
+ *
+ * Everything here is already in the cards below, and that is the point: a card
+ * is a number you have to know the thresholds for, and an arc is a position you
+ * can read from across the room. Somebody opening this at eight in the morning
+ * wants "is anything red", not eight figures to compare against remembered
+ * limits.
+ *
+ * Each gauge names its band as well as colouring it. Red and green are the same
+ * shape to a colour-blind reader, and this is the one screen where the whole
+ * message is carried by the colour.
+ */
+function bandOf(value, warn, crit) {
+  if (value == null || !Number.isFinite(value)) return null;
+  return value >= crit ? "crit" : value >= warn ? "warn" : "ok";
+}
+
+const BAND_WORD = { ok: "healthy", warn: "watch", crit: "urgent" };
+const BAND_COLOR = { ok: "#56c98a", warn: "#f0a35e", crit: "#f2616b" };
+
+function renderGauges(overview) {
+  const v = overview.vitals;
+  const holder = $("gauges");
+
+  if (!v) {
+    holder.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: "Nothing collected yet.",
+    }));
+    return;
+  }
+
+  const host = overview.limits?.rows || [];
+  const hostOf = name => host.find(r => r.name === name)?.host ?? null;
+
+  const usedPercent = v.disk_total_bytes
+    ? (v.disk_used_bytes / v.disk_total_bytes) * 100
+    : null;
+  const inodePercent = v.inodes_total
+    ? (v.inodes_used / v.inodes_total) * 100
+    : null;
+  const cores = v.cpu_cores ? Number(v.cpu_cores) : null;
+  const perCore = v.load1 != null && cores ? (Number(v.load1) / cores) * 100 : null;
+  const hostCpu = hostOf("CPU in use");
+
+  const dials = [
+    {
+      label: "Disk used", value: usedPercent, warn: 88, crit: 95,
+      sub: v.disk_total_bytes
+        ? `${humanBytes(v.disk_free_bytes)} free of ${humanBytes(v.disk_total_bytes)}`
+        : "not reported",
+    },
+    {
+      label: "Inodes used", value: inodePercent, warn: 88, crit: 95,
+      sub: v.inodes_total ? `${humanCount(v.inodes_free)} free` : "not reported",
+    },
+    {
+      label: "CPU", value: v.cpu_percent == null ? null : Number(v.cpu_percent),
+      warn: 70, crit: 90,
+      // The account's allowance, with the machine's own figure under it - see
+      // the limits panel for why they are not the same measurement.
+      sub: v.cpu_percent == null
+        ? "no /proc/stat here"
+        : hostCpu == null
+          ? "of this account's allowance"
+          : `of the allowance · host ${Number(hostCpu).toFixed(0)}%`,
+    },
+    {
+      label: "Memory", value: v.mem_used_percent == null ? null : Number(v.mem_used_percent),
+      warn: 80, crit: 92,
+      sub: v.mem_total_bytes
+        ? `${humanBytes(v.mem_available_bytes)} available of ${humanBytes(v.mem_total_bytes)}`
+        : "not reported",
+    },
+    {
+      label: "Load", value: perCore, warn: 100, crit: 150, max: 200,
+      sub: v.load1 == null
+        ? "not reported"
+        : cores
+          ? `${Number(v.load1).toFixed(2)} over ${count(cores, "core")}`
+          : `${Number(v.load1).toFixed(2)}, cores unknown`,
+    },
+  ];
+
+  holder.replaceChildren(...dials.map(buildGauge));
+}
+
+function buildGauge(dial) {
+  const box = document.createElement("div");
+  box.className = "gauge";
+
+  const canvas = document.createElement("canvas");
+  box.appendChild(canvas);
+
+  const label = document.createElement("div");
+  label.className = "gauge-label";
+  label.textContent = dial.label;
+  box.appendChild(label);
+
+  const band = bandOf(dial.value, dial.warn, dial.crit);
+  const state = document.createElement("div");
+  state.className = "gauge-band " + (band ? `band-${band}` : "muted");
+  state.textContent = band ? BAND_WORD[band] : "not measured";
+  box.appendChild(state);
+
+  const sub = document.createElement("div");
+  sub.className = "gauge-sub";
+  sub.textContent = dial.sub;
+  box.appendChild(sub);
+
+  // Drawn after the node is in the document, or clientWidth is zero and the
+  // remembered redraw is the only thing that ever paints it.
+  requestAnimationFrame(() => drawGauge(canvas, dial, band));
+  rememberDraw(canvas, () => drawGauge(canvas, dial, bandOf(dial.value, dial.warn, dial.crit)));
+
+  return box;
+}
+
+/*
+ * A three-quarter arc, because a full circle has no beginning.
+ *
+ * The gap at the bottom is what tells you which end is empty; a ring with no
+ * gap is read as a pie and the eye looks for the second slice.
+ */
+function drawGauge(canvas, dial, band) {
+  const width = canvas.clientWidth;
+  if (!width) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const height = Math.round(width * 0.62);
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  canvas.style.height = height + "px";
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  const max = dial.max || 100;
+  const cx = width / 2;
+  const cy = height * 0.78;
+  const radius = Math.min(width / 2, cy) - 12;
+  const thickness = Math.max(8, radius * 0.22);
+
+  const start = Math.PI * 0.75;
+  const sweep = Math.PI * 1.5;
+
+  ctx.lineCap = "round";
+  ctx.lineWidth = thickness;
+
+  ctx.strokeStyle = "#232d3a";
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, start, start + sweep);
+  ctx.stroke();
+
+  if (dial.value != null && Number.isFinite(dial.value)) {
+    const share = Math.max(0, Math.min(1, dial.value / max));
+    if (share > 0) {
+      ctx.strokeStyle = BAND_COLOR[band] || "#4c9aff";
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, start, start + sweep * share);
+      ctx.stroke();
+    }
+  }
+
+  ctx.fillStyle = dial.value == null ? "#66717f" : "#e6edf3";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = `600 ${Math.round(radius * 0.52)}px system-ui, sans-serif`;
+  ctx.fillText(
+    dial.value == null ? "—" : `${Math.round(dial.value)}%`,
+    cx, cy + radius * 0.12
+  );
+}
+
+/*
+ * The account's readings against the machine's.
+ *
+ * Every row shows both numbers and then says what the pair means, because the
+ * pair is the finding: two cores out of thirty-two is not a fact about this
+ * account's CPU use, it is the reason its CPU use looks the way it does.
+ */
+function renderLimits(limits) {
+  const body = $("limitsBody");
+  const when = $("limitsWhen");
+
+  if (!limits || !limits.available) {
+    when.textContent = "";
+    body.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: limits?.reason || "No comparison available.",
+    }));
+    return;
+  }
+
+  when.textContent = limits.host_at
+    ? `host reading ${humanTime(limits.host_at)}`
+    : "";
+
+  const format = (value, unit) => {
+    if (value == null) return "not measured";
+    if (unit === "bytes") return humanBytes(value);
+    if (unit === "percent") return `${Number(value).toFixed(0)}%`;
+    return String(Number(value) % 1 === 0 ? value : Number(value).toFixed(2));
+  };
+
+  body.replaceChildren(...limits.rows.map(row => {
+    const div = document.createElement("div");
+    div.className = "limit-row";
+
+    const name = document.createElement("div");
+    name.className = "limit-name";
+    name.textContent = row.name;
+    div.appendChild(name);
+
+    for (const [side, value] of [["This account sees", row.account], ["The machine has", row.host]]) {
+      const pair = document.createElement("div");
+      pair.className = "limit-pair";
+
+      const heading = document.createElement("div");
+      heading.className = "muted";
+      heading.textContent = side;
+      pair.appendChild(heading);
+
+      const figure = document.createElement("div");
+      figure.textContent = format(value, row.unit);
+      if (row.verdict === "capped" && side === "This account sees") {
+        figure.className = "band-warn";
+      }
+      pair.appendChild(figure);
+
+      div.appendChild(pair);
+    }
+
+    const note = document.createElement("div");
+    note.className = "limit-note";
+    note.textContent = row.note;
+    div.appendChild(note);
+
+    return div;
+  }));
 }
 
 function renderCards(overview, vitalRows) {
@@ -466,7 +713,62 @@ function rateAxis(step, magnitude = step) {
  * somebody turns on live updates and then they are ten seconds apart, and
  * spacing them evenly would draw the busy period as though it took hours.
  */
+/*
+ * Charts remember how to redraw themselves.
+ *
+ * A canvas inside a hidden view has a clientWidth of zero, so its backing
+ * store gets sized for a 300px clamp and CSS then stretches it to the panel's
+ * real width - four times over, which is why the category chart came out
+ * blurry with wide letters. It happened because the data for that chart is
+ * fetched by one view while the canvas lives in another.
+ *
+ * Rather than police which view fetches what, every draw is remembered and
+ * replayed when the canvas actually has a layout: on becoming visible, and on
+ * resize. The draw while hidden is skipped rather than done wrongly.
+ */
+function rememberDraw(canvas, redraw) {
+  canvas.__redraw = redraw;
+}
+
+function redrawCharts(root = document) {
+  const dpr = window.devicePixelRatio || 1;
+
+  for (const canvas of root.querySelectorAll("canvas")) {
+    if (canvas.clientWidth === 0) continue;
+
+    if (canvas.__redraw) {
+      canvas.__redraw();
+      continue;
+    }
+
+    /*
+     * A canvas nothing ever drew into.
+     *
+     * It keeps the HTML default backing store of 300x150 while CSS stretches
+     * it to the panel's width, and the browser scales that empty bitmap to
+     * fit - the same blurry, letters-too-wide look, arrived at from the other
+     * direction. Sizing it to its own box makes an undrawn chart blank rather
+     * than smeared.
+     */
+    canvas.width = Math.round(canvas.clientWidth * dpr);
+    canvas.height = Math.round((canvas.clientHeight || 260) * dpr);
+  }
+}
+
 function drawLineChart(canvas, rows, series, options = {}) {
+  rememberDraw(canvas, () => drawLineChart(canvas, rows, series, options));
+
+  /*
+   * Nothing is drawn into a canvas with no width.
+   *
+   * Drawing anyway produces a backing store sized for a box that is not the
+   * one it will be shown in, and the result is stretched the moment it becomes
+   * visible. The remembered redraw above puts it right.
+   */
+  if (canvas.clientWidth === 0) {
+    return;
+  }
+
   drawLegend(canvas, series);
 
   const dpr = window.devicePixelRatio || 1;
@@ -1118,7 +1420,7 @@ function exportRows(target, rows, columns, format) {
   downloadFile(name, "\uFEFF" + lines.join("\r\n"), "text/csv;charset=utf-8");
 }
 
-function renderTable(target, rows, columns, onRowClick) {
+function renderTable(target, rows, columns, onRowClick, rowClass) {
   const el = $(target);
   if (!rows || !rows.length) {
     el.innerHTML = '<p class="muted">Nothing to show.</p>';
@@ -1158,8 +1460,11 @@ function renderTable(target, rows, columns, onRowClick) {
 
   const addRow = row => {
     const tr = body.insertRow();
+    // A row can say something about itself - read or unread, healthy or not -
+    // without that being a column of its own.
+    if (rowClass) tr.className = rowClass(row);
     if (onRowClick) {
-      tr.className = "clickable";
+      tr.classList.add("clickable");
       tr.addEventListener("click", event => {
         if (event.target.closest("button")) return;
         onRowClick(row);
@@ -1290,13 +1595,21 @@ async function refreshShared() {
  */
 async function refreshBadges() {
   try {
-    const alerts = await api("alerts", { limit: 40 });
-    const day = Date.now() / 1000 - 86400;
-    const recent = alerts.rows.filter(r => r.raised_at >= day);
-    const critical = recent.filter(r => r.severity === "critical").length;
+    const alerts = await api("alerts", { limit: 200 });
+    alertState.rows = alerts.rows;
 
-    setBadge("alerts", recent.length, critical ? "crit" : "warn");
-    renderAlertBanner(recent);
+    /*
+     * Unread, not "raised in the last day".
+     *
+     * A badge counting the last day counts the same alert every time you look
+     * at it, so the only way to clear it is to wait. That teaches people to
+     * ignore the number, which is the one thing a badge must not do.
+     */
+    const unread = alerts.rows.filter(r => !r.acknowledged_at);
+    const critical = unread.filter(r => r.severity === "critical").length;
+
+    setBadge("alerts", unread.length, critical ? "crit" : "warn");
+    renderAlertBanner(unread);
   } catch {
     setBadge("alerts", 0);
   }
@@ -1333,6 +1646,9 @@ async function refreshVitals() {
 
   const overview = state.overview || await api("overview");
   overview.trend = vitals.trend;
+  state.limits = overview.limits;
+  renderGauges(overview);
+  renderLimits(overview.limits);
   renderCards(overview, vitals.rows);
 
   state.uptime = uptime;
@@ -1352,6 +1668,85 @@ async function refreshScans() {
 
   const scans = await api("scans", { from, to });
   renderCategoryChart(scans.rows, scans.categories ?? state.categories);
+  renderFileTypes(scans.file_types ?? [], scans.file_types_scan_id, scans.rows ?? []);
+}
+
+/*
+ * A colour per type, fixed rather than positional.
+ *
+ * The order of the slices follows the sizes, so it changes between scans. If
+ * the colours followed the order too, "the green one" would be images this week
+ * and video the next, and every card would change colour when one of them grew.
+ */
+const TYPE_COLORS = {
+  images: "#4c9aff", video: "#f2616b", audio: "#c07ce0", archives: "#f0a35e",
+  web: "#56c98a", documents: "#5ecbd6", code: "#e0c05c", databases: "#8f8ce0",
+  logs: "#e08a8a", other: "#6f7d8c",
+};
+
+function renderFileTypes(types, scanId, scans) {
+  const panel = $("typePanel");
+  const cards = $("typeCards");
+
+  if (!types.length) {
+    /*
+     * Nothing measured is not the same as nothing there.
+     *
+     * The tally starts at the first scan after this was installed, so an
+     * account whose newest scan predates it has no rows - and drawing an empty
+     * pie would say the disk is empty.
+     */
+    cards.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: scans.length
+        ? "The last scan ran before this was measured. The next one will fill it in."
+        : "No completed scan in this range.",
+    }));
+    drawPieChart($("typePie"), [], { empty: "Not measured yet" });
+    $("typeWhen").textContent = "";
+    return;
+  }
+
+  const total = types.reduce((sum, t) => sum + Number(t.bytes || 0), 0);
+  const files = types.reduce((sum, t) => sum + Number(t.files || 0), 0);
+
+  const frag = document.createDocumentFragment();
+  for (const type of types) {
+    const bytes = Number(type.bytes || 0);
+    const card = document.createElement("div");
+    card.className = "card";
+
+    const label = document.createElement("div");
+    label.className = "label";
+    label.style.setProperty("--dot", TYPE_COLORS[type.type] || "#6f7d8c");
+    label.textContent = type.type;
+    card.appendChild(label);
+
+    const value = document.createElement("div");
+    value.className = "value";
+    value.textContent = humanBytes(bytes);
+    card.appendChild(value);
+
+    const sub = document.createElement("div");
+    sub.className = "sub muted";
+    sub.textContent = `${total ? ((bytes / total) * 100).toFixed(1) : "0"}% \u00b7 `
+      + count(Number(type.files || 0), "file");
+    card.appendChild(sub);
+
+    frag.appendChild(card);
+  }
+  cards.replaceChildren(frag);
+
+  drawPieChart($("typePie"), types.map(t => ({
+    label: t.type,
+    value: Number(t.bytes || 0),
+    color: TYPE_COLORS[t.type] || "#6f7d8c",
+  })), { empty: "Not measured yet" });
+
+  const scan = scans.find(row => row.id === scanId);
+  $("typeWhen").textContent = scan
+    ? `${humanBytes(total)} in ${count(files, "file")}, measured ${humanTime(scan.finished_at || scan.started_at)}`
+    : `${humanBytes(total)} in ${count(files, "file")}`;
 }
 
 /** Kept so that anything still calling it refreshes the view on screen. */
@@ -1570,10 +1965,20 @@ function renderCpuChart(rows) {
   // much of the machine that is. A host with no /proc/meminfo has none at all.
   const latest = [...prepared].reverse().find(row => row.mem_total_bytes != null);
 
+  /*
+   * "Share of the machine" was the wrong words, and they mattered.
+   *
+   * Inside a cage this is the share of what the account is *allowed*, not of
+   * the server, and a chart at 95% next to an idle machine has been the single
+   * most misleading thing on this page. The limits panel carries the
+   * comparison; the note only has to stop claiming the wrong denominator.
+   */
+  const cap = state.limits?.available ? " See what the host allows, above." : "";
   $("cpuNote").textContent = absolute && latest
-    ? `Share of the machine in use, since the previous reading. Memory is bytes `
-      + `consumed on the right, out of ${humanBytes(latest.mem_total_bytes)} total.`
-    : "Share of the machine in use, since the previous reading.";
+    ? `Share of what this account may use, since the previous reading. Memory is `
+      + `bytes consumed on the right, out of ${humanBytes(latest.mem_total_bytes)} `
+      + `available to this account.${cap}`
+    : `Share of what this account may use, since the previous reading.${cap}`;
 }
 
 /**
@@ -2270,7 +2675,6 @@ async function refreshProcesses() {
     $("procStopNote").textContent = data.can_stop ? "" : (data.stop_reason || "");
   }
 
-  renderBusyMoments(data.recorded ?? []);
 }
 
 /**
@@ -2555,6 +2959,28 @@ async function previewPattern() {
  * 04:12 the CPU was pinned and these were running" - a flat table of rows makes
  * the reader reassemble that themselves.
  */
+async function refreshBusy() {
+  const panel = $("busyPanel");
+  if (!state.signedIn) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const data = await api("busy");
+  renderBusyMoments(data.moments ?? []);
+}
+
+/*
+ * What each recorded moment looked like, folded shut.
+ *
+ * Twenty spikes each with a table of processes is several screens of nothing
+ * before you reach the one you came for, so the heading carries enough to
+ * choose by - when, how hard, and what was at the top of the list - and the
+ * detail waits until it is asked for. `details` rather than a hand-rolled
+ * toggle: it opens with the keyboard, it prints open, and find-in-page reaches
+ * inside it.
+ */
 function renderBusyMoments(moments) {
   const holder = $("processHistory");
 
@@ -2567,12 +2993,50 @@ function renderBusyMoments(moments) {
   }
 
   holder.replaceChildren(...moments.map(moment => {
-    const section = document.createElement("div");
+    const section = document.createElement("details");
     section.className = "busy-moment";
 
-    const heading = document.createElement("h4");
-    heading.textContent = `${humanTime(moment.taken_at)} — high ${moment.reason}`;
-    section.appendChild(heading);
+    const summary = document.createElement("summary");
+
+    const when = document.createElement("span");
+    when.className = "busy-when";
+    when.textContent = humanTime(moment.taken_at);
+    summary.appendChild(when);
+
+    const first = moment.rows[0] || {};
+    const trigger = Number(first.trigger_percent ?? 0);
+
+    const level = document.createElement("span");
+    level.className = "busy-level";
+    // "high cpu 72%" - the reading is the whole reason the moment was kept, so
+    // it belongs in the line you decide from rather than inside the fold.
+    level.textContent = trigger
+      ? `high ${moment.reason} ${trigger.toFixed(0)}%`
+      : `high ${moment.reason}`;
+    summary.appendChild(level);
+
+    const top = document.createElement("span");
+    top.className = "busy-top muted";
+    top.textContent = first.name
+      ? `${first.name}${moment.rows.length > 1 ? ` and ${count(moment.rows.length - 1, "other")}` : ""}`
+      : "nothing measurable";
+    summary.appendChild(top);
+
+    for (const alert of moment.alerts || []) {
+      const link = document.createElement("button");
+      link.className = "link busy-alert";
+      link.textContent = `${severityIcon(alert.severity)} ${alert.subject}`;
+      link.title = "An alert fired within two minutes of this — open the alerts page";
+      link.addEventListener("click", event => {
+        // Inside a summary, so the click would otherwise fold the thing open.
+        event.preventDefault();
+        event.stopPropagation();
+        showView("alerts");
+      });
+      summary.appendChild(link);
+    }
+
+    section.appendChild(summary);
 
     /*
      * What set it off, and whether anything visible was doing it.
@@ -2584,9 +3048,7 @@ function renderBusyMoments(moments) {
      * mismatch: either something in the list was working, or nothing was and
      * the cause had already exited.
      */
-    const first = moment.rows[0] || {};
     if (moment.reason === "cpu" && first.trigger_percent != null) {
-      const trigger = Number(first.trigger_percent);
       const busiest = Number(first.cpu_percent ?? 0);
       const note = document.createElement("p");
       note.className = "muted small";
@@ -2601,6 +3063,14 @@ function renderBusyMoments(moments) {
     }
 
     const table = document.createElement("table");
+    const head = table.createTHead().insertRow();
+    for (const [label, cls] of [["What", ""], ["CPU", "size"], ["Memory", "size"], ["Running for", "size"]]) {
+      const th = document.createElement("th");
+      th.textContent = label;
+      if (cls) th.className = cls;
+      head.appendChild(th);
+    }
+
     const body = table.createTBody();
     for (const row of moment.rows) {
       const tr = body.insertRow();
@@ -4807,33 +5277,60 @@ async function saveSchedule(remove) {
 }
 
 /*
+ * What each severity looks like at a glance.
+ *
+ * The word is still there - the emoji is a second channel, not a replacement.
+ * Scanning forty rows for the word "critical" is work; scanning them for a red
+ * dot is not.
+ */
+const SEVERITY_ICON = { critical: "\u{1F534}", warning: "\u{1F7E0}", info: "\u{1F535}" };
+const severityIcon = severity => SEVERITY_ICON[severity] || "\u26AA";
+
+const alertState = {
+  rows: [],
+  selected: new Set(),
+  unreadOnly: false,
+  /*
+   * The newest alert the banner has been waved away for.
+   *
+   * Dismissing has to stick across the poll or the banner reappears two
+   * seconds later, and it has to *stop* sticking when something new fires -
+   * otherwise one dismissal silences every future alert. Keying on the newest
+   * id gets both: the banner stays down until an alert arrives that the reader
+   * has not already seen.
+   */
+  dismissedThrough: 0,
+};
+
+/*
  * The banner, which appears above every view rather than only on Alerts.
  *
  * Split out from refreshAlerts so the shared poll can raise it wherever you
  * are standing. A monitor whose warnings are only visible on the page about
  * warnings has arranged for them to be missed.
  */
-function renderAlertBanner(recent) {
+function renderAlertBanner(unread) {
   const banner = $("alertBanner");
   if (!banner) return;
 
-  if (!recent.length) {
+  const newest = unread.reduce((max, row) => Math.max(max, row.id), 0);
+  if (!unread.length || newest <= alertState.dismissedThrough) {
     banner.hidden = true;
     return;
   }
 
   banner.hidden = false;
-  banner.className = recent.some(r => r.severity === "critical") ? "crit" : "";
+  banner.className = unread.some(r => r.severity === "critical") ? "crit" : "";
 
   const frag = document.createDocumentFragment();
   const head = document.createElement("strong");
-  head.textContent = `${count(recent.length, "alert")} in the last day`;
+  head.textContent = `${count(unread.length, "unread alert")}`;
   frag.appendChild(head);
 
   const list = document.createElement("ul");
-  for (const row of recent.slice(0, 4)) {
+  for (const row of unread.slice(0, 4)) {
     const li = document.createElement("li");
-    li.textContent = row.subject;
+    li.textContent = `${severityIcon(row.severity)} ${row.subject}`;
     list.appendChild(li);
   }
   frag.appendChild(list);
@@ -4844,18 +5341,239 @@ function renderAlertBanner(recent) {
   go.addEventListener("click", () => showView("alerts"));
   frag.appendChild(go);
 
+  const close = document.createElement("button");
+  close.className = "dismiss";
+  close.title = "Hide this until something new fires";
+  close.setAttribute("aria-label", "Dismiss");
+  close.textContent = "\u00d7";
+  close.addEventListener("click", () => {
+    alertState.dismissedThrough = newest;
+    banner.hidden = true;
+  });
+  frag.appendChild(close);
+
   banner.replaceChildren(frag);
 }
 
-async function refreshAlerts() {
-  const data = await api("alerts", { limit: 40 });
+/*
+ * Marking read, or removing.
+ *
+ * Optimistic only as far as the redraw: the server is asked first, and the
+ * table is rebuilt from what comes back. Flipping the row locally and hoping
+ * would show an alert as handled that is still sitting in the database.
+ */
+async function alertAction(what, ids) {
+  try {
+    await post("alert-action", { what, ids: ids.join(",") });
+    alertState.selected.clear();
+    await refreshAlerts();
+    await refreshBadges();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+}
 
-  renderTable("alerts", data.rows, [
+function syncAlertTools() {
+  const chosen = alertState.selected.size;
+  $("alertAckSome").disabled = !chosen;
+  $("alertDeleteSome").disabled = !chosen;
+  $("alertAckSome").textContent = chosen ? `Mark ${chosen} read` : "Mark read";
+  $("alertDeleteSome").textContent = chosen ? `Delete ${chosen}` : "Delete";
+}
+
+async function refreshAlerts() {
+  const data = await api("alerts", { limit: 200 });
+  alertState.rows = data.rows;
+
+  // Selections that no longer exist - deleted, or filtered away - must not
+  // keep the buttons lit for rows nobody can see.
+  const live = new Set(data.rows.map(r => r.id));
+  for (const id of [...alertState.selected]) {
+    if (!live.has(id)) alertState.selected.delete(id);
+  }
+
+  const rows = alertState.unreadOnly
+    ? data.rows.filter(r => !r.acknowledged_at)
+    : data.rows;
+
+  drawAlertTimeline(data.rows);
+
+  renderTable("alerts", rows, [
+    { label: "", render: alertPicker },
     { label: "When", render: row => humanTime(row.raised_at) },
-    { label: "Severity", render: row => row.severity },
+    { label: "Severity", render: alertSeverity },
     { label: "What", className: "name", render: alertWhat },
     { label: "Emailed", render: row => (row.emailed_at ? "yes" : "no") },
-  ], row => (row.path_id ? showHistory(row.path_id) : undefined));
+    { label: "", render: alertRowActions },
+  ], null, row => (row.acknowledged_at ? "read" : "unread"));
+
+  syncAlertTools();
+}
+
+function alertPicker(row) {
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = alertState.selected.has(row.id);
+  box.setAttribute("aria-label", `Select alert ${row.id}`);
+  box.addEventListener("change", () => {
+    box.checked ? alertState.selected.add(row.id) : alertState.selected.delete(row.id);
+    syncAlertTools();
+  });
+  return box;
+}
+
+function alertSeverity(row) {
+  const span = document.createElement("span");
+  const icon = document.createElement("span");
+  icon.className = "sev";
+  icon.textContent = severityIcon(row.severity);
+  span.appendChild(icon);
+  span.appendChild(document.createTextNode(row.severity));
+  return span;
+}
+
+function alertRowActions(row) {
+  const cell = document.createDocumentFragment();
+
+  if (!row.acknowledged_at) {
+    const ack = document.createElement("button");
+    ack.className = "link";
+    ack.textContent = "Mark read";
+    ack.addEventListener("click", () => alertAction("ack", [row.id]));
+    cell.appendChild(ack);
+  }
+
+  const remove = document.createElement("button");
+  remove.className = "link danger";
+  remove.textContent = "Delete";
+  remove.addEventListener("click", () => alertAction("delete", [row.id]));
+  cell.appendChild(remove);
+
+  return cell;
+}
+
+/*
+ * When alerts fired, stacked by severity.
+ *
+ * The table answers "what went wrong"; this answers "was it once or has it
+ * been going on all week", which the table cannot show without being read end
+ * to end. Bucketed by hour or by day depending on how far back the alerts
+ * actually go, so a quiet fortnight is not drawn as 336 empty columns.
+ */
+function drawAlertTimeline(rows) {
+  const canvas = $("alertTimeline");
+  rememberDraw(canvas, () => drawAlertTimeline(alertState.rows));
+
+  /*
+   * The canvas's own width, not its parent's.
+   *
+   * The parent's content box is wider than the canvas whenever the panel has
+   * padding or the canvas has a margin, and a bitmap laid out for the wrong
+   * box gets rescaled by the browser to fit the right one. That rescale is
+   * exactly the blur this chart is meant to avoid.
+   */
+  const width = canvas.clientWidth;
+  if (width === 0) return;
+
+  const ratio = window.devicePixelRatio || 1;
+  const height = 170;
+  canvas.width = Math.max(1, Math.floor(width * ratio));
+  canvas.height = Math.max(1, Math.floor(height * ratio));
+  canvas.style.height = height + "px";
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  if (!rows.length) {
+    ctx.fillStyle = "#8b98a8";
+    ctx.font = "13px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Nothing has fired yet.", width / 2, height / 2);
+    $("alertLegend").replaceChildren();
+    $("alertRange").textContent = "";
+    return;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const oldest = Math.min(...rows.map(r => r.raised_at));
+  const span = Math.max(3600, now - oldest);
+  const bucket = span > 3 * 86400 ? 86400 : 3600;
+
+  /*
+   * Day buckets start at local midnight, not at a multiple of 86400.
+   *
+   * Rounding the epoch is rounding in UTC, which puts the first bar at 8pm the
+   * previous evening for anyone west of Greenwich - and labels the chart with a
+   * start time hours before the alert it is meant to begin at.
+   */
+  const edge = new Date(oldest * 1000);
+  edge.setHours(bucket === 86400 ? 0 : edge.getHours(), 0, 0, 0);
+  const from = Math.floor(edge.getTime() / 1000);
+  const slots = Math.max(1, Math.ceil((now - from) / bucket) + 1);
+
+  const levels = ["critical", "warning", "info"];
+  const colour = { critical: "#f2616b", warning: "#f0a35e", info: "#4c9aff" };
+
+  const buckets = Array.from({ length: slots }, () => ({ critical: 0, warning: 0, info: 0 }));
+  for (const row of rows) {
+    const i = Math.min(slots - 1, Math.max(0, Math.floor((row.raised_at - from) / bucket)));
+    const level = levels.includes(row.severity) ? row.severity : "info";
+    buckets[i][level]++;
+  }
+
+  const pad = { left: 32, right: 8, top: 12, bottom: 22 };
+  const plotW = Math.max(1, width - pad.left - pad.right);
+  const plotH = Math.max(1, height - pad.top - pad.bottom);
+
+  const tallest = Math.max(1, ...buckets.map(b => b.critical + b.warning + b.info));
+  const scale = plotH / tallest;
+  const step = plotW / slots;
+  const barW = Math.max(2, Math.min(26, step - 1));
+
+  ctx.strokeStyle = "#232d3a";
+  ctx.beginPath();
+  ctx.moveTo(pad.left, pad.top + plotH + .5);
+  ctx.lineTo(pad.left + plotW, pad.top + plotH + .5);
+  ctx.stroke();
+
+  // Whole alerts only: there is no such thing as half a warning.
+  ctx.fillStyle = "#8b98a8";
+  ctx.font = "10px system-ui, sans-serif";
+  ctx.textAlign = "right";
+  for (const value of tallest > 1 ? [0, tallest] : [0, 1]) {
+    ctx.fillText(String(value), pad.left - 6, pad.top + plotH - value * scale + 3);
+  }
+
+  buckets.forEach((counts, i) => {
+    let y = pad.top + plotH;
+    for (const level of levels) {
+      if (!counts[level]) continue;
+      const h = counts[level] * scale;
+      y -= h;
+      ctx.fillStyle = colour[level];
+      ctx.fillRect(pad.left + i * step, y, barW, h);
+    }
+  });
+
+  ctx.fillStyle = "#8b98a8";
+  ctx.textAlign = "left";
+  ctx.fillText(humanTime(from), pad.left, height - 6);
+  ctx.textAlign = "right";
+  ctx.fillText(humanTime(now), pad.left + plotW, height - 6);
+
+  const legend = document.createDocumentFragment();
+  for (const level of levels) {
+    const total = buckets.reduce((sum, b) => sum + b[level], 0);
+    if (!total) continue;
+    const span = document.createElement("span");
+    span.style.setProperty("--dot", colour[level]);
+    span.textContent = `${level} (${total})`;
+    legend.appendChild(span);
+  }
+  $("alertLegend").replaceChildren(legend);
+  $("alertRange").textContent =
+    `${count(rows.length, "alert")}, one bar per ${bucket === 86400 ? "day" : "hour"}`;
 }
 
 /*
@@ -5174,6 +5892,29 @@ function processTree(nodes) {
   return wrap;
 }
 
+const actionState = { kind: "", who: "", result: "" };
+
+/*
+ * What a raw action name means in words.
+ *
+ * The database stores identifiers because code compares them; a person reading
+ * a list of things that happened to their disk should not have to translate
+ * `empty` into "emptied a directory" in their head.
+ */
+const ACTION_WORDS = {
+  delete_file: "deleted a file",
+  empty: "emptied a directory",
+  scan_now: "ran a scan",
+  schedule_save: "changed the schedule",
+  test_email: "sent a test email",
+  clear_problems: "cleared the problem log",
+  ack_alerts: "marked alerts read",
+  delete_alerts: "deleted alerts",
+  daemon_watch: "changed which services are watched",
+  request_host_walk: "asked the host to walk the disk",
+  check_capabilities: "checked which programs are available",
+};
+
 async function refreshActionLog() {
   const panel = $("actionPanel");
   if (!state.signedIn) {
@@ -5183,13 +5924,86 @@ async function refreshActionLog() {
   panel.hidden = false;
 
   const data = await api("actions");
-  renderTable("actionLog", data.rows, [
+  fillFilter($("actionKind"), data.kinds, actionState.kind,
+    value => ACTION_WORDS[value] || value);
+  fillFilter($("actionWho"), data.who, actionState.who);
+
+  // Said out loud rather than left for the reader to work out from a column
+  // heading, because "From 203.0.113.9" looks like an answer to "who".
+  $("actionWhoNote").textContent = data.identity === "address"
+    ? "There is one password, so there is one identity. The address a change "
+      + "came from is the only thing that tells two uses of it apart \u2014 it is a "
+      + "place, not a person."
+    : "";
+
+  const rows = data.rows.filter(row =>
+    (!actionState.kind || row.action === actionState.kind) &&
+    (!actionState.who || row.remote_addr === actionState.who) &&
+    (!actionState.result || row.outcome === actionState.result));
+
+  renderActionSummary(rows);
+
+  renderTable("actionLog", rows, [
     { label: "When", render: row => humanTime(row.at) },
-    { label: "Action", render: row => row.action },
+    { label: "What", render: row => ACTION_WORDS[row.action] || row.action },
     { label: "Target", className: "name", render: row => row.target ?? "" },
-    { label: "Outcome", render: row => row.outcome + (row.detail ? ` — ${row.detail}` : "") },
+    { label: "Outcome", render: row => row.outcome + (row.detail ? ` \u2014 ${row.detail}` : "") },
     { label: "Freed", className: "size", render: row => humanBytes(row.bytes_freed) },
-  ]);
+    // Not "who": one shared password means the address is the only thing that
+    // tells two uses of it apart, and it is a place rather than a person.
+    { label: "From", render: row => row.remote_addr || "\u2014" },
+  ], null, row => (row.outcome === "ok" ? "" : "row-bad"));
+}
+
+/*
+ * Keeps a filter's options in step with the data without losing the choice.
+ *
+ * Rebuilding the list on every poll is what makes a dropdown forget what it was
+ * set to mid-click, so the current value is put back afterwards - and kept even
+ * when it has dropped out of the data, or filtering to something rare would
+ * silently reset itself the moment that thing stopped happening.
+ */
+function fillFilter(select, values, current, label = v => v) {
+  const wanted = [...new Set(values)].sort();
+  if (current && !wanted.includes(current)) wanted.push(current);
+
+  const already = [...select.options].slice(1).map(o => o.value);
+  if (already.join("\u0000") !== wanted.join("\u0000")) {
+    while (select.options.length > 1) select.remove(1);
+    for (const value of wanted) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label(value);
+      select.appendChild(option);
+    }
+  }
+  select.value = current;
+}
+
+function renderActionSummary(rows) {
+  const freed = rows.reduce((sum, r) => sum + Number(r.bytes_freed || 0), 0);
+  const files = rows.reduce((sum, r) => sum + Number(r.files_removed || 0), 0);
+  const refused = rows.filter(r => r.outcome !== "ok").length;
+
+  const cards = [
+    ["Things done", String(rows.length), rows.length ? `since ${humanTime(rows[rows.length - 1].at)}` : ""],
+    ["Space freed", humanBytes(freed), count(files, "file") + " removed"],
+    ["Refused or failed", String(refused), refused ? "these changed nothing" : "everything worked"],
+  ];
+
+  const frag = document.createDocumentFragment();
+  for (const [label, value, sub] of cards) {
+    const card = document.createElement("div");
+    card.className = "card";
+    for (const [cls, text] of [["label", label], ["value", value], ["sub muted", sub]]) {
+      const div = document.createElement("div");
+      div.className = cls;
+      div.textContent = text;
+      card.appendChild(div);
+    }
+    frag.appendChild(card);
+  }
+  $("actionSummary").replaceChildren(frag);
 }
 
 function escapeHtml(text) {
@@ -5432,9 +6246,11 @@ function drawTreemap() {
   const canvas = $("treemap");
   if (!canvas) return;
 
-  const holder = canvas.parentElement;
+  rememberDraw(canvas, drawTreemap);
+  if (canvas.clientWidth === 0) return;
+
   const ratio = window.devicePixelRatio || 1;
-  const width = holder.clientWidth;
+  const width = canvas.clientWidth;
   const height = 460;
 
   canvas.width = Math.max(1, Math.floor(width * ratio));
@@ -6095,9 +6911,11 @@ async function refreshCapabilityChanges() {
  */
 function drawChangeChart() {
   const canvas = $("capChanges");
-  const holder = canvas.parentElement;
+  rememberDraw(canvas, drawChangeChart);
+  if (canvas.clientWidth === 0) return;
+
   const ratio = window.devicePixelRatio || 1;
-  const width = holder.clientWidth;
+  const width = canvas.clientWidth;
   const height = 200;
 
   canvas.width = Math.max(1, Math.floor(width * ratio));
@@ -6647,30 +7465,33 @@ function showProviderMessage(message) {
  * both correct - it is still true, it is just older - and free.
  */
 const VIEWS = {
-  overview: {
-    label: "Overview",
-    refresh: () => refreshVitals(),
-  },
-  storage: {
-    label: "Storage",
+  overview: { label: "Overview", refresh: () => refreshVitals() },
+
+  storage: { label: "Storage", parent: null, refresh: () => refreshScans() },
+  "storage-files": {
+    label: "Largest & growth", parent: "storage",
     refresh: async () => {
-      await refreshScans();
       await refreshOffenders();
       if (state.historyPathId) await showHistory(state.historyPathId, true);
       if (state.log.pathId) await showLog(state.log.pathId, true);
+    },
+  },
+  "storage-map": {
+    label: "Tree map", parent: "storage",
+    refresh: async () => {
       if (state.signedIn && !treeState.level) await refreshTreemap().catch(() => {});
     },
   },
+
   backups: { label: "Backups", refresh: () => refreshBackups() },
-  host: {
-    label: "Whole machine",
-    refresh: async () => {
-      await refreshHost();
-      await refreshHostDisk();
-      await refreshMounts();
-    },
-  },
+
+  host: { label: "Whole machine", refresh: () => refreshHost() },
+  "host-disk": { label: "Disk & I/O", parent: "host", refresh: () => refreshHostDisk() },
+  "host-layout": { label: "Filesystem layout", parent: "host", refresh: () => refreshMounts() },
+
   processes: { label: "Processes", refresh: () => refreshProcesses() },
+  busy: { label: "Last busy", parent: "processes", refresh: () => refreshBusy() },
+
   capabilities: {
     label: "Capabilities",
     refresh: async () => {
@@ -6678,20 +7499,16 @@ const VIEWS = {
       await refreshCapabilityChanges();
     },
   },
-  alerts: {
-    label: "Alerts",
-    refresh: async () => {
-      await refreshAlerts();
-      await refreshUptime();
-      await refreshActionLog();
-    },
-  },
+
+  alerts: { label: "Alerts", refresh: () => refreshAlerts() },
+  uptime: { label: "Uptime", refresh: () => refreshUptime() },
+  deletions: { label: "Deletions", refresh: () => refreshActionLog() },
+  schedule: { label: "Schedule", refresh: () => refreshSchedule() },
   system: {
     label: "System",
     refresh: async () => {
       await refreshHealth();
       await refreshProblems();
-      await refreshSchedule();
     },
   },
 };
@@ -6759,10 +7576,24 @@ function showView(view, push = true) {
   for (const section of document.querySelectorAll("[data-view]")) {
     section.hidden = section.dataset.view !== view;
   }
+  /*
+   * Sub-items appear only under the section you are in.
+   *
+   * Fifteen entries listed flat is a worse menu than the single page it
+   * replaced. Showing a section's children only while that section is open
+   * keeps the sidebar to eight rows plus whatever is relevant.
+   */
+  const parent = VIEWS[view].parent || view;
+
   for (const link of document.querySelectorAll("[data-nav]")) {
-    link.classList.toggle("current", link.dataset.nav === view);
-    if (link.dataset.nav === view) link.setAttribute("aria-current", "page");
+    const id = link.dataset.nav;
+    const owner = link.dataset.parent;
+
+    link.classList.toggle("current", id === view);
+    if (id === view) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
+
+    if (owner) link.hidden = owner !== parent;
   }
 
   document.title = `${VIEWS[view].label} · Hostscope`;
@@ -6774,7 +7605,26 @@ function showView(view, push = true) {
 
   closeNav();
   if (push) writeRoute();
-  if (changed || !state.rendered.has(view)) refreshCurrent();
+
+  /*
+   * Anything drawn while this view was hidden is redrawn now that it has a
+   * width. Cheap - it is a replay of the last draw, not a refetch.
+   */
+  const section = document.querySelector(`[data-view="${view}"]`);
+  if (section) redrawCharts(section);
+
+  /*
+   * And again once the refresh has landed.
+   *
+   * A panel that stays hidden until its data arrives has no width during the
+   * redraw above, so its chart is skipped - and nothing else would ever come
+   * back for it. This is the second half of that pair, not a duplicate of it.
+   */
+  if (changed || !state.rendered.has(view)) {
+    Promise.resolve(refreshCurrent()).finally(() => {
+      if (state.view === view && section) redrawCharts(section);
+    });
+  }
 }
 
 /* ------------------------------------------------------------------- poll -- */
@@ -6882,7 +7732,10 @@ function setBadge(view, count, level = "warn") {
   if (!el) return;
 
   if (!count) {
+    // Cleared as well as hidden: a stale number left in the node flashes on
+    // the next unhide before the new one is written.
     el.hidden = true;
+    el.textContent = "";
     return;
   }
 
@@ -6972,9 +7825,12 @@ $("range").addEventListener("change", () => {
   refreshCurrent();
 });
 
+let redrawTimer = null;
 window.addEventListener("resize", () => {
-  // The bar chart is laid out in pixels, so it has to be told when they change.
-  if (changeState.data) drawChangeChart();
+  // Canvases are laid out in pixels, so they have to be told when the pixels
+  // change. Debounced: a drag across the screen is one resize, not forty.
+  clearTimeout(redrawTimer);
+  redrawTimer = setTimeout(() => redrawCharts(), 150);
 });
 
 $("live").addEventListener("click", () => {
@@ -7219,6 +8075,37 @@ window.addEventListener("hashchange", applyRoute);
 
 $("pollState").addEventListener("click", () => {
   if (!poll.busy) refreshCurrent();
+});
+
+for (const [id, key] of [["actionKind", "kind"], ["actionWho", "who"], ["actionResult", "result"]]) {
+  $(id).addEventListener("change", event => {
+    actionState[key] = event.target.value;
+    refreshActionLog().catch(error => notice(String(error.message || error)));
+  });
+}
+
+$("busyExpand").addEventListener("click", () => {
+  const all = [...document.querySelectorAll("#processHistory details")];
+  const opening = all.some(d => !d.open);
+  for (const d of all) d.open = opening;
+  $("busyExpand").textContent = opening ? "Close all" : "Open all";
+});
+
+$("alertUnreadOnly").addEventListener("change", event => {
+  alertState.unreadOnly = event.target.checked;
+  refreshAlerts().catch(error => notice(String(error.message || error)));
+});
+
+$("alertAckAll").addEventListener("click", () => alertAction("ack-all", []));
+$("alertAckSome").addEventListener("click",
+  () => alertAction("ack", [...alertState.selected]));
+
+$("alertDeleteSome").addEventListener("click", () => {
+  const ids = [...alertState.selected];
+  if (!ids.length) return;
+  // Deleting is the one thing here that cannot be undone from the interface.
+  if (!confirm(`Delete ${count(ids.length, "alert")}? The history goes with them.`)) return;
+  alertAction("delete", ids);
 });
 
 $("shareLink").addEventListener("click", async () => {

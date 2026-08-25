@@ -413,6 +413,15 @@ function groupByName(array $rows): array
  * CPU was pinned and these five things were running" rather than as a flat list
  * of rows somebody has to reassemble.
  */
+/*
+ * How near in time an alert has to be before it is worth mentioning.
+ *
+ * Defined in a library rather than beside the endpoint that uses it: a
+ * top-level `const` runs when execution reaches it, and api.php has answered
+ * the request and finished long before it reaches its own bottom half.
+ */
+const BUSY_ALERT_WINDOW = 120;
+
 function recordedProcesses(PDO $pdo, int $limit = 12): array
 {
     $moments = $pdo->prepare(

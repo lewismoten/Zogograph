@@ -518,6 +518,38 @@ function migrations(): array
             'CREATE INDEX capability_changes_at ON capability_changes (at)',
             'CREATE INDEX capability_changes_name ON capability_changes (name, at)',
         ],
+
+        /*
+         * Whether somebody has looked at an alert.
+         *
+         * The navigation badge counts what is unread, so without this it counts
+         * everything raised in the last day for ever - and a badge that never
+         * clears is one nobody reads. Acknowledging is not the same as
+         * deleting: the alert stays in the history, it just stops asking.
+         */
+        /*
+         * What kind of thing the space is, as distinct from what rule watches it.
+         *
+         * The categories are an alerting concern - logs, temp, trash - and a
+         * file belongs to at most one of them, with most files belonging to
+         * none. That makes them useless for the question "what is this disk
+         * actually full of", where every byte has to land somewhere or the
+         * answer does not add up. Types are that second partition: total,
+         * exhaustive, and deliberately not the thing the delete buttons read.
+         */
+        16 => [
+            "CREATE TABLE scan_file_types (
+                scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+                type    TEXT NOT NULL,
+                bytes   INTEGER NOT NULL,
+                files   INTEGER NOT NULL,
+                PRIMARY KEY (scan_id, type)
+            )",
+        ],
+
+        15 => [
+            'ALTER TABLE alerts ADD COLUMN acknowledged_at INTEGER',
+        ],
     ];
 }
 

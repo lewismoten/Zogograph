@@ -978,6 +978,30 @@ function hostTakeReading(
          * impossible rather than merely unlikely, and it is how takeVitals()
          * has always built its insert.
          */
+        /*
+         * The host's real CPU use, worked out against the previous host row.
+         *
+         * A tick counter says nothing on its own - CPU use only exists as a
+         * difference between two moments - so the first reading after an
+         * install has no percentage, and neither does the first after a reboot,
+         * where the counters restart and a difference would be negative. Both
+         * are left null rather than guessed at.
+         */
+        $cpu = cpuTicks();
+        $cpuPercent = null;
+        if ($cpu !== null) {
+            $previous = $pdo->query(
+                'SELECT cpu_total_ticks, cpu_idle_ticks FROM host_samples
+                 WHERE cpu_total_ticks IS NOT NULL ORDER BY taken_at DESC, id DESC LIMIT 1'
+            )->fetch();
+
+            if ($previous && $cpu['total'] > (int)$previous['cpu_total_ticks']) {
+                $totalDelta = $cpu['total'] - (int)$previous['cpu_total_ticks'];
+                $idleDelta = $cpu['idle'] - (int)$previous['cpu_idle_ticks'];
+                $cpuPercent = round(max(0.0, min(100.0, (1 - $idleDelta / $totalDelta) * 100)), 2);
+            }
+        }
+
         $sample = [
             'taken_at' => $takenAt,
             'mem_total' => $get('MemTotal'),
@@ -1014,6 +1038,9 @@ function hostTakeReading(
             'load5' => $load[1],
             'load15' => $load[2],
             'cpu_cores' => cpuCores(),
+            'cpu_total_ticks' => $cpu['total'] ?? null,
+            'cpu_idle_ticks' => $cpu['idle'] ?? null,
+            'cpu_percent' => $cpuPercent,
             'source' => $source,
             'io_pressure_some' => $pressure['some10'] ?? null,
             'io_pressure_full' => $pressure['full10'] ?? null,
