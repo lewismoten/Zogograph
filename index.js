@@ -1161,6 +1161,16 @@ function inkOn(hex) {
  * place.
  */
 function drawPieChart(canvas, slices, options = {}) {
+  /*
+   * Remembered like every other chart.
+   *
+   * Without this, redrawCharts treats the canvas as one nothing ever drew into
+   * and resizes it to its box - which clears it. The pie was painting
+   * correctly and then being wiped by the tidy-up pass a moment later.
+   */
+  rememberDraw(canvas, () => drawPieChart(canvas, slices, options));
+  if (canvas.clientWidth === 0) return;
+
   const dpr = window.devicePixelRatio || 1;
   const cssW = Math.max(240, canvas.clientWidth);
   const cssH = canvas.clientHeight || 300;
@@ -1194,6 +1204,18 @@ function drawPieChart(canvas, slices, options = {}) {
    */
   const radius = Math.max(40, Math.min(cssW / 3, cssH) / 2 - 10);
   const labelGap = 20;
+
+  /*
+   * A second measurement of the same whole, drawn inside the first.
+   *
+   * Used where two partitions overlap and cannot honestly share one set of
+   * wedges - file types and watched categories count the same log file twice.
+   * As two concentric rings against the same total, each ring is internally
+   * correct and the eye can still compare a category against the disk it sits
+   * on, which is the actual question.
+   */
+  const inner = (options.inner || []).filter(slice => slice.value > 0);
+  const hole = inner.length ? radius * 0.56 : 0;
 
   /*
    * A slice writes inside itself only if the text actually fits.
@@ -1252,8 +1274,15 @@ function drawPieChart(canvas, slices, options = {}) {
     const color = slice.color || PIE_COLORS[i % PIE_COLORS.length];
 
     ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, radius, angle, angle + sweep);
+    if (hole > 0) {
+      // A ring rather than a wedge, leaving room for the second measurement
+      // in the middle. Same angles, so the two rings stay comparable.
+      ctx.arc(cx, cy, radius, angle, angle + sweep);
+      ctx.arc(cx, cy, hole, angle + sweep, angle, true);
+    } else {
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, radius, angle, angle + sweep);
+    }
     ctx.closePath();
     ctx.fillStyle = color;
     ctx.fill();
@@ -1292,7 +1321,7 @@ function drawPieChart(canvas, slices, options = {}) {
   // The list runs down the right in slice order, so the eye can follow it round.
   const labelX = cx + radius + labelGap;
   const lineHeight = 18;
-  const startY = cy - ((slices.length - 1) * lineHeight) / 2;
+  const startY = cy - ((slices.length + inner.length - 1) * lineHeight) / 2;
 
   slices.forEach((slice, i) => {
     const y = startY + i * lineHeight;
@@ -1305,6 +1334,54 @@ function drawPieChart(canvas, slices, options = {}) {
     ctx.fillStyle = "#ddd";
     ctx.fillText(listText[i], labelX + 16, y + 1);
   });
+
+  if (inner.length) {
+    /*
+     * The inner ring shares the outer ring's denominator.
+     *
+     * Rescaling it to its own sum would make three categories covering a tenth
+     * of the disk fill the whole circle - which is precisely the exaggeration
+     * this panel exists to avoid. What is left over is drawn in the panel's own
+     * background so it reads as absence rather than as another category.
+     */
+    let innerAngle = -Math.PI / 2;
+    const named = inner.reduce((sum, slice) => sum + slice.value, 0);
+    const parts = [...inner, { label: "", value: Math.max(0, total - named), quiet: true }];
+
+    for (const slice of parts) {
+      const sweep = (slice.value / total) * Math.PI * 2;
+      if (sweep <= 0) continue;
+
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, hole - 3, innerAngle, innerAngle + sweep);
+      ctx.closePath();
+      ctx.fillStyle = slice.quiet ? "#1b2430" : (slice.color || "#8899aa");
+      ctx.fill();
+
+      if (!slice.quiet) {
+        ctx.strokeStyle = "#161616";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      innerAngle += sweep;
+    }
+
+    let y = startY + slices.length * lineHeight + 6;
+    for (const slice of inner) {
+      if (y > cssH - 4) break;
+      ctx.fillStyle = slice.color || "#8899aa";
+      ctx.fillRect(labelX, y - 8, 10, 10);
+      ctx.fillStyle = "#ddd";
+      ctx.fillText(
+        `${slice.label} — ${humanBytes(slice.value)} `
+          + `(${percentText(slice.value / total)})`,
+        labelX + 16, y + 1
+      );
+      y += lineHeight;
+    }
+  }
 
   // The canvas carries its own labels, so the shared legend would repeat them.
   drawLegend(canvas, []);
@@ -1420,6 +1497,14 @@ function exportRows(target, rows, columns, format) {
   downloadFile(name, "\uFEFF" + lines.join("\r\n"), "text/csv;charset=utf-8");
 }
 
+/*
+ * How far each table has been unfolded, by the id it renders into.
+ *
+ * Outside renderTable because renderTable is called afresh every poll: state
+ * kept inside it lives exactly as long as the table it is meant to outlive.
+ */
+const TABLE_SHOWN = new Map();
+
 function renderTable(target, rows, columns, onRowClick, rowClass) {
   const el = $(target);
   if (!rows || !rows.length) {
@@ -1486,6 +1571,8 @@ function renderTable(target, rows, columns, onRowClick, rowClass) {
     const next = rows.slice(shown, shown + TABLE_PAGE);
     next.forEach(addRow);
     shown += next.length;
+    // Remembered against the table's id, so the next poll can put it back.
+    TABLE_SHOWN.set(target, shown);
 
     counter.textContent = shown >= rows.length
       ? count(rows.length, "row")
@@ -1495,7 +1582,17 @@ function renderTable(target, rows, columns, onRowClick, rowClass) {
     more.textContent = `Show ${Math.min(TABLE_PAGE, rows.length - shown)} more`;
   };
 
-  draw();
+  /*
+   * However far it was unfolded before, again.
+   *
+   * The poll rebuilds every table from scratch, which threw away how many rows
+   * were on screen - so "Show 25 more" expanded and then collapsed a second
+   * later when the next refresh landed. Restoring the count rather than the
+   * rows keeps it correct when the data underneath has changed.
+   */
+  const wanted = Math.min(TABLE_SHOWN.get(target) || 0, rows.length);
+  do { draw(); } while (shown < wanted && shown < rows.length);
+
   more.addEventListener("click", draw);
 
   el.replaceChildren(tools, table, more);
@@ -1667,8 +1764,65 @@ async function refreshScans() {
   const from = to - state.range;
 
   const scans = await api("scans", { from, to });
+  state.scans = scans;
+
+  syncScanButton(scans);
+  renderScanFacts(scans);
   renderCategoryChart(scans.rows, scans.categories ?? state.categories);
-  renderFileTypes(scans.file_types ?? [], scans.file_types_scan_id, scans.rows ?? []);
+  renderFileTypes(scans);
+  renderTypeGrowth(scans);
+}
+
+/** Kept so that anything still calling it refreshes the view on screen. */
+async function refreshAll() {
+  await refreshCurrent();
+}
+
+/*
+ * What the last scan cost and what it found.
+ *
+ * The button on its own says nothing about whether pressing it is worth it. A
+ * scan that takes four minutes and last ran twenty minutes ago is one you
+ * should probably not start again, and only these figures can say so.
+ */
+function renderScanFacts(scans) {
+  const last = scans.last_scan;
+  const holder = $("scanFacts");
+
+  if (!last) {
+    holder.replaceChildren();
+    $("scanNote").textContent = scans.scan_running
+      ? "The first scan is running now."
+      : "No completed scan yet.";
+    return;
+  }
+
+  const cards = [
+    ["Last scan", humanTime(last.finished_at || last.started_at),
+      last.duration_ms ? `took ${humanDuration(last.duration_ms / 1000)}` : ""],
+    ["Seen", humanBytes(last.bytes_seen),
+      `${humanCount(last.files_seen)} files in ${humanCount(last.dirs_seen)} directories`],
+    ["Scans in this range", String(scans.rows.length),
+      scans.rows.length > 1 ? "each point on the charts below" : "not enough to draw a trend"],
+  ];
+
+  const frag = document.createDocumentFragment();
+  for (const [label, value, sub] of cards) {
+    const card = document.createElement("div");
+    card.className = "card";
+    for (const [cls, text] of [["label", label], ["value", value], ["sub muted", sub]]) {
+      const div = document.createElement("div");
+      div.className = cls;
+      div.textContent = text;
+      card.appendChild(div);
+    }
+    frag.appendChild(card);
+  }
+  holder.replaceChildren(frag);
+
+  $("scanNote").textContent = last.error
+    ? `The last scan reported: ${last.error}`
+    : "";
 }
 
 /*
@@ -1684,8 +1838,21 @@ const TYPE_COLORS = {
   logs: "#e08a8a", other: "#6f7d8c",
 };
 
-function renderFileTypes(types, scanId, scans) {
-  const panel = $("typePanel");
+/*
+ * The watched categories, in colours no type uses.
+ *
+ * Deliberately outside the type palette: on a chart carrying both, a category
+ * that happened to borrow the colour of a type would read as the same series.
+ */
+const CATEGORY_COLORS = {
+  trash: "#b06fb0", logs: "#d98f4a", temp: "#4a9fb0", errors: "#d05a5a",
+};
+
+/** The fixed colour for a type, wherever it is drawn. */
+const typeColor = type => TYPE_COLORS[type] || "#6f7d8c";
+
+function renderFileTypes(scans) {
+  const types = scans.file_types ?? [];
   const cards = $("typeCards");
 
   if (!types.length) {
@@ -1698,12 +1865,14 @@ function renderFileTypes(types, scanId, scans) {
      */
     cards.replaceChildren(Object.assign(document.createElement("p"), {
       className: "muted",
-      textContent: scans.length
+      textContent: (scans.rows ?? []).length
         ? "The last scan ran before this was measured. The next one will fill it in."
         : "No completed scan in this range.",
     }));
     drawPieChart($("typePie"), [], { empty: "Not measured yet" });
+    renderOtherExtensions([]);
     $("typeWhen").textContent = "";
+    $("pieNote").textContent = "";
     return;
   }
 
@@ -1718,7 +1887,7 @@ function renderFileTypes(types, scanId, scans) {
 
     const label = document.createElement("div");
     label.className = "label";
-    label.style.setProperty("--dot", TYPE_COLORS[type.type] || "#6f7d8c");
+    label.style.setProperty("--dot", typeColor(type.type));
     label.textContent = type.type;
     card.appendChild(label);
 
@@ -1737,21 +1906,167 @@ function renderFileTypes(types, scanId, scans) {
   }
   cards.replaceChildren(frag);
 
-  drawPieChart($("typePie"), types.map(t => ({
-    label: t.type,
-    value: Number(t.bytes || 0),
-    color: TYPE_COLORS[t.type] || "#6f7d8c",
-  })), { empty: "Not measured yet" });
+  renderTypePie(scans, total);
+  renderOtherExtensions(scans.other_extensions ?? []);
 
-  const scan = scans.find(row => row.id === scanId);
+  const scan = (scans.rows ?? []).find(row => row.id === scans.file_types_scan_id);
   $("typeWhen").textContent = scan
     ? `${humanBytes(total)} in ${count(files, "file")}, measured ${humanTime(scan.finished_at || scan.started_at)}`
     : `${humanBytes(total)} in ${count(files, "file")}`;
 }
 
-/** Kept so that anything still calling it refreshes the view on screen. */
-async function refreshAll() {
-  await refreshCurrent();
+/*
+ * The pie, optionally with the watched categories beside the types.
+ *
+ * These are two different partitions of the same disk and they overlap: a
+ * `.log` inside a log directory is counted once under `logs` the type and again
+ * under `logs` the category. Drawn as one pie that would be nonsense - the
+ * slices would sum past the total. Drawn as two rings on one canvas they answer
+ * the question actually being asked, which is "has one of the watched things
+ * got out of hand compared with everything else".
+ *
+ * So the categories go in as slices measured against the same whole, and the
+ * note says plainly that they are a second view of the same bytes rather than
+ * extra ones.
+ */
+function renderTypePie(scans, total) {
+  const withCategories = $("pieShowCategories").checked;
+  const types = scans.file_types ?? [];
+
+  const slices = types.map(t => ({
+    label: t.type,
+    value: Number(t.bytes || 0),
+    color: typeColor(t.type),
+  }));
+
+  const latest = (scans.rows ?? []).find(r => r.id === scans.file_types_scan_id)
+    || (scans.rows ?? [])[scans.rows.length - 1];
+
+  const categories = [];
+  if (withCategories && latest) {
+    for (const name of scans.categories ?? []) {
+      const bytes = Number(latest[`${name}_bytes`] || 0);
+      if (bytes > 0) categories.push({ name, bytes });
+    }
+  }
+
+  if (categories.length) {
+    drawPieChart($("typePie"), slices, {
+      empty: "Not measured yet",
+      inner: categories.map(c => ({
+        label: `${c.name} (watched)`,
+        value: c.bytes,
+        color: CATEGORY_COLORS[c.name] || "#8899aa",
+      })),
+    });
+
+    $("pieNote").textContent =
+      "Outer ring: every file by type, each counted once, so it is the whole "
+      + "account. Inner ring: the categories the alert rules watch, against that "
+      + "same total \u2014 the dark remainder is everything they do not cover. The "
+      + "two rings measure some of the same bytes twice, since a log file is in "
+      + "both, so read each ring against the whole rather than against the other.";
+    return;
+  }
+
+  drawPieChart($("typePie"), slices, { empty: "Not measured yet" });
+  $("pieNote").textContent =
+    "Every file counted once, so the slices are the whole account.";
+}
+
+/*
+ * What fell into `other`, as a table rather than more slices.
+ *
+ * Forty extensions is forty wedges nobody can tell apart, and the useful form
+ * is sortable and readable: name, size, count, and what share of the account it
+ * is. The point is to be able to say "so *that* is what .bkup is doing here".
+ */
+function renderOtherExtensions(rows) {
+  if (!rows.length) {
+    $("otherExtensions").innerHTML =
+      '<p class="muted">Nothing landed in <code>other</code>, or the last scan '
+      + 'ran before this was measured.</p>';
+    return;
+  }
+
+  const total = rows.reduce((sum, r) => sum + Number(r.bytes || 0), 0);
+
+  renderTable("otherExtensions", rows, [
+    {
+      label: "Extension",
+      className: "name",
+      render: row => row.extension === "(none)" ? "(no extension)" : `.${row.extension}`,
+    },
+    { label: "Size", className: "size", render: row => humanBytes(row.bytes) },
+    { label: "Files", className: "size", render: row => humanCount(row.files) },
+    {
+      label: "Of other",
+      className: "size",
+      render: row => total ? `${((Number(row.bytes) / total) * 100).toFixed(1)}%` : "\u2014",
+    },
+  ]);
+}
+
+/*
+ * Each type over time.
+ *
+ * Total size answers "what is growing"; change per scan answers "what grew
+ * *this hour*", which a total hides completely - a type sitting at 40 GiB and
+ * one climbing through 40 GiB draw the same flat-looking line at that scale.
+ */
+function renderTypeGrowth(scans) {
+  const history = scans.file_type_history ?? [];
+  const canvas = $("typeGrowthChart");
+
+  if (!history.length) {
+    drawLineChart(canvas, [], [], { empty: "No completed scans in this range yet" });
+    return;
+  }
+
+  const mode = $("typeGrowthMode").value;
+
+  // Long rows into one row per scan, which is what the chart draws from.
+  const byScan = new Map();
+  const seen = new Set();
+  for (const row of history) {
+    const at = Number(row.started_at);
+    if (!byScan.has(at)) byScan.set(at, { started_at: at });
+    byScan.get(at)[row.type] = Number(row.bytes);
+    seen.add(row.type);
+  }
+
+  let rows = [...byScan.values()].sort((a, b) => a.started_at - b.started_at);
+  const types = [...seen].sort();
+
+  if (mode === "change") {
+    const changes = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = { started_at: rows[i].started_at };
+      for (const type of types) {
+        const before = rows[i - 1][type];
+        const after = rows[i][type];
+        // A type that did not exist in one of the two scans has no change to
+        // report - not a change of its whole size from zero.
+        row[type] = before == null || after == null ? null : after - before;
+      }
+      changes.push(row);
+    }
+    rows = changes;
+  }
+
+  drawLineChart(
+    canvas,
+    rows,
+    types.map(type => ({ key: type, label: type, color: typeColor(type) })),
+    {
+      xKey: "started_at",
+      axis: bytesAxis,
+      zeroBased: mode !== "change",
+      empty: mode === "change"
+        ? "Two completed scans are needed before there is a change to draw"
+        : "No completed scans in this range yet",
+    }
+  );
 }
 
 /**
@@ -2217,13 +2532,7 @@ async function refreshOffenders() {
     columns.push({
       label: "Change",
       className: "size",
-      render: row => {
-        const span = document.createElement("span");
-        const growth = Number(row.growth || 0);
-        span.textContent = growth === 0 ? "—" : humanBytes(growth);
-        span.className = growth > 0 ? "grew" : growth < 0 ? "shrank" : "";
-        return span;
-      },
+      render: row => growthCell(Number(row.growth || 0)),
     });
   }
 
@@ -2233,6 +2542,33 @@ async function refreshOffenders() {
   }
 
   renderTable("offenders", data.rows, columns, row => showHistory(row.path_id));
+}
+
+/*
+ * A change in size, with which way it went shown as well as said.
+ *
+ * The arrow is the direction and the colour is the judgement, and on a disk
+ * monitor those point opposite ways: a file that gained four gigabytes went
+ * *up*, and that is the bad one. Colouring growth green because green means up
+ * elsewhere would be reading a share price, not a disk.
+ */
+function growthCell(growth) {
+  const span = document.createElement("span");
+
+  if (!growth) {
+    span.className = "muted";
+    span.textContent = "\u2014";
+    span.title = "No measurable change since the previous scan.";
+    return span;
+  }
+
+  const up = growth > 0;
+  span.className = up ? "grew" : "shrank";
+  span.textContent = `${up ? "\u25b2" : "\u25bc"} ${humanBytes(Math.abs(growth))}`;
+  span.title = up
+    ? `Grew by ${humanBytes(growth)} since the previous scan \u2014 this is taking space.`
+    : `Shrank by ${humanBytes(-growth)} since the previous scan \u2014 this gave space back.`;
+  return span;
 }
 
 /** The buttons for one row: view a log, delete a file, or neither. */
@@ -2446,10 +2782,22 @@ async function showHistory(pathId, quiet = false) {
  * matches instead - which is the only way to page through the interesting lines
  * of a file too big to read.
  */
+/** Opens a log named by a raw path - the treemap and the host log list. */
+function showLogPath(path, quiet = false) {
+  if (!path) return Promise.resolve();
+  if (path !== state.log.path) {
+    state.log = { pathId: null, path, page: 0, needle: $("logSearch").value.trim() };
+  }
+  return showLog(null, quiet);
+}
+
 async function showLog(pathId, quiet = false) {
-  if (!pathId) return;
-  if (pathId !== state.log.pathId) {
-    state.log = { pathId, page: 0, needle: $("logSearch").value.trim() };
+  if (pathId) {
+    if (pathId !== state.log.pathId) {
+      state.log = { pathId, path: null, page: 0, needle: $("logSearch").value.trim() };
+    }
+  } else if (!state.log.path) {
+    return;
   }
 
   const panel = $("logPanel");
@@ -2458,7 +2806,7 @@ async function showLog(pathId, quiet = false) {
   let data;
   try {
     data = await api("tail", {
-      path_id: pathId,
+      ...(state.log.pathId ? { path_id: state.log.pathId } : { path: state.log.path }),
       lines: $("logLines").value,
       page: state.log.page,
       q: state.log.needle,
@@ -2503,7 +2851,7 @@ async function showLog(pathId, quiet = false) {
     number.className = "num";
     number.textContent = String(line.n);
     row.appendChild(number);
-    row.append(...highlight(line.text, state.log.needle));
+    row.append(...highlightMatches(line.text, state.log.needle));
     return row;
   }));
 
@@ -2517,8 +2865,15 @@ async function showLog(pathId, quiet = false) {
   if (!quiet) panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-/** Splits a line around the search term, so the match can be marked. */
-function highlight(text, needle) {
+/*
+ * Splits a line around the search term, so the match can be marked.
+ *
+ * Named for what it highlights. There was a second `highlight` further down
+ * that outlines a treemap rectangle, and a function declaration does not care
+ * which of the two you meant - the later one simply won for the whole file, so
+ * opening a log called the canvas version and died on `ctx.strokeRect`.
+ */
+function highlightMatches(text, needle) {
   if (!needle) return [document.createTextNode(text)];
 
   const out = [];
@@ -3104,12 +3459,32 @@ function renderBusyMoments(moments) {
  * numbers were missing.
  */
 async function refreshHost() {
+  /*
+   * One request, three pages.
+   *
+   * Memory, the machine's disks and whether its daemons are alive all come from
+   * the same host reading, and splitting them into separate views should not
+   * mean fetching that reading three times. Each page has its own body element
+   * for the "no host readings" message and its own content wrapper, so whichever
+   * one is open shows the state of the collector rather than an empty panel.
+   */
+  const bodies = ["hostBody", "hostIoBody", "hostDaemonBody"];
+  const contents = ["hostMemory", "hostIoContent", "hostDaemonContent"];
+  const showAll = hidden => contents.forEach(id => { const el = $(id); if (el) el.hidden = hidden; });
+  const sayAll = build => bodies.forEach(id => { const el = $(id); if (el) build(el); });
+
   const panel = $("hostPanel");
   if (!state.signedIn) {
-    panel.hidden = true;
+    for (const id of ["hostPanel", "hostIoPanel", "hostDaemonPanel"]) {
+      const el = $(id);
+      if (el) el.hidden = true;
+    }
     return;
   }
-  panel.hidden = false;
+  for (const id of ["hostPanel", "hostIoPanel", "hostDaemonPanel"]) {
+    const el = $(id);
+    if (el) el.hidden = false;
+  }
 
   let data;
   try {
@@ -3118,8 +3493,8 @@ async function refreshHost() {
     // back with the series the user is looking at rather than the default.
     data = await api("host", { from: to - state.range, to, metric: state.hostMetric || "pss" });
   } catch (error) {
-    $("hostBody").textContent = String(error.message || error);
-    $("hostMemory").hidden = true;
+    sayAll(el => { el.textContent = String(error.message || error); });
+    showAll(true);
     return;
   }
 
@@ -3133,6 +3508,17 @@ async function refreshHost() {
      * this install's real paths already in it.
      */
     const holder = $("hostBody");
+    // The same explanation on the other two pages, which are just as blank
+    // without the collector and just as much in need of the instruction.
+    for (const id of ["hostIoBody", "hostDaemonBody"]) {
+      const el = $(id);
+      if (el) {
+        el.replaceChildren(Object.assign(document.createElement("p"), {
+          className: "muted",
+          textContent: data.reason || "No host readings.",
+        }));
+      }
+    }
     holder.replaceChildren(Object.assign(document.createElement("p"), {
       className: "muted",
       textContent: data.reason || "No host readings.",
@@ -3155,12 +3541,12 @@ async function refreshHost() {
       }));
     }
 
-    $("hostMemory").hidden = true;
+    showAll(true);
     return;
   }
 
-  $("hostBody").textContent = "";
-  $("hostMemory").hidden = false;
+  sayAll(el => { el.textContent = ""; });
+  showAll(false);
 
   const s = data.sample;
   const swapUsed = num(s.swap_total) - num(s.swap_free);
@@ -6066,7 +6452,8 @@ setInterval(renderLastSeen, 1000);
  * children of one directory, measured when asked. See lib/treemap.php for why
  * that is the right trade rather than a nightly job that records the tree.
  */
-const treeState = { path: "", source: "account", level: null, boxes: [], hover: null };
+const treeState = { path: "", source: "account", level: null, boxes: [], hover: null,
+                    colourBy: "type", selected: null };
 
 async function refreshTreemap(path = treeState.path) {
   if (!state.signedIn) {
@@ -6087,6 +6474,7 @@ async function refreshTreemap(path = treeState.path) {
     drawTreemap();
     renderCrumbs();
     renderTreeNote();
+    renderTreeLegend();
   } catch (error) {
     treeState.level = null;
     treeState.boxes = [];
@@ -6229,10 +6617,30 @@ function squarify(items, x, y, width, height) {
 }
 
 /** Colour by kind, and by age within files, so old and cold stands out. */
+/*
+ * What a rectangle's colour means, which is a choice rather than a fact.
+ *
+ * By age answers "what is active" and by type answers "what is it" - two
+ * genuinely different hunts. A directory of week-old video and a directory of
+ * week-old logs are the same rectangle under one scheme and obviously different
+ * under the other.
+ *
+ * The type palette is the same one the Storage page uses, and it is fixed per
+ * type rather than assigned by rank. A colour that means "video" here and
+ * "archives" after the next scan is worse than no colour at all.
+ */
 function treeColour(node) {
-  if (node.kind === "dir") return "#2f6f8f";
   if (node.kind === "link") return "#4a4a4a";
   if (node.kind === "pool") return "#3a3a3a";
+
+  if (treeState.colourBy === "type") {
+    // A directory has no type of its own. Colouring it by its heaviest child
+    // would be inventing a fact; it gets the neutral blue it always had.
+    if (node.kind === "dir") return "#2f6f8f";
+    return typeColor(fileTypeOfName(node.name || ""));
+  }
+
+  if (node.kind === "dir") return "#2f6f8f";
 
   const days = node.modified_at ? (Date.now() / 1000 - node.modified_at) / 86400 : null;
   if (days === null) return "#6b7f3a";
@@ -6240,6 +6648,70 @@ function treeColour(node) {
   if (days < 7) return "#b08040";
   if (days < 90) return "#6b7f3a";
   return "#41603f";                     // cold
+}
+
+/*
+ * The same classification the scanner does, in the browser.
+ *
+ * Repeated rather than sent down with every rectangle: the treemap already
+ * carries a name per node and this is a lookup, where shipping a type field for
+ * ten thousand nodes is bytes on the wire for something the client can work out.
+ * It has to stay in step with fileTypeGroups() in lib/collect.php - if the two
+ * disagree, the map is coloured by one rule and the pie by another.
+ */
+const TYPE_EXTENSIONS = {
+  images: "jpg jpeg png gif webp bmp tif tiff svg ico heic avif psd raw cr2 nef",
+  video: "mp4 m4v mov avi mkv webm wmv flv mpg mpeg ts 3gp",
+  audio: "mp3 wav flac aac ogg oga m4a wma aiff opus",
+  archives: "zip gz tgz bz2 xz 7z rar tar zst lz lzma jar war iso dmg pkg deb rpm cab",
+  web: "html htm css js mjs cjs map woff woff2 ttf eot otf json xml scss less vue ts tsx jsx",
+  documents: "pdf doc docx xls xlsx ppt pptx odt ods odp rtf txt md csv tsv epub mobi",
+  code: "php py rb pl sh bash c h cpp hpp go rs java cs swift kt lua sql yml yaml toml ini conf patch diff",
+  databases: "db sqlite sqlite3 mdb frm ibd myd myi dump bak",
+  logs: "log out err",
+};
+
+const EXTENSION_TYPE = (() => {
+  const index = new Map();
+  for (const [type, list] of Object.entries(TYPE_EXTENSIONS)) {
+    for (const extension of list.split(" ")) index.set(extension, type);
+  }
+  return index;
+})();
+
+function fileTypeOfName(name) {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return "other";
+  const extension = name.slice(dot + 1).toLowerCase();
+  if (!extension || extension.length > 8 || !/^[a-z0-9]+$/.test(extension)) return "other";
+  return EXTENSION_TYPE.get(extension) || "other";
+}
+
+/* What the current colouring means, said in words under the map. */
+function renderTreeLegend() {
+  const legend = $("treeLegend");
+  const entries = treeState.colourBy === "type"
+    ? [
+      ...Object.keys(TYPE_EXTENSIONS).map(type => [type, typeColor(type)]),
+      ["other", typeColor("other")],
+      ["directory", "#2f6f8f"],
+    ]
+    : [
+      ["touched today", "#c9603f"],
+      ["this week", "#b08040"],
+      ["this quarter", "#6b7f3a"],
+      ["older", "#41603f"],
+      ["directory", "#2f6f8f"],
+    ];
+
+  const frag = document.createDocumentFragment();
+  for (const [label, colour] of [...entries, ["symlink", "#4a4a4a"], ["pooled", "#3a3a3a"]]) {
+    const span = document.createElement("span");
+    span.style.setProperty("--dot", colour);
+    span.textContent = label;
+    frag.appendChild(span);
+  }
+  legend.replaceChildren(frag);
 }
 
 function drawTreemap() {
@@ -6325,10 +6797,10 @@ function drawTreemap() {
     }
   }
 
-  if (treeState.hover) highlight(ctx, treeState.hover);
+  if (treeState.hover) outlineBox(ctx, treeState.hover);
 }
 
-function highlight(ctx, box) {
+function outlineBox(ctx, box) {
   ctx.strokeStyle = "#ffffff";
   ctx.lineWidth = 2;
   ctx.strokeRect(box.x + 1, box.y + 1, box.w - 2, box.h - 2);
@@ -6433,9 +6905,47 @@ $("treemap").addEventListener("mouseleave", () => {
 $("treemap").addEventListener("click", event => {
   const rect = event.currentTarget.getBoundingClientRect();
   const box = boxAt(event.clientX - rect.left, event.clientY - rect.top);
-  // Only directories go anywhere. A file is a leaf and a symlink is not
-  // followed, here or anywhere else in this tool.
+  if (!box) return;
+
+  /*
+   * A click opens the details; going in is a second, deliberate act.
+   *
+   * Descending on a plain click meant a directory could only ever be passed
+   * through - there was no way to ask about the thing you had just landed on,
+   * which is where the size you are chasing usually is.
+   */
+  if (box.kind === "pool") return;
+
+  /*
+   * The host map is a picture of what root recorded, not of files this account
+   * can reach. Asking the inspector about one would only ever come back
+   * refused, so the map says why rather than sending a request that cannot work.
+   */
+  if (treeState.source === "host") {
+    notice("These are the host's own files, recorded by root. This account cannot "
+      + "examine them directly — double-click to go in.");
+    return;
+  }
+
+  inspect(box.path);
+});
+
+$("treemap").addEventListener("dblclick", event => {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const box = boxAt(event.clientX - rect.left, event.clientY - rect.top);
+  // A symlink is never followed, here or anywhere else in this tool.
   if (box && box.kind === "dir") refreshTreemap(box.path);
+});
+
+$("treeColourBy").addEventListener("change", () => {
+  treeState.colourBy = $("treeColourBy").value;
+  drawTreemap();
+  renderTreeLegend();
+});
+
+$("inspectClose").addEventListener("click", () => {
+  $("inspectPanel").hidden = true;
+  treeState.selected = null;
 });
 
 $("treeUp").addEventListener("click", () => {
@@ -6448,6 +6958,353 @@ $("treeSource").addEventListener("change", () => {
   refreshTreemap("");
 });
 
+
+
+/*
+ * Everything about one path, from a click on the map.
+ *
+ * Laid out in the order somebody actually asks: what is this, how big, is it
+ * still growing, can I see inside it, and can I get rid of it. The delete
+ * button comes last on purpose - it should be the thing you reach after
+ * reading, not the thing your eye lands on first.
+ */
+async function inspect(path) {
+  const panel = $("inspectPanel");
+  panel.hidden = false;
+  treeState.selected = path;
+
+  $("inspectTitle").textContent = "Details";
+  $("inspectPath").textContent = path;
+  $("inspectBody").replaceChildren(note("Looking\u2026"));
+
+  let data;
+  try {
+    data = await api("inspect", { path });
+  } catch (error) {
+    $("inspectBody").replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  state.inspected = data;
+  renderInspect(data);
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function renderInspect(data) {
+  const body = $("inspectBody");
+  const parts = [];
+
+  $("inspectTitle").textContent = data.name;
+  $("inspectPath").textContent = data.path;
+
+  const f = data.facts;
+  const facts = [
+    ["Kind", data.kind === "dir" ? "directory" : data.kind],
+    ["Size", data.kind === "dir"
+      ? `${humanBytes(data.contents.bytes)}${data.contents.complete ? "" : " or more"}`
+      : humanBytes(f.size_bytes)],
+  ];
+
+  /*
+   * Apparent size and allocated size, when they differ.
+   *
+   * They usually do, in both directions: a small file still occupies a whole
+   * block, and a sparse one reports a size the disk has never held. Showing
+   * only the first is why a directory of tiny files never adds up to what df
+   * says.
+   */
+  if (data.kind === "file" && data.allocated_bytes != null
+      && Math.abs(data.allocated_bytes - f.size_bytes) > 4096) {
+    facts.push(["On disk", `${humanBytes(data.allocated_bytes)} allocated `
+      + (data.allocated_bytes > f.size_bytes ? "(block padding)" : "(sparse file)")]);
+  }
+
+  if (data.type) facts.push(["Type", `${data.type}${data.extension ? ` (.${data.extension})` : ""}`]);
+  if (data.category) facts.push(["Watched as", data.category]);
+
+  facts.push(
+    ["Last modified", f.modified_at ? `${humanTime(f.modified_at)} (${humanDuration(Date.now() / 1000 - f.modified_at)} ago)` : "unknown"],
+    ["Last read", f.accessed_at ? humanTime(f.accessed_at) : "unknown"],
+    // Named for what it is: Unix does not record a creation time, and every
+    // file manager that labels ctime "created" is repeating the same mistake.
+    ["Inode last changed", f.changed_at ? humanTime(f.changed_at) : "unknown"],
+    ["Owner", f.owner ?? "unknown"],
+    ["Permissions", f.mode ?? "unknown"],
+  );
+
+  if (f.links > 1) {
+    facts.push(["Hard links", `${f.links} \u2014 the same bytes are reachable by ${f.links} paths, `
+      + "and removing this one frees nothing until the last goes"]);
+  }
+  if (data.inode) facts.push(["Inode", String(data.inode)]);
+
+  if (data.kind === "link") {
+    facts.push(["Points at", data.link_target ?? "unreadable"]);
+    facts.push(["Target exists", data.link_resolves ? "yes" : "no \u2014 this link is broken"]);
+  }
+
+  parts.push(section("What it is", factGrid(facts)));
+
+  if (data.kind === "dir") parts.push(...inspectDirectory(data));
+  if (data.image?.is_image) parts.push(inspectImage(data));
+
+  parts.push(inspectHistory(data));
+  parts.push(inspectActions(data));
+
+  body.replaceChildren(...parts);
+}
+
+function inspectDirectory(data) {
+  const c = data.contents;
+  const out = [];
+
+  const facts = [
+    ["Directly inside", `${count(c.entries.files, "file")}, `
+      + `${count(c.entries.dirs, "directory", "directories")}, `
+      + `${count(c.entries.links, "symlink")}`],
+    ["Files below here", `${humanCount(c.files)}${c.complete ? "" : " so far"}`],
+  ];
+  if (!c.complete) {
+    facts.push(["Measurement", "The walk ran out of time. The size above is a lower "
+      + "bound \u2014 at least that much, not exactly that much."]);
+  }
+  out.push(section("What is in it", factGrid(facts)));
+
+  if (c.biggest.length) {
+    out.push(section("The biggest files directly inside", simpleTable(
+      ["Name", "Size"],
+      c.biggest.map(b => [b.name, humanBytes(b.bytes)]),
+      ["name", "size"]
+    )));
+  }
+
+  if (c.types.length > 1) {
+    out.push(section("By type, directly inside", simpleTable(
+      ["Type", "Size"],
+      c.types.map(t => [t.type, humanBytes(t.bytes)]),
+      ["name", "size"]
+    )));
+  }
+
+  return out;
+}
+
+/*
+ * The picture, if the file's own first bytes say it is one.
+ *
+ * Sized in the page rather than on the server: a real thumbnailer needs an
+ * image library that shared hosts do not reliably have, and one that silently
+ * did nothing where GD was missing would be worse than an honest full-size
+ * image scaled by the browser. The size is stated so nobody is surprised by
+ * what they just asked the connection to carry.
+ */
+function inspectImage(data) {
+  const wrap = document.createElement("div");
+
+  const img = document.createElement("img");
+  img.className = "thumb";
+  img.loading = "lazy";
+  img.alt = data.name;
+  img.src = `thumb.php?path=${encodeURIComponent(data.path)}`;
+  img.addEventListener("error", () => {
+    img.replaceWith(note("The preview could not be loaded."));
+  });
+  wrap.appendChild(img);
+
+  const said = data.image.width
+    ? `${data.image.format.toUpperCase()}, ${data.image.width}\u00d7${data.image.height} pixels, `
+      + `${humanBytes(data.facts.size_bytes)} sent in full and scaled here.`
+    : `${data.image.format.toUpperCase()}, ${humanBytes(data.facts.size_bytes)}.`;
+  wrap.appendChild(note(said));
+
+  return section("Preview", wrap);
+}
+
+function inspectHistory(data) {
+  const history = data.history;
+
+  if (!history.recorded || history.rows.length < 2) {
+    return section("Size over time", note(history.recorded
+      ? "Recorded, but only once so far \u2014 there is no change to draw yet."
+      : "This path is not one of the ones kept between scans. Only the biggest files "
+        + "and directories, and the biggest of each category, are recorded each time; "
+        + "everything else is measured and not stored."));
+  }
+
+  const holder = document.createElement("div");
+  const canvas = document.createElement("canvas");
+  holder.appendChild(canvas);
+
+  const first = Number(history.rows[0].bytes);
+  const last = Number(history.rows[history.rows.length - 1].bytes);
+  const change = last - first;
+
+  holder.appendChild(note(
+    change === 0
+      ? `Unchanged across ${count(history.rows.length, "scan")}.`
+      : `${change > 0 ? "Grew" : "Shrank"} by ${humanBytes(Math.abs(change))} across `
+        + `${count(history.rows.length, "scan")}, from ${humanBytes(first)} to ${humanBytes(last)}.`
+  ));
+
+  const wrap = section("Size over time", holder);
+
+  // Drawn after it is in the document, or the canvas has no width to size to.
+  requestAnimationFrame(() => drawLineChart(
+    canvas,
+    history.rows,
+    [{ key: "bytes", label: data.name }],
+    { xKey: "started_at", axis: bytesAxis, zeroBased: true, empty: "No history" }
+  ));
+
+  return wrap;
+}
+
+/*
+ * What can be done to it, and what cannot, and why.
+ *
+ * The refusals are the useful half. "Delete unavailable" sends somebody hunting
+ * for another way to do it; "this is not in a category the config allows
+ * deleting from" tells them which line to change if they disagree with the
+ * policy.
+ */
+function inspectActions(data) {
+  const wrap = document.createElement("div");
+  wrap.className = "inspect-actions";
+
+  const p = data.permissions;
+
+  if (p.view) {
+    const view = document.createElement("button");
+    view.textContent = "Read this log";
+    view.addEventListener("click", () => {
+      showView("storage-files");
+      showLogPath(data.path);
+    });
+    wrap.appendChild(view);
+  } else if (p.view_reason) {
+    wrap.appendChild(note(p.view_reason));
+  }
+
+  if (p.delete) {
+    const remove = document.createElement("button");
+    remove.className = "danger";
+    remove.textContent = data.kind === "dir"
+      ? "Delete this directory and everything in it"
+      : "Delete this file";
+    remove.addEventListener("click", () => deleteFromInspect(data));
+    wrap.appendChild(remove);
+  } else if (p.delete_reason) {
+    wrap.appendChild(note(p.delete_reason));
+  }
+
+  return section("What you can do with it", wrap);
+}
+
+async function deleteFromInspect(data) {
+  const what = data.kind === "dir"
+    ? `Delete ${data.path} and everything inside it? `
+      + `That is ${humanBytes(data.contents.bytes)} in ${humanCount(data.contents.files)} files, `
+      + "and it cannot be undone."
+    : `Delete ${data.path}? That is ${humanBytes(data.facts.size_bytes)}, and it cannot be undone.`;
+
+  if (!confirm(what)) return;
+
+  try {
+    const result = data.kind === "dir"
+      ? await post("delete-dir", { path: data.path })
+      : await post("delete-file", { path: data.path });
+
+    if (data.kind === "dir") {
+      notice(
+        `Removed ${humanBytes(result.bytes)} in ${count(result.files, "file")}`
+          + (result.skipped?.length ? `. ${count(result.skipped.length, "path")} could not be removed.` : "."),
+        !result.skipped?.length
+      );
+    } else {
+      notice(`Removed ${humanBytes(result.bytes_freed ?? data.facts.size_bytes)}.`, true);
+    }
+
+    $("inspectPanel").hidden = true;
+    treeState.selected = null;
+    // Back to the parent: the thing that was being looked at is gone, and
+    // redrawing the level it was in is what you want to see next.
+    await refreshTreemap(data.kind === "dir" ? data.parent : treeState.path);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+}
+
+/*
+ * The server's own logs, and whether this account can actually read them.
+ *
+ * Listed even when unreadable. "Configured but refused by the host" is a
+ * different state from "not set up", and only the first one means there is
+ * nothing more you can do from in here.
+ */
+async function refreshHostLogs() {
+  const panel = $("hostLogPanel");
+  if (!state.signedIn) {
+    panel.hidden = true;
+    return;
+  }
+
+  let data;
+  try {
+    data = await api("host-logs");
+  } catch {
+    panel.hidden = true;
+    return;
+  }
+
+  if (!data.rows.length) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  renderTable("hostLogs", data.rows, [
+    { label: "Log", className: "name", render: row => row.path },
+    {
+      label: "Size",
+      className: "size",
+      render: row => (row.exists ? humanBytes(row.bytes) : "\u2014"),
+    },
+    {
+      label: "Last written",
+      render: row => (row.modified_at ? humanTime(row.modified_at) : "\u2014"),
+    },
+    {
+      label: "State",
+      render: row => {
+        const span = document.createElement("span");
+        if (!row.exists) {
+          span.className = "muted";
+          span.textContent = "not on this machine";
+        } else if (row.readable) {
+          span.className = "ok";
+          span.textContent = "readable";
+        } else {
+          span.className = "muted";
+          span.textContent = "refused by the host";
+          span.title = "The file is there and this account may not open it. That needs a "
+            + "group membership or an ACL granted by root \u2014 nothing in here can change it.";
+        }
+        return span;
+      },
+    },
+    {
+      label: "",
+      render: row => {
+        if (!row.readable) return "";
+        const button = document.createElement("button");
+        button.className = "link";
+        button.textContent = "View";
+        button.addEventListener("click", () => showLogPath(row.path));
+        return button;
+      },
+    },
+  ]);
+}
 
 /* ------------------------------------------------------------ capabilities -- */
 
@@ -7468,12 +8325,15 @@ const VIEWS = {
   overview: { label: "Overview", refresh: () => refreshVitals() },
 
   storage: { label: "Storage", parent: null, refresh: () => refreshScans() },
+  "storage-io": { label: "Disk I/O", parent: "storage", refresh: () => refreshHost() },
   "storage-files": {
     label: "Largest & growth", parent: "storage",
     refresh: async () => {
       await refreshOffenders();
+      await refreshHostLogs();
       if (state.historyPathId) await showHistory(state.historyPathId, true);
       if (state.log.pathId) await showLog(state.log.pathId, true);
+      else if (state.log.path) await showLogPath(state.log.path, true);
     },
   },
   "storage-map": {
@@ -7485,11 +8345,13 @@ const VIEWS = {
 
   backups: { label: "Backups", refresh: () => refreshBackups() },
 
-  host: { label: "Whole machine", refresh: () => refreshHost() },
-  "host-disk": { label: "Disk & I/O", parent: "host", refresh: () => refreshHostDisk() },
-  "host-layout": { label: "Filesystem layout", parent: "host", refresh: () => refreshMounts() },
+  "host-disk": { label: "Host disk usage", parent: "storage", refresh: () => refreshHostDisk() },
+  "host-layout": { label: "Filesystem layout", parent: "storage", refresh: () => refreshMounts() },
+
+  host: { label: "Memory", refresh: () => refreshHost() },
 
   processes: { label: "Processes", refresh: () => refreshProcesses() },
+  services: { label: "Services", parent: "processes", refresh: () => refreshHost() },
   busy: { label: "Last busy", parent: "processes", refresh: () => refreshBusy() },
 
   capabilities: {
@@ -7845,24 +8707,34 @@ for (const id of ["offCategory", "offKind", "offSort"]) {
   $(id).addEventListener("change", () => refreshOffenders().catch(e => notice(String(e.message || e))));
 }
 
+/*
+ * Reopen whichever way the current log was named.
+ *
+ * Every control here used to pass state.log.pathId, which is null for a log
+ * opened by path - so paging or searching a host log would silently do nothing.
+ */
+const reopenLog = () => (state.log.pathId
+  ? showLog(state.log.pathId, true)
+  : showLogPath(state.log.path, true));
+
 $("logClose").addEventListener("click", () => {
-  state.log = { pathId: null, page: 0, needle: "" };
+  state.log = { pathId: null, path: null, page: 0, needle: "" };
   $("logPanel").hidden = true;
 });
 
 $("logOlder").addEventListener("click", () => {
   state.log.page += 1;
-  showLog(state.log.pathId, true);
+  reopenLog();
 });
 
 $("logNewer").addEventListener("click", () => {
   state.log.page = Math.max(0, state.log.page - 1);
-  showLog(state.log.pathId, true);
+  reopenLog();
 });
 
 $("logLines").addEventListener("change", () => {
   state.log.page = 0;
-  if (state.log.pathId) showLog(state.log.pathId, true);
+  if (state.log.pathId || state.log.path) reopenLog();
 });
 
 // Searching restarts at the newest match rather than keeping the page number,
@@ -7873,7 +8745,7 @@ $("logSearch").addEventListener("input", () => {
   searchTimer = setTimeout(() => {
     state.log.needle = $("logSearch").value.trim();
     state.log.page = 0;
-    if (state.log.pathId) showLog(state.log.pathId, true);
+    if (state.log.pathId || state.log.path) reopenLog();
   }, 350);
 });
 
@@ -8039,12 +8911,16 @@ $("signInForm").addEventListener("submit", async event => {
   }
 });
 
-// Redrawing on resize is a canvas thing, not a data thing: the old code
-// re-fetched every JSON file on every resize event.
+// Redrawing on resize is a canvas thing, not a data thing - and this said so
+// while calling refreshAll, which re-fetched every endpoint on the view for
+// every resize. Replaying the last draw is what a wider window needs.
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => refreshAll(), 200);
+  resizeTimer = setTimeout(() => {
+    const section = document.querySelector(`[data-view="${state.view}"]`);
+    redrawCharts(section || document);
+  }, 200);
 });
 
 document.addEventListener("visibilitychange", () => {
@@ -8084,12 +8960,29 @@ for (const [id, key] of [["actionKind", "kind"], ["actionWho", "who"], ["actionR
   });
 }
 
+for (const id of ["hostIoRefresh", "hostDaemonRefresh"]) {
+  $(id).addEventListener("click",
+    () => refreshHost().catch(error => notice(String(error.message || error))));
+}
+
+$("hostLogRefresh").addEventListener("click",
+  () => refreshHostLogs().catch(error => notice(String(error.message || error))));
+
 $("busyExpand").addEventListener("click", () => {
   const all = [...document.querySelectorAll("#processHistory details")];
   const opening = all.some(d => !d.open);
   for (const d of all) d.open = opening;
   $("busyExpand").textContent = opening ? "Close all" : "Open all";
 });
+
+for (const id of ["pieShowCategories", "typeGrowthMode"]) {
+  $(id).addEventListener("change", () => {
+    if (state.scans) {
+      renderFileTypes(state.scans);
+      renderTypeGrowth(state.scans);
+    }
+  });
+}
 
 $("alertUnreadOnly").addEventListener("change", event => {
   alertState.unreadOnly = event.target.checked;

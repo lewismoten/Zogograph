@@ -87,6 +87,21 @@
       <span class="nav-label">Largest & growth</span>
       <span class="nav-badge" data-badge="storage-files" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/storage-io" data-nav="storage-io" data-parent="storage">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Disk I/O</span>
+      <span class="nav-badge" data-badge="storage-io" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/host-disk" data-nav="host-disk" data-parent="storage">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Host disk usage</span>
+      <span class="nav-badge" data-badge="host-disk" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/host-layout" data-nav="host-layout" data-parent="storage">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Filesystem layout</span>
+      <span class="nav-badge" data-badge="host-layout" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/storage-map" data-nav="storage-map" data-parent="storage">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Tree map</span>
@@ -99,23 +114,18 @@
     </a>
     <a class="nav-item" href="#/host" data-nav="host">
       <span class="nav-icon" aria-hidden="true">▣</span>
-      <span class="nav-label">Whole machine</span>
+      <span class="nav-label">Memory</span>
       <span class="nav-badge" data-badge="host" hidden></span>
-    </a>
-    <a class="nav-item nav-sub" href="#/host-disk" data-nav="host-disk" data-parent="host">
-      <span class="nav-icon" aria-hidden="true">›</span>
-      <span class="nav-label">Disk & I/O</span>
-      <span class="nav-badge" data-badge="host-disk" hidden></span>
-    </a>
-    <a class="nav-item nav-sub" href="#/host-layout" data-nav="host-layout" data-parent="host">
-      <span class="nav-icon" aria-hidden="true">›</span>
-      <span class="nav-label">Filesystem layout</span>
-      <span class="nav-badge" data-badge="host-layout" hidden></span>
     </a>
     <a class="nav-item" href="#/processes" data-nav="processes">
       <span class="nav-icon" aria-hidden="true">⚙</span>
       <span class="nav-label">Processes</span>
       <span class="nav-badge" data-badge="processes" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/services" data-nav="services" data-parent="processes">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Services</span>
+      <span class="nav-badge" data-badge="services" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/busy" data-nav="busy" data-parent="processes">
       <span class="nav-icon" aria-hidden="true">›</span>
@@ -249,6 +259,15 @@
 
 <section class="view" data-view="storage" hidden>
 <div class="grid">
+<section class="panel wide" id="scanPanel">
+  <div class="panel-head">
+    <h2>The last scan</h2>
+    <button id="scanNow">Scan now</button>
+  </div>
+  <div id="scanFacts" class="cards small-cards"></div>
+  <p class="muted small sub-note" id="scanNote"></p>
+</section>
+
 <section class="panel wide" id="typePanel">
     <div class="panel-head">
       <h2>What the space is made of</h2>
@@ -263,7 +282,44 @@
       one, and on most accounts it is large.
     </p>
     <div id="typeCards" class="cards type-cards"></div>
+
+    <div class="panel-head sub-head-row">
+      <h3 class="sub-head">Everything, side by side</h3>
+      <label class="pill">
+        <input type="checkbox" id="pieShowCategories" checked>
+        Show the watched categories too
+      </label>
+    </div>
+    <p class="muted small sub-note" id="pieNote"></p>
     <canvas id="typePie" class="pie"></canvas>
+
+    <h3 class="sub-head">What is inside <code>other</code></h3>
+    <p class="muted small sub-note">
+      The extensions that matched no group, heaviest first. This is where a
+      backup convention nobody documented turns up — <code>.bkup</code>,
+      <code>.old</code>, a date-stamped copy of a database. <code>(none)</code>
+      is files with no extension at all.
+    </p>
+    <div id="otherExtensions"></div>
+  </section>
+
+<section class="panel wide" id="typeGrowthPanel">
+    <div class="panel-head">
+      <h2>How each type has grown</h2>
+      <label class="inline">
+        Show
+        <select id="typeGrowthMode">
+          <option value="size">total size</option>
+          <option value="change">change since the previous scan</option>
+        </select>
+      </label>
+    </div>
+    <p class="muted small sub-note">
+      One line per type across every completed scan in this range. A type with
+      no line had nothing of that kind at the time — the line starts where the
+      first file did, rather than running along the axis from the beginning.
+    </p>
+    <canvas id="typeGrowthChart"></canvas>
   </section>
 
 <section class="panel wide">
@@ -278,11 +334,23 @@
 </section>
 
 <section class="view" data-view="storage-files" hidden>
+<section class="panel" id="hostLogPanel" hidden>
+  <div class="panel-head">
+    <h2>The server's own logs</h2>
+    <button id="hostLogRefresh" class="link">Check again</button>
+  </div>
+  <p class="muted small sub-note">
+    The logs named in <code>host_log_paths</code>. These belong to root and live
+    outside this account, so on most shared servers they will be listed and
+    refused — which is itself the answer. Where the host has granted read
+    access, they open in the same viewer as the account's own logs.
+  </p>
+  <div id="hostLogs"></div>
+</section>
 <section class="panel" id="offenderPanel">
   <div class="panel-head">
     <h2>What is taking the space</h2>
     <div class="panel-controls">
-      <button id="scanNow">Scan now</button>
       <label class="inline">
         Category
         <select id="offCategory">
@@ -369,6 +437,13 @@
           <option value="host">Host (root only)</option>
         </select>
       </label>
+      <label class="inline">
+        Colour by
+        <select id="treeColourBy">
+          <option value="type">File type</option>
+          <option value="age">How recently touched</option>
+        </select>
+      </label>
       <button id="treeUp" class="link">Up one level</button>
     </div>
   </div>
@@ -383,7 +458,17 @@
     <canvas id="treemap"></canvas>
     <div id="treeTip" class="treemap-tip" hidden></div>
   </div>
+  <div class="legend" id="treeLegend"></div>
   <p class="muted small chart-note" id="treeNote"></p>
+</section>
+
+<section class="panel" id="inspectPanel" hidden>
+  <div class="panel-head">
+    <h2 id="inspectTitle">Details</h2>
+    <button id="inspectClose" class="link">Close</button>
+  </div>
+  <p class="muted small" id="inspectPath"></p>
+  <div id="inspectBody"></div>
 </section>
 </section>
 
@@ -402,7 +487,7 @@
 <section class="view" data-view="host" hidden>
 <section class="panel" id="hostPanel" hidden>
   <div class="panel-head">
-    <h2>The whole machine</h2>
+    <h2>Memory across the whole machine</h2>
     <div class="panel-controls">
       <button id="hostRefresh" class="link">Refresh</button>
     </div>
@@ -410,7 +495,9 @@
   <p class="muted small sub-note">
     From <code>host-cron.php</code>, run by root. Inside CageFS this account gets
     its own <code>/proc</code> holding only its own processes, so everything
-    below is invisible to every other panel on this page.
+    below is invisible to every other panel on this site. The machine's disks
+    are under <a href="#/storage-io">Storage → Disk I/O</a>, and whether its
+    daemons are alive is under <a href="#/services">Processes → Services</a>.
   </p>
   <div id="hostBody"></div>
 
@@ -469,6 +556,41 @@
     <h3 class="sub-head">Biggest processes on the host</h3>
     <div id="hostProcesses"></div>
 
+    <h3 class="sub-head">Kernel slab caches</h3>
+    <p class="muted small sub-note">
+      Memory the kernel holds for itself. It belongs to no process and no
+      account, and it is the first place to look when the numbers do not add up
+      — a quarter of a gigabyte of <code>xfs_inode</code> appears in nothing else
+      on this page.
+    </p>
+    <div id="hostSlab"></div>
+
+    <div id="hostLveWrap" hidden>
+      <h3 class="sub-head">CloudLinux limits</h3>
+      <p class="muted small sub-note">
+        A process killed for hitting an LVE limit leaves no other trace. A rising
+        fault count is the evidence.
+      </p>
+      <div id="hostLve"></div>
+    </div>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="storage-io" hidden>
+<section class="panel" id="hostIoPanel">
+  <div class="panel-head">
+    <h2>Disk I/O across the whole machine</h2>
+    <button id="hostIoRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note" id="hostIoIntro">
+    Read by root, so this is every account on the server together — a busy line
+    here says the disk is working, never that this account is the reason. The
+    account's own traffic is on <a href="#/overview">the dashboard</a>.
+  </p>
+  <div id="hostIoBody"></div>
+
+  <div id="hostIoContent" hidden>
     <h3 class="sub-head">Disks</h3>
     <p class="muted small sub-note" id="hostDiskNote">
       Throughput and how close each device is to saturated. LVM and RAID volumes
@@ -481,6 +603,34 @@
     <p class="muted small chart-note" id="hostIoChartNote"></p>
     <div id="hostDisks"></div>
 
+    <h3 class="sub-head">Processes touching the disk</h3>
+    <p class="muted small sub-note">
+      Which processes the throughput above is actually coming from. CPU can sit
+      low while one job makes everything else feel slow by keeping a disk busy,
+      and that job is invisible in every other panel on this page.
+    </p>
+    <div id="hostIoProcs"></div>
+
+    <h3 class="sub-head">Files only root can see</h3>
+    <p class="muted small sub-note">
+      Apache writes each domain's logs under <code>/etc</code> owned by root. A
+      rotated log there costs exactly as much disk as one in the home directory
+      and is invisible to everything the account can run.
+    </p>
+    <div id="hostFiles"></div>
+
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="services" hidden>
+<section class="panel" id="hostDaemonPanel">
+  <div class="panel-head">
+    <h2>Are the services alive?</h2>
+    <button id="hostDaemonRefresh" class="link">Refresh</button>
+  </div>
+  <div id="hostDaemonBody"></div>
+  <div id="hostDaemonContent" hidden>
     <h3 class="sub-head">Are the services alive?</h3>
     <p class="muted small sub-note">
       The one question the rest of this page cannot answer. A daemon that has
@@ -492,39 +642,6 @@
     </p>
     <div id="hostDaemons"></div>
 
-    <h3 class="sub-head">Processes touching the disk</h3>
-    <p class="muted small sub-note">
-      Which processes the throughput above is actually coming from. CPU can sit
-      low while one job makes everything else feel slow by keeping a disk busy,
-      and that job is invisible in every other panel on this page.
-    </p>
-    <div id="hostIoProcs"></div>
-
-    <h3 class="sub-head">Kernel slab caches</h3>
-    <p class="muted small sub-note">
-      Memory the kernel holds for itself. It belongs to no process and no
-      account, and it is the first place to look when the numbers do not add up
-      — a quarter of a gigabyte of <code>xfs_inode</code> appears in nothing else
-      on this page.
-    </p>
-    <div id="hostSlab"></div>
-
-    <h3 class="sub-head">Files only root can see</h3>
-    <p class="muted small sub-note">
-      Apache writes each domain's logs under <code>/etc</code> owned by root. A
-      rotated log there costs exactly as much disk as one in the home directory
-      and is invisible to everything the account can run.
-    </p>
-    <div id="hostFiles"></div>
-
-    <div id="hostLveWrap" hidden>
-      <h3 class="sub-head">CloudLinux limits</h3>
-      <p class="muted small sub-note">
-        A process killed for hitting an LVE limit leaves no other trace. A rising
-        fault count is the evidence.
-      </p>
-      <div id="hostLve"></div>
-    </div>
   </div>
 </section>
 </section>

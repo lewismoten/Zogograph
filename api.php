@@ -61,6 +61,7 @@ require_once __DIR__ . '/lib/hostdb.php';
 require_once __DIR__ . '/lib/host.php';
 require_once __DIR__ . '/lib/uptime.php';
 require_once __DIR__ . '/lib/limits.php';
+require_once __DIR__ . '/lib/inspect.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -98,6 +99,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'actions' => actionLog($config, $pdo, $signedIn),
         'incident' => incidentView($config, $pdo, $signedIn),
         'treemap' => treemapView($config, $signedIn),
+        'inspect' => inspectView($config, $pdo, $signedIn),
+        'host-logs' => hostLogList($config, $signedIn),
         'host-disk' => hostDiskView($config, $signedIn),
         'backups' => backupsView($config, $signedIn),
         'capabilities' => capabilitiesView($config, $pdo, $signedIn),
@@ -118,6 +121,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'signin' => doSignIn($config, $post),
         'signout' => doSignOut(),
         'delete-file' => doDeleteFile($config, $pdo, $post),
+        'delete-dir' => doDeleteDir($config, $pdo, $post),
         'empty' => doEmpty($config, $pdo, $post),
         'schedule-save' => doScheduleSave($post),
         'scan-now' => doScanNow($pdo, $post),
@@ -171,9 +175,7 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
         'SELECT * FROM scans WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1'
     )->fetch() ?: null;
 
-    $running = $pdo->query(
-        'SELECT id, started_at FROM scans WHERE finished_at IS NULL ORDER BY id DESC LIMIT 1'
-    )->fetch() ?: null;
+
 
     $totals = [];
     if ($scan) {
@@ -189,9 +191,7 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
         'csrf' => $signedIn ? csrfToken() : null,
         'vitals' => $vitals,
         'scan' => $scan,
-        'scan_running' => $running && (time() - (int)$running['started_at']) < 3600
-            ? ['started_at' => (int)$running['started_at']]
-            : null,
+        'scan_running' => scanRunning($pdo),
         'totals' => $totals,
         /*
          * Categories emptied since the scan that measured them.
@@ -486,27 +486,98 @@ function scanSeries(array $config, PDO $pdo): array
      */
     $rows = $stmt->fetchAll();
     $types = [];
+    $extensions = [];
     $typeScan = null;
+    $typeHistory = [];
 
     if ($rows !== []) {
         $latest = (int)end($rows)['id'];
+
         $byType = $pdo->prepare(
             'SELECT type, bytes, files FROM scan_file_types WHERE scan_id = ? ORDER BY bytes DESC'
         );
         $byType->execute([$latest]);
         $types = $byType->fetchAll();
         $typeScan = $types === [] ? null : $latest;
+
+        /*
+         * What fell into `other`, for the newest scan only.
+         *
+         * A history of these would be a table with forty columns and no
+         * question attached to it. The composition now is what turns an
+         * unactionable slice into a list of things to go and look at.
+         */
+        $byExtension = $pdo->prepare(
+            'SELECT extension, bytes, files FROM scan_extensions
+             WHERE scan_id = ? ORDER BY bytes DESC'
+        );
+        $byExtension->execute([$latest]);
+        $extensions = $byExtension->fetchAll();
+
+        /*
+         * One row per scan per type, for the growth chart.
+         *
+         * Returned long rather than pivoted into a column per type: the set of
+         * types is fixed and small, but a scan that saw no `.mp4` has no row at
+         * all, and a pivot in SQL would turn that absence into a zero. The
+         * difference matters at the left-hand end of the chart, where a type
+         * that did not exist yet should start where it started rather than
+         * running along the axis from the beginning of time.
+         */
+        $ids = array_column($rows, 'id');
+        $marks = implode(',', array_fill(0, count($ids), '?'));
+        $history = $pdo->prepare(
+            "SELECT f.scan_id, s.started_at, f.type, f.bytes
+               FROM scan_file_types f JOIN scans s ON s.id = f.scan_id
+              WHERE f.scan_id IN ($marks)
+              ORDER BY s.started_at"
+        );
+        $history->execute($ids);
+        $typeHistory = $history->fetchAll();
     }
 
     return [
         'rows' => $rows,
         'categories' => $categories,
         'file_types' => $types,
+        'file_type_history' => $typeHistory,
+        'other_extensions' => $extensions,
         // Null when the newest scan predates the tally, so the panel can say
         // "not measured yet" rather than drawing an empty pie as though the
         // account contained nothing.
         'file_types_scan_id' => $typeScan,
+        /*
+         * Enough for the Scan now button to work from this page.
+         *
+         * It used to live only beside the offender table and read its state
+         * from the overview payload, which the storage view does not fetch -
+         * so putting the button here without this would give a control that
+         * never knew whether a scan was already running.
+         */
+        'scan_running' => scanRunning($pdo),
+        'last_scan' => $pdo->query(
+            'SELECT id, started_at, finished_at, duration_ms, files_seen, dirs_seen, bytes_seen, error
+               FROM scans WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1'
+        )->fetch() ?: null,
     ];
+}
+
+/**
+ * A scan in flight, or null.
+ *
+ * An hour's grace, because a scan that died without writing a finish time would
+ * otherwise leave the button disabled for ever, and "the button is stuck" is a
+ * worse failure than "you can start a second scan an hour later".
+ */
+function scanRunning(PDO $pdo): ?array
+{
+    $row = $pdo->query(
+        'SELECT id, started_at FROM scans WHERE finished_at IS NULL ORDER BY id DESC LIMIT 1'
+    )->fetch();
+
+    return $row && (time() - (int)$row['started_at']) < 3600
+        ? ['started_at' => (int)$row['started_at']]
+        : null;
 }
 
 /**
@@ -917,6 +988,51 @@ function hostDiskView(array $config, bool $signedIn): array
     return $report;
 }
 
+/**
+ * Everything knowable about one path.
+ *
+ * Signed in only. It reports owners, permissions and the contents of
+ * directories, which is more than a masked path is willing to say.
+ */
+function inspectView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to inspect a path');
+    }
+    return inspectPath($config, $pdo, (string)($_GET['path'] ?? ''));
+}
+
+/**
+ * The host logs this install offers, and whether each can actually be read.
+ *
+ * Probed rather than listed, because the list in the config is a statement of
+ * intent and the filesystem is the authority. A log that is named but
+ * unreadable is worth showing as exactly that - it tells you the feature is
+ * configured and the host is what is in the way.
+ */
+function hostLogList(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to read log files');
+    }
+
+    $rows = [];
+    foreach ($config['host_log_paths'] ?? [] as $path) {
+        $real = realpath((string)$path);
+        $exists = $real !== false && is_file($real);
+
+        $rows[] = [
+            'path' => (string)$path,
+            'exists' => $exists,
+            'readable' => $exists && is_readable($real),
+            'bytes' => $exists ? (int)(@filesize($real) ?: 0) : null,
+            'modified_at' => $exists ? (int)(@filemtime($real) ?: 0) : null,
+        ];
+    }
+
+    return ['rows' => $rows];
+}
+
 function treemapView(array $config, bool $signedIn): array
 {
     if (!$signedIn) {
@@ -1000,12 +1116,29 @@ function tailLog(array $config, PDO $pdo, bool $signedIn): array
         throw new ActionRefused('sign in to read log files');
     }
 
-    $pathId = clampInt($_GET['path_id'] ?? 0, 1, PHP_INT_MAX);
-    $stmt = $pdo->prepare('SELECT id, path, kind, category FROM paths WHERE id = ?');
-    $stmt->execute([$pathId]);
-    $row = $stmt->fetch();
-    if (!$row) {
-        throw new ActionRefused('unknown path');
+    /*
+     * Named either by id or by path.
+     *
+     * The id is how the offender table refers to a file it already knows, and
+     * carries the category with it. A raw path is how everything else does -
+     * the treemap, the host log list - and those files may never have been
+     * recorded at all. resolveViewable decides in both cases, so the extra way
+     * in grants nothing the other one did not already allow.
+     */
+    $pathId = clampInt($_GET['path_id'] ?? 0, 0, PHP_INT_MAX);
+    $wanted = (string)($_GET['path'] ?? '');
+
+    if ($pathId > 0) {
+        $stmt = $pdo->prepare('SELECT id, path, kind, category FROM paths WHERE id = ?');
+        $stmt->execute([$pathId]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            throw new ActionRefused('unknown path');
+        }
+    } elseif ($wanted !== '') {
+        $row = ['id' => null, 'path' => $wanted, 'kind' => 'file', 'category' => null];
+    } else {
+        throw new ActionRefused('no file named');
     }
 
     try {
@@ -1852,6 +1985,20 @@ function requireWrite(bool $post): void
     if (!csrfValid($_POST['csrf'] ?? null)) {
         throw new ActionRefused('stale form token; reload and try again');
     }
+}
+
+/**
+ * Removes a directory and everything under it.
+ *
+ * Its own action rather than a flag on delete-file, so that nothing can turn a
+ * single-file delete into a recursive one by changing one parameter - and so
+ * that the confirmation the interface shows is attached to the act it is
+ * actually confirming.
+ */
+function doDeleteDir(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    return ['ok' => true] + deleteDirectory($config, $pdo, (string)($_POST['path'] ?? ''));
 }
 
 function doDeleteFile(array $config, PDO $pdo, bool $post): array

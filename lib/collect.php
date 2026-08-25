@@ -397,6 +397,9 @@ function shellRead(string $command): ?string
  * accumulated up the tree as the walk unwinds, which is what makes "this
  * directory got ten thousand files today" answerable at all.
  */
+/** How many extensions inside `other` are worth keeping per scan. */
+const SCAN_EXTENSION_LIMIT = 40;
+
 function runScan(array $config, PDO $pdo): array
 {
     $started = time();
@@ -414,6 +417,7 @@ function runScan(array $config, PDO $pdo): array
     $fileBytes = [];
     $totals = [];
     $types = [];
+    $extensions = [];
     $seenFiles = 0;
     $seenDirs = 0;
     $seenBytes = 0;
@@ -424,7 +428,8 @@ function runScan(array $config, PDO $pdo): array
 
     try {
         walk($root, $root, $rules, $excluded, $dirBytes, $dirFiles, $fileBytes,
-             $totals, $types, $seenFiles, $seenDirs, $seenBytes, $seenInodes, $linkCounts);
+             $totals, $types, $extensions, $seenFiles, $seenDirs, $seenBytes,
+             $seenInodes, $linkCounts);
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
@@ -505,6 +510,25 @@ function runScan(array $config, PDO $pdo): array
             ]);
         }
 
+        /*
+         * The heaviest extensions only.
+         *
+         * Sorted by bytes rather than by count, because the question this
+         * answers is "what is the space", and thirty thousand empty `.pid`
+         * files are not it. The tail is dropped rather than lumped together -
+         * an "everything else" row inside a breakdown of "everything else" is
+         * a hall of mirrors, and the type total above already holds the truth.
+         */
+        uasort($extensions, fn(array $a, array $b): int => $b['bytes'] <=> $a['bytes']);
+        $insertExtension = $pdo->prepare(
+            'INSERT INTO scan_extensions (scan_id, extension, bytes, files) VALUES (?, ?, ?, ?)'
+        );
+        foreach (array_slice($extensions, 0, SCAN_EXTENSION_LIMIT, true) as $extension => $tally) {
+            $insertExtension->execute([
+                $scanId, (string)$extension, (int)$tally['bytes'], (int)$tally['files'],
+            ]);
+        }
+
         $pdo->prepare(
             'UPDATE scans SET finished_at = ?, duration_ms = ?, files_seen = ?,
                     dirs_seen = ?, bytes_seen = ?, error = ? WHERE id = ?'
@@ -577,6 +601,7 @@ function walk(
     array &$fileBytes,
     array &$totals,
     array &$types,
+    array &$extensions,
     int &$seenFiles,
     int &$seenDirs,
     int &$seenBytes,
@@ -612,8 +637,8 @@ function walk(
         if (is_dir($full)) {
             [$childBytes, $childFiles] = walk(
                 $full, $root, $rules, $excluded, $dirBytes, $dirFiles, $fileBytes,
-                $totals, $types, $seenFiles, $seenDirs, $seenBytes, $seenInodes, $linkCounts,
-                $depth + 1
+                $totals, $types, $extensions, $seenFiles, $seenDirs, $seenBytes,
+                $seenInodes, $linkCounts, $depth + 1
             );
             $bytes += $childBytes;
             $files += $childFiles;
@@ -663,10 +688,25 @@ function walk(
         $seenFiles++;
         $seenBytes += $size;
 
-        // Every file, unlike the categories - see fileTypeOf.
-        $type = fileTypeOf($full);
+        // Every file, unlike the categories - see classifyFile.
+        $what = classifyFile($full);
+        $type = $what['type'];
         $types[$type]['bytes'] = ($types[$type]['bytes'] ?? 0) + $size;
         $types[$type]['files'] = ($types[$type]['files'] ?? 0) + 1;
+
+        /*
+         * Only the ones that landed in `other`.
+         *
+         * The rest already have a home in a named group, and repeating `.jpg`
+         * under images tells nobody anything. `(none)` stands for a file with
+         * no extension at all, which on most accounts is the largest single
+         * entry here and would otherwise be invisible.
+         */
+        if ($type === 'other') {
+            $key = $what['extension'] === '' ? '(none)' : $what['extension'];
+            $extensions[$key]['bytes'] = ($extensions[$key]['bytes'] ?? 0) + $size;
+            $extensions[$key]['files'] = ($extensions[$key]['files'] ?? 0) + 1;
+        }
 
         $category = categoryOf($full, $rules, $root);
         if ($category !== null) {
@@ -720,6 +760,21 @@ function fileTypeNames(): array
 
 function fileTypeOf(string $path): string
 {
+    return classifyFile($path)['type'];
+}
+
+/**
+ * The type group and the extension it was decided from.
+ *
+ * Both in one call because the caller wants both and the parsing is the same
+ * work either way - and because the extension has to be the *normalised* one
+ * the type decision used, or the breakdown of `other` would be listing strings
+ * that never took part in the classification.
+ *
+ * @return array{type: string, extension: string}
+ */
+function classifyFile(string $path): array
+{
     static $index = null;
     if ($index === null) {
         $index = [];
@@ -738,12 +793,15 @@ function fileTypeOf(string $path): string
      * `backup.2026-08-18-full-nightly` has a dot in it and nothing after the
      * dot is a file type. Without a cap every such name invents its own group
      * and the tally fills with rubbish nobody asked for.
+     *
+     * Anything not made of letters and digits goes the same way, so a filename
+     * ending `.tar.gz~` or `.log:2` cannot invent an extension either.
      */
-    if ($extension === '' || strlen($extension) > 8) {
-        return 'other';
+    if ($extension === '' || strlen($extension) > 8 || !ctype_alnum($extension)) {
+        return ['type' => 'other', 'extension' => ''];
     }
 
-    return $index[$extension] ?? 'other';
+    return ['type' => $index[$extension] ?? 'other', 'extension' => $extension];
 }
 
 /**

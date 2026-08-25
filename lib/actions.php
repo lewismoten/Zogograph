@@ -157,6 +157,131 @@ function deleteFile(array $config, PDO $pdo, string $requested): array
 }
 
 /** Whether this tool has a record of successfully deleting that exact path. */
+/**
+ * Deletes a directory and everything in it.
+ *
+ * The dangerous one, so it is bounded on every side that can be bounded:
+ *
+ *   - the same resolveDeletable check as a single file, so it is inside the
+ *     account, not the scan root itself, not the monitor's own data, and in a
+ *     category the config marks deletable
+ *   - never through a symlink, and never *onto* one: a link inside the tree is
+ *     unlinked, never followed, so a link to `/` cannot turn this into a
+ *     recursive delete of the machine
+ *   - never off the device it started on, so a mount point inside the tree
+ *     stops it rather than being emptied
+ *   - depth-limited, because a loop that survived the link checks would
+ *     otherwise recurse until PHP gives up somewhere unpredictable
+ *
+ * It reports what it removed and what it refused, and a refusal does not abort
+ * the rest: a tree with one unreadable file in it should still lose the other
+ * nine thousand, and the one that stayed should be named.
+ */
+function deleteDirectory(array $config, PDO $pdo, string $requested): array
+{
+    $real = resolveDeletable($config, $requested);
+
+    if (!is_dir($real)) {
+        throw new ActionRefused('that is not a directory');
+    }
+
+    $device = @stat($real)['dev'] ?? null;
+    $result = ['files' => 0, 'dirs' => 0, 'bytes' => 0, 'skipped' => [], 'links' => 0];
+
+    removeTree($real, $device, $result, 0);
+
+    // The directory itself, last and only if it actually emptied.
+    $removed = $result['skipped'] === [] && @rmdir($real);
+    if ($removed) {
+        $result['dirs']++;
+    }
+
+    $outcome = $result['skipped'] === [] ? 'ok' : 'partial';
+    logAction(
+        $pdo,
+        'delete_dir',
+        $real,
+        $outcome,
+        $result['bytes'],
+        $result['files'],
+        $result['skipped'] === []
+            ? null
+            : count($result['skipped']) . ' left behind: ' . implode(', ', array_slice($result['skipped'], 0, 5))
+    );
+
+    return $result + ['path' => $real, 'removed_itself' => $removed, 'outcome' => $outcome];
+}
+
+function removeTree(string $dir, ?int $device, array &$result, int $depth): void
+{
+    if ($depth > 40) {
+        $result['skipped'][] = $dir . ' (nested too deep)';
+        return;
+    }
+
+    $handle = @opendir($dir);
+    if ($handle === false) {
+        $result['skipped'][] = $dir . ' (cannot be opened)';
+        return;
+    }
+
+    while (($entry = readdir($handle)) !== false) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+        $full = $dir . DIRECTORY_SEPARATOR . $entry;
+
+        /*
+         * A link is unlinked where it stands.
+         *
+         * Checked before is_dir, which follows links and would otherwise send
+         * this walking into whatever the link points at.
+         */
+        if (is_link($full)) {
+            if (@unlink($full)) {
+                $result['links']++;
+            } else {
+                $result['skipped'][] = $full;
+            }
+            continue;
+        }
+
+        $stat = @lstat($full);
+        if ($stat === false) {
+            $result['skipped'][] = $full;
+            continue;
+        }
+
+        if ($device !== null && (int)$stat['dev'] !== $device) {
+            // A different filesystem is mounted here. Emptying somebody else's
+            // mount because it happens to sit inside this directory is not what
+            // "delete this directory" means.
+            $result['skipped'][] = $full . ' (a different filesystem is mounted here)';
+            continue;
+        }
+
+        if (is_dir($full)) {
+            removeTree($full, $device, $result, $depth + 1);
+            if (@rmdir($full)) {
+                $result['dirs']++;
+            } else {
+                $result['skipped'][] = $full;
+            }
+            continue;
+        }
+
+        $bytes = (int)($stat['size'] ?? 0);
+        if (@unlink($full)) {
+            $result['files']++;
+            $result['bytes'] += $bytes;
+        } else {
+            $result['skipped'][] = $full;
+        }
+    }
+
+    closedir($handle);
+}
+
 function alreadyDeleted(PDO $pdo, string $path): bool
 {
     $stmt = $pdo->prepare(

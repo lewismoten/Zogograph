@@ -126,9 +126,25 @@ function resolveViewable(array $config, string $requested): string
         throw new ActionRefused('no such file');
     }
 
+    /*
+     * The host's own logs, when the config names them and the host allows it.
+     *
+     * Checked before the scan-root rule, because these are outside it by
+     * definition. Membership of the list is not permission - the open() below
+     * decides that, as it should - it only says the administrator considers
+     * this file one of the ones worth offering. Compared exactly against the
+     * resolved path so a symlink cannot be used to nominate a different file.
+     */
+    $hostLogs = array_values(array_filter(
+        array_map('realpath', $config['host_log_paths'] ?? []),
+        fn(mixed $p): bool => is_string($p)
+    ));
+    $isHostLog = in_array($real, $hostLogs, true);
+
     $root = realpath((string)$config['scan_root']);
-    if ($root === false || !str_starts_with($real . '/', rtrim($root, '/') . '/')) {
-        throw new ActionRefused('outside the scan root');
+    if (!$isHostLog && ($root === false || !str_starts_with($real . '/', rtrim($root, '/') . '/'))) {
+        throw new ActionRefused('outside the scan root, and not one of the host logs '
+            . 'named in host_log_paths');
     }
     if (is_link($requested) || is_link($real)) {
         throw new ActionRefused('symlinks are not read');
@@ -139,14 +155,23 @@ function resolveViewable(array $config, string $requested): string
         throw new ActionRefused('not the monitor\'s own data');
     }
 
-    $category = categoryOf($real, $config['scan'], $root);
-    $allowed = $config['viewable_categories'] ?? ['logs', 'errors'];
-    if ($category === null || !in_array($category, $allowed, true)) {
-        throw new ActionRefused('only log files can be read here');
+    // A named host log is already the administrator saying "this one"; the
+    // account's category rules describe the account's own tree and have nothing
+    // to say about /var/log.
+    if (!$isHostLog) {
+        $category = categoryOf($real, $config['scan'], $root === false ? '' : $root);
+        $allowed = $config['viewable_categories'] ?? ['logs', 'errors'];
+        if ($category === null || !in_array($category, $allowed, true)) {
+            throw new ActionRefused('only log files can be read here');
+        }
     }
 
     if (!is_readable($real)) {
-        throw new ActionRefused('the file is not readable by this user');
+        throw new ActionRefused($isHostLog
+            ? 'that log belongs to the host and this account cannot read it. On a '
+                . 'shared server that is normal and there is nothing to change here — '
+                . 'it needs a group membership or an ACL granted by root.'
+            : 'the file is not readable by this user');
     }
 
     $compressed = compressedExtension($real);

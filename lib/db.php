@@ -537,6 +537,27 @@ function migrations(): array
          * answer does not add up. Types are that second partition: total,
          * exhaustive, and deliberately not the thing the delete buttons read.
          */
+        /*
+         * The extensions inside `other`, which is the slice nobody can act on.
+         *
+         * "31% other" is the least useful thing a chart can say - it names the
+         * gap in its own knowledge and stops. Keeping the extensions that fell
+         * through turns it into "31% is .bkup and .old", which is a finding.
+         *
+         * Only the ones with real weight are kept: an account has thousands of
+         * distinct extensions with one file each, and storing that tail every
+         * scan would cost more than the answer is worth.
+         */
+        17 => [
+            "CREATE TABLE scan_extensions (
+                scan_id   INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+                extension TEXT NOT NULL,
+                bytes     INTEGER NOT NULL,
+                files     INTEGER NOT NULL,
+                PRIMARY KEY (scan_id, extension)
+            )",
+        ],
+
         16 => [
             "CREATE TABLE scan_file_types (
                 scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,

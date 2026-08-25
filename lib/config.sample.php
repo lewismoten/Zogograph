@@ -210,6 +210,31 @@ return [
     'deletable_categories' => ['trash', 'temp'],
 
     /*
+     * Log files outside the account that may be read, if the host lets you.
+     *
+     * On cPanel the interesting ones belong to root and live outside the home
+     * directory entirely, so nothing in the account-side rules can ever reach
+     * them. Listing them here does not grant access: the file still has to be
+     * readable by the user the dashboard runs as, and if it is not, that is
+     * exactly what gets reported. On most shared hosts these will be refused,
+     * and the refusal is the answer to "can I see the server's error log".
+     *
+     * Exact paths only, and no globs. A pattern here would be a way to read an
+     * arbitrary file by naming one that happens to match.
+     */
+    'host_log_paths' => [
+        '/usr/local/apache/logs/error_log',
+        '/usr/local/apache/logs/access_log',
+        '/usr/local/apache/logs/suexec_log',
+        '/var/log/httpd/error_log',
+        '/var/log/httpd/access_log',
+        '/var/log/nginx/error.log',
+        '/var/log/nginx/access.log',
+        '/var/log/messages',
+        '/var/log/maillog',
+    ],
+
+    /*
      * What a signed-in session may read the contents of.
      *
      * Separate from deletable_categories, and deliberately a different set:

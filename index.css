@@ -988,7 +988,9 @@ tr.clickable:hover { background: var(--panel-hover); }
 /* Alerts ------------------------------------------------------------- */
 
 .panel-tools { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.panel-tools .pill {
+/* A checkbox and its words, kept on one line wherever one appears. It used to
+   be scoped to .panel-tools, so the same control elsewhere fell apart. */
+.pill {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: .85rem; color: var(--muted);
 }
@@ -1093,3 +1095,36 @@ tr.row-bad td:first-child { box-shadow: inset 2px 0 var(--warn); }
 .limit-pair .muted { font-size: .82rem; }
 .limit-note { grid-column: 1 / -1; color: var(--muted); font-size: .85rem; max-width: 80ch; }
 @media (max-width: 620px) { .limit-row { grid-template-columns: 1fr; } }
+
+/* Heading and its one control, side by side rather than shoved to opposite
+   ends of a full-width panel where the control runs off the edge. */
+.sub-head-row {
+  display: flex; align-items: baseline; gap: 18px;
+  flex-wrap: wrap; justify-content: flex-start;
+  margin-top: 20px;
+}
+.sub-head-row .sub-head { margin: 0; }
+
+/* Room for the ring, its inner ring and the list beside them. The default
+   canvas height cut the circle off at the bottom. */
+#typePie { height: 420px; }
+
+/* Path details ------------------------------------------------------- */
+
+.inspect-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.inspect-actions .muted { flex-basis: 100%; margin: 0; }
+button.danger {
+  background: transparent; color: var(--crit);
+  border: 1px solid var(--crit); border-radius: 6px;
+  padding: 6px 12px; cursor: pointer; font: inherit;
+}
+button.danger:hover { background: rgba(242, 97, 107, .12); }
+
+/* Scaled by the browser, so it needs a ceiling in both directions - a 6000px
+   photograph must not become a six-thousand-pixel page. */
+img.thumb {
+  max-width: min(100%, 460px); max-height: 340px;
+  border-radius: 8px; border: 1px solid var(--line);
+  background: var(--bg-raised); display: block;
+}
+.ok { color: var(--ok); }
