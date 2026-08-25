@@ -41,6 +41,8 @@ require_once __DIR__ . '/lib/hostdisk.php';
 require_once __DIR__ . '/lib/backups.php';
 require_once __DIR__ . '/lib/mountinfo.php';
 require_once __DIR__ . '/lib/capabilities.php';
+// The outbound budget, so registries are not asked twenty things at once.
+require_once __DIR__ . '/lib/external.php';
 
 $args = array_slice($argv, 1);
 $quiet = in_array('--quiet', $args, true);
@@ -218,11 +220,37 @@ try {
      * host. The account leaves a request naming one of a fixed set of verbs and
      * a domain; this runs it and stores the output verbatim.
      */
+    /*
+     * One outbound lookup per run, oldest request first.
+     *
+     * These go to registries and public resolvers, which defend themselves. A
+     * burst of twenty gets this address rate-limited, and the result is twenty
+     * domains reported as unknown - one self-inflicted problem wearing the
+     * costume of twenty real ones. Oldest first, so an impatient person cannot
+     * starve the queue by asking repeatedly.
+     */
+    $asks = [];
     foreach ($requestedTasks as $task => $requested) {
-        $ask = parseAskTask((string)$task);
-        if ($ask === null) {
-            continue;
+        $parsed = parseAskTask((string)$task);
+        if ($parsed !== null) {
+            $asks[] = $parsed + ['task' => (string)$task, 'requested' => (int)$requested];
         }
+    }
+    usort($asks, fn(array $a, array $b): int => $a['requested'] <=> $b['requested']);
+
+    $askBudget = externalBudget($config, 'whois');
+    $askedThisRun = 0;
+
+    foreach ($asks as $entry) {
+        if ($askedThisRun >= $askBudget) {
+            $say(sprintf('%d more question(s) waiting; they run next time.',
+                count($asks) - $askedThisRun));
+            break;
+        }
+
+        $ask = ['verb' => $entry['verb'], 'argument' => $entry['argument']];
+        $task = $entry['task'];
+        $requested = $entry['requested'];
 
         $done = 0;
         try {
@@ -241,6 +269,7 @@ try {
 
         $say(sprintf('Answering %s for %s...', $ask['verb'], $ask['argument']));
         $answer = runHostAsk($pdo, $ask['verb'], $ask['argument'], (int)$requested);
+        $askedThisRun++;
         hostHandOver($config, hostDatabasePath($config));
         $say('  ' . ($answer['ok']
             ? strlen((string)$answer['text']) . ' bytes'

@@ -25,6 +25,10 @@ declare(strict_types=1);
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/network.php';
+// The outbound budget: whois registries defend themselves, so this drains.
+require_once __DIR__ . '/external.php';
+// domainStatusPlain lives with the other DNS wording.
+require_once __DIR__ . '/dnsrecords.php';
 
 /** How long to let a whois lookup run before giving up on it. */
 const WHOIS_TIMEOUT = 20;
@@ -59,6 +63,11 @@ function domainList(PDO $pdo): array
             : (int)floor(((int)$row['expires_at'] - $now) / 86400);
 
         $row['state'] = domainState($row);
+        // The EPP codes in readable form; see domainStatusPlain.
+        $row['status_plain'] = array_map(
+            'domainStatusPlain',
+            array_filter(array_map('trim', explode(',', (string)($row['status'] ?? ''))))
+        );
         $row['due_at'] = (int)($row['last_checked_at'] ?? 0) + (int)$row['interval_seconds'];
         $row['auto_renew'] = $row['auto_renew'] === null ? null : (bool)$row['auto_renew'];
     }
@@ -180,28 +189,41 @@ function domainCheck(PDO $pdo, array $domain, ?callable $runner = null, array $c
  */
 function domainCheckDue(PDO $pdo, ?int $only = null, ?callable $runner = null, array $config = []): array
 {
-    /*
-     * One request to the host per run, not one per domain.
-     *
-     * If whois is unavailable here, every due domain would otherwise queue its
-     * own task and the first run would leave a hundred of them. The collector
-     * answers them one at a time anyway, so they are asked for as each domain
-     * comes up and the rest wait for the next run.
-     */
-    $askedHost = 0;
     $now = time();
     $ran = 0;
     $failed = 0;
     $rows = [];
 
-    foreach (domainList($pdo) as $domain) {
-        if ($only !== null) {
-            if ((int)$domain['id'] !== $only) {
-                continue;
+    /*
+     * A budget per run, and the oldest request first.
+     *
+     * whois registries rate-limit, and a blocked install reports every domain
+     * as unknown - one self-inflicted problem that looks like twenty real ones.
+     * Draining oldest-first also means one impatient person cannot starve the
+     * queue by asking about the same domain repeatedly.
+     *
+     * A check asked for by hand bypasses the budget: it is one lookup, somebody
+     * is waiting for it, and the queue is for the unattended runs.
+     */
+    $budget = $only === null ? externalBudget($config, 'whois') : PHP_INT_MAX;
+
+    $due = array_values(array_filter(
+        domainList($pdo),
+        function (array $domain) use ($only, $now): bool {
+            if ($only !== null) {
+                return (int)$domain['id'] === $only;
             }
-        } elseif ($domain['due_at'] > $now) {
-            continue;
+            return $domain['due_at'] <= $now;
         }
+    ));
+
+    usort($due, fn(array $a, array $b): int =>
+        (int)($a['last_checked_at'] ?? 0) <=> (int)($b['last_checked_at'] ?? 0));
+
+    $waiting = max(0, count($due) - $budget);
+    $askedHost = 0;
+
+    foreach (array_slice($due, 0, $budget) as $domain) {
 
         if ($ran > 0 && $runner === null) {
             // Politeness, and self-preservation: a burst gets an install
@@ -224,14 +246,17 @@ function domainCheckDue(PDO $pdo, ?int $only = null, ?callable $runner = null, a
         $rows[] = $result;
     }
 
-    return ['ran' => $ran, 'failed' => $failed, 'rows' => $rows];
+    return [
+        'ran' => $ran,
+        'failed' => $failed,
+        'rows' => $rows,
+        // Said, so a run that answered one of twelve does not read as a run
+        // that found only one thing to do.
+        'waiting' => $waiting,
+        'budget' => $budget === PHP_INT_MAX ? null : $budget,
+    ];
 }
 
-/**
- * The raw whois answer for a name.
- *
- * @return array{ok: bool, text: string, error: ?string}
- */
 /** The host collector's stored whois answer for a name, if it has one. */
 function domainHostAnswer(array $config, string $name): ?array
 {
@@ -254,6 +279,11 @@ function domainAskHost(array $config, PDO $pdo, string $name): void
     }
 }
 
+/**
+ * The raw whois answer for a name.
+ *
+ * @return array{ok: bool, text: string, error: ?string}
+ */
 function whoisLookup(string $name, ?callable $runner = null): array
 {
     if (!preg_match('/^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$/', $name)) {
@@ -451,6 +481,33 @@ function whoisDate(?string $value): ?int
     }
 
     return $at;
+}
+
+/**
+ * What every registry asks you to agree to before it will answer.
+ *
+ * Registries publish a version of this with their answers, in legal English at
+ * a length nobody reads. The substance is short and worth actually knowing,
+ * because both prohibitions are things somebody could do by accident with a
+ * tool like this one - which is exactly why the throttle exists.
+ *
+ * Shown once and remembered per browser: a notice on every lookup is a notice
+ * nobody reads, and this is a statement of terms rather than a safety warning
+ * that needs repeating.
+ */
+function whoisTerms(): array
+{
+    return [
+        'summary' => 'Registries give this data out for looking up domain registrations, '
+            . 'and nothing else. They do not guarantee it is accurate.',
+        'points' => [
+            'Do not use it to send bulk or unsolicited mail to the addresses in it.',
+            'Do not use it to run high-volume automated queries against a registry. This '
+                . 'dashboard looks up a small number per collector run for that reason.',
+            'Registries can change these terms, and can refuse to answer anyone who ignores '
+                . 'them.',
+        ],
+    ];
 }
 
 function domainSave(PDO $pdo, string $name, int $warnDays, int $interval): int

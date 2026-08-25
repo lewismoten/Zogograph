@@ -243,6 +243,40 @@ return [
      * well - see CAPTURE_MAX_SECONDS - because this opens a live interface as
      * root and a config typo should not be able to leave tcpdump running.
      */
+    /*
+     * How politely to talk to other people's servers.
+     *
+     * whois registries, and DNS at volume, are somebody else's infrastructure.
+     * Asking for twenty domains in one burst is how an install gets temporarily
+     * blocked - and a blocked install reports every domain as unknown, which
+     * looks exactly like twenty problems rather than one.
+     *
+     * So outbound lookups drain a queue rather than emptying it: a few per run,
+     * oldest first. On a five-minute cron that is a hundred a day, which is far
+     * more than any real watch list needs and slow enough that no registry
+     * notices.
+     */
+    'external' => [
+        // How many of each kind of outbound lookup per collector run.
+        'per_run' => 1,
+
+        // Overrides, for anything that deserves a different rate.
+        'per_run_by_command' => [
+            'whois' => 1,
+            'dns' => 4,
+        ],
+
+        /*
+         * Which package manager this host uses.
+         *
+         * Only used to print the right install line when something is missing.
+         * `auto` picks from what is actually on the machine, which is right
+         * nearly always; naming it explicitly is for the case where several are
+         * present and only one is the real one.
+         */
+        'package_manager' => 'auto',
+    ],
+
     'network' => [
         'capture_seconds' => 20,
 

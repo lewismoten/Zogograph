@@ -235,9 +235,18 @@ function applyLabels(array $labels, array $rows, string $field, string $kind): a
             : labelForAddress($labels, (string)$value);
 
         if ($found !== null) {
-            $row['label'] = $found['label'];
-            $row['label_note'] = $found['note'];
-            $row['label_match'] = $found['match'];
+            /*
+             * `own_label`, not `label`.
+             *
+             * The capture rows already carry a `label` column - it holds the
+             * address or port itself - so writing the operator's name there
+             * collided with it, and an address with no custom name rendered as
+             * itself twice. A distinct key cannot collide with a column name
+             * somewhere else.
+             */
+            $row['own_label'] = $found['label'];
+            $row['own_note'] = $found['note'];
+            $row['own_match'] = $found['match'];
         }
     }
     unset($row);

@@ -859,6 +859,29 @@ main {
 }
 .poll.busy .poll-dot { background: var(--accent); }
 
+/*
+ * The centre dot carries what has been asked of the host.
+ *
+ * Two blinks then a steady dull red: the blinks catch the eye when a request is
+ * first made, and the steady state says "still waiting" without pulsing at
+ * somebody for the twenty minutes it may take. Grey again once nothing is
+ * outstanding.
+ */
+.poll.has-pending .poll-dot {
+  background: var(--crit);
+  animation: dotAsked 2.4s ease-in-out 2;
+  cursor: pointer;
+}
+.poll.has-pending:hover .poll-dot { filter: brightness(1.5); }
+@keyframes dotAsked {
+  0%, 100% { opacity: .45; }
+  15%, 45% { opacity: 1; }
+  30%, 60% { opacity: .2; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .poll.has-pending .poll-dot { animation: none; opacity: .8; }
+}
+
 /* ------------------------------------------------------------ panels -- */
 
 .panel {
@@ -1428,3 +1451,14 @@ input.narrow { width: 5em; }
 /* A record that has stopped resolving is kept and struck through, not removed:
    "the MX disappeared last Tuesday" needs the row to still be there. */
 .struck { text-decoration: line-through; }
+
+/* One DNS answer, with its explanation ------------------------------- */
+
+.dns-answer { padding: 8px 0 8px 14px; border-left: 2px solid var(--line-soft); margin: 8px 0; }
+.dns-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+.txt-pairs {
+  display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px;
+  margin: 8px 0 0; font-size: .85rem;
+}
+.txt-pairs dt { color: var(--accent); font-family: ui-monospace, Menlo, monospace; }
+.txt-pairs dd { margin: 0; word-break: break-word; }

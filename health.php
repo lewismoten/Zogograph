@@ -39,7 +39,7 @@ $required = [
     'lib/symlinks.php', 'lib/signals.php', 'lib/host.php', 'lib/uptime.php',
     'lib/limits.php', 'lib/inspect.php', 'thumb.php',
     'lib/network.php', 'lib/logstream.php', 'lib/diagnose.php', 'lib/labels.php',
-    'lib/urlwatch.php', 'lib/domains.php', 'lib/events.php', 'lib/whoami.php', 'lib/dnsrecords.php',
+    'lib/urlwatch.php', 'lib/domains.php', 'lib/events.php', 'lib/whoami.php', 'lib/dnsrecords.php', 'lib/external.php',
     'lib/hostdb.php', 'host-cron.php', 'lib/config.sample.php',
 ];
 

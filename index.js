@@ -7345,7 +7345,17 @@ function simpleTable(headings, rows, classes = []) {
     row.forEach((cell, i) => {
       const td = tr.insertCell();
       if (classes[i]) td.className = classes[i];
-      td.textContent = cell;
+
+      /*
+       * A cell may be a node, not only a string.
+       *
+       * renderTable has always allowed both; this one did not, and setting
+       * textContent on an element produced "[object HTMLSpanElement]" in every
+       * cell that carried a label - which is what the capture reports showed
+       * for every address and port.
+       */
+      if (cell instanceof Node) td.appendChild(cell);
+      else td.textContent = cell ?? "";
     });
   }
 
@@ -8709,7 +8719,32 @@ async function refreshDiagnosis() {
 const pendingState = { rows: [], raf: null, unseen: new Map() };
 
 function renderPending(rows) {
+  const was = pendingState.rows.map(r => r.task).join(",");
   pendingState.rows = rows || [];
+  const now = pendingState.rows.map(r => r.task).join(",");
+
+  /*
+   * The centre dot says something has been asked of the host.
+   *
+   * Re-triggered only when the set of outstanding requests actually changes -
+   * restarting the blink on every poll would make it a permanent flash rather
+   * than an announcement.
+   */
+  const button = $("pollState");
+  if (button) {
+    button.classList.toggle("has-pending", pendingState.rows.length > 0);
+    if (now !== was && pendingState.rows.length) {
+      const dot = button.querySelector(".poll-dot");
+      if (dot) {
+        dot.style.animation = "none";
+        // Reading offsetHeight forces the style to be applied, so the
+        // animation genuinely restarts rather than being coalesced away.
+        void dot.offsetHeight;
+        dot.style.animation = "";
+      }
+    }
+  }
+
   const banner = $("pendingBanner");
   if (!banner) return;
 
@@ -9112,7 +9147,11 @@ function renderPorts(data) {
   }
 
   renderTable("portsBody", rows, [
-    { label: "Port", className: "size", render: row => `${row.port}/${row.protocol}` },
+    {
+      label: "Port",
+      className: "size",
+      render: row => labelled(`${row.port}/${row.protocol}`, row.own_label),
+    },
     {
       label: "Usually",
       className: "name",
@@ -9176,7 +9215,7 @@ function renderPeers(data) {
   $("peersBody").appendChild(holder);
 
   renderTable("peersTable", rows, [
-    { label: "Address", className: "name", render: row => row.address },
+    { label: "Address", className: "name", render: row => labelled(row.address, row.own_label) },
     { label: "Connections", className: "size", render: row => humanCount(row.connections) },
     {
       label: "Share",
@@ -9427,7 +9466,7 @@ function renderCapture(capture, target = "captureBody") {
     const table = simpleTable(
       ["Remote address", "In", "Out", "Arriving", "Leaving", "Opened", ""],
       capture.peers.slice(0, 25).map(p => [
-        labelled(p.address, p.label),
+        labelled(p.address, p.own_label),
         humanCount(p.in_packets),
         humanCount(p.out_packets),
         humanBytes(p.in_bytes),
@@ -9457,7 +9496,7 @@ function renderCapture(capture, target = "captureBody") {
     parts.push(section("Which service", simpleTable(
       ["Port", "Packets", "Share", "Bytes", "Usually"],
       capture.ports.slice(0, 20).map(p => [
-        labelled(`${p.port}`, p.label),
+        labelled(`${p.port}`, p.own_label),
         humanCount(p.packets),
         total ? `${((p.packets / total) * 100).toFixed(1)}%` : "\u2014",
         humanBytes(p.bytes),
@@ -9645,7 +9684,30 @@ function renderUrls(data) {
         return span;
       },
     },
-    { label: "What", className: "name", render: row => row.label },
+    {
+      label: "What",
+      className: "name",
+      render: row => {
+        const span = document.createElement("span");
+
+        /*
+         * The scheme at a glance.
+         *
+         * A plain-HTTP check among a list of HTTPS ones is worth spotting: it
+         * is either deliberate - testing the redirect - or something nobody
+         * updated, and the two look identical in a URL column that is usually
+         * truncated.
+         */
+        const secure = String(row.url || "").startsWith("https:");
+        const mark = document.createElement("span");
+        mark.textContent = secure ? "\u{1F512} " : "\u{1F513} ";
+        mark.title = secure ? "https" : "http \u2014 not encrypted";
+        span.appendChild(mark);
+
+        span.appendChild(document.createTextNode(row.label));
+        return span;
+      },
+    },
     { label: "How often", render: row => row.interval_label },
     {
       label: "How",
@@ -10589,6 +10651,43 @@ function renderFetch(data) {
   body.replaceChildren(...parts);
 }
 
+/*
+ * A command that is missing, and the exact line that installs it.
+ *
+ * "whois is not installed" tells somebody the problem and leaves them to work
+ * out the fix on a distribution they may not have chosen. The package name is
+ * not always the command name - dig lives in bind-utils on Red Hat and dnsutils
+ * on Debian - so the right one for this machine is worked out and printed.
+ */
+function missingCommandNote(missing, where = "this account") {
+  const wrap = document.createDocumentFragment();
+
+  wrap.appendChild(note(
+    `${missing.command} is not available to ${where}. As root:`
+  ));
+  wrap.appendChild(paste(missing.install));
+
+  if (missing.note) wrap.appendChild(note(missing.note));
+
+  const after = document.createElement("p");
+  after.className = "muted small";
+  after.append(document.createTextNode("Once it is installed, "));
+
+  const go = document.createElement("button");
+  go.className = "link";
+  go.textContent = "check the capabilities again";
+  go.addEventListener("click", () => showView("capabilities"));
+  after.appendChild(go);
+
+  after.append(document.createTextNode(
+    " so this notices \u2014 nothing re-probes on its own, because running a "
+    + "hundred command lookups on every page load would cost more than it saves."
+  ));
+  wrap.appendChild(after);
+
+  return wrap;
+}
+
 /* --------------------------------------------------------- dns records -- */
 
 const dnsRecordState = { data: null, domain: null };
@@ -10983,8 +11082,23 @@ function renderDomains(data) {
     parts.push(note(
       "whois is not available to this account, so expiry dates are looked up by root's "
       + "collector instead \u2014 a request is left for each domain as it comes due, and the "
-      + "answer arrives on the collector's next run. If the host has no whois either, install "
-      + "it there: on Red Hat it is the \u201cwhois\u201d package, on Debian \u201cwhois\u201d."
+      + "answer arrives on its next run."
+    ));
+    if (data.missing) parts.push(missingCommandNote(data.missing, "this account or the host"));
+  }
+
+  if (data.queue && data.queue.due > data.queue.per_run) {
+    /*
+     * A patient queue looks like a broken one unless it says so.
+     *
+     * Twelve domains due against a budget of one per run is an hour of
+     * draining, and eleven rows reading "not checked" is indistinguishable
+     * from eleven failures without this line.
+     */
+    parts.push(note(
+      `${count(data.queue.due, "domain")} due, and ${data.queue.per_run} looked up per run \u2014 `
+      + "registries rate-limit anyone who asks faster, and a blocked address reports every "
+      + "domain as unknown. The oldest waits least."
     ));
   }
 
@@ -11053,9 +11167,14 @@ function renderDomains(data) {
       render: row => {
         const span = document.createElement("span");
         span.className = "lastline muted";
-        span.textContent = row.status || "";
-        // clientTransferProhibited is reassuring; pendingDelete is an
-        // emergency. Both live in this field and neither is obvious.
+        /*
+         * Plain language, with the registry's own wording on hover.
+         *
+         * clientTransferProhibited is reassuring and pendingDelete is an
+         * emergency; both live in this field and neither reads that way.
+         */
+        span.textContent = (row.status_plain || []).map(entry => entry.plain).join(", ")
+          || row.status || "";
         span.title = row.status || "";
         return span;
       },
@@ -11127,6 +11246,61 @@ function renderDomains(data) {
 
 /* ----------------------------------------------------------------- whois -- */
 
+const WHOIS_TERMS_KEY = "hostscope.whoisTermsAccepted";
+
+function whoisTermsAccepted() {
+  try {
+    return localStorage.getItem(WHOIS_TERMS_KEY) === "1";
+  } catch {
+    // Storage refused. Showing the terms again is the safe direction.
+    return false;
+  }
+}
+
+/*
+ * The registry's terms, said once and in plain words.
+ *
+ * Every registry publishes a version of this alongside its answers, in legal
+ * English at a length nobody reads. The substance is short and genuinely worth
+ * knowing, because both prohibitions are things somebody could trip over with a
+ * tool like this - which is why the lookups are rationed.
+ *
+ * Once per browser, not once per lookup: a notice on every query is a notice
+ * that gets clicked through without being read.
+ */
+function renderWhoisTerms(terms, onAccept) {
+  const wrap = document.createDocumentFragment();
+
+  wrap.appendChild(note(terms.summary));
+
+  const list = document.createElement("ul");
+  list.className = "evidence-list";
+  for (const point of terms.points) {
+    const li = document.createElement("li");
+    li.textContent = point;
+    list.appendChild(li);
+  }
+  wrap.appendChild(list);
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const agree = document.createElement("button");
+  agree.textContent = "Understood \u2014 look it up";
+  agree.addEventListener("click", () => {
+    try {
+      localStorage.setItem(WHOIS_TERMS_KEY, "1");
+    } catch {
+      // Not fatal: the lookup proceeds and the terms show again next time.
+    }
+    onAccept();
+  });
+  actions.appendChild(agree);
+  wrap.appendChild(actions);
+
+  return section("Before looking a name up", wrap);
+}
+
 async function refreshWhois(name = "") {
   const body = $("whoisBody");
   if (!state.signedIn) {
@@ -11135,8 +11309,34 @@ async function refreshWhois(name = "") {
   }
 
   if (name === "") {
+    if (!whoisTermsAccepted()) {
+      try {
+        const terms = (await api("whois")).terms;
+        if (terms) {
+          body.replaceChildren(renderWhoisTerms(terms, () => {
+            body.replaceChildren(note("Type a name above."));
+          }));
+          return;
+        }
+      } catch {
+        // If the terms cannot be fetched the page still works; they are a
+        // statement, not a gate this should fail closed on.
+      }
+    }
     body.replaceChildren(note("Type a name above."));
     return;
+  }
+
+  if (!whoisTermsAccepted()) {
+    try {
+      const terms = (await api("whois")).terms;
+      if (terms) {
+        body.replaceChildren(renderWhoisTerms(terms, () => refreshWhois(name)));
+        return;
+      }
+    } catch {
+      /* As above. */
+    }
   }
 
   body.replaceChildren(spinner("Asking the registry\u2026 this can take a few seconds."));
@@ -11150,6 +11350,12 @@ async function refreshWhois(name = "") {
   }
 
   const parts = [];
+
+  if (!data.ok && data.missing && !data.from_host?.pending) {
+    parts.push(missingCommandNote(data.missing));
+    body.replaceChildren(...parts);
+    return;
+  }
 
   if (!data.ok) {
     /*
@@ -11205,14 +11411,38 @@ async function refreshWhois(name = "") {
       facts.push(["Expires", "the answer contained no date this recognises"]);
     }
     if (p.created_at) facts.push(["Registered", humanTime(p.created_at).split(",")[0]]);
+    if (p.updated_at) {
+      facts.push(["Record last changed", `${humanTime(p.updated_at).split(",")[0]} \u2014 `
+        + `${humanDuration(Date.now() / 1000 - p.updated_at)} ago`]);
+    }
     if (p.registrar) facts.push(["Registrar", p.registrar]);
-    if (p.status) facts.push(["Status", p.status]);
+    if (p.status) {
+      /*
+       * EPP status codes in plain language.
+       *
+       * They read like error messages and most of them are the opposite:
+       * clientTransferProhibited is the lock that stops somebody moving your
+       * domain away from you, and seeing it should be reassuring.
+       */
+      facts.push(["Status", (data.status_plain || [])
+        .map(s => s.plain)
+        .join(", ") || p.status]);
+    }
     if (p.nameservers) facts.push(["Nameservers", p.nameservers.split(" ").join(", ")]);
     if (p.auto_renew !== null && p.auto_renew !== undefined) {
       facts.push(["Auto renew", p.auto_renew ? "on" : "off"]);
     }
 
     parts.push(section("What the registry says", factGrid(facts)));
+
+    if ((data.status_plain || []).some(entry => entry.note)) {
+      parts.push(section("What those locks mean", simpleTable(
+        ["Status", "Means", "As the registry writes it"],
+        data.status_plain.filter(entry => entry.note)
+          .map(entry => [entry.plain, entry.note, entry.raw]),
+        ["name", null, "cmd"]
+      )));
+    }
 
     if (!data.watched) {
       const actions = document.createElement("div");
@@ -11350,8 +11580,28 @@ async function refreshDns(params = {}) {
   }
 
   if (!data.available) {
-    body.replaceChildren(note(data.reason));
+    body.replaceChildren(data.missing
+      ? missingCommandNote(data.missing)
+      : note(data.reason));
     return;
+  }
+
+  /*
+   * The type list comes from the server, so one definition governs both what
+   * can be asked for and what each answer means.
+   */
+  if (data.types) {
+    const picker = $("dnsType");
+    if (picker.options.length !== data.types.length + 1) {
+      picker.replaceChildren();
+      for (const type of ["ALL", ...data.types]) {
+        const option = document.createElement("option");
+        option.value = type;
+        option.textContent = type === "ALL" ? "every type" : type;
+        option.title = data.notes?.[type] || "";
+        picker.appendChild(option);
+      }
+    }
   }
 
   if (!data.rows.length) {
@@ -11421,14 +11671,9 @@ async function refreshDns(params = {}) {
     }
 
     if (row.answers.length) {
-      const list = document.createElement("ul");
-      list.className = "evidence-list";
       for (const answer of row.answers) {
-        const li = document.createElement("li");
-        li.textContent = `${answer.type} ${answer.value} (ttl ${humanDuration(answer.ttl)})`;
-        list.appendChild(li);
+        block.appendChild(renderDnsAnswer(answer));
       }
-      block.appendChild(list);
     }
 
     if (row.note) {
@@ -11442,6 +11687,81 @@ async function refreshDns(params = {}) {
   }
 
   body.replaceChildren(wrap);
+}
+
+/*
+ * One answer, with what its type is for and what a TXT record actually says.
+ *
+ * Most TXT records are not text: they are a settings language with no agreed
+ * syntax written as key=value. Splitting them turns a hundred-character run-on
+ * into something readable, and each known key carries a note - which is the
+ * difference between seeing "p=reject" and knowing that failing mail is refused
+ * outright.
+ */
+function renderDnsAnswer(answer) {
+  const box = document.createElement("div");
+  box.className = "dns-answer";
+
+  const head = document.createElement("div");
+
+  const type = document.createElement("strong");
+  type.textContent = answer.type;
+  head.appendChild(type);
+
+  const value = document.createElement("span");
+  value.className = "dns-value";
+  value.textContent = " " + answer.value;
+  head.appendChild(value);
+
+  const ttl = document.createElement("span");
+  ttl.className = "muted small";
+  ttl.textContent = ` ttl ${humanDuration(answer.ttl)}`;
+  if (Number(answer.ttl) > 0 && Number(answer.ttl) <= 300) {
+    ttl.className = "band-warn small";
+    ttl.title = "A short TTL means resolvers re-ask constantly. Often left over from a "
+      + "migration.";
+  }
+  head.appendChild(ttl);
+
+  box.appendChild(head);
+
+  if (answer.note) {
+    const said = document.createElement("div");
+    said.className = "muted small";
+    said.textContent = answer.note;
+    box.appendChild(said);
+  }
+
+  const txt = answer.txt;
+  if (txt && (txt.pairs.length || txt.note)) {
+    if (txt.note) {
+      const what = document.createElement("div");
+      what.className = "muted small";
+      what.textContent = `${txt.kind}: ${txt.note}`;
+      box.appendChild(what);
+    }
+
+    if (txt.pairs.length) {
+      const list = document.createElement("dl");
+      list.className = "txt-pairs";
+      for (const pair of txt.pairs) {
+        const dt = document.createElement("dt");
+        dt.textContent = pair.name || "\u2022";
+        const dd = document.createElement("dd");
+        dd.textContent = pair.value;
+        if (pair.note) {
+          const said = document.createElement("span");
+          said.className = "muted small";
+          said.textContent = ` \u2014 ${pair.note}`;
+          dd.appendChild(said);
+        }
+        list.append(dt, dd);
+      }
+      box.appendChild(list);
+    }
+  }
+
+  return box;
 }
 
 /* -------------------------------------------------------------- services -- */
@@ -14272,8 +14592,90 @@ document.addEventListener("keydown", event => {
 window.addEventListener("hashchange", applyRoute);
 
 $("pollState").addEventListener("click", () => {
+  /*
+   * With work outstanding, the click shows the queue instead of refreshing.
+   *
+   * Refreshing is what the ring is for and it is available from anywhere; the
+   * queue is only reachable here, and the red dot is what invites the click in
+   * the first place.
+   */
+  if (pendingState.rows.length) {
+    showPendingDialog();
+    return;
+  }
   if (!poll.busy) refreshCurrent();
 });
+
+/*
+ * What has been asked of the host, and a way to withdraw each one.
+ *
+ * The wait is minutes, so asking for the wrong thing and then waiting for it to
+ * run before asking for the right thing is a real cost. The collector only acts
+ * on what is in the table when it looks, so withdrawing is just removing the row.
+ */
+function showPendingDialog() {
+  const nodes = [];
+
+  for (const row of pendingState.rows) {
+    const item = document.createElement("div");
+    item.className = "day-entry";
+
+    const title = document.createElement("strong");
+    title.textContent = row.label;
+    item.appendChild(title);
+
+    const when = document.createElement("div");
+    when.className = "muted small";
+    when.textContent = `Asked ${ago(row.requested_at)}.`
+      + (hostClock.lastAt && hostClock.interval
+        ? ` The collector runs about every ${humanDuration(hostClock.interval)}.`
+        : " The collector's schedule is not known yet.");
+    item.appendChild(when);
+
+    const actions = document.createElement("div");
+    actions.className = "inspect-actions";
+
+    if (row.view && VIEWS[row.view]) {
+      const go = document.createElement("button");
+      go.className = "link";
+      go.textContent = `Where it will appear: ${VIEWS[row.view].label}`;
+      go.addEventListener("click", () => {
+        $("listDialog").close();
+        showView(row.view);
+      });
+      actions.appendChild(go);
+    }
+
+    const cancel = document.createElement("button");
+    cancel.className = "link danger";
+    cancel.textContent = "Withdraw it";
+    cancel.addEventListener("click", async () => {
+      cancel.disabled = true;
+      try {
+        const result = await post("cancel-task", { task: row.task });
+        notice(result.already
+          ? "The collector had already answered that one."
+          : "Withdrawn. The collector will not run it.", true);
+        $("listDialog").close();
+        await refreshShared();
+      } catch (error) {
+        notice(String(error.message || error));
+        cancel.disabled = false;
+      }
+    });
+    actions.appendChild(cancel);
+
+    item.appendChild(actions);
+    nodes.push(item);
+  }
+
+  showListDialog(
+    count(pendingState.rows.length, "request") + " waiting for the host",
+    nodes,
+    "These run on root's collector, one kind of outbound lookup per run so that "
+    + "registries and resolvers are not asked twenty things at once."
+  );
+}
 
 for (const [id, key] of [["actionKind", "kind"], ["actionWho", "who"], ["actionResult", "result"]]) {
   $(id).addEventListener("change", event => {

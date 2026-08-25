@@ -627,3 +627,278 @@ function dnsRecentChanges(PDO $pdo, ?string $domain, int $limit = 100): array
         return [];
     }
 }
+
+/* --------------------------------------------------- explaining a record -- */
+
+/**
+ * What a record type is for, in a sentence.
+ *
+ * Included because a zone read by somebody who does not administer DNS every
+ * day is a wall of three-letter names, and the difference between an A and a
+ * CNAME is exactly the thing that matters when one of them is wrong.
+ *
+ * @return array<string, string>
+ */
+function dnsTypeNotes(): array
+{
+    return [
+        'A' => 'An address. This is where the name actually points, for IPv4.',
+        'AAAA' => 'The same thing for IPv6. A name can have both, and visitors use whichever '
+            . 'their connection supports.',
+        'CNAME' => 'A pointer at another name rather than at an address. Whatever that name '
+            . 'resolves to is what this resolves to, which is convenient until the target '
+            . 'moves without anybody remembering this exists.',
+        'MX' => 'Where mail for this domain should be delivered. The number is a preference: '
+            . 'lower is tried first.',
+        'NS' => 'Which nameservers are authoritative for this zone — the servers that are '
+            . 'allowed to answer for it.',
+        'SOA' => 'The start of authority: who owns the zone, and the serial number that says '
+            . 'when it last changed. Secondary servers use the serial to notice updates.',
+        'TXT' => 'Free text. In practice almost always a machine-readable setting: mail '
+            . 'policy, or proof to somebody that you control the domain.',
+        'CAA' => 'Which certificate authorities are allowed to issue certificates for this '
+            . 'domain. Anything unexpected here is worth asking about.',
+        'SRV' => 'Where a particular service lives, with a port — used by things like chat '
+            . 'and directory protocols that need more than an address.',
+        'PTR' => 'The reverse: an address pointing back at a name. Mail servers check this.',
+        'DNSKEY' => 'A DNSSEC signing key.',
+        'DS' => 'A pointer to the DNSSEC key, published by the parent zone.',
+        'ANY' => 'Ask for everything. Most resolvers no longer answer this usefully, which is '
+            . 'why this asks for each type in turn instead.',
+    ];
+}
+
+/**
+ * The record types worth offering to look up.
+ *
+ * @return list<string>
+ */
+function dnsLookupTypes(): array
+{
+    return ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'CAA', 'SRV', 'PTR', 'DS', 'DNSKEY'];
+}
+
+/**
+ * A TXT record broken into its parts, where it has any.
+ *
+ * Most TXT records are not text at all: they are a small settings language with
+ * no agreed syntax, written as `key=value` pairs separated by semicolons or
+ * spaces. Splitting them turns a hundred-character run-on into a list somebody
+ * can read, and lets each known key carry a note about what it does.
+ *
+ * A record that does not look like pairs is returned whole rather than being
+ * mangled into halves at the first equals sign it happens to contain.
+ *
+ * @return array{kind: string, note: string, pairs: list<array{name: string, value: string, note: string}>}
+ */
+function parseTxtRecord(string $value): array
+{
+    $text = trim($value, " \t\"");
+
+    // Long records are split across quoted chunks by the protocol; joining them
+    // back is what the reader means by "the record".
+    $text = (string)preg_replace('/"\s+"/', '', $text);
+
+    $kind = 'text';
+    $note = '';
+
+    if (stripos($text, 'v=spf1') === 0) {
+        $kind = 'SPF';
+        $note = 'Says which servers are allowed to send mail claiming to be from this domain. '
+            . 'The last term decides what happens to everything else: ~all is a soft fail, '
+            . '-all a hard one, ?all no opinion at all.';
+    } elseif (stripos($text, 'v=DMARC1') === 0) {
+        $kind = 'DMARC';
+        $note = 'Says what a receiving server should do with mail that fails SPF or DKIM, and '
+            . 'where to send reports about it.';
+    } elseif (stripos($text, 'v=DKIM1') === 0) {
+        $kind = 'DKIM';
+        $note = 'A public key used to verify signatures on mail from this domain.';
+    } elseif (preg_match('/(verification|site-verification|validation)/i', $text)) {
+        $kind = 'verification';
+        $note = 'Proof to somebody that you control this domain. Harmless, and they accumulate '
+            . 'for ever unless somebody tidies them.';
+    }
+
+    /*
+     * Split on semicolons first, then on spaces.
+     *
+     * DMARC and DKIM use semicolons; SPF uses spaces. Trying semicolons first
+     * and only falling back keeps an SPF record's `include:` terms intact
+     * rather than treating the whole thing as one pair.
+     */
+    /*
+     * Only structured records are taken apart.
+     *
+     * A genuine free-text record - and they do exist - split on spaces becomes
+     * a list of its own words presented as settings, which is confidently
+     * wrong. Structure means either a known kind, or something that actually
+     * looks like `name=value`.
+     */
+    $structured = $kind !== 'text'
+        || (bool)preg_match('/(^|[\s;])[A-Za-z][A-Za-z0-9_.-]{0,30}=/', $text);
+
+    if (!$structured) {
+        return ['kind' => $kind, 'note' => $note, 'pairs' => [], 'text' => $text];
+    }
+
+    $parts = str_contains($text, ';')
+        ? preg_split('/\s*;\s*/', $text)
+        : preg_split('/\s+/', $text);
+
+    $pairs = [];
+    foreach ($parts ?: [] as $part) {
+        $part = trim($part);
+        if ($part === '') {
+            continue;
+        }
+
+        /*
+         * A pair needs a name-shaped thing before the equals.
+         *
+         * `v=spf1` is a pair; a base64 key containing an equals as padding is
+         * not, and splitting it would produce nonsense with great confidence.
+         */
+        if (preg_match('/^([A-Za-z][A-Za-z0-9_.-]{0,30})=(.*)$/', $part, $m)) {
+            $pairs[] = [
+                'name' => $m[1],
+                'value' => $m[2],
+                'note' => txtKeyNote($kind, $m[1], $m[2]),
+            ];
+            continue;
+        }
+
+        $pairs[] = ['name' => '', 'value' => $part, 'note' => txtTermNote($kind, $part)];
+    }
+
+    return ['kind' => $kind, 'note' => $note, 'pairs' => $pairs, 'text' => $text];
+}
+
+/** What one key inside a TXT record means. */
+function txtKeyNote(string $kind, string $name, string $value): string
+{
+    $key = strtolower($name);
+
+    if ($kind === 'DMARC') {
+        return match ($key) {
+            'v' => 'The version. Always DMARC1.',
+            'p' => match (strtolower($value)) {
+                'none' => 'Do nothing to failing mail — monitoring only.',
+                'quarantine' => 'Failing mail goes to spam.',
+                'reject' => 'Failing mail is refused outright. The strictest setting.',
+                default => 'What to do with mail that fails.',
+            },
+            'sp' => 'The same, for subdomains.',
+            'rua' => 'Where to send aggregate reports.',
+            'ruf' => 'Where to send reports about individual failures.',
+            'pct' => 'The percentage of failing mail the policy applies to — used to roll '
+                . 'a policy out gradually.',
+            'adkim' => 'How strictly the DKIM domain must match. s is strict, r relaxed.',
+            'aspf' => 'The same for SPF.',
+            default => '',
+        };
+    }
+
+    if ($kind === 'DKIM') {
+        return match ($key) {
+            'v' => 'The version.',
+            'k' => 'The key type, usually rsa.',
+            'p' => 'The public key itself. An empty one revokes the key.',
+            't' => 'Flags. y means testing, so failures should not be enforced.',
+            default => '',
+        };
+    }
+
+    if ($kind === 'SPF' && $key === 'v') {
+        return 'The version. Always spf1.';
+    }
+
+    return '';
+}
+
+/** What one bare term inside a TXT record means. */
+function txtTermNote(string $kind, string $term): string
+{
+    if ($kind !== 'SPF') {
+        return '';
+    }
+
+    if (preg_match('/^([~+?-])?all$/i', $term, $m)) {
+        return match ($m[1] ?? '+') {
+            '-' => 'Everything not listed above fails. The strict setting.',
+            '~' => 'Everything not listed above soft-fails — usually treated as suspicious '
+                . 'rather than refused.',
+            '?' => 'No opinion about anything not listed, which is close to having no SPF.',
+            default => 'Everything is allowed, which defeats the point of the record.',
+        };
+    }
+
+    if (str_starts_with(strtolower($term), 'include:')) {
+        return 'Also allow whatever this domain\'s SPF allows — how a mail provider is '
+            . 'authorised.';
+    }
+    if (str_starts_with(strtolower($term), 'ip4:') || str_starts_with(strtolower($term), 'ip6:')) {
+        return 'This address may send mail for the domain.';
+    }
+    if (strtolower($term) === 'a' || strtolower($term) === 'mx') {
+        return 'Whatever the domain\'s own ' . strtoupper($term) . ' records point at may send '
+            . 'mail for it.';
+    }
+    if (str_starts_with(strtolower($term), 'redirect=')) {
+        return 'Use another domain\'s SPF record instead of this one.';
+    }
+
+    return '';
+}
+
+/**
+ * A domain status word from whois, in plain language.
+ *
+ * These are EPP status codes and they read like error messages when most of
+ * them are the opposite: `clientTransferProhibited` is the registrar lock that
+ * stops somebody moving the domain away from you, and seeing it should be
+ * reassuring rather than alarming.
+ */
+function domainStatusPlain(string $status): array
+{
+    $key = strtolower(trim($status));
+
+    $known = [
+        'clienttransferprohibited' => ['Locked against transfer',
+            'Your registrar will not let the domain be moved elsewhere. This is the normal '
+            . 'protective lock and is a good thing to see.'],
+        'clientupdateprohibited' => ['Locked against changes',
+            'Details cannot be edited without unlocking first. Protective.'],
+        'clientdeleteprohibited' => ['Locked against deletion',
+            'The domain cannot be deleted without unlocking first. Protective.'],
+        'clientrenewprohibited' => ['Renewal blocked by the registrar',
+            'Worth asking about — this can prevent renewing.'],
+        'clienthold' => ['Withdrawn from DNS by the registrar',
+            'The domain is registered but will not resolve. Usually a billing or compliance '
+            . 'problem, and the site is down while it lasts.'],
+        'servertransferprohibited' => ['Locked against transfer by the registry',
+            'A registry-level lock rather than your registrar’s.'],
+        'serverhold' => ['Withdrawn from DNS by the registry',
+            'The domain will not resolve. This is serious and is not something the registrar '
+            . 'set.'],
+        'pendingdelete' => ['About to be deleted',
+            'The registration has lapsed and the registry is releasing it. Act now or lose it.'],
+        'redemptionperiod' => ['Expired, still recoverable',
+            'Recoverable, usually for several times the renewal fee, for a limited time.'],
+        'pendingtransfer' => ['Being transferred', 'A transfer to another registrar is in '
+            . 'progress.'],
+        'autorenewperiod' => ['Just auto-renewed',
+            'The grace period after an automatic renewal.'],
+        'inactive' => ['No nameservers', 'The domain has no nameservers set, so it cannot '
+            . 'resolve.'],
+        'ok' => ['Nothing unusual', 'No locks and nothing pending. Note that this also means '
+            . 'no transfer lock.'],
+        'active' => ['Active', 'Registered and resolving.'],
+    ];
+
+    if (isset($known[$key])) {
+        return ['plain' => $known[$key][0], 'note' => $known[$key][1], 'raw' => trim($status)];
+    }
+
+    return ['plain' => trim($status), 'note' => '', 'raw' => trim($status)];
+}

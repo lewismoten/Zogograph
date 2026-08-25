@@ -71,6 +71,7 @@ require_once __DIR__ . '/lib/domains.php';
 require_once __DIR__ . '/lib/events.php';
 require_once __DIR__ . '/lib/whoami.php';
 require_once __DIR__ . '/lib/dnsrecords.php';
+require_once __DIR__ . '/lib/external.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
@@ -125,7 +126,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'dns-records' => dnsRecordsView($config, $pdo, $signedIn),
         'urls' => urlsView($pdo, $signedIn),
         'fetch' => fetchView($pdo, $signedIn),
-        'domains' => domainsView($pdo, $signedIn),
+        'domains' => domainsView($config, $pdo, $signedIn),
         'whois' => whoisView($config, $pdo, $signedIn),
         'calendar' => calendarView($config, $pdo, $signedIn),
         'capability-changes' => capabilityChangesView($config, $pdo, $signedIn),
@@ -161,13 +162,14 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'daemon-watch' => doDaemonWatch($config, $pdo, $post),
         'request-host-walk' => doRequestHostWalk($config, $pdo, $post),
         'request-capture' => doRequestCapture($config, $pdo, $post),
+        'cancel-task' => doCancelTask($pdo, $post),
         'label-save' => doLabelSave($pdo, $post),
         'label-delete' => doLabelDelete($pdo, $post),
         'url-save' => doUrlSave($pdo, $post),
         'url-delete' => doUrlDelete($pdo, $post),
         'url-run' => doUrlRun($pdo, $post),
         'domain-save' => doDomainSave($config, $pdo, $post),
-        'domain-delete' => doDomainDelete($pdo, $post),
+        'domain-delete' => doDomainDelete($config, $pdo, $post),
         'domain-check' => doDomainCheck($config, $pdo, $post),
         'dns-sweep' => doDnsSweep($config, $pdo, $post),
         'event-save' => doEventSave($pdo, $post),
@@ -1208,7 +1210,7 @@ function capturesView(array $config, PDO $account, bool $signedIn): array
  */
 /* ------------------------------------------------------------- domains -- */
 
-function domainsView(PDO $pdo, bool $signedIn): array
+function domainsView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
         throw new ActionRefused('sign in to see the watched domains');
@@ -1235,6 +1237,31 @@ function domainsView(PDO $pdo, bool $signedIn): array
         'max' => DOMAIN_MAX,
         'default_warn_days' => DOMAIN_WARN_DAYS,
         'have_whois' => whichBinary('whois') !== null,
+        'missing' => whichBinary('whois') === null ? missingCommand($config, 'whois') : null,
+        'queue' => domainQueueState($config, $pdo),
+    ];
+}
+
+/**
+ * How many domain lookups are waiting, and how fast they drain.
+ *
+ * Shown because a watch list of twelve on a one-per-run budget takes an hour to
+ * work through, and a page that simply showed eleven unchecked domains would
+ * look broken rather than patient.
+ */
+function domainQueueState(array $config, PDO $pdo): array
+{
+    $now = time();
+    $due = 0;
+    foreach (domainList($pdo) as $row) {
+        if ($row['due_at'] <= $now) {
+            $due++;
+        }
+    }
+
+    return [
+        'due' => $due,
+        'per_run' => externalBudget($config, 'whois'),
     ];
 }
 
@@ -1294,7 +1321,12 @@ function whoisView(array $config, PDO $pdo, bool $signedIn): array
 
     $name = strtolower(trim((string)($_GET['name'] ?? '')));
     if ($name === '') {
-        return ['asked' => false, 'have_whois' => whichBinary('whois') !== null];
+        return [
+            'asked' => false,
+            'have_whois' => whichBinary('whois') !== null,
+            'missing' => whichBinary('whois') === null ? missingCommand($config, 'whois') : null,
+            'terms' => whoisTerms(),
+        ];
     }
 
     $answer = whoisLookup($name);
@@ -1325,6 +1357,11 @@ function whoisView(array $config, PDO $pdo, bool $signedIn): array
         'ok' => $answer['ok'],
         'error' => $answer['error'],
         'from_host' => $askedFor,
+        // EPP status codes in plain language; see domainStatusPlain.
+        'status_plain' => array_map(
+            'domainStatusPlain',
+            array_filter(array_map('trim', explode(',', (string)($parsed['status'] ?? ''))))
+        ),
         'text' => substr($answer['text'], 0, WHOIS_MAX_BYTES),
         'parsed' => $parsed,
         'have_whois' => whichBinary('whois') !== null,
@@ -1351,10 +1388,10 @@ function doDomainSave(array $config, PDO $pdo, bool $post): array
     // Looked up straight away, so the expiry is on screen rather than pending.
     domainCheckDue($pdo, $id, null, $config);
 
-    return ['ok' => true, 'id' => $id] + domainsView($pdo, true);
+    return ['ok' => true, 'id' => $id] + domainsView($config, $pdo, true);
 }
 
-function doDomainDelete(PDO $pdo, bool $post): array
+function doDomainDelete(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
 
@@ -1367,7 +1404,7 @@ function doDomainDelete(PDO $pdo, bool $post): array
     }
 
     logAction($pdo, 'domain_delete', (string)$id, 'ok', 0, 0, null);
-    return ['ok' => true] + domainsView($pdo, true);
+    return ['ok' => true] + domainsView($config, $pdo, true);
 }
 
 function doDomainCheck(array $config, PDO $pdo, bool $post): array
@@ -1381,7 +1418,7 @@ function doDomainCheck(array $config, PDO $pdo, bool $post): array
         throw new ActionRefused('no such domain');
     }
 
-    return ['ok' => true, 'result' => $result['rows'][0]] + domainsView($pdo, true);
+    return ['ok' => true, 'result' => $result['rows'][0]] + domainsView($config, $pdo, true);
 }
 
 /* ------------------------------------------------------------ calendar -- */
@@ -1941,21 +1978,58 @@ function dnsView(array $config, bool $signedIn): array
     $server = (string)($_GET['server'] ?? '');
 
     if ($wanted !== '') {
-        $queries = [[
-            'name' => $wanted,
-            'type' => strtoupper((string)($_GET['type'] ?? 'A')),
-            'server' => $server === '' ? null : $server,
-            'why' => 'Asked for from the dashboard.',
-        ]];
+        $type = strtoupper((string)($_GET['type'] ?? 'A'));
+
+        /*
+         * "Every type" asks for each in turn rather than sending ANY.
+         *
+         * ANY is not an answer any more: most resolvers return a minimal or
+         * refused response to it, and a zone that does answer does so
+         * inconsistently. Asking for each type is slower and is the only way to
+         * get a complete picture.
+         */
+        $types = $type === 'ALL' ? dnsLookupTypes() : [$type];
+
+        $queries = [];
+        foreach ($types as $one) {
+            $queries[] = [
+                'name' => $wanted,
+                'type' => $one,
+                'server' => $server === '' ? null : $server,
+                'why' => count($types) > 1 ? '' : 'Asked for from the dashboard.',
+            ];
+        }
     } else {
         $queries = defaultDnsQueries($config, $listening);
     }
 
-    return dnsChecks($queries) + ['serves_dns' => $listening !== [] && in_array(
-        53,
-        array_column($listening, 'port'),
-        true
-    )];
+    $result = dnsChecks($queries);
+
+    /*
+     * Every answer carries what its type is for, and TXT records are taken
+     * apart. A zone read by somebody who does not administer DNS daily is a
+     * wall of three-letter names, and the difference between an A and a CNAME
+     * is exactly what matters when one of them is wrong.
+     */
+    $notes = dnsTypeNotes();
+    foreach ($result['rows'] as &$row) {
+        $row['type_note'] = $notes[$row['type']] ?? '';
+        foreach ($row['answers'] as &$answer) {
+            $answer['note'] = $notes[$answer['type']] ?? '';
+            if ($answer['type'] === 'TXT') {
+                $answer['txt'] = parseTxtRecord((string)$answer['value']);
+            }
+        }
+        unset($answer);
+    }
+    unset($row);
+
+    return $result + [
+        'types' => dnsLookupTypes(),
+        'notes' => $notes,
+        'serves_dns' => $listening !== [] && in_array(53, array_column($listening, 'port'), true),
+        'missing' => whichBinary('dig') === null ? missingCommand($config, 'dig') : null,
+    ];
 }
 
 /**
@@ -1966,6 +2040,42 @@ function dnsView(array $config, bool $signedIn): array
  * which root's collector picks up - the same protocol as the disk walk, and for
  * the same reason.
  */
+/**
+ * Withdraws a request before the collector gets to it.
+ *
+ * Worth having because the wait is minutes: asking for a sixty-second capture
+ * and then realising it should have been on a different interface should not
+ * mean waiting for the wrong one to run first. Removing the row is the whole
+ * of it - the collector only ever acts on what is in the table when it looks.
+ */
+function doCancelTask(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $task = (string)($_POST['task'] ?? '');
+    if ($task === '') {
+        throw new ActionRefused('no request named');
+    }
+
+    $stmt = $pdo->prepare('DELETE FROM host_tasks WHERE task = ?');
+    $stmt->execute([$task]);
+
+    if ($stmt->rowCount() === 0) {
+        /*
+         * Gone already is not an error.
+         *
+         * The collector may have answered it between the page being drawn and
+         * the button being pressed, which is the ordinary case rather than a
+         * fault - and reporting it as one would be confusing about something
+         * that worked.
+         */
+        return ['ok' => true, 'already' => true];
+    }
+
+    logAction($pdo, 'cancel_task', $task, 'ok', 0, 0, 'withdrawn before it ran');
+    return ['ok' => true, 'already' => false];
+}
+
 function doRequestCapture(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
