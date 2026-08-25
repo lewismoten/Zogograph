@@ -4223,6 +4223,222 @@ function collectorDial(collector) {
   return svg;
 }
 
+/* ---------------------------------------------------------- address names -- */
+
+const rdnsState = { data: null };
+
+async function refreshRdns() {
+  const body = $("rdnsBody");
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see this."));
+    return;
+  }
+
+  try {
+    renderRdns(await api("rdns"));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderRdns(data) {
+  rdnsState.data = data;
+  // Kept for every other page that shows an address, so a table can name one
+  // without asking again.
+  state.rdnsNames = Object.fromEntries(
+    (data.known || []).filter(row => row.name).map(row => [row.address, row.name])
+  );
+
+  const body = $("rdnsBody");
+  const parts = [];
+
+  if (data.released > 0) {
+    parts.push(note(
+      `${count(data.released, "request")} had been taken by a collector that never came `
+      + "back — a run killed mid-lookup — and have been put back in the queue."
+    ));
+  }
+
+  const waiting = (data.waiting || []).filter(row => !row.taken);
+  const taken = (data.waiting || []).filter(row => row.taken);
+
+  if (waiting.length || taken.length) {
+    const holder = document.createElement("div");
+    holder.id = "rdnsQueue";
+    parts.push(section(
+      `${count(waiting.length, "address", "addresses")} waiting`
+      + (taken.length ? `, ${taken.length} in progress` : ""),
+      holder
+    ));
+
+    parts.push(note(
+      `At ${data.per_run === 1 ? "one" : data.per_run} per collector run, the queue empties `
+      + `in about ${humanSpan(Math.ceil(waiting.length / Math.max(1, data.per_run)) * 300)}. `
+      + (data.host_enabled
+        ? "Both collectors take one, so it may be quicker than that."
+        : "")
+    ));
+  } else {
+    parts.push(note("Nothing waiting."));
+  }
+
+  if (data.known?.length) {
+    const holder = document.createElement("div");
+    holder.id = "rdnsKnown";
+    parts.push(section(`${count(data.known.length, "address", "addresses")} looked up`, holder));
+  }
+
+  body.replaceChildren(...parts);
+
+  if (waiting.length || taken.length) {
+    renderTable("rdnsQueue", data.waiting, [
+      {
+        label: "Address",
+        className: "name",
+        render: row => row.address,
+      },
+      { label: "Asked", render: row => `${ago(row.asked_at)} by ${row.asked_by}` },
+      { label: "Waiting", render: row => humanSpan(row.waited) },
+      {
+        label: "",
+        render: row => {
+          if (!row.taken) return "";
+          const span = document.createElement("span");
+          span.className = "band-warn";
+          span.textContent = `${row.taken_by} is looking now`;
+          return span;
+        },
+      },
+      {
+        label: "",
+        className: "row-actions",
+        render: row => {
+          const button = document.createElement("button");
+          button.className = "link danger";
+          button.textContent = "Withdraw";
+          /*
+           * Only while it is still waiting.
+           *
+           * Once a collector has taken it the lookup is running or done, and
+           * offering to recall it would be a claim about something this page
+           * does not control.
+           */
+          button.disabled = row.taken;
+          button.title = row.taken
+            ? "A collector has already taken this one"
+            : "Take it off the queue";
+          button.addEventListener("click", async () => {
+            button.disabled = true;
+            try {
+              renderRdns(await post("rdns-cancel", { id: row.id }));
+            } catch (error) {
+              notice(String(error.message || error));
+              button.disabled = false;
+            }
+          });
+          return button;
+        },
+      },
+    ], null, row => (row.taken ? "row-off" : ""), row => String(row.id));
+  }
+
+  if (data.known?.length) {
+    renderTable("rdnsKnown", data.known, [
+      { label: "Address", className: "name", render: row => row.address },
+      {
+        label: "Called",
+        className: "name",
+        render: row => {
+          if (row.name) return row.name;
+          const span = document.createElement("span");
+          span.className = "muted";
+          span.textContent = "no name";
+          span.title = "The address resolved, and the answer is that it has no PTR record. "
+            + "That is a real answer and is remembered, so it is not asked again for a week.";
+          return span;
+        },
+      },
+      {
+        label: "Looked up",
+        render: row => {
+          const span = document.createElement("span");
+          span.textContent = ago(row.checked_at);
+          if (row.stale) {
+            span.className = "muted";
+            span.title = `Older than ${humanSpan(data.fresh_for)}. Ask again to refresh it.`;
+          }
+          return span;
+        },
+      },
+      { label: "By", render: row => row.resolved_by },
+      {
+        label: "",
+        className: "row-actions",
+        render: row => {
+          const again = document.createElement("button");
+          again.className = "link";
+          again.textContent = "Ask again";
+          again.title = "Queue another lookup — names do change";
+          again.addEventListener("click", async () => {
+            again.disabled = true;
+            try {
+              /*
+               * Forced, because rdnsRequest declines anything recent.
+               *
+               * Which is right for the automatic path and wrong here: somebody
+               * pressing this has a reason to believe the stored answer is out
+               * of date.
+               */
+              renderRdns(await post("rdns-ask", { addresses: row.address, force: "1" }));
+              notice(`${row.address} queued.`, true);
+            } catch (error) {
+              notice(String(error.message || error));
+            } finally {
+              again.disabled = false;
+            }
+          });
+          return again;
+        },
+      },
+    ], null, null, row => row.address);
+  }
+}
+
+/**
+ * A name for an address, where one is known.
+ *
+ * Returns a node rather than a string so the address stays visible: a label is
+ * a note about a fact, never a replacement for it, and that goes double for a
+ * name that came from a PTR record somebody else controls.
+ */
+function withAddressName(address) {
+  const name = state.rdnsNames?.[address];
+  const mine = state.labelNames?.[address];
+
+  const span = document.createElement("span");
+  span.textContent = address;
+
+  if (mine) {
+    const yours = document.createElement("span");
+    yours.className = "own-name";
+    yours.textContent = ` (${mine})`;
+    yours.title = "A name you gave this address, under Settings → Your own names.";
+    span.appendChild(yours);
+  }
+
+  if (name) {
+    const theirs = document.createElement("span");
+    theirs.className = "muted small";
+    theirs.textContent = ` ${name}`;
+    theirs.title = "What the internet says this address is called — a PTR record, which "
+      + "its owner controls and can say anything.";
+    span.appendChild(theirs);
+  }
+
+  return span;
+}
+
 /* -------------------------------------------------------------- changes -- */
 
 const changedState = { data: null, only: "" };
@@ -11833,7 +12049,11 @@ function renderPeers(data) {
   $("peersBody").appendChild(holder);
 
   renderTable("peersTable", rows, [
-    { label: "Address", className: "name", render: row => labelled(row.address, row.own_label) },
+    {
+      label: "Address",
+      className: "name",
+      render: row => labelled(row.address, row.own_label, row),
+    },
     { label: "Connections", className: "size", render: row => humanCount(row.connections) },
     {
       label: "Share",
@@ -11943,15 +12163,87 @@ function renderCaptureRequest(data) {
  * about a number, and one that hid the number would make a typo in the notes
  * indistinguishable from a change on the network.
  */
-function labelled(value, label) {
+/**
+ * A value, the name you gave it, and the name the internet gives it.
+ *
+ * Three different things, kept visibly apart. Your own label is a decision;
+ * the resolved name is a PTR record its owner controls and can set to anything;
+ * the value is the only one of the three that is a fact about the packet. So
+ * the number always stays, and the two names are styled differently.
+ *
+ * `row` is optional and carries the rdns fields, so a caller that has them
+ * passes the row and one that does not passes nothing.
+ */
+function labelled(value, label, row = null) {
     const span = document.createElement("span");
     span.textContent = String(value);
+
     if (label) {
       const tag = document.createElement("span");
       tag.className = "own-label";
       tag.textContent = ` ${label}`;
+      tag.title = "A name you gave this, under Settings \u2192 Your own names.";
       span.appendChild(tag);
     }
+
+    if (row?.rdns_name) {
+      const tag = document.createElement("span");
+      tag.className = "rdns-name muted small";
+      tag.textContent = ` ${row.rdns_name}`;
+      tag.title = "What the internet says this address is called \u2014 a PTR record, which "
+        + "its owner controls and can set to anything.";
+      span.appendChild(tag);
+    } else if (row?.rdns_asked) {
+      const tag = document.createElement("span");
+      tag.className = "muted small";
+      tag.textContent = " \u2026";
+      tag.title = "Waiting to be looked up. One is resolved per collector run.";
+      span.appendChild(tag);
+    } else if (row?.rdns_none) {
+      /*
+       * Already asked, and the answer was that it has no name.
+       *
+       * Shown rather than falling back to offering a lookup, or somebody keeps
+       * queueing an address that has been asked and will keep answering the
+       * same way.
+       */
+      const tag = document.createElement("span");
+      tag.className = "muted small";
+      tag.textContent = " \u2014";
+      tag.title = "Looked up: this address has no PTR record, so it has no name to show. "
+        + "That is a real answer, not a failure.";
+      span.appendChild(tag);
+    } else if (row && row.address && row.private === false) {
+      /*
+       * An offer, not an automatic lookup.
+       *
+       * A page showing forty addresses that resolved all of them on sight
+       * would make forty DNS queries every time somebody opened it. Private
+       * addresses are skipped because no public resolver can answer for one.
+       */
+      const ask = document.createElement("button");
+      ask.className = "link tiny";
+      ask.textContent = "name?";
+      ask.title = "Queue a reverse lookup for this address";
+      ask.addEventListener("click", async event => {
+        event.stopPropagation();
+        ask.disabled = true;
+        try {
+          await post("rdns-ask", { addresses: row.address });
+          ask.replaceWith(Object.assign(document.createElement("span"), {
+            className: "muted small",
+            textContent: " \u2026",
+            title: "Queued. One is resolved per collector run.",
+          }));
+        } catch (error) {
+          notice(String(error.message || error));
+          ask.disabled = false;
+        }
+      });
+      span.appendChild(document.createTextNode(" "));
+      span.appendChild(ask);
+    }
+
     return span;
 }
 
@@ -12084,7 +12376,7 @@ function renderCapture(capture, target = "captureBody") {
     const table = simpleTable(
       ["Remote address", "In", "Out", "Arriving", "Leaving", "Opened", ""],
       capture.peers.slice(0, 25).map(p => [
-        labelled(p.address, p.own_label),
+        labelled(p.address, p.own_label, p),
         humanCount(p.in_packets),
         humanCount(p.out_packets),
         humanBytes(p.in_bytes),
@@ -15339,6 +15631,22 @@ async function refreshLogStream() {
   renderRepeats(data);
 }
 
+/*
+ * What each severity looks like at a glance.
+ *
+ * An icon rather than a colour alone: a merged view is read by skipping down
+ * the left edge looking for the one line that matters, and a colour difference
+ * is much harder to skim than a shape. Colour as well, for the same reason in
+ * the other direction.
+ */
+const LOG_MARKS = {
+  critical: ["\u{1F534}", "Critical — something stopped", "band-crit"],
+  error: ["\u{1F7E0}", "Error — something failed", "band-crit"],
+  warning: ["\u{1F7E1}", "Warning — something is not right", "band-warn"],
+  notice: ["\u{1F535}", "Notice — worth knowing", "muted"],
+  info: ["⚪", "Info", "muted"],
+};
+
 function renderLogStream(data) {
   const body = $("streamBody");
   const wrap = document.createDocumentFragment();
@@ -15354,6 +15662,16 @@ function renderLogStream(data) {
 
   if (data.note) wrap.appendChild(note(data.note));
 
+  const folded = data.rows.reduce((sum, row) => sum + (row.trace?.length ?? 0), 0);
+  if (folded) {
+    wrap.appendChild(note(
+      `${count(folded, "stack-trace line")} folded into the ${count(
+        data.rows.filter(row => row.trace?.length).length, "error")} they belong to. `
+      + "A fatal writes one line for the error and a dozen for the trace, so without this "
+      + "the twenty newest lines are one error and nineteen fragments of it."
+    ));
+  }
+
   if (!data.rows.length) {
     wrap.appendChild(note("Nothing in any of them."));
     body.replaceChildren(wrap);
@@ -15362,13 +15680,33 @@ function renderLogStream(data) {
 
   const list = document.createElement("div");
   list.className = "stream";
-  for (const row of data.rows) {
-    const line = document.createElement("div");
-    line.className = "stream-line";
+
+  data.rows.forEach((row, index) => {
+    const parsed = row.parsed || { kind: "", where: "", message: row.text };
+
+    /*
+     * A button, because the whole line opens the breakdown.
+     *
+     * The columns here are deliberately narrow - the point is skimming - so
+     * anything long is cut off, and the full line has to be one click away
+     * rather than requiring a trip to the file.
+     */
+    const line = document.createElement("button");
+    line.type = "button";
+    line.className = "stream-line" + (parsed.kind ? ` is-${parsed.kind}` : "");
+    line.addEventListener("click", () => showLogLine(row, index, data.rows));
+
+    const [icon, meaning, tone] = LOG_MARKS[parsed.kind] || ["▫️", "No level stated", "muted"];
+
+    const mark = document.createElement("span");
+    mark.className = "stream-mark";
+    mark.textContent = icon;
+    mark.title = meaning;
+    line.appendChild(mark);
 
     const when = document.createElement("span");
     when.className = "stream-when muted";
-    when.textContent = row.at ? humanTime(row.at) : "\u2014";
+    when.textContent = row.at ? humanTime(row.at) : "—";
     /*
      * A line with no timestamp says so rather than borrowing one.
      *
@@ -15386,15 +15724,164 @@ function renderLogStream(data) {
     from.title = row.path;
     line.appendChild(from);
 
+    /*
+     * Whatever wrote the line, where the line says.
+     *
+     * `[diskmon]`, `sshd[123]`, `Fatal error` - the useful question in a
+     * merged view is which of the six things writing to these files said this,
+     * and it was previously buried a hundred characters into the raw text.
+     */
+    const who = document.createElement("span");
+    who.className = "stream-who muted";
+    who.textContent = parsed.where || "";
+    line.appendChild(who);
+
     const text = document.createElement("span");
     text.className = "stream-text";
-    text.textContent = row.text;
+    text.textContent = parsed.message || row.text;
     line.appendChild(text);
 
+    if (row.trace?.length) {
+      const frames = document.createElement("span");
+      frames.className = "stream-frames muted";
+      frames.textContent = `+${row.trace.length}`;
+      frames.title = `${count(row.trace.length, "stack-trace line")} folded in. Click to read.`;
+      line.appendChild(frames);
+    }
+
     list.appendChild(line);
-  }
+  });
+
   wrap.appendChild(list);
+  wrap.appendChild(note(
+    "Click any line for the whole of it, taken apart. The columns here are cut short on "
+    + "purpose — this view is for skimming."
+  ));
   body.replaceChildren(wrap);
+}
+
+/**
+ * One log line, in pieces, with what came around it.
+ *
+ * The raw text is always shown as well as the breakdown. A parser that quietly
+ * got something wrong would be indistinguishable from a log that said something
+ * strange, and only one of those is worth investigating.
+ */
+function showLogLine(row, index, rows) {
+  const parsed = row.parsed || {};
+  const nodes = [];
+
+  const facts = [];
+  /*
+   * humanWhen rather than ago, because a log line can be in the future.
+   *
+   * Clock skew between a web server and a database, a timezone written into a
+   * log by software that has the wrong one, a machine whose clock has just
+   * been corrected - all real, and ago() renders every one of them as a dash.
+   */
+  facts.push(["When", row.at
+    ? `${humanTime(row.at)} (${humanWhen(row.at - Math.floor(Date.now() / 1000))})`
+    : "not stated on the line — placed by when the file was last written"]);
+  facts.push(["From", row.path || row.label]);
+  if (row.n) facts.push(["Line", String(row.n)]);
+  if (parsed.kind) {
+    const [icon, meaning] = LOG_MARKS[parsed.kind] || ["", ""];
+    facts.push(["Level", `${icon} ${meaning}`]);
+  }
+  if (parsed.where) facts.push(["Written by", parsed.where]);
+  if (parsed.file) facts.push(["In", `${parsed.file}, line ${parsed.line}`]);
+
+  nodes.push(section("What it is", factGrid(facts)));
+
+  const message = document.createElement("pre");
+  message.className = "paste log-message";
+  message.textContent = parsed.message || row.text;
+  nodes.push(section("What it says", message));
+
+  if (row.trace?.length) {
+    const trace = document.createElement("pre");
+    trace.className = "paste log-trace";
+    trace.textContent = row.trace.join("\n");
+    nodes.push(section(`Stack trace (${count(row.trace.length, "line")})`, trace));
+    nodes.push(note(
+      "Read from the top: the first frame is where it failed, and each one below is what "
+      + "called it. The bottom is usually where the request came in."
+    ));
+  }
+
+  /*
+   * The raw line, always.
+   *
+   * The breakdown above is this tool's reading of it, and a reading can be
+   * wrong. Somebody comparing an odd-looking field against the original should
+   * not have to go and find the file to do it.
+   */
+  const raw = document.createElement("pre");
+  raw.className = "paste log-raw";
+  raw.textContent = row.text;
+  nodes.push(section("As it was written", raw));
+
+  const tools = document.createElement("div");
+  tools.className = "inspect-actions";
+
+  const copy = document.createElement("button");
+  copy.className = "link";
+  copy.textContent = "Copy the line";
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(
+        row.text + (row.trace?.length ? "\n" + row.trace.join("\n") : "")
+      );
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy the line"; }, 1500);
+    } catch {
+      // Needs a secure context, which plenty of these installs are not.
+      const range = document.createRange();
+      range.selectNodeContents(raw);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      copy.textContent = "Selected — press ⌘C";
+    }
+  });
+  tools.appendChild(copy);
+
+  /*
+   * Straight to the file, at this line.
+   *
+   * A merged view shows twenty lines out of thousands, and the next question
+   * after reading one is almost always what surrounded it.
+   */
+  if (row.path && state.viewable?.some(entry => entry.path === row.path)) {
+    const open = document.createElement("button");
+    open.className = "link";
+    open.textContent = "Open the whole file";
+    open.addEventListener("click", () => {
+      $("listDialog").close();
+      showLogPath(row.path);
+    });
+    tools.appendChild(open);
+  }
+
+  // Stepping between entries without closing and re-opening.
+  for (const [text, step] of [["‹ Newer", -1], ["Older ›", 1]]) {
+    const button = document.createElement("button");
+    button.className = "link";
+    button.textContent = text;
+    button.disabled = index + step < 0 || index + step >= rows.length;
+    button.addEventListener("click", () => showLogLine(rows[index + step], index + step, rows));
+    tools.appendChild(button);
+  }
+
+  nodes.unshift(tools);
+
+  showListDialog(
+    parsed.kind
+      ? `${(LOG_MARKS[parsed.kind] || [])[0] ?? ""} ${parsed.where || parsed.kind}`
+      : "A log line",
+    nodes,
+    `${row.label} · entry ${index + 1} of ${rows.length}`
+  );
 }
 
 function renderRepeats(data) {
@@ -17517,6 +18004,11 @@ const VIEWS = {
     parent: "system",
     refresh: () => refreshChanged(),
   },
+  "net-rdns": {
+    label: "Address names",
+    parent: "network",
+    refresh: () => refreshRdns(),
+  },
   "storage-links": {
     label: "Symlinks",
     parent: "storage",
@@ -18135,6 +18627,58 @@ $("noteButton").addEventListener("click", () => {
 });
 
 $("noteAdd").addEventListener("click", () => showNoteDialog());
+
+$("rdnsForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const addresses = $("rdnsAddresses").value.trim();
+  if (addresses === "") return;
+
+  try {
+    const result = await post("rdns-ask", { addresses });
+    const said = Object.entries(result.results);
+    const queued = said.filter(([, state]) => state === "queued").length;
+
+    notice(
+      queued
+        ? `${count(queued, "address", "addresses")} queued. `
+          + (said.length > queued
+            ? `${said.length - queued} needed nothing: `
+              + said.filter(([, s]) => s !== "queued")
+                .slice(0, 4).map(([a, s]) => `${a} ${s}`).join(", ")
+            : "")
+        : "Nothing queued: " + said.slice(0, 4).map(([a, s]) => `${a} — ${s}`).join(", "),
+      queued > 0
+    );
+
+    $("rdnsAddresses").value = "";
+    renderRdns(result);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
+$("rdnsNow").addEventListener("click", async () => {
+  const button = $("rdnsNow");
+  button.disabled = true;
+  button.textContent = "Looking\u2026";
+
+  try {
+    const result = await post("rdns-now");
+    notice(
+      result.done.length
+        ? result.done.map(one =>
+            `${one.address} \u2192 ${one.name || "no name"} (${one.ms} ms)`).join("; ")
+        : "Nothing was waiting.",
+      result.done.length > 0
+    );
+    renderRdns(result);
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    button.disabled = false;
+    button.textContent = "Resolve the next one now";
+  }
+});
 
 $("changedOnly").addEventListener("change", event => {
   changedState.only = event.target.value;

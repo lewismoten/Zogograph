@@ -595,6 +595,55 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        28 => [
+            /*
+             * What the internet says an address is called.
+             *
+             * Deliberately not the `labels` table. That one is what *you*
+             * decided an address means - "Lewis: home" - and is small,
+             * hand-written and permanent. This is automatic, large,
+             * occasionally wrong and stale within months, and mixing the two
+             * would put a machine guess in a list somebody curated.
+             *
+             * A null name is a real answer: plenty of addresses have no PTR
+             * record, and remembering that is what stops the same hopeless
+             * address being re-asked every time it appears in a capture.
+             */
+            "CREATE TABLE rdns (
+                address     TEXT PRIMARY KEY,
+                name        TEXT,
+                checked_at  INTEGER NOT NULL,
+                first_seen  INTEGER NOT NULL,
+                resolved_by TEXT NOT NULL,
+                ms          INTEGER NOT NULL DEFAULT 0
+            )",
+            'CREATE INDEX rdns_checked ON rdns (checked_at)',
+
+            /*
+             * Addresses waiting to be looked up.
+             *
+             * A queue rather than a function call because the lookup leaves
+             * this machine: a page showing forty addresses would make forty DNS
+             * queries while somebody waited, and one slow resolver would turn
+             * the page into a timeout. One is drained per collector run,
+             * oldest first, so nothing is starved by newer arrivals.
+             *
+             * `taken_at` is set before the lookup runs, not after - a process
+             * killed mid-query would otherwise leave the same row at the head
+             * of the queue for every subsequent run to hang on.
+             */
+            "CREATE TABLE rdns_queue (
+                id       INTEGER PRIMARY KEY,
+                address  TEXT NOT NULL,
+                asked_at INTEGER NOT NULL,
+                asked_by TEXT NOT NULL,
+                taken_at INTEGER,
+                taken_by TEXT
+            )",
+            'CREATE INDEX rdns_queue_order ON rdns_queue (taken_at, asked_at)',
+            'CREATE UNIQUE INDEX rdns_queue_pending ON rdns_queue (address) WHERE taken_at IS NULL',
+        ],
+
         27 => [
             /*
              * What is installed, and when each thing last moved.

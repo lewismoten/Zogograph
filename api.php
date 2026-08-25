@@ -71,6 +71,7 @@ require_once __DIR__ . '/lib/spans.php';
 require_once __DIR__ . '/lib/storekeep.php';
 require_once __DIR__ . '/lib/notes.php';
 require_once __DIR__ . '/lib/software.php';
+require_once __DIR__ . '/lib/rdns.php';
 require_once __DIR__ . '/lib/headers.php';
 require_once __DIR__ . '/lib/pagebits.php';
 require_once __DIR__ . '/lib/domains.php';
@@ -155,6 +156,10 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ldconfig' => doLdconfig($config, $pdo, $post),
         'notes' => notesView($config, $pdo, $signedIn),
         'changed' => changedView($config, $pdo, $signedIn),
+        'rdns' => rdnsView($config, $pdo, $signedIn),
+        'rdns-ask' => doRdnsAsk($config, $pdo, $post),
+        'rdns-cancel' => doRdnsCancel($config, $pdo, $post),
+        'rdns-now' => doRdnsNow($config, $pdo, $post),
         'note-marks' => noteMarksView($pdo, $signedIn),
         'note-snapshots' => noteSnapshotsView($pdo, $signedIn),
         'note-save' => doNoteSave($config, $pdo, $post),
@@ -1027,10 +1032,14 @@ function networkView(array $config, PDO $account, bool $signedIn): array
         'taken_at' => (int)$host->query('SELECT taken_at FROM host_samples WHERE id = ' . $latest)->fetchColumn(),
         'ports' => $portRows,
         'interfaces' => $interfaces,
-        'peers' => applyLabels($labels, array_map(function (array $row): array {
-            $row['private'] = (bool)$row['private'];
-            return $row;
-        }, $peers->fetchAll()), 'address', 'address'),
+        // The name the internet gives an address, beside the name you gave it.
+        'peers' => applyRdns($account, applyLabels($labels, array_map(
+            function (array $row): array {
+                $row['private'] = (bool)$row['private'];
+                return $row;
+            },
+            $peers->fetchAll()
+        ), 'address', 'address')),
         'capture' => $capture,
         'filters' => captureFilters(),
         'pending' => pendingCaptures($account, $host),
@@ -1162,7 +1171,8 @@ function latestCapture(PDO $host, ?PDO $account = null, ?int $id = null): ?array
 
     if ($account !== null) {
         $labels = loadLabels($account);
-        $grouped['peers'] = applyLabels($labels, $grouped['peers'], 'address', 'address');
+        $grouped['peers'] = applyRdns($account,
+            applyLabels($labels, $grouped['peers'], 'address', 'address'));
         $grouped['ports'] = applyLabels($labels, $grouped['ports'], 'port', 'port');
     }
 
@@ -5624,4 +5634,145 @@ function lastCapabilityCheck(PDO $pdo): ?int
     } catch (Throwable) {
         return null;
     }
+}
+
+/* ------------------------------------------------------------------ rdns -- */
+
+/** What is waiting to be looked up, and what has been. */
+function rdnsView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see this');
+    }
+
+    /*
+     * Requests a collector took and never finished are released first.
+     *
+     * A run killed mid-lookup leaves a row marked taken with no answer, and
+     * without this it sits at the head of the queue looking like work in
+     * progress for ever.
+     */
+    $released = rdnsReleaseStuck($pdo);
+
+    return rdnsState($pdo) + [
+        'released' => $released,
+        'per_run' => externalBudget($config, 'rdns'),
+        'host_enabled' => (bool)($config['host']['enabled'] ?? false),
+    ];
+}
+
+/**
+ * Adds one or more addresses to the queue.
+ *
+ * Several at once because the useful gesture is "look up everything in this
+ * capture", and doing that one request at a time would be forty clicks.
+ */
+function doRdnsAsk(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $wanted = array_filter(array_map('trim',
+        preg_split('/[\s,;]+/', (string)($_POST['addresses'] ?? '')) ?: []));
+
+    if ($wanted === []) {
+        throw new ActionRefused('nothing to look up');
+    }
+
+    if (count($wanted) > 200) {
+        throw new ActionRefused('that is more addresses than this will take in one go');
+    }
+
+    $force = ($_POST['force'] ?? '0') === '1';
+    $results = [];
+    $queued = 0;
+
+    foreach ($wanted as $address) {
+        try {
+            /*
+             * A forced ask clears what is stored first.
+             *
+             * rdnsRequest declines anything answered recently, which is right
+             * for the automatic path and wrong for somebody pressing "ask
+             * again" - they have a reason to think the stored answer is out of
+             * date, and the alternative is a button that does nothing.
+             */
+            if ($force) {
+                $pdo->prepare('DELETE FROM rdns WHERE address = ?')->execute([$address]);
+            }
+
+            $result = rdnsRequest($pdo, $address, currentAccountName() ?: 'account');
+            $results[$address] = $result['state'];
+            if ($result['state'] === 'queued') {
+                $queued++;
+            }
+        } catch (ActionRefused $e) {
+            // One bad address does not stop the rest: a paste from a capture
+            // often carries a port or a stray bracket on one line.
+            $results[$address] = $e->getMessage();
+        }
+    }
+
+    if ($queued > 0) {
+        logAction($pdo, 'rdns_ask', null, 'ok', $queued, 0,
+            $queued . ' of ' . count($wanted) . ' queued');
+    }
+
+    return ['ok' => true, 'results' => $results, 'queued' => $queued]
+        + rdnsView($config, $pdo, true);
+}
+
+/** Withdraws a request, or all of them. */
+function doRdnsCancel(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    if (($_POST['all'] ?? '0') === '1') {
+        $gone = rdnsCancelAll($pdo);
+        logAction($pdo, 'rdns_cancel', null, 'ok', $gone, 0, 'all waiting');
+        return ['ok' => true, 'removed' => $gone] + rdnsView($config, $pdo, true);
+    }
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    if (!rdnsCancel($pdo, $id)) {
+        throw new ActionRefused(
+            'that one has already been taken by a collector, so it cannot be withdrawn'
+        );
+    }
+
+    logAction($pdo, 'rdns_cancel', null, 'ok', 1, 0, null);
+    return ['ok' => true, 'removed' => 1] + rdnsView($config, $pdo, true);
+}
+
+/**
+ * Resolves the next one now, from this request.
+ *
+ * Offered because waiting for a cron to answer a question that takes a
+ * hundredth of a second is a strange thing to make somebody do while they are
+ * sitting there looking at it. Still one at a time, and still through the
+ * queue, so the ordering and the throttle both hold.
+ */
+function doRdnsNow(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $done = [];
+    $budget = externalBudget($config, 'rdns');
+
+    for ($i = 0; $i < $budget; $i++) {
+        $one = rdnsDrainOne($pdo, currentAccountName() ?: 'account');
+        if ($one === null) {
+            break;
+        }
+        $done[] = $one;
+    }
+
+    if ($done !== []) {
+        logAction($pdo, 'rdns_resolve', null, 'ok', count($done), 0,
+            implode(', ', array_map(
+                fn(array $one): string => $one['address'] . ' -> ' . ($one['name'] ?? 'no name'),
+                $done
+            )));
+    }
+
+    return ['ok' => true, 'done' => $done] + rdnsView($config, $pdo, true);
 }

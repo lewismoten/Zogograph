@@ -21,6 +21,7 @@ if (PHP_SAPI !== 'cli') {
     exit("host-cron.php runs from the command line only.\n");
 }
 
+require_once __DIR__ . '/lib/rdns.php';
 require_once __DIR__ . '/lib/boot.php';
 
 $configFile = __DIR__ . '/lib/config.php';
@@ -274,6 +275,25 @@ try {
         $say('  ' . ($answer['ok']
             ? strlen((string)$answer['text']) . ' bytes'
             : $answer['error']));
+    }
+
+    /*
+     * One reverse lookup, if any are waiting.
+     *
+     * Reverse DNS needs no privileges, so the account resolves these itself
+     * most of the time - this is for the case where the account's resolver is
+     * blocked and the host's is not, which inside a cage is common enough to
+     * be worth covering.
+     *
+     * One per run, like every other outbound lookup here, and the answer is
+     * left in this database for the account to collect. The account's queue is
+     * only ever read from here.
+     */
+    $lookup = rdnsHostDrain($config, $pdo);
+    if ($lookup !== null) {
+        hostHandOver($config, hostDatabasePath($config));
+        $say(sprintf('Resolved %s -> %s (%dms).',
+            $lookup['address'], $lookup['name'] ?? 'no name', $lookup['ms']));
     }
 
     /*

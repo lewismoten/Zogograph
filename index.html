@@ -296,6 +296,11 @@
       <span class="nav-label">Who am I?</span>
       <span class="nav-badge" data-badge="whoami" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/net-rdns" data-nav="net-rdns" data-parent="network">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Address names</span>
+      <span class="nav-badge" data-badge="net-rdns" hidden></span>
+    </a>
     <a class="nav-item" href="#/alerts" data-nav="alerts">
       <span class="nav-icon" aria-hidden="true">⚠</span>
       <span class="nav-label">Alerts</span>
@@ -1361,6 +1366,38 @@
     <button type="submit">Ask</button>
   </form>
   <div id="fetchBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="net-rdns" hidden>
+<section class="panel" id="rdnsPanel">
+  <div class="panel-head">
+    <h2>What the internet calls an address</h2>
+    <div class="panel-controls">
+      <button id="rdnsNow" class="link">Resolve the next one now</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    A capture or an access log is a wall of numbers, and the same number means
+    nothing on Monday and something on Friday once somebody has looked it up.
+    This is <em>not</em> <a href="#/net-labels">your own names</a> — that is what
+    <strong>you</strong> decided an address means, and is small, hand-written and
+    permanent. This is what the internet says it is: automatic, occasionally
+    wrong, and stale within months.
+  </p>
+  <p class="muted small sub-note">
+    The lookup leaves this machine, so it is a queue rather than something that
+    happens while you wait. One is resolved per collector run, oldest first —
+    a page showing forty addresses would otherwise make forty DNS queries, and
+    one slow resolver would turn it into a timeout. Anything still waiting can
+    be withdrawn.
+  </p>
+  <form id="rdnsForm" class="pattern-row">
+    <input type="text" id="rdnsAddresses" spellcheck="false" autocomplete="off"
+           placeholder="78.174.88.104, 2001:db8::1 — or paste a whole column">
+    <button type="submit">Look these up</button>
+  </form>
+  <div id="rdnsBody"></div>
 </section>
 </section>
 

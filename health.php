@@ -43,7 +43,7 @@ $required = [
     'lib/hostdb.php', 'host-cron.php', 'lib/config.sample.php',
     'lib/headers.php', 'lib/pagebits.php', 'preview.php',
     'lib/spans.php', 'lib/storekeep.php', 'lib/notes.php', 'lib/software.php',
-    'lib/notify.php',
+    'lib/notify.php', 'lib/rdns.php',
 ];
 
 $files = [];

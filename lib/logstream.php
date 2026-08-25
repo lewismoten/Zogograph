@@ -78,7 +78,17 @@ function logStream(array $files, int $want = 20): array
             'lines' => count($tail['lines']), 'bytes' => $tail['size'], 'modified_at' => $mtime,
         ];
 
-        foreach ($tail['lines'] as $line) {
+        /*
+         * Folded here, per file, before anything is merged or sorted.
+         *
+         * A stack frame belongs to the line above it *in the file*. That is a
+         * fact about the file, not about the merged sequence - and the frames
+         * carry no timestamp, so once everything is interleaved they sort by
+         * their file's mtime and end up nowhere near the error they belong to.
+         * Folding after the merge attached them to whatever happened to be
+         * adjacent, which was usually the wrong entry.
+         */
+        foreach (foldFileLines($tail['lines']) as $line) {
             $text = (string)$line['text'];
             $at = logLineTime($text);
 
@@ -89,6 +99,8 @@ function logStream(array $files, int $want = 20): array
             }
 
             $rows[] = [
+                'parsed' => $line['parsed'],
+                'trace' => $line['trace'],
                 'path' => $path,
                 'label' => $label,
                 'n' => (int)$line['n'],
@@ -162,6 +174,38 @@ function logLineTime(string $line): ?int
     if (preg_match('/^\[([A-Z][a-z]{2} [A-Z][a-z]{2} +\d+ \d{2}:\d{2}:\d{2})(?:\.\d+)? (\d{4})\]/', $head, $m)) {
         $at = strtotime($m[1] . ' ' . $m[2]);
         return $at === false ? null : $at;
+    }
+
+    /*
+     * PHP's own: [25-Aug-2026 11:40:20 America/New_York]
+     *
+     * Which is the format of the file this tool most often reads and was the
+     * one format missing - so every line of every PHP error log fell through
+     * to "no timestamp" and got placed by its file's mtime instead. In a view
+     * whose whole purpose is ordering lines from several files together, that
+     * was the ordering being wrong for the majority of them.
+     *
+     * The zone is a name rather than an offset, so it is applied rather than
+     * parsed: strtotime does not accept "11:40:20 America/New_York".
+     */
+    if (preg_match('/^\[(\d{1,2}-[A-Z][a-z]{2}-\d{4} \d{2}:\d{2}:\d{2})(?:\s+([A-Za-z_\/+-]{2,40}))?\]/', $head, $m)) {
+        $zone = null;
+        if (isset($m[2]) && $m[2] !== '') {
+            try {
+                $zone = new DateTimeZone($m[2]);
+            } catch (Throwable) {
+                // An unrecognised zone is better ignored than fatal: the local
+                // one is at worst a few hours out, and null would lose the line.
+                $zone = null;
+            }
+        }
+
+        try {
+            $when = new DateTimeImmutable($m[1], $zone);
+            return $when->getTimestamp();
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     // 2026-08-24 09:20:00 or 2026-08-24T09:20:00Z or with an offset
@@ -312,4 +356,297 @@ function normaliseLogLine(string $line): string
     $shape = trim((string)preg_replace('/\s+/', ' ', (string)$shape));
 
     return mb_substr($shape, 0, 200);
+}
+
+/* ------------------------------------------------------ taking a line apart -- */
+
+/**
+ * A log line, split into the parts a person reads.
+ *
+ * "Every log at once" was showing whole raw lines, which is almost useless for
+ * the thing it exists for. A PHP error line is a bracketed timestamp, then a
+ * timezone, then the word PHP, then a level, then a colon, then the message,
+ * then usually the file and line number - and the message, which is the only
+ * part anybody is scanning for, starts a hundred characters in and gets cut off
+ * by the column width.
+ *
+ * So: the timestamp comes out, the level comes out, and what is left is the
+ * message. Sorted into fields the eye can skip down.
+ *
+ * `kind` is one of info, notice, warning, error, critical, or '' when the line
+ * announces no level at all. It is taken from what the line says rather than
+ * guessed from the words in it: a message that happens to contain "error" is
+ * not necessarily one.
+ *
+ * @return array<string, mixed>
+ */
+function parseLogLine(string $line): array
+{
+    $out = [
+        'kind' => '',
+        'where' => '',
+        'message' => trim($line),
+        'trace' => false,
+        'frame' => null,
+        'stamp' => '',
+    ];
+
+    $rest = rtrim($line, "\r\n");
+
+    /*
+     * A stack frame is recognised first, and never parsed further.
+     *
+     * `#0 /path/file.php(12): thing()` belongs to the error above it, and
+     * treating it as its own entry is what fills the merged view with lines
+     * that have no timestamp, no level and no meaning on their own.
+     */
+    if (preg_match('/^\s*#(\d+)\s+(.*)$/', $rest, $m)) {
+        return [
+            'kind' => '',
+            'where' => '',
+            'message' => trim($m[2]),
+            'trace' => true,
+            'frame' => (int)$m[1],
+            'stamp' => '',
+        ];
+    }
+
+    /*
+     * The timestamp comes off before anything else is decided.
+     *
+     * Including before the trace check: PHP writes `[25-Aug-2026 ...] PHP Stack
+     * trace:` with the timestamp on the front, so looking for the trace header
+     * in the raw line missed every one that had a date on it - which is all of
+     * them, in the file this view reads.
+     *
+     * Removed rather than kept, because the merged view has a column for it
+     * already; repeating it inside the message is the padding this whole
+     * function exists to strip.
+     */
+    $patterns = [
+        // Apache and PHP: [25-Aug-2026 11:40:29 America/New_York]
+        '/^\[([^\]]{6,60})\]\s*/',
+        // ISO-ish: 2026-08-25T11:40:29-04:00, or with a space
+        '/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s*/',
+        // syslog: Aug 25 11:40:29
+        '/^([A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})\s*/',
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $rest, $m)) {
+            $out['stamp'] = trim($m[1]);
+            $rest = substr($rest, strlen($m[0]));
+            break;
+        }
+    }
+
+    /*
+     * A leading colon left by the timestamp.
+     *
+     * suexec writes `[2026-08-25 11:39:00]: uid: ...`, so once the bracket is
+     * removed the line starts with a colon and every later rule is thrown off
+     * by it.
+     */
+    $rest = preg_replace('/^\s*:\s*/', '', $rest) ?? $rest;
+
+    /*
+     * The other shapes a continuation takes.
+     *
+     * The header of a trace, the "thrown in" line that closes one, and both
+     * numbering styles: PHP's own `PHP   1. {main}()` and the exception
+     * form `#0 /path(12): thing()`.
+     */
+    if (preg_match('/^(PHP\s+)?(Stack trace:|thrown in\b|#\d+\s|\d+\.\s)/i', ltrim($rest))) {
+        return [
+            'kind' => '', 'where' => '', 'message' => trim($rest),
+            'trace' => true, 'frame' => null, 'stamp' => $out['stamp'],
+        ];
+    }
+
+    /*
+     * This tool's own log is tab-separated: time, level, where, message.
+     *
+     * Recognised explicitly because it is the file somebody reads when the
+     * dashboard itself is misbehaving, and leaving its level unparsed would
+     * mean the one log guaranteed to be present is the one shown worst.
+     */
+    if (str_contains($rest, "\t")) {
+        $fields = explode("\t", $rest);
+        $level = logLevelWord($fields[0]);
+        if ($level !== '' && count($fields) >= 2) {
+            $out['kind'] = $level;
+            array_shift($fields);
+            if (count($fields) >= 2) {
+                $out['where'] = trim(array_shift($fields));
+            }
+            $rest = implode(' ', $fields);
+        }
+    }
+
+    /*
+     * A bracketed field is either a level or the source.
+     *
+     * `[diskmon] [error] something` and `[core:notice] [pid 12] something` are
+     * both common. Whichever bracket reads as a level becomes the level; the
+     * rest name whatever wrote the line, which is exactly the question a merged
+     * view raises.
+     */
+    while (preg_match('/^\[([^\]]{1,40})\]\s*/', $rest, $m)) {
+        $inside = trim($m[1]);
+        $rest = substr($rest, strlen($m[0]));
+
+        $level = logLevelWord($inside);
+        if ($level !== '' && $out['kind'] === '') {
+            $out['kind'] = $level;
+        } elseif ($out['where'] === '') {
+            $out['where'] = $inside;
+        }
+    }
+
+    /*
+     * `PHP Warning:  message` and friends.
+     *
+     * The level is the words before the first colon, and only when they are
+     * short and read as a level - otherwise a message that happens to contain
+     * a colon would have its first clause promoted to a severity.
+     */
+    if (preg_match('/^(?:PHP\s+)?([A-Za-z][A-Za-z ]{1,24}?):\s*(.*)$/s', $rest, $m)) {
+        $level = logLevelWord($m[1]);
+        if ($level !== '') {
+            $out['kind'] = $level;
+            if ($out['where'] === '' && stripos($m[1], 'PHP') === false) {
+                // The exact wording is kept: "Fatal error" and "Recoverable
+                // fatal error" are different things that map to one kind.
+                $out['where'] = trim($m[1]);
+            }
+            $rest = $m[2];
+        }
+    }
+
+    /*
+     * syslog's `host program[pid]:` prefix.
+     *
+     * The program is the useful half - "which of the twenty things writing to
+     * /var/log/messages said this" - and the hostname is the same on every
+     * line of a file read from the machine it describes.
+     */
+    if ($out['where'] === ''
+        && preg_match('/^(\S+)\s+([A-Za-z][\w.\/-]{1,32})(\[\d+\])?:\s+(.*)$/s', $rest, $m)
+        /*
+         * Not when the second word is a level.
+         *
+         * `PHP Warning:  something` fits this shape exactly - "PHP" as the
+         * host and "Warning" as the program - and matching it here consumed
+         * the line before the level branch could see it, so every PHP warning
+         * came out with no severity at all.
+         */
+        && logLevelWord($m[2]) === '') {
+        $out['where'] = $m[2] . ($m[3] ?? '');
+        $rest = $m[4];
+    }
+
+    $out['message'] = trim($rest);
+
+    /*
+     * The file and line, pulled off the end where PHP puts it.
+     *
+     * ` in /home/x/y.php on line 12` is not part of the sentence and is often
+     * the longest thing on the line. Held separately so the message reads as a
+     * message and the location is still there when it is wanted.
+     */
+    if (preg_match('/^(.*?)\s+in\s+(\/\S+)\s+on\s+line\s+(\d+)\.?$/s', $out['message'], $m)) {
+        $out['message'] = trim($m[1]);
+        $out['file'] = $m[2];
+        $out['line'] = (int)$m[3];
+    } elseif (preg_match('/^(.*?)\s+in\s+(\/\S+):(\d+)$/s', $out['message'], $m)) {
+        // The `:12` form, which is what an uncaught exception writes.
+        $out['message'] = trim($m[1]);
+        $out['file'] = $m[2];
+        $out['line'] = (int)$m[3];
+    }
+
+    return $out;
+}
+
+/**
+ * The severity a word announces, or '' if it is not announcing one.
+ *
+ * Matched against a list rather than by looking for the word anywhere: "an
+ * error occurred while warning the user" is not a level, and a merged view
+ * that marked it critical would be teaching people to ignore the marks.
+ */
+function logLevelWord(string $word): string
+{
+    $word = strtolower(trim($word));
+
+    // `core:error`, `php:warn`, `LogLevel=error` - the level is the last part.
+    if (str_contains($word, ':')) {
+        $word = trim((string)strrchr($word, ':'), ': ');
+    }
+
+    return match (true) {
+        $word === 'emerg' || $word === 'emergency' || $word === 'alert'
+            || $word === 'crit' || $word === 'critical'
+            || $word === 'fatal error' || $word === 'fatal'
+            || $word === 'parse error' || $word === 'core error' => 'critical',
+
+        $word === 'err' || $word === 'error' || $word === 'exception'
+            || $word === 'recoverable fatal error'
+            || $word === 'user error' || $word === 'core warning' => 'error',
+
+        $word === 'warn' || $word === 'warning' || $word === 'user warning'
+            || $word === 'deprecated' || $word === 'user deprecated' => 'warning',
+
+        $word === 'notice' || $word === 'user notice' || $word === 'strict standards'
+            => 'notice',
+
+        $word === 'info' || $word === 'debug' || $word === 'trace' => 'info',
+
+        default => '',
+    };
+}
+
+/**
+ * Merges stack-trace lines into the entry above them, within one file.
+ *
+ * A PHP fatal writes one line for the error and then a dozen for the trace, so
+ * a view showing the twenty newest lines across every file showed one error and
+ * nineteen fragments of it. The trace is not discarded - it is attached to its
+ * error, which is where it is useful and where it came from.
+ *
+ * Lines arrive in file order, oldest first, which is the order this needs: a
+ * trace follows its error, so each frame attaches to the most recent entry.
+ *
+ * @param list<array{n: int, text: string}> $lines
+ * @return list<array{n: int, text: string, parsed: array, trace: list<string>}>
+ */
+function foldFileLines(array $lines): array
+{
+    $out = [];
+
+    foreach ($lines as $line) {
+        $text = (string)$line['text'];
+        $parsed = parseLogLine($text);
+
+        if ($parsed['trace'] && $out !== []) {
+            $out[count($out) - 1]['trace'][] = $parsed['message'];
+            continue;
+        }
+
+        /*
+         * A frame with nothing above it is kept as an entry of its own.
+         *
+         * It happens when the tail begins part-way through a trace, and
+         * silently dropping it would mean a view promising "the 20 newest
+         * lines" showing twelve with no explanation of the rest.
+         */
+        $out[] = [
+            'n' => (int)$line['n'],
+            'text' => $text,
+            'parsed' => $parsed,
+            'trace' => [],
+        ];
+    }
+
+    return $out;
 }

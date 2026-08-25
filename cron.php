@@ -33,6 +33,7 @@ if (!is_file($configFile)) {
 $config = require $configFile;
 date_default_timezone_set($config['timezone'] ?? 'UTC');
 
+require_once __DIR__ . '/lib/rdns.php';
 require_once __DIR__ . '/lib/boot.php';
 define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
@@ -65,6 +66,7 @@ if (in_array('--help', $jobs, true) || in_array('-h', $jobs, true)) {
       php cron.php --vitals     take one cheap reading (disk, memory, cpu)
       php cron.php --scan       walk the tree and record what is where
       php cron.php --urls       run the URL checks that are due (also part of --vitals)
+      php cron.php --rdns       resolve one waiting address (also part of --vitals)
       php cron.php --domains    look up domain expiry for any that are due
       php cron.php --alerts     evaluate the rules, email if anything tripped
       php cron.php --prune      thin readings older than the retention window
@@ -150,6 +152,50 @@ try {
      * more often. Ridden along with --vitals for the same reason the URL checks
      * are: a third cron line is a third thing to be missing.
      */
+    /*
+     * One reverse lookup, and anything the host answered while we were away.
+     *
+     * Rides along with --vitals for the same reason the URL checks do: it
+     * needs to happen regularly and nobody wants a fourth crontab line. The
+     * import is first, so an address the host has already answered is not
+     * looked up a second time by this run.
+     *
+     * The budget is deliberately small. This uses somebody else's resolver on
+     * somebody else's behalf, and a queue that drains slowly is the correct
+     * behaviour rather than a limitation to work around.
+     */
+    if ($wants('--vitals') || $wants('--rdns')) {
+        try {
+            $imported = rdnsImportHostAnswers($pdo, hostDb($config, false));
+            if ($imported > 0) {
+                $say(sprintf('names   took %d answer(s) from the host collector', $imported));
+            }
+
+            $budget = externalBudget($config, 'rdns');
+            for ($i = 0; $i < $budget; $i++) {
+                $one = rdnsDrainOne($pdo, 'cron');
+                if ($one === null) {
+                    break;
+                }
+                $say(sprintf('names   %s -> %s (%dms, waited %s)',
+                    $one['address'], $one['name'] ?? 'no name', $one['ms'],
+                    plainSpan($one['waited'])));
+            }
+
+            /*
+             * Requests a collector took and never finished.
+             *
+             * A run killed mid-lookup leaves a row marked taken with no
+             * answer; released here so the next run picks it up rather than
+             * the queue quietly losing it.
+             */
+            rdnsReleaseStuck($pdo);
+        } catch (Throwable $e) {
+            logProblem('warning', 'reverse lookups: ' . $e->getMessage());
+            $say('names   could not run: ' . $e->getMessage());
+        }
+    }
+
     if ($wants('--vitals') || $wants('--domains')) {
         try {
             $domains = domainCheckDue($pdo, null, null, $config);
