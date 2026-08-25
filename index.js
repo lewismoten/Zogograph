@@ -5852,7 +5852,7 @@ async function sweepLinks(pattern, confirmed = false) {
     : `${count(result.matched, "link with a problem")} under that pattern. `
       + `${count(result.deleted.length, "broken")} would be removed`
       + (result.skipped
-        ? `, and ${count(result.skipped, "with other problems")} left alone \u2014 `
+        ? `, and ${result.skipped} with other problems left alone \u2014 `
           + "a loop or an escape is never removed on a pattern alone."
         : ".");
   parts.push(said);
@@ -15752,6 +15752,125 @@ async function refreshEmail() {
   renderEmail(data);
 }
 
+/**
+ * How loudly each rule speaks, and how long before it repeats.
+ *
+ * Both per rule, and both shown beside the recommendation. Two volumes for
+ * everything meant a domain expiring in a month shouted as loudly as a disk
+ * with an hour left, and one cooldown for everything meant an alert about
+ * inodes silenced the next alert about disk space for six hours - which is the
+ * easiest possible way to miss the one that mattered.
+ */
+function ruleSettings(data) {
+  const wrap = document.createDocumentFragment();
+
+  wrap.appendChild(note(
+    "A cooldown of “every time” is a real answer for a site that has stopped "
+    + "answering. The recommendation is beside each one, so a deliberate choice is "
+    + "distinguishable from a default nobody looked at."
+  ));
+
+  const table = document.createElement("table");
+  table.className = "retention";
+
+  const head = table.createTHead().insertRow();
+  for (const label of ["What", "How loud", "Do not repeat within", ""]) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    head.appendChild(th);
+  }
+
+  const tbody = table.createTBody();
+
+  for (const rule of data.rules) {
+    const row = tbody.insertRow();
+
+    const what = row.insertCell();
+    what.className = "name";
+    what.appendChild(document.createTextNode(rule.label));
+    what.appendChild(helpIcon({ title: rule.label, note: rule.why, mine: false }));
+
+    const level = row.insertCell();
+    const severity = document.createElement("select");
+    severity.name = `severity_${rule.key}`;
+    severity.className = "rule-severity";
+    severity.disabled = !data.writable;
+    for (const [key, meta] of Object.entries(data.levels)) {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = meta.label;
+      option.title = meta.note;
+      option.selected = rule.severity === key;
+      severity.appendChild(option);
+    }
+    level.appendChild(severity);
+
+    const when = row.insertCell();
+    const cooldown = document.createElement("select");
+    cooldown.name = `cooldown_${rule.key}`;
+    cooldown.className = "rule-cooldown";
+    cooldown.disabled = !data.writable;
+    for (const [seconds, label] of [
+      [0, "every time"], [900, "15 minutes"], [3600, "an hour"], [7200, "two hours"],
+      [21600, "six hours"], [43200, "twelve hours"], [86400, "a day"], [604800, "a week"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = String(seconds);
+      option.textContent = label;
+      option.selected = Number(rule.cooldown) === seconds;
+      cooldown.appendChild(option);
+    }
+    /*
+     * A stored cooldown that is not one of the offered steps still shows.
+     *
+     * Somebody who set 4000 seconds by hand in the config should not have it
+     * silently rounded to six hours the first time this page is saved.
+     */
+    if (![...cooldown.options].some(option => option.selected)) {
+      const option = document.createElement("option");
+      option.value = String(rule.cooldown);
+      option.textContent = `${humanSpan(rule.cooldown)} (set by hand)`;
+      option.selected = true;
+      cooldown.appendChild(option);
+    }
+    when.appendChild(cooldown);
+
+    const said = row.insertCell();
+    said.className = "muted small";
+    const bits = [];
+    if (rule.severity !== rule.recommended_severity) {
+      bits.push(`recommended ${data.levels[rule.recommended_severity]?.label
+        ?? rule.recommended_severity}`);
+    }
+    if (Number(rule.cooldown) !== Number(rule.recommended_cooldown)) {
+      bits.push(`recommended ${rule.recommended_cooldown === 0
+        ? "every time" : humanSpan(rule.recommended_cooldown)}`);
+    }
+    said.textContent = bits.length ? bits.join(", ") : "as recommended";
+    if (!bits.length) said.className = "muted small band-ok";
+
+    /*
+     * Where the evidence is, as a link.
+     *
+     * The same page the email links to, so the two agree - and so somebody
+     * setting a severity can see what they are setting it about.
+     */
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "link";
+    go.textContent = "Show me";
+    go.title = VIEWS[rule.view] ? `Open ${VIEWS[rule.view].label}` : rule.view;
+    go.addEventListener("click", () => {
+      location.hash = `#/${rule.view}?range=${state.range}`;
+    });
+    said.appendChild(document.createTextNode(" "));
+    said.appendChild(go);
+  }
+
+  wrap.appendChild(table);
+  return wrap;
+}
+
 function renderEmail(data) {
   const body = $("emailBody");
   state.email = data;
@@ -15774,14 +15893,32 @@ function renderEmail(data) {
   })(), "Nothing is sent while this is off, however bad things get."));
 
   form.appendChild(fieldRow("Send to", (() => {
+    /*
+     * Text rather than email, because several addresses go in here.
+     *
+     * type="email" refuses anything with a semicolon in it, which is exactly
+     * what somebody types when they want two people told.
+     */
     const input = document.createElement("input");
-    input.type = "email";
+    input.type = "text";
     input.id = "emailTo";
     input.value = data.to;
-    input.placeholder = "you@example.com";
-    input.size = 34;
+    input.placeholder = "you@example.com; oncall@example.com";
+    input.size = 44;
     return input;
-  })(), "Where the alerts go."));
+  })(),
+    "Several addresses, separated by semicolons. Each gets its own message rather than "
+    + "one with everybody in the To \u2014 a single send fails as a unit, so one bad "
+    + "mailbox would mean nobody hears."));
+
+  if (data.bad_recipients?.length) {
+    form.appendChild(note(
+      `${count(data.bad_recipients.length, "address", "addresses")} in that list will never receive `
+      + `anything: ${data.bad_recipients.join(", ")}.`
+    ));
+  } else if (data.recipients?.length > 1) {
+    form.appendChild(note(`${count(data.recipients.length, "address", "addresses")} will be told.`));
+  }
 
   form.appendChild(fieldRow("Send from", (() => {
     const input = document.createElement("input");
@@ -15794,22 +15931,22 @@ function renderEmail(data) {
   })(), "Optional. Some hosts reject mail with no From header; others rewrite it "
     + "whatever you put here."));
 
-  form.appendChild(fieldRow("Do not repeat within", (() => {
-    const select = document.createElement("select");
-    select.id = "emailCooldown";
-    for (const [seconds, label] of [
-      [3600, "an hour"], [21600, "six hours"], [43200, "twelve hours"], [86400, "a day"],
-    ]) {
-      const option = document.createElement("option");
-      option.value = String(seconds);
-      option.textContent = label;
-      option.selected = Number(data.cooldown_seconds) === seconds;
-      select.appendChild(option);
-    }
-    return select;
-  })(), "However bad things get. An alert that arrives every minute becomes a filter rule."));
+  form.appendChild(fieldRow("This dashboard's address", (() => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "emailSite";
+    input.value = data.site_url || "";
+    input.placeholder = "https://stats.example.com";
+    input.size = 44;
+    return input;
+  })(),
+    "So the messages can link to the page that answers the question. The cron that sends "
+    + "them has no request to work this out from, so it has to be written down \u2014 "
+    + "otherwise a message says what is wrong and leaves you to find the page at two in "
+    + "the morning."));
 
   parts.push(section("Where to send", form));
+  parts.push(section("How loud, and how often", ruleSettings(data)));
 
   const list = document.createElement("div");
   list.className = "conditions";
@@ -16022,13 +16159,20 @@ async function saveEmailSettings() {
     fields["field_" + input.dataset.field.replace(/\./g, "__")] = String(stored);
   }
 
+  // Per-rule severity and cooldown, collected by name.
+  const perRule = {};
+  for (const select of document.querySelectorAll("select.rule-severity, select.rule-cooldown")) {
+    perRule[select.name] = select.value;
+  }
+
   try {
     const result = await post("email-save", {
       ...fields,
+      ...perRule,
       enabled: $("emailEnabled").checked ? "1" : "0",
       to: $("emailTo").value.trim(),
       from: $("emailFrom").value.trim(),
-      cooldown_seconds: $("emailCooldown").value,
+      site_url: $("emailSite").value.trim(),
       conditions,
     });
     notice("Saved. New settings apply from the next alerting run.", true);

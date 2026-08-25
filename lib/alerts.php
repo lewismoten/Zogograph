@@ -19,6 +19,8 @@ declare(strict_types=1);
  * then it is not an alert.
  */
 
+require_once __DIR__ . '/notify.php';
+require_once __DIR__ . '/domains.php';
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/anomalies.php';
 require_once __DIR__ . '/incident.php';
@@ -723,7 +725,25 @@ function explainedByChild(string $path, int $grew, array $growth): bool
  */
 function recordAlert(PDO $pdo, array $rules, array $alert): ?int
 {
-    $cooldown = (int)($rules['cooldown_seconds'] ?? 21600);
+    /*
+     * The cooldown belongs to the rule, not to the system.
+     *
+     * One setting for everything meant an alert about inodes silenced the next
+     * alert about disk space for six hours. Those are different problems that
+     * happen to arrive together, and suppressing the second because the first
+     * went out is the easiest possible way to miss the one that mattered.
+     *
+     * `$rules` is the alerts section of the config, so it is wrapped back up
+     * into the shape alertRule() reads.
+     */
+    $settings = alertRule(['alerts' => $rules], (string)$alert['rule']);
+    $cooldown = $settings['cooldown'];
+
+    // Zero means every time, which is a real answer for a site that is down.
+    if ($cooldown <= 0) {
+        return writeAlert($pdo, $alert, $settings['severity']);
+    }
+
     $since = time() - $cooldown;
 
     $check = $pdo->prepare(
@@ -737,16 +757,37 @@ function recordAlert(PDO $pdo, array $rules, array $alert): ?int
         return null;
     }
 
+    return writeAlert($pdo, $alert, $settings['severity']);
+}
+
+/**
+ * Writes the row, with the severity the operator chose for this rule.
+ *
+ * The rule decides how loudly it speaks, not the code that raised it: two
+ * volumes meant a domain expiring in a month shouted as loudly as a disk with
+ * an hour left, and people learn very quickly that a channel where everything
+ * is urgent contains nothing urgent.
+ *
+ * A rule that names its own severity - the four steps of a domain expiry, say -
+ * keeps it, because there the urgency is a property of the event rather than of
+ * the kind of event.
+ */
+function writeAlert(PDO $pdo, array $alert, string $fallback): int
+{
+    $severity = isset($alert['severity']) && isset(severityLevels()[$alert['severity']])
+        ? (string)$alert['severity']
+        : $fallback;
+
     $pdo->prepare(
         'INSERT INTO alerts (raised_at, rule, severity, subject, detail, path_id)
          VALUES (?, ?, ?, ?, ?, ?)'
     )->execute([
         time(),
         $alert['rule'],
-        $alert['severity'],
+        $severity,
         $alert['subject'],
         $alert['detail'],
-        $pathId,
+        $alert['path_id'] ?? null,
     ]);
 
     return (int)$pdo->lastInsertId();
@@ -761,30 +802,58 @@ function recordAlert(PDO $pdo, array $rules, array $alert): ?int
 function sendAlertEmail(array $config, PDO $pdo, array $raised): void
 {
     $rules = $config['alerts'];
-    $to = trim((string)($rules['to'] ?? ''));
-    if ($to === '' || !function_exists('mail')) {
+    $recipients = alertRecipients((string)($rules['to'] ?? ''));
+
+    if ($recipients === [] || !function_exists('mail')) {
         return;
     }
 
-    $worst = 'warning';
-    foreach ($raised as $alert) {
-        if ($alert['severity'] === 'critical') {
-            $worst = 'critical';
-        }
-    }
+    /*
+     * Loudest first, and the message takes the volume of its loudest line.
+     *
+     * A message whose subject says "info" and whose third paragraph says a
+     * domain expired yesterday has buried the only part that mattered.
+     */
+    usort($raised, fn(array $a, array $b): int =>
+        severityRank((string)$b['severity']) <=> severityRank((string)$a['severity']));
 
+    $worst = worstSeverity(array_column($raised, 'severity'));
     $host = php_uname('n');
+
     $subject = sprintf(
         '[%s] %s: %s',
-        $worst === 'critical' ? 'CRITICAL' : 'warning',
+        strtoupper(severityLevels()[$worst]['label'] ?? $worst),
         $host,
-        count($raised) === 1 ? $raised[0]['subject'] : count($raised) . ' disk alerts'
+        count($raised) === 1
+            ? $raised[0]['subject']
+            : count($raised) . ' things need looking at'
     );
 
-    $lines = ['Disk Usage Monitor on ' . $host, ''];
+    $lines = ['Hostscope on ' . $host, ''];
+
+    $link = dashboardLink($config);
+    if ($link !== null) {
+        $lines[] = $link;
+        $lines[] = '';
+    }
+
     foreach ($raised as $alert) {
-        $lines[] = strtoupper($alert['severity']) . ' — ' . $alert['subject'];
-        $lines[] = '  ' . str_replace("\n", "\n  ", $alert['detail']);
+        $level = severityLevels()[$alert['severity']] ?? null;
+        $lines[] = strtoupper($level['label'] ?? (string)$alert['severity'])
+            . ' — ' . $alert['subject'];
+        $lines[] = '  ' . str_replace("\n", "\n  ", (string)$alert['detail']);
+
+        /*
+         * A link to the page that answers this particular question.
+         *
+         * Not to the front door: somebody woken by this has to find the right
+         * page, and the tool already knows which one it is.
+         */
+        $where = alertRule($config, (string)$alert['rule']);
+        $page = dashboardLink($config, $where['view'], ['range' => 86400]);
+        if ($page !== null) {
+            $lines[] = '  ' . $page;
+        }
         $lines[] = '';
     }
 
@@ -809,42 +878,256 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
         $lines[] = $line;
     }
 
-    $lines[] = '';
-    $lines[] = 'This message will not repeat for '
-        . humanDuration((float)($rules['cooldown_seconds'] ?? 21600)) . '.';
+    foreach (diagnosisBlock($config, $pdo, $raised) as $line) {
+        $lines[] = $line;
+    }
 
-    $headers = ['Auto-Submitted: auto-generated', 'X-Priority: ' . ($worst === 'critical' ? '1' : '3')];
+    $lines[] = '';
+    $lines[] = repeatNote($config, $raised);
+
+    $headers = [
+        'Auto-Submitted: auto-generated',
+        // 1 is highest. Only the top two levels claim it; a client that sorts
+        // by priority should not put a thirty-day domain notice at the top.
+        'X-Priority: ' . (severityRank($worst) >= 3 ? '1' : '3'),
+    ];
     $from = trim((string)($rules['from'] ?? ''));
     if ($from !== '') {
         $headers[] = 'From: ' . $from;
     }
 
-    $sent = @mail($to, $subject, implode("\n", $lines), implode("\r\n", $headers));
+    /*
+     * One message per recipient rather than a comma-joined To.
+     *
+     * A single mail() with several addresses fails as a unit - one bad
+     * mailbox and nobody hears - and it also shows everybody the whole list,
+     * which is not this tool's to share.
+     */
+    $body = implode("\n", $lines);
+    $failed = [];
+    $sentAny = false;
+
+    foreach ($recipients as $one) {
+        if (@mail($one, $subject, $body, implode("\r\n", $headers))) {
+            $sentAny = true;
+        } else {
+            $failed[] = $one;
+        }
+    }
+
+    $error = $failed === []
+        ? null
+        : 'mail() refused: ' . implode(', ', $failed);
 
     $update = $pdo->prepare('UPDATE alerts SET emailed_at = ?, email_error = ? WHERE id = ?');
     foreach ($raised as $alert) {
-        $update->execute([$sent ? time() : null, $sent ? null : 'mail() returned false', $alert['id']]);
+        $update->execute([$sentAny ? time() : null, $error, $alert['id']]);
     }
 
-    /*
-     * The send goes in the action log as well as on the alert rows.
-     *
-     * The alert row records what happened to *that alert*; this records that
-     * the machine sent mail at that moment. When somebody asks "did I get told
-     * about this", one place holding everything the monitor did - by hand or on
-     * its own - is the answer, rather than a hunt through two tables.
-     */
     logAction(
         $pdo,
         'alert_email',
-        $to,
-        $sent ? 'ok' : 'failed',
+        implode('; ', $recipients),
+        $sentAny ? 'ok' : 'failed',
         0,
         0,
-        sprintf('%s about %s', $worst, count($raised) === 1
-            ? $raised[0]['subject']
-            : count($raised) . ' alerts')
+        sprintf('%s, %d alert(s)%s',
+            $worst,
+            count($raised),
+            $failed === [] ? '' : ', ' . count($failed) . ' address(es) refused')
     );
+}
+
+/**
+ * Commands to diagnose this by hand, at the end of the message.
+ *
+ * The most likely moment for this dashboard to be unreachable is the moment
+ * the disk is full - which is exactly when its email arrives. Each command
+ * says what it will tell you and whether it needs root, because a block of
+ * shell nobody understands gets pasted without reading or not at all.
+ *
+ * @return list<string>
+ */
+function diagnosisBlock(array $config, PDO $pdo, array $raised): array
+{
+    $seen = [];
+    $account = [];
+    $root = [];
+
+    foreach ($raised as $alert) {
+        foreach (diagnosisFor($alert, $config, alertFacts($pdo, $alert)) as $command) {
+            // The same command from two alerts is one command.
+            if (isset($seen[$command['command']])) {
+                continue;
+            }
+            $seen[$command['command']] = true;
+
+            if ($command['who'] === 'root') {
+                $root[] = $command;
+            } else {
+                $account[] = $command;
+            }
+        }
+    }
+
+    // Appended once, at the end, rather than wherever the first alert put it.
+    $self = selfDiagnosis($config);
+    if (!isset($seen[$self['command']])) {
+        $account[] = $self;
+    }
+
+    if ($account === [] && $root === []) {
+        return [];
+    }
+
+    $lines = ['', str_repeat('-', 66), '', 'If this dashboard is not reachable - which is '
+        . 'likely, if the disk is the problem - these', 'answer the same questions from a '
+        . 'shell.', ''];
+
+    if ($account !== []) {
+        $lines[] = 'As ' . (currentAccountOwner($config) ?: 'the account') . ':';
+        $lines[] = '';
+        foreach ($account as $command) {
+            foreach (commandLines($command) as $line) {
+                $lines[] = $line;
+            }
+        }
+    }
+
+    if ($root !== []) {
+        $lines[] = 'As root:';
+        $lines[] = '';
+        foreach ($root as $command) {
+            foreach (commandLines($command) as $line) {
+                $lines[] = $line;
+            }
+        }
+    }
+
+    return $lines;
+}
+
+/**
+ * One command, wrapped as a comment and the line itself.
+ *
+ * @return list<string>
+ */
+function commandLines(array $command): array
+{
+    $lines = [];
+
+    if ($command['when'] !== null) {
+        $lines[] = '  # Only if ' . $command['when'] . ':';
+    }
+
+    foreach (wrapComment($command['why'], 68) as $line) {
+        $lines[] = '  # ' . $line;
+    }
+
+    $lines[] = '  ' . $command['command'];
+    $lines[] = '';
+
+    return $lines;
+}
+
+/** Wraps prose to a width, for a comment in a plain-text email. */
+function wrapComment(string $text, int $width): array
+{
+    $wrapped = wordwrap(trim($text), $width, "\n", false);
+    return $wrapped === '' ? [] : explode("\n", $wrapped);
+}
+
+/**
+ * Values from an alert that a command can be built around.
+ *
+ * A message about a runaway process should carry that process's id rather than
+ * a placeholder somebody has to go and look up - at which point they may as
+ * well not have been given the command.
+ *
+ * @return array<string, mixed>
+ */
+function alertFacts(PDO $pdo, array $alert): array
+{
+    $facts = [];
+
+    if (!empty($alert['path_id'])) {
+        try {
+            $stmt = $pdo->prepare('SELECT path FROM paths WHERE id = ?');
+            $stmt->execute([(int)$alert['path_id']]);
+            $path = $stmt->fetchColumn();
+            if ($path !== false) {
+                $facts['path'] = (string)$path;
+            }
+        } catch (Throwable) {
+            // A missing path is not worth failing an email over.
+        }
+    }
+
+    /*
+     * The rest come out of the alert's own text.
+     *
+     * Which is not elegant, and is much better than the alternative: the rules
+     * that raise these do not carry structured detail, and adding a column to
+     * every one of them to serve the email would be a larger change than
+     * reading back the thing they already wrote down.
+     */
+    $detail = (string)($alert['subject'] ?? '') . ' ' . (string)($alert['detail'] ?? '');
+
+    if (preg_match('/\bpid\s*[:# ]\s*(\d{1,7})\b/i', $detail, $m)) {
+        $facts['pid'] = (int)$m[1];
+    }
+    if (preg_match('#\bhttps?://\S+#i', $detail, $m)) {
+        $facts['url'] = rtrim($m[0], '.,);');
+    }
+
+    $rule = explode(':', (string)($alert['rule'] ?? ''), 2);
+    if ($rule[0] === 'domain_expiry' && isset($rule[1])) {
+        $facts['domain'] = $rule[1];
+    }
+
+    return $facts;
+}
+
+/** Whose shell the account commands are meant for, if it can be worked out. */
+function currentAccountOwner(array $config): string
+{
+    $owner = trim((string)($config['host']['owner'] ?? ''));
+    if ($owner !== '') {
+        return $owner;
+    }
+
+    $root = (string)($config['scan_root'] ?? '');
+    return $root === '' ? '' : basename($root);
+}
+
+/**
+ * When this will speak again, said per rule rather than once.
+ *
+ * The cooldown is now per rule, so a single sentence about "this message" would
+ * be wrong for every message carrying more than one kind of alert.
+ */
+function repeatNote(array $config, array $raised): string
+{
+    $spans = [];
+
+    foreach ($raised as $alert) {
+        $settings = alertRule($config, (string)$alert['rule']);
+        $spans[$settings['label']] = $settings['cooldown'];
+    }
+
+    if (count($spans) === 1) {
+        $only = (int)reset($spans);
+        return $only <= 0
+            ? 'This will be sent again the next time it is true.'
+            : 'This will not repeat for ' . plainSpan($only, true) . '.';
+    }
+
+    $parts = [];
+    foreach ($spans as $label => $seconds) {
+        $parts[] = $label . ': ' . ((int)$seconds <= 0 ? 'every time' : plainSpan((int)$seconds, true));
+    }
+
+    return 'Before repeating — ' . implode('; ', $parts) . '.';
 }
 
 /**
@@ -880,26 +1163,37 @@ function dateAlerts(array $config, PDO $pdo): array
         return $out;
     }
 
+    /*
+     * Domains are read directly rather than through pressingEvents().
+     *
+     * That function answers "what needs attention", and rightly filters to
+     * domains already urgent or expired - which is the dashboard's question and
+     * the calendar's. It is not this one: the whole point of a thirty-day
+     * notice is that it arrives long before anything is urgent, and going
+     * through a filter designed to exclude the not-yet-urgent would have made
+     * the info and warning steps unreachable.
+     */
+    foreach (domainAlerts($config, $pdo) as $alert) {
+        $out[] = $alert;
+    }
+
     foreach ($pressing as $item) {
-        $days = (int)floor(($item['at'] - time()) / 86400);
+        if ($item['kind'] === 'domain') {
+            // Already handled above, with four steps instead of two.
+            continue;
+        }
+
+        $days = (int)floor(($item['at'] - time()) / SPAN_DAY);
 
         $out[] = [
-            'rule' => $item['kind'] === 'domain' ? 'domain_expiry' : 'event_due',
-            'severity' => $days <= 3 ? 'critical' : 'warning',
-            'subject' => $item['kind'] === 'domain'
-                ? $item['title']
-                : sprintf('%s %s', $item['title'], $days < 0
-                    ? 'was due ' . abs($days) . ' days ago'
-                    : ($days === 0 ? 'is due today' : 'is due in ' . $days . ' days')),
-            'detail' => trim(sprintf(
-                "%s\n%s",
-                $item['note'] ?? '',
-                $item['kind'] === 'domain'
-                    ? 'Nothing else on this dashboard can see this coming: every server '
-                        . 'measure stays green until the name stops resolving.'
-                    : 'Marked as important on the calendar. Mark it dealt with there to stop '
-                        . 'it appearing here.'
-            )),
+            'rule' => 'event_due',
+            'severity' => $days <= 1 ? 'error' : ($days <= 3 ? 'warning' : 'info'),
+            'subject' => sprintf('%s %s', $item['title'], $days < 0
+                ? 'was due ' . abs($days) . ' days ago'
+                : ($days === 0 ? 'is due today' : 'is due in ' . $days . ' days')),
+            'detail' => trim(($item['note'] ?? '') . "\n"
+                . 'Marked as important on the calendar. Mark it dealt with there to stop '
+                . 'it appearing here.'),
         ];
     }
 
@@ -1076,4 +1370,81 @@ function humanDuration(float $seconds): string
         return sprintf('%.1f hours', $seconds / 3600);
     }
     return sprintf('%.1f days', $seconds / 86400);
+}
+
+/**
+ * One alert per domain that is close enough to expiry to say something about.
+ *
+ * Four steps, per domain, so one expiring name cannot silence another - the
+ * cooldown is keyed on rule and path together and these carry no path, so a
+ * shared rule name would mean the first domain to fire suppressed the rest for
+ * a day.
+ *
+ * @return list<array<string, mixed>>
+ */
+function domainAlerts(array $config, PDO $pdo): array
+{
+    try {
+        $domains = domainList($pdo);
+    } catch (Throwable) {
+        return [];
+    }
+
+    $out = [];
+
+    foreach ($domains as $domain) {
+        if ($domain['days_left'] === null) {
+            continue;
+        }
+
+        $urgency = domainUrgency((int)$domain['days_left']);
+        if ($urgency === null) {
+            continue;
+        }
+
+        /*
+         * A domain set to renew itself is not silent, but it is quieter.
+         *
+         * Auto-renew fails often enough - an expired card, a registrar that
+         * changed its terms - that saying nothing would be wrong. Saying it at
+         * the same volume as an unprotected domain would be wrong too.
+         */
+        $severity = $domain['auto_renew'] === true && $urgency['severity'] !== 'critical'
+            ? 'info'
+            : $urgency['severity'];
+
+        $out[] = [
+            'rule' => 'domain_expiry:' . $domain['name'],
+            'severity' => $severity,
+            'subject' => sprintf('%s %s', $domain['name'], $urgency['when']),
+            'detail' => implode("\n", array_filter([
+                $domain['registrar'] ? 'Registered through ' . $domain['registrar'] . '.' : '',
+                $domain['auto_renew'] === true
+                    ? 'The registrar says auto-renew is on, which is not the same as it '
+                        . 'working - an expired card is the usual reason it does not.'
+                    : ($domain['auto_renew'] === false
+                        ? 'Auto-renew is off, so this will not renew itself.'
+                        : ''),
+                'Nothing else on this dashboard can see this coming: every server measure '
+                . 'stays green until the name stops resolving, and then everything fails at '
+                . 'once for a reason that is in no log.',
+            ])),
+            'group' => 'domains',
+            'days_left' => (int)$domain['days_left'],
+            'domain' => (string)$domain['name'],
+        ];
+    }
+
+    /*
+     * Loudest first, then soonest.
+     *
+     * The email lists them in this order and takes the highest as its own
+     * severity, so the first line of a message about six domains is the one
+     * that needs doing today.
+     */
+    usort($out, fn(array $a, array $b): int =>
+        [severityRank($b['severity']), $a['days_left']]
+        <=> [severityRank($a['severity']), $b['days_left']]);
+
+    return $out;
 }

@@ -37,8 +37,44 @@ return [
 
     'alerts' => [
         'enabled' => false,
+        /*
+         * Where to send it. Several addresses, separated by semicolons.
+         *
+         * A semicolon because that is what mail clients use and therefore what
+         * people type; commas are accepted too. Each address gets its own
+         * message rather than one with a joined To - a single send fails as a
+         * unit, so one bad mailbox would mean nobody hears, and a shared To
+         * shows everybody the whole list.
+         */
         'to' => '',
         'from' => '',
+
+        /*
+         * The address of this dashboard, for the links in the messages.
+         *
+         * The cron that sends them has no request to work it out from, so it
+         * has to be written down - otherwise the messages say what is wrong and
+         * leave the reader to find the page themselves at two in the morning.
+         */
+        'site_url' => '',
+
+        /*
+         * How loudly each rule speaks, and how long before it repeats.
+         *
+         * Both are per rule, and both are optional: anything absent uses the
+         * recommendation in lib/notify.php, which the settings page shows
+         * beside your choice so a decision is distinguishable from a default.
+         *
+         *   'rules' => [
+         *       'disk_free_percent' => ['severity' => 'critical', 'cooldown' => 3600],
+         *       'url_down'          => ['cooldown' => 0],   // every time
+         *       'anomaly'           => ['severity' => 'info'],
+         *   ]
+         *
+         * A cooldown of 0 means every time, which is a real answer for a site
+         * that has stopped answering.
+         */
+        'rules' => [],
         // No more than one message per rule per this many seconds, however bad
         // things get. An alert that arrives every minute is a filter rule.
         /*

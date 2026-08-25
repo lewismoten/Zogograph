@@ -3696,12 +3696,35 @@ function emailSettings(array $config, PDO $pdo, bool $signedIn): array
           ORDER BY at DESC LIMIT 10"
     )->fetchAll();
 
+    /*
+     * Every rule with its severity, its cooldown, and what is recommended.
+     *
+     * Both settings beside their recommendation, so that a deliberate choice is
+     * distinguishable from a default nobody looked at - which on a page about
+     * how loudly things shout is the whole difference between a considered
+     * setup and one that was never touched.
+     */
+    $rules = [];
+    foreach (alertCatalogue() as $key => $entry) {
+        $rules[] = alertRule($config, $key) + [
+            'set_severity' => isset($a['rules'][$key]['severity']),
+            'set_cooldown' => isset($a['rules'][$key]['cooldown']),
+        ];
+    }
+
     return [
         'enabled' => (bool)($a['enabled'] ?? false),
         'to' => (string)($a['to'] ?? ''),
         'from' => (string)($a['from'] ?? ''),
+        'site_url' => (string)($a['site_url'] ?? ''),
         'cooldown_seconds' => (int)($a['cooldown_seconds'] ?? 21600),
         'conditions' => emailConditions($config),
+        'rules' => $rules,
+        'levels' => severityLevels(),
+        // Addresses in the field that will never receive anything, so the page
+        // can say which rather than silently dropping them.
+        'recipients' => alertRecipients((string)($a['to'] ?? '')),
+        'bad_recipients' => badRecipients((string)($a['to'] ?? '')),
         // Whether the host can send at all, which is the usual reason nothing
         // arrives and is not something the settings above can fix.
         'mail_available' => function_exists('mail'),
@@ -3771,9 +3794,21 @@ function doEmailSave(array $config, PDO $pdo, bool $post): array
         );
     }
 
+    /*
+     * Several addresses, separated by semicolons.
+     *
+     * Refused as a whole if any one of them is unusable, rather than quietly
+     * keeping the good ones: a typo in the third of four means one person
+     * stops being told and nothing anywhere would have mentioned it.
+     */
     $to = trim((string)($_POST['to'] ?? ''));
-    if ($to !== '' && !filter_var($to, FILTER_VALIDATE_EMAIL)) {
-        throw new ActionRefused('that does not look like an email address');
+    $bad = badRecipients($to);
+    if ($bad !== []) {
+        throw new ActionRefused(
+            count($bad) === 1
+                ? '"' . $bad[0] . '" does not look like an email address'
+                : 'these do not look like email addresses: ' . implode(', ', $bad)
+        );
     }
 
     $from = trim((string)($_POST['from'] ?? ''));
@@ -3786,7 +3821,8 @@ function doEmailSave(array $config, PDO $pdo, bool $post): array
         throw new ActionRefused('turning email on needs an address to send to');
     }
 
-    $current = require $file;
+    // $file went when writeConfigFile() was extracted; this needs the path too.
+    $current = require __DIR__ . '/lib/config.php';
     $current['alerts']['enabled'] = $enabled;
     $current['alerts']['to'] = $to;
     $current['alerts']['from'] = $from;
@@ -3844,6 +3880,43 @@ function doEmailSave(array $config, PDO $pdo, bool $post): array
      * Turning one back on restores what it was, not a default, unless it was
      * off before and there is nothing to restore.
      */
+    $site = trim((string)($_POST['site_url'] ?? ''));
+    if ($site !== '' && !filter_var($site, FILTER_VALIDATE_URL)) {
+        throw new ActionRefused('that is not a web address');
+    }
+    $current['alerts']['site_url'] = $site;
+
+    /*
+     * Per-rule severity and cooldown, stored only where they differ.
+     *
+     * Writing every rule out with its recommendation would freeze today's
+     * recommendations into the config file, so a later change to the
+     * catalogue would never reach an existing install.
+     */
+    $perRule = [];
+    foreach (alertCatalogue() as $key => $entry) {
+        $severity = (string)($_POST['severity_' . $key] ?? '');
+        $cooldown = $_POST['cooldown_' . $key] ?? null;
+        $mine = [];
+
+        if ($severity !== '' && $severity !== $entry['severity']) {
+            if (!isset(severityLevels()[$severity])) {
+                throw new ActionRefused('that is not one of the levels on offer');
+            }
+            $mine['severity'] = $severity;
+        }
+
+        if ($cooldown !== null && $cooldown !== '' && (int)$cooldown !== (int)$entry['cooldown']) {
+            $seconds = clampInt($cooldown, 0, 30 * 86400);
+            $mine['cooldown'] = $seconds;
+        }
+
+        if ($mine !== []) {
+            $perRule[$key] = $mine;
+        }
+    }
+    $current['alerts']['rules'] = $perRule;
+
     $wanted = array_filter(explode(',', (string)($_POST['conditions'] ?? '')));
 
     foreach (emailConditions($config) as $condition) {
