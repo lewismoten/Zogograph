@@ -1424,3 +1424,7 @@ input.narrow { width: 5em; }
   width: 100%; height: 60vh; border: 1px solid var(--line);
   border-radius: 8px; background: #fff;
 }
+
+/* A record that has stopped resolving is kept and struck through, not removed:
+   "the MX disappeared last Tuesday" needs the row to still be there. */
+.struck { text-decoration: line-through; }

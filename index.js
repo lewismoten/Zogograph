@@ -308,6 +308,68 @@ function renderGauges(overview) {
   holder.replaceChildren(...dials.map(buildGauge));
 }
 
+/*
+ * The processor, from the same host reading the memory page uses.
+ *
+ * Two figures that answer different questions and are constantly conflated:
+ * how busy the machine is, and how much of its own allowance this account is
+ * using. Inside CageFS the second can sit at the ceiling while the first is
+ * idle, which is not a contradiction - it is what being throttled looks like.
+ */
+function renderCpuGauges(sample) {
+  const holder = $("cpuGauges");
+  if (!holder) return;
+
+  const cores = Number(sample?.cpu_cores) || 0;
+  const load1 = sample?.load1 == null ? null : Number(sample.load1);
+  const dials = [];
+
+  if (sample?.cpu_percent != null) {
+    dials.push({
+      label: "Host CPU",
+      value: Number(sample.cpu_percent),
+      warn: 70, crit: 90,
+      sub: `of every core on the machine${cores ? ` (${cores})` : ""}`,
+    });
+  }
+
+  const mine = state.overview?.vitals?.cpu_percent;
+  if (mine != null) {
+    dials.push({
+      label: "This account's CPU",
+      value: Number(mine),
+      warn: 70, crit: 90,
+      // Not comparable with the figure beside it: different denominators.
+      sub: "of what this account may use, not of the machine",
+    });
+  }
+
+  if (cores > 0 && load1 != null) {
+    dials.push({
+      label: "Load per core",
+      value: (load1 / cores) * 100,
+      // One job per core is a busy machine, not a broken one; past that work is
+      // queueing, and half again is where it starts to be felt.
+      warn: 100, crit: 150, max: 200,
+      sub: `${load1.toFixed(2)} over ${count(cores, "core")}`,
+    });
+  }
+
+  const myCores = Number(state.overview?.vitals?.cpu_cores) || 0;
+  if (myCores > 0 && cores > 0 && myCores < cores) {
+    dials.push({
+      label: "Share of the cores",
+      value: (myCores / cores) * 100,
+      // A small share is the normal, healthy state of a tenant on a shared box,
+      // so the bands sit past anything ordinary.
+      warn: 60, crit: 85,
+      sub: `${myCores} of the machine's ${cores}`,
+    });
+  }
+
+  holder.replaceChildren(...dials.map(buildGauge));
+}
+
 function buildGauge(dial) {
   const box = document.createElement("div");
   box.className = "gauge";
@@ -4004,6 +4066,7 @@ function renderBusyMoments(moments) {
 const HOST_PANELS = [
   "hostPanel", "hostIoPanel", "hostDaemonPanel", "diskProcsPanel", "rootFilesPanel",
   "memUsersPanel", "memServicesPanel", "memGoesPanel", "memProcsPanel", "memSlabPanel",
+  "cpuPanel",
 ];
 
 async function refreshHost() {
@@ -4017,10 +4080,11 @@ async function refreshHost() {
    * one is open shows the state of the collector rather than an empty panel.
    */
   const bodies = ["hostBody", "hostIoBody", "hostDaemonBody", "diskProcsBody", "rootFilesBody",
-    "memUsersBody", "memServicesBody", "memGoesBody", "memProcsBody", "memSlabBody"];
+    "memUsersBody", "memServicesBody", "memGoesBody", "memProcsBody", "memSlabBody",
+    "cpuBody"];
   const contents = ["hostMemory", "hostIoContent", "hostDaemonContent",
     "memUsersContent", "memServicesContent", "memGoesContent", "memProcsContent",
-    "memSlabContent"];
+    "memSlabContent", "cpuContent"];
   const showAll = hidden => contents.forEach(id => { const el = $(id); if (el) el.hidden = hidden; });
   const sayAll = build => bodies.forEach(id => { const el = $(id); if (el) build(el); });
 
@@ -4114,6 +4178,7 @@ async function refreshHost() {
     : null;
 
   renderHostGauges(s, swapUsed, swap);
+  renderCpuGauges(s);
 
   setHostCard("Memory in use", humanBytes(s.used_bytes),
     `of ${humanBytes(s.mem_total)}`);
@@ -5445,25 +5510,14 @@ function renderHostGauges(sample, swapUsed, swap) {
     });
   }
 
-  if (cores > 0 && load1 != null) {
-    dials.push({
-      label: "Load per core",
-      value: (load1 / cores) * 100,
-      // One job per core is a busy machine, not a broken one; past that, work
-      // is queueing, and half again is where it starts to be felt.
-      warn: 100, crit: 150, max: 200,
-      sub: `${load1.toFixed(2)} over ${count(cores, "core")}`,
-    });
-  }
-
-  if (sample.cpu_percent != null) {
-    dials.push({
-      label: "Host CPU",
-      value: Number(sample.cpu_percent),
-      warn: 70, crit: 90,
-      sub: "of every core on the machine",
-    });
-  }
+  /*
+   * Load and CPU are not memory, and have moved.
+   *
+   * They were here because this was the only page fed by the host reading. They
+   * belong on the CPU page, which is fed by the same reading - see
+   * renderCpuGauges. Leaving a copy on both would mean two places to change one
+   * threshold.
+   */
 
   /*
    * The account's share of the machine, when both readings exist.
@@ -10535,6 +10589,367 @@ function renderFetch(data) {
   body.replaceChildren(...parts);
 }
 
+/* --------------------------------------------------------- dns records -- */
+
+const dnsRecordState = { data: null, domain: null };
+
+async function refreshDnsRecords() {
+  const body = $("dnsRecordsBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see DNS records."));
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner());
+
+  let data;
+  try {
+    data = await api("dns-records", dnsRecordState.domain
+      ? { domain: dnsRecordState.domain }
+      : {});
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  renderDnsRecords(data);
+}
+
+function renderDnsRecords(data) {
+  dnsRecordState.data = data;
+  dnsRecordState.domain = data.domain;
+
+  const body = $("dnsRecordsBody");
+  const picker = $("dnsDomain");
+
+  fillFilter(picker, data.domains, data.domain ?? "");
+  // The domain list is not a filter with an "everything" option: a zone sweep
+  // is per zone, so the blank entry would be a choice that cannot be acted on.
+  if (picker.options.length && picker.options[0].value === "") picker.remove(0);
+  picker.value = data.domain ?? "";
+
+  $("dnsSweep").disabled = !data.domain || !data.have_dig;
+
+  const parts = [];
+
+  if (!data.domains.length) {
+    parts.push(note("No domains are being watched yet. Add one on Domain names, then come "
+      + "back \u2014 a zone sweep is offered for domains you have said you care about rather "
+      + "than for any name, because it is a few dozen lookups against somebody's nameserver."));
+    body.replaceChildren(...parts);
+    renderDnsChanges(data);
+    return;
+  }
+
+  if (!data.have_dig) {
+    parts.push(note("dig is not available to this account, so zones cannot be looked up here. "
+      + "On Red Hat it is in bind-utils; on Debian, dnsutils."));
+  }
+
+  const inventory = data.inventory;
+  if (!inventory || !inventory.rows.length) {
+    parts.push(note(data.have_dig
+      ? "Nothing recorded for this domain yet. Press \u201cLook it all up\u201d."
+      : "Nothing recorded for this domain."));
+    body.replaceChildren(...parts);
+    renderDnsChanges(data);
+    return;
+  }
+
+  const live = inventory.rows.filter(r => !r.gone);
+  parts.push(note(
+    `${count(live.length, "record")} across ${count(inventory.names.length, "name")}`
+    + (data.last_swept ? `, last looked up ${ago(data.last_swept)}.` : ".")
+  ));
+
+  /*
+   * Grouped by what each part of the zone is for.
+   *
+   * A flat list of forty rows hides the structure that matters: six records are
+   * the mail configuration and belong together, and a missing SPF is only
+   * obvious next to the MX records it should accompany.
+   */
+  const order = ["addresses", "mail", "delegation", "certificates", "proof", "text", "other"];
+  for (const group of order) {
+    const rows = inventory.groups[group];
+    if (!rows || !rows.length) continue;
+
+    const wrap = document.createDocumentFragment();
+    wrap.appendChild(note(inventory.group_notes[group] || ""));
+
+    const holder = document.createElement("div");
+    holder.id = `dnsGroup_${group}`;
+    wrap.appendChild(holder);
+
+    parts.push(section(GROUP_TITLES[group] || group, wrap));
+  }
+
+  body.replaceChildren(...parts);
+
+  // Filled after the holders are in the document, since renderTable finds them
+  // by id. One pass: an earlier version also queued a microtask and drew twice.
+  for (const group of order) {
+    const rows = inventory.groups[group];
+    if (rows && rows.length) renderDnsGroup(`dnsGroup_${group}`, rows);
+  }
+
+  renderDnsChanges(data);
+}
+
+const GROUP_TITLES = {
+  addresses: "Where the names point",
+  mail: "Mail",
+  delegation: "Who is in charge of the zone",
+  certificates: "Who may issue certificates",
+  proof: "Proof of ownership",
+  text: "Other text records",
+  other: "Everything else",
+};
+
+function renderDnsGroup(id, rows) {
+  const el = $(id);
+  if (!el) return;
+
+  renderTable(id, rows, [
+    {
+      label: "Name",
+      className: "name",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.name;
+        // A class rather than an inline style, to match the rest and to stay
+        // clear of the CSP question entirely.
+        if (row.gone) span.className = "muted struck";
+        return span;
+      },
+    },
+    { label: "Type", render: row => row.type },
+    { label: "Value", className: "cmd", render: row => row.value },
+    {
+      label: "TTL",
+      className: "size",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = humanDuration(Number(row.ttl));
+        /*
+         * A very short TTL is worth noticing.
+         *
+         * Sixty seconds is what somebody sets during a migration so a change
+         * propagates quickly, and it is nearly always meant to be put back.
+         * Left down, every resolver on the internet re-asks constantly.
+         */
+        if (Number(row.ttl) > 0 && Number(row.ttl) <= 300) {
+          span.className = "band-warn";
+          span.title = "A short TTL means resolvers re-ask constantly. Often left over from "
+            + "a migration.";
+        }
+        return span;
+      },
+    },
+    {
+      label: "",
+      render: row => {
+        const span = document.createElement("span");
+        span.className = "muted small";
+        span.textContent = row.gone
+          ? `gone since ${humanTime(row.gone_at).split(",")[0]}`
+          : `seen since ${humanTime(row.first_seen).split(",")[0]}`;
+        return span;
+      },
+    },
+  ], null, row => (row.gone ? "row-bad" : ""), row => `${row.name}|${row.type}|${row.value}`);
+}
+
+function renderDnsChanges(data) {
+  const body = $("dnsChangeBody");
+
+  if (!data.changes.length) {
+    body.replaceChildren(note("Nothing has changed since this started watching."));
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.id = "dnsChangeTable";
+  body.replaceChildren(holder);
+
+  renderTable("dnsChangeTable", data.changes, [
+    { label: "When", render: row => humanTime(row.at) },
+    {
+      label: "What",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.change === "added" ? "appeared" : "disappeared";
+        span.className = row.change === "added" ? "band-ok" : "band-warn";
+        return span;
+      },
+    },
+    { label: "Name", className: "name", render: row => row.name },
+    { label: "Type", render: row => row.type },
+    { label: "Value", className: "cmd", render: row => row.value },
+  ], null, null, row => String(row.id));
+}
+
+/* -------------------------------------------------------------- who am I -- */
+
+async function refreshWhoAmI() {
+  const body = $("whoamiBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see who you are."));
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner());
+
+  let data;
+  try {
+    data = await api("whoami");
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  const parts = [];
+  const you = data.you;
+  const server = data.server;
+
+  const yours = [
+    ["Your address", you.address
+      ? (you.label ? `${you.address} \u2014 ${you.label}` : you.address)
+      : "not reported"],
+  ];
+  if (you.label_note) yours.push(["Your note", you.label_note]);
+  if (you.reverse) yours.push(["Resolves to", you.reverse]);
+  if (you.private) {
+    yours.push(["", "A private address \u2014 you are on the same network as this machine, "
+      + "or behind a proxy that is."]);
+  }
+  yours.push(["Connection", you.secure ? "encrypted" : "not encrypted"]);
+  if (you.agent) yours.push(["Browser says", you.agent]);
+
+  parts.push(section("You", factGrid(yours)));
+
+  if (!you.label && you.address) {
+    /*
+     * An offer rather than a lecture.
+     *
+     * Naming your own address is the single most useful label to have, because
+     * it is the one that turns up in every capture and every connection list.
+     */
+    const wrap = document.createElement("div");
+    wrap.className = "inspect-actions";
+    wrap.appendChild(note("This address has no name yet. Naming it means it is recognised "
+      + "wherever it appears \u2014 in captures, in the connection list, in the ports table."));
+    const go = document.createElement("button");
+    go.textContent = "Give it a name";
+    go.addEventListener("click", () => {
+      showView("net-labels");
+      const field = $("labelMatch");
+      if (field) {
+        field.value = you.address;
+        $("labelText")?.focus();
+      }
+    });
+    wrap.appendChild(go);
+    parts.push(wrap);
+  }
+
+  if (you.claims.length) {
+    parts.push(section("What the proxy chain claims", (() => {
+      const wrap = document.createDocumentFragment();
+      wrap.appendChild(simpleTable(
+        ["Header", "Says"],
+        you.claims.map(c => [c.header, c.value]),
+        ["name", "cmd"]
+      ));
+      /*
+       * Claims, stated as claims.
+       *
+       * Anything can set these. Behind Cloudflare or a load balancer the real
+       * address is only in here; typed directly at the server they are whatever
+       * the client felt like sending.
+       */
+      wrap.appendChild(note("These are set by whatever spoke to the web server last. Behind a "
+        + "proxy they carry the real address; sent straight to the server they can say "
+        + "anything at all. The address above is the only one this process observed."));
+      return wrap;
+    })()));
+  }
+
+  const running = server.running_as;
+  const owner = server.files_owned_by;
+
+  const mine = [
+    ["This machine", server.hostname],
+    ["Running as", running
+      ? `${running.name}${running.display ? ` (${running.display})` : ""} \u2014 uid ${running.uid}`
+      : "unknown"],
+    ["Files owned by", owner
+      ? `${owner.name}${owner.display ? ` (${owner.display})` : ""}`
+      : "unknown"],
+  ];
+
+  if (running && owner && !server.same_user) {
+    mine.push(["", "These differ. Every \u201cpermission denied\u201d on this install traces back "
+      + "to that: the process cannot write what the other account owns."]);
+  }
+
+  mine.push(
+    ["Watching", server.scan_root],
+    ["Its data in", `${server.data_dir}${server.data_writable ? "" : " \u2014 not writable"}`],
+    ["PHP", `${server.php} via ${server.sapi}`],
+  );
+  if (server.server_software) mine.push(["Web server", server.server_software]);
+  if (server.host_owner) {
+    mine.push(["Host collector writes for", server.host_owner]);
+  }
+  if (server.server_addresses?.length) {
+    mine.push(["This machine's addresses", server.server_addresses.join(", ")]);
+  }
+
+  parts.push(section("This install", factGrid(mine)));
+
+  body.replaceChildren(...parts);
+}
+
+/* -------------------------------------------------------------- settings -- */
+
+/*
+ * A landing page for the handful of things that are choices rather than
+ * measurements. Built from the registry so a page added later cannot be
+ * forgotten here.
+ */
+function renderSettings() {
+  const body = $("settingsBody");
+  const wrap = document.createElement("div");
+  wrap.className = "upcoming";
+
+  for (const [view, what] of [
+    ["net-labels", "Your own names for addresses and ports, used across every network page."],
+    ["email", "Where alerts are sent, and which conditions send them."],
+    ["schedule", "When the collectors run, and how to set up the host one."],
+    ["system", "What this install can do, and what it is costing."],
+  ]) {
+    if (!VIEWS[view]) continue;
+
+    const row = document.createElement("div");
+    row.className = "upcoming-row level-info";
+
+    const go = document.createElement("button");
+    go.className = "link";
+    go.textContent = VIEWS[view].label;
+    go.addEventListener("click", () => showView(view));
+    row.appendChild(go);
+
+    const said = document.createElement("span");
+    said.textContent = what;
+    row.appendChild(said);
+
+    wrap.appendChild(row);
+  }
+
+  body.replaceChildren(wrap);
+}
+
 /* --------------------------------------------------------------- domains -- */
 
 const domainState_ = { data: null };
@@ -13048,6 +13463,7 @@ const VIEWS = {
   "host-layout": { label: "Filesystem layout", parent: "storage", refresh: () => refreshMounts() },
   cagefs: { label: "CageFS skeleton", parent: "storage", refresh: () => refreshMounts() },
 
+  cpu: { label: "CPU", refresh: () => refreshHost() },
   host: { label: "Memory", refresh: () => refreshHost() },
   "mem-users": { label: "Memory by user", parent: "host", refresh: () => refreshHost() },
   "mem-goes": { label: "Where it goes", parent: "host", refresh: () => refreshHost() },
@@ -13089,7 +13505,14 @@ const VIEWS = {
     parent: "network",
     refresh: () => refreshUrls(),
   },
-  "net-labels": { label: "Your own names", parent: "network", refresh: () => refreshLabels() },
+  "net-labels": { label: "Your own names", parent: "settings", refresh: () => refreshLabels() },
+  settings: { label: "Settings", refresh: () => renderSettings() },
+  whoami: { label: "Who am I?", parent: "network", refresh: () => refreshWhoAmI() },
+  "dns-records": {
+    label: "What a domain publishes",
+    parent: "network",
+    refresh: () => refreshDnsRecords(),
+  },
   "net-dns": {
     label: "Name lookups",
     parent: "network",
@@ -13859,7 +14282,7 @@ for (const [id, key] of [["actionKind", "kind"], ["actionWho", "who"], ["actionR
   });
 }
 
-for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh",
+for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh", "cpuRefresh",
   "memUsersRefresh", "memServicesRefresh", "memGoesRefresh", "memProcsRefresh",
   "memSlabRefresh"]) {
   $(id).addEventListener("click",
@@ -13889,6 +14312,38 @@ $("domainForm").addEventListener("submit", async event => {
     notice(String(error.message || error));
   }
 });
+
+$("dnsDomain").addEventListener("change", event => {
+  dnsRecordState.domain = event.target.value;
+  refreshDnsRecords().catch(error => notice(String(error.message || error)));
+});
+
+$("dnsSweep").addEventListener("click", async () => {
+  const button = $("dnsSweep");
+  const domain = $("dnsDomain").value;
+  if (!domain) return;
+
+  button.disabled = true;
+  button.textContent = "Looking\u2026";
+  try {
+    const result = await post("dns-sweep", { domain });
+    const r = result.result;
+    notice(r.ok
+      ? `${domain}: ${count(r.records, "record")} across ${count(r.names, "name")}`
+        + (r.changes.length ? `, ${count(r.changes.length, "change")}.` : ", nothing changed.")
+        + (r.truncated ? " The zone has more names than one sweep looks at." : "")
+      : r.reason, r.ok);
+    renderDnsRecords(result);
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    button.disabled = false;
+    button.textContent = "Look it all up";
+  }
+});
+
+$("whoamiRefresh").addEventListener("click",
+  () => refreshWhoAmI().catch(error => notice(String(error.message || error))));
 
 $("fetchForm").addEventListener("submit", event => {
   event.preventDefault();

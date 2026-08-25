@@ -69,6 +69,8 @@ require_once __DIR__ . '/lib/labels.php';
 require_once __DIR__ . '/lib/urlwatch.php';
 require_once __DIR__ . '/lib/domains.php';
 require_once __DIR__ . '/lib/events.php';
+require_once __DIR__ . '/lib/whoami.php';
+require_once __DIR__ . '/lib/dnsrecords.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
@@ -119,6 +121,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'dns' => dnsView($config, $signedIn),
         'captures' => capturesView($config, $pdo, $signedIn),
         'labels' => labelsView($pdo, $signedIn),
+        'whoami' => whoAmIView($config, $pdo, $signedIn),
+        'dns-records' => dnsRecordsView($config, $pdo, $signedIn),
         'urls' => urlsView($pdo, $signedIn),
         'fetch' => fetchView($pdo, $signedIn),
         'domains' => domainsView($pdo, $signedIn),
@@ -165,6 +169,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'domain-save' => doDomainSave($config, $pdo, $post),
         'domain-delete' => doDomainDelete($pdo, $post),
         'domain-check' => doDomainCheck($config, $pdo, $post),
+        'dns-sweep' => doDnsSweep($config, $pdo, $post),
         'event-save' => doEventSave($pdo, $post),
         'event-delete' => doEventDelete($pdo, $post),
         'event-resolve' => doEventResolve($pdo, $post),
@@ -1669,6 +1674,88 @@ function doUrlRun(PDO $pdo, bool $post): array
     }
 
     return ['ok' => true, 'result' => $result['rows'][0]] + urlsView($pdo, true);
+}
+
+/**
+ * Who is asking and who is answering.
+ *
+ * Signed in only: it reports the account the process runs as, where its files
+ * live and what the server calls itself, which together are a fair sketch of
+ * the install for anybody who should not have one.
+ */
+/**
+ * Everything a domain publishes, and what has changed.
+ *
+ * The domain list comes from the watched domains, because those are the ones
+ * somebody has already said they care about - and a zone sweep is expensive
+ * enough that offering it for an arbitrary name would invite pointing it at
+ * somebody else's.
+ */
+function dnsRecordsView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see DNS records');
+    }
+
+    $domains = array_column(domainList($pdo), 'name');
+    $wanted = strtolower(trim((string)($_GET['domain'] ?? '')));
+
+    if ($wanted !== '' && !in_array($wanted, $domains, true)) {
+        throw new ActionRefused('that domain is not being watched');
+    }
+    if ($wanted === '' && $domains !== []) {
+        $wanted = $domains[0];
+    }
+
+    return [
+        'domains' => $domains,
+        'domain' => $wanted === '' ? null : $wanted,
+        'inventory' => $wanted === '' ? null : dnsInventory($pdo, $wanted),
+        'changes' => dnsRecentChanges($pdo, $wanted === '' ? null : $wanted, 60),
+        'have_dig' => whichBinary('dig') !== null,
+        'last_swept' => $wanted === '' ? null : (int)$pdo->query(
+            'SELECT MAX(last_seen) FROM dns_records WHERE domain = ' . $pdo->quote($wanted)
+        )->fetchColumn(),
+    ];
+}
+
+/**
+ * Sweeps one zone now.
+ *
+ * Synchronous, unlike most things that shell out here: a sweep is a few dozen
+ * short lookups and finishes in seconds, and the answer is only useful while
+ * somebody is looking at it. The name limit is what keeps that true on a large
+ * zone.
+ */
+function doDnsSweep(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $domain = strtolower(trim((string)($_POST['domain'] ?? '')));
+    $watched = array_column(domainList($pdo), 'name');
+
+    if (!in_array($domain, $watched, true)) {
+        throw new ActionRefused('that domain is not being watched');
+    }
+
+    $result = dnsSweep($config, $pdo, $domain);
+
+    logAction($pdo, 'dns_sweep', $domain, $result['ok'] ? 'ok' : 'failed', 0, 0,
+        $result['ok']
+            ? sprintf('%d records across %d names, %d changes',
+                $result['records'], $result['names'], count($result['changes']))
+            : $result['reason']);
+
+    $_GET['domain'] = $domain;
+    return ['ok' => true, 'result' => $result] + dnsRecordsView($config, $pdo, true);
+}
+
+function whoAmIView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see who you are');
+    }
+    return whoAmI($config, $pdo);
 }
 
 function labelsView(PDO $pdo, bool $signedIn): array

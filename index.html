@@ -171,6 +171,11 @@
       <span class="nav-label">JetBackup</span>
       <span class="nav-badge" data-badge="backups-jetbackup" hidden></span>
     </a>
+    <a class="nav-item" href="#/cpu" data-nav="cpu">
+      <span class="nav-icon" aria-hidden="true">◱</span>
+      <span class="nav-label">CPU</span>
+      <span class="nav-badge" data-badge="cpu" hidden></span>
+    </a>
     <a class="nav-item" href="#/host" data-nav="host">
       <span class="nav-icon" aria-hidden="true">▣</span>
       <span class="nav-label">Memory</span>
@@ -271,10 +276,15 @@
       <span class="nav-label">Ask for a page</span>
       <span class="nav-badge" data-badge="net-fetch" hidden></span>
     </a>
-    <a class="nav-item nav-sub" href="#/net-labels" data-nav="net-labels" data-parent="network">
+    <a class="nav-item nav-sub" href="#/dns-records" data-nav="dns-records" data-parent="network">
       <span class="nav-icon" aria-hidden="true">›</span>
-      <span class="nav-label">Your own names</span>
-      <span class="nav-badge" data-badge="net-labels" hidden></span>
+      <span class="nav-label">What a domain publishes</span>
+      <span class="nav-badge" data-badge="dns-records" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/whoami" data-nav="whoami" data-parent="network">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Who am I?</span>
+      <span class="nav-badge" data-badge="whoami" hidden></span>
     </a>
     <a class="nav-item" href="#/capabilities" data-nav="capabilities">
       <span class="nav-icon" aria-hidden="true">✓</span>
@@ -305,6 +315,16 @@
       <span class="nav-icon" aria-hidden="true">⏱</span>
       <span class="nav-label">Schedule</span>
       <span class="nav-badge" data-badge="schedule" hidden></span>
+    </a>
+    <a class="nav-item" href="#/settings" data-nav="settings">
+      <span class="nav-icon" aria-hidden="true">⚙</span>
+      <span class="nav-label">Settings</span>
+      <span class="nav-badge" data-badge="settings" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/net-labels" data-nav="net-labels" data-parent="settings">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Your own names</span>
+      <span class="nav-badge" data-badge="net-labels" hidden></span>
     </a>
     <a class="nav-item" href="#/system" data-nav="system">
       <span class="nav-icon" aria-hidden="true">⚒</span>
@@ -1444,6 +1464,87 @@
     <button type="submit">Ask</button>
   </form>
   <div id="whoisBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="dns-records" hidden>
+<section class="panel" id="dnsRecordsPanel">
+  <div class="panel-head">
+    <h2>What a domain publishes</h2>
+    <div class="panel-controls">
+      <label class="inline">Domain
+        <select id="dnsDomain"></select>
+      </label>
+      <button id="dnsSweep">Look it all up</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    A name resolving is not the same as a zone being right. Mail stops arriving
+    because an MX was dropped or an SPF edited; a subdomain starts pointing
+    somewhere that is not yours; a TTL cut to sixty seconds during a migration
+    is never put back. None of that shows anywhere else here. Names come from a
+    zone transfer where your nameserver allows one, from cPanel's own record of
+    this account's domains, and from what was found last time — not from
+    guessing at names.
+  </p>
+  <div id="dnsRecordsBody"></div>
+</section>
+
+<section class="panel" id="dnsChangePanel">
+  <h2>What changed</h2>
+  <p class="muted small sub-note">
+    A record that stops resolving is kept and marked gone rather than deleted —
+    &ldquo;the MX disappeared last Tuesday&rdquo; is the question somebody asks a
+    week later, and a deleted row cannot answer it.
+  </p>
+  <div id="dnsChangeBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="whoami" hidden>
+<section class="panel" id="whoamiPanel">
+  <div class="panel-head">
+    <h2>Who am I?</h2>
+    <button id="whoamiRefresh" class="link">Recheck</button>
+  </div>
+  <p class="muted small sub-note">
+    Two identities that get confused constantly: the browser at the other end,
+    and the account this process runs as. The second is the one that answers
+    permission questions — &ldquo;this account cannot read that&rdquo; means
+    nothing until you know which account it is.
+  </p>
+  <div id="whoamiBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="settings" hidden>
+<section class="panel" id="settingsPanel">
+  <h2>Settings</h2>
+  <p class="muted small sub-note">
+    Everything here changes what this dashboard does rather than what it
+    reports. The rest of the site is measurements; this is the handful of
+    choices behind them.
+  </p>
+  <div id="settingsBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="cpu" hidden>
+<section class="panel" id="cpuPanel">
+  <div class="panel-head">
+    <h2>CPU</h2>
+    <button id="cpuRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note">
+    How hard the processor is working, and how much of it this account may use.
+    Inside CageFS the account's own percentage is of its allowance rather than
+    of the machine, so a pinned account and an idle server are the ordinary
+    shape of hitting a limit rather than a contradiction.
+  </p>
+  <div id="cpuBody"></div>
+  <div id="cpuContent" hidden>
+    <div class="gauges" id="cpuGauges"></div>
+  </div>
 </section>
 </section>
 

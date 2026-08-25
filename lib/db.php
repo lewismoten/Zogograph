@@ -587,6 +587,41 @@ function migrations(): array
          * some endpoints answer it differently, and OPTIONS is the only way to
          * test CORS at all.
          */
+        /*
+         * What a domain publishes, and when each record appeared or went.
+         *
+         * A record is kept rather than deleted when it stops resolving: "the MX
+         * record disappeared last Tuesday" is the question somebody asks a week
+         * later, and a row that was removed cannot answer it. The change log
+         * beside it is what makes that query cheap.
+         */
+        22 => [
+            "CREATE TABLE dns_records (
+                id         INTEGER PRIMARY KEY,
+                domain     TEXT NOT NULL,
+                name       TEXT NOT NULL,
+                type       TEXT NOT NULL,
+                value      TEXT NOT NULL,
+                ttl        INTEGER,
+                first_seen INTEGER NOT NULL,
+                last_seen  INTEGER NOT NULL,
+                gone_at    INTEGER
+            )",
+            'CREATE UNIQUE INDEX dns_records_key ON dns_records (domain, name, type, value)',
+            'CREATE INDEX dns_records_domain ON dns_records (domain, gone_at)',
+
+            "CREATE TABLE dns_changes (
+                id     INTEGER PRIMARY KEY,
+                domain TEXT NOT NULL,
+                at     INTEGER NOT NULL,
+                change TEXT NOT NULL,
+                name   TEXT NOT NULL,
+                type   TEXT NOT NULL,
+                value  TEXT NOT NULL
+            )",
+            'CREATE INDEX dns_changes_at ON dns_changes (at)',
+        ],
+
         21 => [
             "ALTER TABLE url_checks ADD COLUMN follow_redirects INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE url_checks ADD COLUMN method TEXT NOT NULL DEFAULT 'GET'",
