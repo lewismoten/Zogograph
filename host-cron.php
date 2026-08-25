@@ -212,6 +212,42 @@ try {
     }
 
     /*
+     * Questions the account could not answer for itself.
+     *
+     * whois and dig are often missing from inside a cage and present on the
+     * host. The account leaves a request naming one of a fixed set of verbs and
+     * a domain; this runs it and stores the output verbatim.
+     */
+    foreach ($requestedTasks as $task => $requested) {
+        $ask = parseAskTask((string)$task);
+        if ($ask === null) {
+            continue;
+        }
+
+        $done = 0;
+        try {
+            $stmt = $pdo->prepare(
+                'SELECT MAX(answered_at) FROM host_answers WHERE verb = ? AND argument = ?'
+            );
+            $stmt->execute([$ask['verb'], $ask['argument']]);
+            $done = (int)$stmt->fetchColumn();
+        } catch (Throwable) {
+            $done = 0;
+        }
+
+        if ($done >= (int)$requested) {
+            continue;
+        }
+
+        $say(sprintf('Answering %s for %s...', $ask['verb'], $ask['argument']));
+        $answer = runHostAsk($pdo, $ask['verb'], $ask['argument'], (int)$requested);
+        hostHandOver($config, hostDatabasePath($config));
+        $say('  ' . ($answer['ok']
+            ? strlen((string)$answer['text']) . ' bytes'
+            : $answer['error']));
+    }
+
+    /*
      * A capability sweep, if one was asked for.
      *
      * Requests to expose a program count as well: whether it worked is only

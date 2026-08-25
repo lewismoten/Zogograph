@@ -1567,3 +1567,136 @@ function parseCaptureTask(string $task): ?array
     }
     return ['interface' => $parts[1], 'filter' => $parts[2]];
 }
+
+/* ------------------------------------------------- commands root can run -- */
+
+/**
+ * The verbs the collector will run on the account's behalf.
+ *
+ * A fixed list, and each one takes exactly one argument validated as a domain
+ * name. Nothing here accepts a command string: this runs as root, and the whole
+ * point of the arrangement is that the account can ask a question without being
+ * able to say how it is answered.
+ *
+ * @return array<string, array{binary: string, build: callable, about: string}>
+ */
+function hostVerbs(): array
+{
+    return [
+        'whois' => [
+            'binary' => 'whois',
+            'build' => fn(string $binary, string $argument): string =>
+                escapeshellarg($binary) . ' ' . escapeshellarg($argument),
+            'about' => 'the registry record for a domain',
+        ],
+        'dig-any' => [
+            'binary' => 'dig',
+            'build' => fn(string $binary, string $argument): string =>
+                escapeshellarg($binary) . ' +noall +answer +tries=1 +time=3 '
+                . escapeshellarg($argument) . ' ANY',
+            'about' => 'every record type for a name',
+        ],
+        'dig-ns' => [
+            'binary' => 'dig',
+            'build' => fn(string $binary, string $argument): string =>
+                escapeshellarg($binary) . ' +noall +answer +tries=1 +time=3 '
+                . escapeshellarg($argument) . ' NS',
+            'about' => 'which nameservers are authoritative',
+        ],
+    ];
+}
+
+/** The task name for one question, so two different ones are two tasks. */
+function hostAskTask(string $verb, string $argument): string
+{
+    return 'ask:' . $verb . ':' . $argument;
+}
+
+/** Reads a task name back into its parts, or null if it is not one. */
+function parseAskTask(string $task): ?array
+{
+    if (!str_starts_with($task, 'ask:')) {
+        return null;
+    }
+
+    $parts = explode(':', $task, 3);
+    if (count($parts) !== 3 || !isset(hostVerbs()[$parts[1]])) {
+        return null;
+    }
+    if (!preg_match('/^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$/', $parts[2])) {
+        return null;
+    }
+
+    return ['verb' => $parts[1], 'argument' => $parts[2]];
+}
+
+/**
+ * Runs one asked-for command and records the answer.
+ *
+ * Bounded by `timeout` and by the fixed command shape. The output is stored as
+ * text for the account to parse - the collector deliberately does no parsing of
+ * its own, so that improving the parsing never requires touching the thing that
+ * runs as root.
+ */
+function runHostAsk(PDO $host, string $verb, string $argument, int $askedAt): array
+{
+    $verbs = hostVerbs();
+    if (!isset($verbs[$verb])) {
+        return ['ok' => false, 'error' => 'not a verb this runs'];
+    }
+
+    $binary = whichBinary($verbs[$verb]['binary']);
+    if ($binary === null) {
+        $answer = ['ok' => false, 'text' => null,
+                   'error' => $verbs[$verb]['binary'] . ' is not installed on the host either'];
+    } else {
+        $timeout = whichBinary('timeout');
+        $command = ($timeout === null ? '' : escapeshellarg($timeout) . ' 25 ')
+            . ($verbs[$verb]['build'])($binary, $argument) . ' 2>&1';
+
+        $text = shellRead($command);
+        $answer = $text === null || trim($text) === ''
+            ? ['ok' => false, 'text' => null, 'error' => 'the command produced no output']
+            : ['ok' => true, 'text' => substr($text, 0, 40000), 'error' => null];
+    }
+
+    $host->prepare(
+        'INSERT INTO host_answers (verb, argument, asked_at, answered_at, ok, text, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?)'
+    )->execute([
+        $verb, $argument, $askedAt, time(),
+        $answer['ok'] ? 1 : 0, $answer['text'], $answer['error'],
+    ]);
+
+    return $answer;
+}
+
+/**
+ * The newest answer to one question, if there is one.
+ *
+ * @return array{ok: bool, text: ?string, error: ?string, answered_at: int}|null
+ */
+function hostAnswer(PDO $host, string $verb, string $argument): ?array
+{
+    try {
+        $stmt = $host->prepare(
+            'SELECT ok, text, error, answered_at FROM host_answers
+              WHERE verb = ? AND argument = ? ORDER BY answered_at DESC LIMIT 1'
+        );
+        $stmt->execute([$verb, $argument]);
+        $row = $stmt->fetch();
+    } catch (Throwable) {
+        return null;
+    }
+
+    if (!$row) {
+        return null;
+    }
+
+    return [
+        'ok' => (bool)$row['ok'],
+        'text' => $row['text'],
+        'error' => $row['error'],
+        'answered_at' => (int)$row['answered_at'],
+    ];
+}

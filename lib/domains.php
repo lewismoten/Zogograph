@@ -117,10 +117,26 @@ function domainStateNote(string $state): string
  *
  * @return array<string, mixed>
  */
-function domainCheck(PDO $pdo, array $domain, ?callable $runner = null): array
+function domainCheck(PDO $pdo, array $domain, ?callable $runner = null, array $config = []): array
 {
     $name = (string)$domain['name'];
     $answer = whoisLookup($name, $runner);
+
+    /*
+     * When whois is missing here, use whatever root's collector found.
+     *
+     * A cage frequently has no whois binary while the host does, and reporting
+     * "not installed" for every domain for ever is not a monitoring outcome.
+     * The request is left by the caller - see domainCheckDue - because leaving
+     * one per domain from in here would queue a hundred tasks on a first run.
+     */
+    if (!$answer['ok'] && $config !== []
+        && str_contains((string)$answer['error'], 'not installed')) {
+        $fromHost = domainHostAnswer($config, $name);
+        if ($fromHost !== null && $fromHost['ok']) {
+            $answer = ['ok' => true, 'text' => (string)$fromHost['text'], 'error' => null];
+        }
+    }
 
     $parsed = $answer['ok']
         ? parseWhois($answer['text'])
@@ -162,8 +178,17 @@ function domainCheck(PDO $pdo, array $domain, ?callable $runner = null): array
  *
  * @return array{ran: int, failed: int, rows: list<array>}
  */
-function domainCheckDue(PDO $pdo, ?int $only = null, ?callable $runner = null): array
+function domainCheckDue(PDO $pdo, ?int $only = null, ?callable $runner = null, array $config = []): array
 {
+    /*
+     * One request to the host per run, not one per domain.
+     *
+     * If whois is unavailable here, every due domain would otherwise queue its
+     * own task and the first run would leave a hundred of them. The collector
+     * answers them one at a time anyway, so they are asked for as each domain
+     * comes up and the rest wait for the next run.
+     */
+    $askedHost = 0;
     $now = time();
     $ran = 0;
     $failed = 0;
@@ -184,7 +209,14 @@ function domainCheckDue(PDO $pdo, ?int $only = null, ?callable $runner = null): 
             sleep(2);
         }
 
-        $result = domainCheck($pdo, $domain, $runner);
+        $result = domainCheck($pdo, $domain, $runner, $config);
+
+        if (!$result['ok'] && $config !== [] && $askedHost < 3
+            && str_contains((string)$result['error'], 'not installed')) {
+            domainAskHost($config, $pdo, (string)$domain['name']);
+            $askedHost++;
+        }
+
         $ran++;
         if (!$result['ok']) {
             $failed++;
@@ -200,6 +232,28 @@ function domainCheckDue(PDO $pdo, ?int $only = null, ?callable $runner = null): 
  *
  * @return array{ok: bool, text: string, error: ?string}
  */
+/** The host collector's stored whois answer for a name, if it has one. */
+function domainHostAnswer(array $config, string $name): ?array
+{
+    try {
+        $host = hostDb($config, false);
+    } catch (Throwable) {
+        return null;
+    }
+    return $host === null ? null : hostAnswer($host, 'whois', $name);
+}
+
+/** Leaves a request for the collector to look this name up. */
+function domainAskHost(array $config, PDO $pdo, string $name): void
+{
+    try {
+        requestHostTask($pdo, hostAskTask('whois', $name), 'domain check');
+    } catch (Throwable) {
+        // The request is a convenience; failing to leave one is not a reason to
+        // fail the check that was already going to report "not installed".
+    }
+}
+
 function whoisLookup(string $name, ?callable $runner = null): array
 {
     if (!preg_match('/^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$/', $name)) {

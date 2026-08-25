@@ -782,6 +782,32 @@ function hostMigrations(): array
          * sending hundreds of tiny requests - the two look identical in a
          * packet count.
          */
+        /*
+         * Commands the account cannot run, answered by root's collector.
+         *
+         * whois and dig are frequently absent from a cage while being perfectly
+         * present on the host. Rather than reporting "not installed here" and
+         * stopping, the account leaves a request and the collector answers it -
+         * the same protocol as the disk walk, for the same reason.
+         *
+         * The command is never a string from the request. Only a fixed set of
+         * verbs exists, and the argument is validated as a domain name on both
+         * sides, because this runs as root.
+         */
+        21 => [
+            "CREATE TABLE host_answers (
+                id        INTEGER PRIMARY KEY,
+                verb      TEXT NOT NULL,
+                argument  TEXT NOT NULL,
+                asked_at  INTEGER NOT NULL,
+                answered_at INTEGER NOT NULL,
+                ok        INTEGER NOT NULL DEFAULT 0,
+                text      TEXT,
+                error     TEXT
+            )",
+            'CREATE INDEX host_answers_lookup ON host_answers (verb, argument, answered_at)',
+        ],
+
         20 => [
             'ALTER TABLE host_captures ADD COLUMN in_packets INTEGER NOT NULL DEFAULT 0',
             'ALTER TABLE host_captures ADD COLUMN out_packets INTEGER NOT NULL DEFAULT 0',

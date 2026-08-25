@@ -152,7 +152,7 @@ try {
      */
     if ($wants('--vitals') || $wants('--domains')) {
         try {
-            $domains = domainCheckDue($pdo);
+            $domains = domainCheckDue($pdo, null, null, $config);
             if ($domains['ran'] > 0) {
                 $say(sprintf('domains checked %d, %d could not be read',
                     $domains['ran'], $domains['failed']));

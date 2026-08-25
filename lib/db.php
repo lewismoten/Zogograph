@@ -577,6 +577,25 @@ function migrations(): array
          * both. A domain expiry is an event this can discover; a VPS renewal is
          * one only the operator knows about, and both belong on the same page.
          */
+        /*
+         * How a URL check makes its request, not just what it asks for.
+         *
+         * Following redirects is the right default and is exactly wrong when
+         * the redirect is the thing being tested - a check on the plain-HTTP
+         * address that follows to HTTPS reports 200 and never notices the day
+         * the redirect disappears. Same for the method: HEAD is cheaper and
+         * some endpoints answer it differently, and OPTIONS is the only way to
+         * test CORS at all.
+         */
+        21 => [
+            "ALTER TABLE url_checks ADD COLUMN follow_redirects INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE url_checks ADD COLUMN method TEXT NOT NULL DEFAULT 'GET'",
+            "ALTER TABLE url_checks ADD COLUMN send_etag INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE url_checks ADD COLUMN last_etag TEXT",
+            "ALTER TABLE url_results ADD COLUMN redirected_to TEXT",
+            "ALTER TABLE url_results ADD COLUMN hops INTEGER NOT NULL DEFAULT 0",
+        ],
+
         20 => [
             "CREATE TABLE domains (
                 id               INTEGER PRIMARY KEY,

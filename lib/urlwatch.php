@@ -199,7 +199,13 @@ function urlWatchRunOne(array $check, ?callable $fetcher = null): array
 {
     $started = microtime(true);
     $fetched = $fetcher === null
-        ? urlWatchFetch((string)$check['url'])
+        ? urlWatchFetch((string)$check['url'], [
+            'follow_redirects' => (bool)($check['follow_redirects'] ?? true),
+            'method' => (string)($check['method'] ?? 'GET'),
+            // Only when asked, and only with something to send: a conditional
+            // request with no ETag is just an ordinary one with extra words.
+            'etag' => !empty($check['send_etag']) ? ($check['last_etag'] ?? null) : null,
+        ])
         : $fetcher((string)$check['url']);
 
     $result = [
@@ -211,6 +217,10 @@ function urlWatchRunOne(array $check, ?callable $fetcher = null): array
         'matched' => null,
         'ok' => false,
         'error' => $fetched['error'],
+        'hops' => (int)($fetched['hops'] ?? 0),
+        'landed' => $fetched['landed'] ?? null,
+        'etag' => $fetched['etag'] ?? null,
+        'headers' => $fetched['headers'] ?? '',
     ];
 
     if ($fetched['error'] !== null) {
@@ -229,6 +239,22 @@ function urlWatchRunOne(array $check, ?callable $fetcher = null): array
     $statusOk = $expect === 0
         ? $fetched['status'] >= 200 && $fetched['status'] < 400
         : $fetched['status'] === $expect;
+
+    /*
+     * A 304 has no body, so a body rule cannot be applied to it.
+     *
+     * This is not a failure: a conditional request answered "unchanged" is the
+     * server behaving correctly and is often the thing being tested. Running
+     * the content rule against an empty body would report it as broken.
+     */
+    if ($fetched['status'] === 304) {
+        $result['ok'] = $statusOk || $expect === 200;
+        $result['matched'] = null;
+        $result['error'] = $result['ok']
+            ? null
+            : sprintf('answered 304, expected %d', $expect);
+        return $result;
+    }
 
     $inspection = urlWatchInspect(
         (string)($check['check_kind'] ?? 'none'),
@@ -424,35 +450,71 @@ function urlWatchNumber(mixed $value): ?float
  *
  * @return array{status: int, body: string, error: ?string}
  */
-function urlWatchFetch(string $url): array
+function urlWatchFetch(string $url, array $how = []): array
 {
     $parts = parse_url($url);
     if ($parts === false || !in_array($parts['scheme'] ?? '', ['http', 'https'], true)) {
         return ['status' => 0, 'body' => '', 'error' => 'that is not an http or https URL'];
     }
 
+    $follow = (bool)($how['follow_redirects'] ?? true);
+    $method = strtoupper((string)($how['method'] ?? 'GET'));
+    if (!in_array($method, ['GET', 'HEAD', 'OPTIONS'], true)) {
+        $method = 'GET';
+    }
+
     if (function_exists('curl_init')) {
         $handle = curl_init($url);
-        curl_setopt_array($handle, [
+        $options = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => URLWATCH_TIMEOUT,
             CURLOPT_CONNECTTIMEOUT => 8,
-            // Redirects are followed, because a site that redirects to itself
-            // over HTTPS is the normal case and refusing to follow would report
-            // every such site as a 301.
-            CURLOPT_FOLLOWLOCATION => true,
+            /*
+             * Following redirects is a choice, not a default to hide.
+             *
+             * Following is right for "is the site up". It is exactly wrong when
+             * the redirect is the thing being tested: a check on the plain-HTTP
+             * address that follows to HTTPS reports 200 for ever and never
+             * notices the day the redirect stops happening.
+             */
+            CURLOPT_FOLLOWLOCATION => $follow,
             CURLOPT_MAXREDIRS => 5,
             CURLOPT_USERAGENT => 'Hostscope/1.0 (+uptime check)',
             CURLOPT_ENCODING => '',
+            CURLOPT_HEADER => true,
             // A monitor that ignored certificate problems would report a site
             // with an expired certificate as perfectly healthy, which is one of
             // the failures it most needs to catch.
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
-        ]);
+        ];
 
-        $body = curl_exec($handle);
+        if ($method === 'HEAD') {
+            $options[CURLOPT_NOBODY] = true;
+        } elseif ($method !== 'GET') {
+            $options[CURLOPT_CUSTOMREQUEST] = $method;
+        }
+
+        /*
+         * A conditional request, when asked for.
+         *
+         * With the last response's ETag this asks "has it changed", and a well
+         * behaved server answers 304 with no body. That is a legitimate and
+         * useful thing to check - a page that stops sending 304 is a caching
+         * problem - and it is nonsense as a default, because a 304 has no body
+         * to run a content rule against.
+         */
+        if (!empty($how['etag'])) {
+            $options[CURLOPT_HTTPHEADER] = ['If-None-Match: ' . $how['etag']];
+        }
+
+        curl_setopt_array($handle, $options);
+
+        $raw = curl_exec($handle);
         $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        $hops = (int)curl_getinfo($handle, CURLINFO_REDIRECT_COUNT);
+        $landed = (string)curl_getinfo($handle, CURLINFO_EFFECTIVE_URL);
+        $headerSize = (int)curl_getinfo($handle, CURLINFO_HEADER_SIZE);
         $error = curl_errno($handle) === 0 ? null : curl_error($handle);
 
         /*
@@ -461,10 +523,20 @@ function urlWatchFetch(string $url): array
          * check. The handle is released when it goes out of scope.
          */
 
+        $headers = is_string($raw) ? substr($raw, 0, $headerSize) : '';
+        $body = is_string($raw) ? substr($raw, $headerSize) : '';
+
         return [
             'status' => $status,
-            'body' => is_string($body) ? substr($body, 0, URLWATCH_MAX_BYTES) : '',
+            'body' => substr($body, 0, URLWATCH_MAX_BYTES),
+            'headers' => $headers,
             'error' => $error,
+            'hops' => $hops,
+            // Only when it actually went somewhere else, so the column means
+            // "this moved" rather than repeating the address on every row.
+            'landed' => ($landed !== '' && $landed !== $url) ? $landed : null,
+            'etag' => urlWatchHeader($headers, 'etag'),
+            'method' => $method,
         ];
     }
 
@@ -472,6 +544,10 @@ function urlWatchFetch(string $url): array
         'timeout' => URLWATCH_TIMEOUT,
         'ignore_errors' => true,
         'user_agent' => 'Hostscope/1.0 (+uptime check)',
+        'method' => $method,
+        'max_redirects' => $follow ? 5 : 1,
+        'follow_location' => $follow ? 1 : 0,
+        'header' => empty($how['etag']) ? '' : 'If-None-Match: ' . $how['etag'],
     ]]);
 
     $body = @file_get_contents($url, false, $context, 0, URLWATCH_MAX_BYTES);
@@ -486,26 +562,55 @@ function urlWatchFetch(string $url): array
         }
     }
 
-    return ['status' => $status, 'body' => $body, 'error' => null];
+    return [
+        'status' => $status,
+        'body' => $body,
+        'headers' => implode("\n", $http_response_header ?? []),
+        'error' => null,
+        'hops' => 0,
+        'landed' => null,
+        'etag' => urlWatchHeader(implode("\n", $http_response_header ?? []), 'etag'),
+        'method' => $method,
+    ];
+}
+
+/** One header out of a raw response head, case-insensitively. */
+function urlWatchHeader(string $headers, string $name): ?string
+{
+    $pattern = '/^' . preg_quote($name, '/') . '\s*:\s*(.+?)\s*$/im';
+    return preg_match($pattern, $headers, $m) ? trim($m[1]) : null;
 }
 
 function urlWatchStore(PDO $pdo, int $id, array $result): void
 {
     $pdo->prepare(
-        'INSERT INTO url_results (check_id, at, status, ms, bytes, value, matched, ok, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO url_results
+            (check_id, at, status, ms, bytes, value, matched, ok, error, redirected_to, hops)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )->execute([
         $id, $result['at'], $result['status'], $result['ms'], $result['bytes'],
         $result['value'],
         $result['matched'] === null ? null : ($result['matched'] ? 1 : 0),
         $result['ok'] ? 1 : 0,
         $result['error'],
+        $result['landed'] ?? null,
+        (int)($result['hops'] ?? 0),
     ]);
 
+    /*
+     * The ETag is remembered so the next conditional request has one to send.
+     *
+     * Only worth keeping when the check asked for it; storing one otherwise
+     * would quietly change what the next request looks like.
+     */
     $pdo->prepare(
-        'UPDATE url_checks SET last_at = ?, last_ok = ?, last_status = ?, last_error = ?
+        'UPDATE url_checks SET last_at = ?, last_ok = ?, last_status = ?, last_error = ?,
+                last_etag = COALESCE(?, last_etag)
           WHERE id = ?'
-    )->execute([$result['at'], $result['ok'] ? 1 : 0, $result['status'], $result['error'], $id]);
+    )->execute([
+        $result['at'], $result['ok'] ? 1 : 0, $result['status'], $result['error'],
+        $result['etag'] ?? null, $id,
+    ]);
 }
 
 /**
@@ -553,13 +658,36 @@ function urlWatchSave(PDO $pdo, array $input): int
     $id = (int)($input['id'] ?? 0);
     $label = trim((string)($input['label'] ?? '')) ?: ($parts['host'] . ($parts['path'] ?? ''));
 
+    $method = strtoupper((string)($input['method'] ?? 'GET'));
+    if (!in_array($method, ['GET', 'HEAD', 'OPTIONS'], true)) {
+        throw new ActionRefused('that is not a method this will send');
+    }
+
+    /*
+     * A body rule needs a body, and HEAD has none by definition.
+     *
+     * Refused rather than silently ignored: a check configured to look for text
+     * in a response that can never contain any would fail every run, and be
+     * reported as the site being broken.
+     */
+    if ($method === 'HEAD' && $kind !== 'none') {
+        throw new ActionRefused(
+            'a HEAD request has no body, so there is nothing for a content check to look at. '
+            . 'Use GET, or set the check to "just the status code".'
+        );
+    }
+
+    $follow = empty($input['follow_redirects']) ? 0 : 1;
+    $etag = empty($input['send_etag']) ? 0 : 1;
+
     if ($id > 0) {
         $pdo->prepare(
             'UPDATE url_checks SET url = ?, label = ?, interval_seconds = ?, expect_status = ?,
-                    check_kind = ?, check_value = ?, enabled = ? WHERE id = ?'
+                    check_kind = ?, check_value = ?, enabled = ?, follow_redirects = ?,
+                    method = ?, send_etag = ? WHERE id = ?'
         )->execute([
             $url, $label, $interval, $expect, $kind, $value,
-            empty($input['enabled']) ? 0 : 1, $id,
+            empty($input['enabled']) ? 0 : 1, $follow, $method, $etag, $id,
         ]);
         return $id;
     }
@@ -571,11 +699,12 @@ function urlWatchSave(PDO $pdo, array $input): int
 
     $pdo->prepare(
         'INSERT INTO url_checks
-            (url, label, interval_seconds, expect_status, check_kind, check_value, enabled, added_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+            (url, label, interval_seconds, expect_status, check_kind, check_value, enabled,
+             follow_redirects, method, send_etag, added_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )->execute([
         $url, $label, $interval, $expect, $kind, $value,
-        empty($input['enabled']) ? 0 : 1, time(),
+        empty($input['enabled']) ? 0 : 1, $follow, $method, $etag, time(),
     ]);
 
     return (int)$pdo->lastInsertId();

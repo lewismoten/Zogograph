@@ -120,8 +120,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'captures' => capturesView($config, $pdo, $signedIn),
         'labels' => labelsView($pdo, $signedIn),
         'urls' => urlsView($pdo, $signedIn),
+        'fetch' => fetchView($pdo, $signedIn),
         'domains' => domainsView($pdo, $signedIn),
-        'whois' => whoisView($pdo, $signedIn),
+        'whois' => whoisView($config, $pdo, $signedIn),
         'calendar' => calendarView($config, $pdo, $signedIn),
         'capability-changes' => capabilityChangesView($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
@@ -161,9 +162,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'url-save' => doUrlSave($pdo, $post),
         'url-delete' => doUrlDelete($pdo, $post),
         'url-run' => doUrlRun($pdo, $post),
-        'domain-save' => doDomainSave($pdo, $post),
+        'domain-save' => doDomainSave($config, $pdo, $post),
         'domain-delete' => doDomainDelete($pdo, $post),
-        'domain-check' => doDomainCheck($pdo, $post),
+        'domain-check' => doDomainCheck($config, $pdo, $post),
         'event-save' => doEventSave($pdo, $post),
         'event-delete' => doEventDelete($pdo, $post),
         'event-resolve' => doEventResolve($pdo, $post),
@@ -1239,7 +1240,48 @@ function domainsView(PDO $pdo, bool $signedIn): array
  * "when does mine expire" want the same protocol and completely different
  * answers, and running one should not add a domain to the watch list.
  */
-function whoisView(PDO $pdo, bool $signedIn): array
+/**
+ * The host collector's stored answer to a question, if it has one.
+ *
+ * Returns null when there is no host database at all, which is different from
+ * "asked and not answered yet" and is reported differently.
+ */
+function hostAnswerFor(array $config, string $verb, string $argument): ?array
+{
+    try {
+        $host = hostDb($config, false);
+    } catch (Throwable) {
+        return null;
+    }
+    if ($host === null) {
+        return null;
+    }
+
+    return hostAnswer($host, $verb, $argument);
+}
+
+/**
+ * Leaves a request for root's collector, and says what to expect.
+ *
+ * Deliberately does not block. The collector runs on its own schedule, and a
+ * page that waited for it would hang for up to five minutes; the pending
+ * banner and its countdown are how the wait is shown.
+ */
+function askHost(array $config, PDO $pdo, string $verb, string $argument, ?array $previous): array
+{
+    $at = requestHostTask($pdo, hostAskTask($verb, $argument), currentAccountName());
+
+    return [
+        'asked_at' => $at,
+        'pending' => true,
+        // A previous attempt that failed on the host too is worth repeating,
+        // because "the host has not answered yet" and "the host cannot answer"
+        // need different responses from the reader.
+        'previous_error' => $previous === null ? null : $previous['error'],
+    ];
+}
+
+function whoisView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
         throw new ActionRefused('sign in to run a whois lookup');
@@ -1251,6 +1293,25 @@ function whoisView(PDO $pdo, bool $signedIn): array
     }
 
     $answer = whoisLookup($name);
+
+    /*
+     * When the account cannot run whois, ask root's collector instead.
+     *
+     * whois is routinely absent from inside a cage and present on the host, and
+     * "not installed here" is a dead end rather than an answer. A stored answer
+     * is used if there is one; otherwise a request is left and the page says so.
+     */
+    $askedFor = null;
+    if (!$answer['ok'] && str_contains((string)$answer['error'], 'not installed')) {
+        $fromHost = hostAnswerFor($config, 'whois', $name);
+        if ($fromHost !== null && $fromHost['ok']) {
+            $answer = ['ok' => true, 'text' => (string)$fromHost['text'], 'error' => null];
+            $askedFor = ['answered_at' => $fromHost['answered_at']];
+        } else {
+            $askedFor = askHost($config, $pdo, 'whois', $name, $fromHost);
+        }
+    }
+
     $parsed = $answer['ok'] ? parseWhois($answer['text']) : [];
 
     return [
@@ -1258,6 +1319,7 @@ function whoisView(PDO $pdo, bool $signedIn): array
         'name' => $name,
         'ok' => $answer['ok'],
         'error' => $answer['error'],
+        'from_host' => $askedFor,
         'text' => substr($answer['text'], 0, WHOIS_MAX_BYTES),
         'parsed' => $parsed,
         'have_whois' => whichBinary('whois') !== null,
@@ -1268,7 +1330,7 @@ function whoisView(PDO $pdo, bool $signedIn): array
     ];
 }
 
-function doDomainSave(PDO $pdo, bool $post): array
+function doDomainSave(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
 
@@ -1282,7 +1344,7 @@ function doDomainSave(PDO $pdo, bool $post): array
     logAction($pdo, 'domain_save', (string)($_POST['name'] ?? ''), 'ok', 0, 0, null);
 
     // Looked up straight away, so the expiry is on screen rather than pending.
-    domainCheckDue($pdo, $id);
+    domainCheckDue($pdo, $id, null, $config);
 
     return ['ok' => true, 'id' => $id] + domainsView($pdo, true);
 }
@@ -1303,12 +1365,12 @@ function doDomainDelete(PDO $pdo, bool $post): array
     return ['ok' => true] + domainsView($pdo, true);
 }
 
-function doDomainCheck(PDO $pdo, bool $post): array
+function doDomainCheck(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
 
     $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
-    $result = domainCheckDue($pdo, $id);
+    $result = domainCheckDue($pdo, $id, null, $config);
 
     if ($result['ran'] === 0) {
         throw new ActionRefused('no such domain');
@@ -1390,6 +1452,112 @@ function doEventResolve(PDO $pdo, bool $post): array
         $resolved ? 'marked dealt with' : 'reopened');
 
     return ['ok' => true] + calendarView([], $pdo, true);
+}
+
+/**
+ * One request, made now, reported in full.
+ *
+ * The monitor answers "is it still working"; this answers "what exactly does it
+ * send", which is the question while you are setting a check up or arguing with
+ * a cache. Nothing is stored - it is a look, not a measurement.
+ *
+ * The body comes back as text and is rendered by the browser as text. It is
+ * never inserted as markup: fetching an arbitrary page and putting its HTML
+ * into this document would hand that page the dashboard's session.
+ */
+function fetchView(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to make a request');
+    }
+
+    $url = trim((string)($_GET['url'] ?? ''));
+    if ($url === '') {
+        return ['asked' => false];
+    }
+
+    $method = strtoupper((string)($_GET['method'] ?? 'GET'));
+    $follow = ($_GET['follow'] ?? '1') === '1';
+
+    $started = microtime(true);
+    $result = urlWatchFetch($url, ['method' => $method, 'follow_redirects' => $follow]);
+    $ms = (int)round((microtime(true) - $started) * 1000);
+
+    if ($result['error'] !== null && $result['status'] === 0) {
+        return [
+            'asked' => true, 'url' => $url, 'ok' => false,
+            'error' => $result['error'], 'ms' => $ms,
+        ];
+    }
+
+    $headers = (string)($result['headers'] ?? '');
+    $type = urlWatchHeader($headers, 'content-type') ?? '';
+
+    logAction($pdo, 'fetch_url', $url, 'ok', 0, 0, $method . ' ' . $result['status']);
+
+    return [
+        'asked' => true,
+        'url' => $url,
+        'ok' => true,
+        'status' => $result['status'],
+        'ms' => $ms,
+        'method' => $result['method'] ?? $method,
+        'hops' => $result['hops'] ?? 0,
+        'landed' => $result['landed'] ?? null,
+        'headers' => parseHeaderBlock($headers),
+        'raw_headers' => $headers,
+        'body' => $result['body'],
+        'bytes' => strlen((string)$result['body']),
+        'content_type' => $type,
+        /*
+         * Whether the browser could reasonably show this as a page.
+         *
+         * Decided from the declared type rather than by sniffing: the preview
+         * is a convenience and guessing wrong turns it into a way to render
+         * something unexpected inside a sandboxed frame.
+         */
+        'previewable' => (bool)preg_match('#^(text/html|text/plain|application/xhtml)#i', $type),
+        'looks_json' => (bool)preg_match('#json#i', $type),
+    ];
+}
+
+/**
+ * A raw header block as a list of pairs, keeping repeats.
+ *
+ * Set-Cookie and Link legitimately appear several times, and folding them into
+ * a map would silently drop all but the last - which on a page about what a
+ * server actually sent is the one thing that must not happen.
+ *
+ * @return list<array{name: string, value: string, response: int}>
+ */
+function parseHeaderBlock(string $block): array
+{
+    $out = [];
+    $response = 0;
+
+    foreach (preg_split('/\R/', trim($block)) ?: [] as $line) {
+        if ($line === '') {
+            continue;
+        }
+        if (preg_match('#^HTTP/#i', $line)) {
+            // A redirect chain produces several response heads in one block;
+            // numbering them keeps the hops apart.
+            $response++;
+            $out[] = ['name' => '', 'value' => trim($line), 'response' => $response];
+            continue;
+        }
+        $at = strpos($line, ':');
+        if ($at === false) {
+            continue;
+        }
+        $out[] = [
+            'name' => trim(substr($line, 0, $at)),
+            'value' => trim(substr($line, $at + 1)),
+            'response' => max(1, $response),
+        ];
+    }
+
+    return $out;
 }
 
 function urlsView(PDO $pdo, bool $signedIn): array
@@ -3701,7 +3869,28 @@ function doClearProblems(array $config, PDO $pdo, bool $post): array
  */
 function hostClock(array $config): array
 {
-    $out = ['last_at' => null, 'interval' => null, 'pending' => []];
+    $out = ['last_at' => null, 'interval' => null, 'pending' => [],
+            'account_last_at' => null, 'account_interval' => null];
+
+    /*
+     * The account's own collector, measured the same way as the host's.
+     *
+     * From the readings rather than from the crontab: two readings five minutes
+     * apart are better evidence of the schedule than a config file describing a
+     * job that may never have been installed.
+     */
+    try {
+        $mine = db($config)->query(
+            'SELECT taken_at FROM vitals ORDER BY taken_at DESC LIMIT 20'
+        )->fetchAll(PDO::FETCH_COLUMN);
+
+        if ($mine !== []) {
+            $out['account_last_at'] = (int)$mine[0];
+            $out['account_interval'] = medianGap($mine);
+        }
+    } catch (Throwable) {
+        // No readings yet. Both stay null and the ring stays empty.
+    }
 
     try {
         $host = hostDb($config, false);

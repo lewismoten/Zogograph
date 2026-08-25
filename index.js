@@ -28,6 +28,33 @@ const LIVE_POLL_MS = 10000;
 /** While a scan is running, so its finishing is noticed promptly. */
 const SCAN_POLL_MS = 5000;
 
+/*
+ * How soon to look again when something is expected and has not arrived.
+ *
+ * Short enough that a collector running a little late is picked up promptly,
+ * long enough not to hammer the server while waiting for a job that may be
+ * minutes away. Also the floor for the synchronised schedule - see pollInterval.
+ */
+const CATCHUP_POLL_MS = 5000;
+
+/*
+ * The longest this will ever sleep between requests.
+ *
+ * Only reached when both collectors run on very long intervals. Alerts, a
+ * finished scan and a signed-out session all change without either of them
+ * writing a reading, so the page still looks up from time to time.
+ */
+const MAX_POLL_MS = 10 * 60 * 1000;
+
+/*
+ * The pause after a collector is due before asking for its result.
+ *
+ * A reading written at the top of the minute is not in the database until the
+ * collector has finished writing it, and asking at the exact due moment reliably
+ * fetches the previous one - then waits a whole interval to notice.
+ */
+const POLL_GRACE_SECONDS = 2;
+
 const state = {
   signedIn: false,
   csrf: null,
@@ -1894,7 +1921,9 @@ async function refreshShared() {
 
   hostClock.lastAt = clock.last_at === null ? null : Number(clock.last_at);
   hostClock.interval = clock.interval === null ? null : Number(clock.interval);
-  drawHostRing();
+  accountClock.lastAt = clock.account_last_at === null ? null : Number(clock.account_last_at);
+  accountClock.interval = clock.account_interval === null ? null : Number(clock.account_interval);
+  drawPoll();
 
   // Announced before the list is replaced, so it can see what has just gone.
   if (arrived) noticeHostArrival();
@@ -7492,19 +7521,15 @@ async function doSignIn(password) {
  * assignment, and tying it to the refresh interval is what made it wrong in
  * the first place.
  */
-function renderLastSeen() {
-  const el = $("lastSeen");
-  if (!el) return;
-
-  if (!state.lastReadingAt) {
-    el.textContent = "";
-    return;
-  }
-
-  el.textContent = `updated ${ago(state.lastReadingAt)}`;
-}
-
-setInterval(renderLastSeen, 1000);
+/*
+ * Kept as a no-op rather than removed.
+ *
+ * "updated 43s ago" is now carried by the two countdown rings, which say the
+ * same thing about both collectors instead of one about neither. Several
+ * callers still invoke this; leaving it defined is cheaper than hunting them
+ * and safer than a half-removed name.
+ */
+function renderLastSeen() {}
 
 
 /* ------------------------------------------------------------------ treemap -- */
@@ -9569,6 +9594,20 @@ function renderUrls(data) {
     { label: "What", className: "name", render: row => row.label },
     { label: "How often", render: row => row.interval_label },
     {
+      label: "How",
+      render: row => {
+        const span = document.createElement("span");
+        span.className = "muted small";
+        const parts = [row.method || "GET"];
+        // Only the non-default is worth a word; every row saying "follows
+        // redirects" is a column of noise.
+        if (!Number(row.follow_redirects)) parts.push("no redirects");
+        if (Number(row.send_etag)) parts.push("conditional");
+        span.textContent = parts.join(" \u00b7 ");
+        return span;
+      },
+    },
+    {
       label: "Last checked",
       render: row => {
         if (!row.last_at) return "never";
@@ -9791,6 +9830,35 @@ function openUrlForm(row = null) {
   }
   field("urlInterval", "How often", interval, "");
 
+  const method = document.createElement("select");
+  for (const [value, text] of [
+    ["GET", "GET \u2014 fetch the page"],
+    ["HEAD", "HEAD \u2014 headers only, no body"],
+    ["OPTIONS", "OPTIONS \u2014 what the server allows"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = text;
+    option.selected = (row?.method ?? "GET") === value;
+    method.appendChild(option);
+  }
+  field("urlMethod", "Method", method,
+    "HEAD is cheaper and has no body, so it cannot be combined with a content check.");
+
+  const follow = document.createElement("input");
+  follow.type = "checkbox";
+  follow.checked = row ? Boolean(Number(row.follow_redirects)) : true;
+  field("urlFollow", "Follow redirects", follow,
+    "On, a 301 to HTTPS is followed and you see the page. Off, the 301 itself is the answer "
+    + "\u2014 which is what you want when the redirect is the thing being tested.");
+
+  const etag = document.createElement("input");
+  etag.type = "checkbox";
+  etag.checked = row ? Boolean(Number(row.send_etag)) : false;
+  field("urlEtag", "Ask if it changed", etag,
+    "Sends the last ETag, so an unchanged page answers 304 with no body. A 304 counts as "
+    + "healthy and skips the content check, because there is no body to check.");
+
   const expect = document.createElement("input");
   expect.type = "number";
   expect.min = "0";
@@ -9830,8 +9898,23 @@ function openUrlForm(row = null) {
     const wrap = value.closest(".settings-row");
     if (wrap) wrap.hidden = !meta.needs_value;
     hint.innerHTML = meta.hint;
+
+    /*
+     * A body rule and a HEAD request cannot both be chosen.
+     *
+     * The server refuses the combination; disabling it here means nobody
+     * assembles a configuration only to be told at the end that it is not one.
+     */
+    for (const option of kind.options) {
+      option.disabled = method.value === "HEAD" && option.value !== "none";
+    }
+    if (method.value === "HEAD" && kind.value !== "none") {
+      kind.value = "none";
+      sync();
+    }
   };
   kind.addEventListener("change", sync);
+  method.addEventListener("change", sync);
   form.appendChild(hint);
   sync();
 
@@ -9852,6 +9935,9 @@ function openUrlForm(row = null) {
         check_kind: kind.value,
         check_value: value.value.trim(),
         enabled: enabled.checked ? "1" : "0",
+        method: method.value,
+        follow_redirects: follow.checked ? "1" : "0",
+        send_etag: etag.checked ? "1" : "0",
       });
 
       /*
@@ -10316,6 +10402,139 @@ function openEventForm(row = null) {
   $("eventFormPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+/* ------------------------------------------------------------ ask for it -- */
+
+const fetchState = { data: null, showing: "headers" };
+
+async function refreshFetch(params = null) {
+  const body = $("fetchBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to make a request."));
+    return;
+  }
+
+  if (params === null) {
+    if (!fetchState.data) body.replaceChildren(note("Type an address above."));
+    else renderFetch(fetchState.data);
+    return;
+  }
+
+  body.replaceChildren(spinner("Asking\u2026"));
+
+  let data;
+  try {
+    data = await api("fetch", params);
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  fetchState.data = data;
+  renderFetch(data);
+}
+
+function renderFetch(data) {
+  const body = $("fetchBody");
+
+  if (!data.asked) {
+    body.replaceChildren(note("Type an address above."));
+    return;
+  }
+
+  if (!data.ok) {
+    body.replaceChildren(note(`Nothing came back after ${data.ms} ms: ${data.error}`));
+    return;
+  }
+
+  const parts = [];
+
+  const facts = [
+    ["Status", String(data.status)],
+    ["Took", `${data.ms} ms`],
+    ["Method", data.method],
+    ["Body", `${humanBytes(data.bytes)}${data.content_type ? " \u00b7 " + data.content_type : ""}`],
+  ];
+  if (data.hops > 0) {
+    facts.push(["Redirects", `${count(data.hops, "hop")} \u2014 ended at ${data.landed}`]);
+  }
+  parts.push(section("The response", factGrid(facts)));
+
+  /*
+   * Three ways to look at one answer, because they are three questions.
+   *
+   * Headers answer "what is the server claiming", raw answers "what did it
+   * literally send", and the preview answers "does it look right" - and only
+   * the first two are ever the whole truth about a page that renders wrongly.
+   */
+  const tabs = document.createElement("div");
+  tabs.className = "panel-tools";
+
+  const views = [
+    ["headers", "Headers"],
+    ["raw", "Raw body"],
+    ...(data.previewable ? [["preview", "Preview"]] : []),
+  ];
+
+  for (const [key, label] of views) {
+    const button = document.createElement("button");
+    button.className = "link";
+    button.textContent = label;
+    button.disabled = fetchState.showing === key;
+    button.addEventListener("click", () => {
+      fetchState.showing = key;
+      renderFetch(data);
+    });
+    tabs.appendChild(button);
+  }
+  parts.push(tabs);
+
+  if (fetchState.showing === "headers") {
+    if (!data.headers.length) {
+      parts.push(note("No headers were captured."));
+    } else {
+      parts.push(simpleTable(
+        ["Header", "Value"],
+        data.headers.map(h => [
+          h.name || `\u2014 response ${h.response} \u2014`,
+          h.value,
+        ]),
+        ["name", "cmd"]
+      ));
+    }
+  } else if (fetchState.showing === "raw") {
+    const pre = document.createElement("pre");
+    pre.className = "paste raw-body";
+    // textContent, never innerHTML: this is somebody else's page and putting
+    // it into this document as markup would hand it the dashboard's session.
+    pre.textContent = data.body || "(no body)";
+    parts.push(pre);
+  } else {
+    /*
+     * The preview is sandboxed and given the body as a blob, not as markup.
+     *
+     * `sandbox` with no allow-* tokens means no scripts, no forms, no top-level
+     * navigation and a unique origin - so a hostile page rendered here can
+     * neither reach this document nor act as the signed-in user. Anything less
+     * would make this feature a way to run somebody else's code inside the
+     * dashboard.
+     */
+    const frame = document.createElement("iframe");
+    frame.className = "preview-frame";
+    frame.setAttribute("sandbox", "");
+    frame.title = "Preview of the response";
+    frame.srcdoc = data.body || "";
+    parts.push(frame);
+
+    parts.push(note(
+      "Rendered in a sandbox with no scripts, no forms and no access to this page, so it "
+      + "will not look exactly as it does in a browser \u2014 anything the page draws with "
+      + "JavaScript will be missing, and so will anything it loads from elsewhere."
+    ));
+  }
+
+  body.replaceChildren(...parts);
+}
+
 /* --------------------------------------------------------------- domains -- */
 
 const domainState_ = { data: null };
@@ -10347,9 +10566,10 @@ function renderDomains(data) {
 
   if (!data.have_whois) {
     parts.push(note(
-      "The whois command is not installed here, so expiry dates cannot be read. On Red Hat "
-      + "it is in the \u201cwhois\u201d package; on Debian, \u201cwhois\u201d. Domains can still be "
-      + "listed, and will show as unchecked."
+      "whois is not available to this account, so expiry dates are looked up by root's "
+      + "collector instead \u2014 a request is left for each domain as it comes due, and the "
+      + "answer arrives on the collector's next run. If the host has no whois either, install "
+      + "it there: on Red Hat it is the \u201cwhois\u201d package, on Debian \u201cwhois\u201d."
     ));
   }
 
@@ -10516,16 +10736,33 @@ async function refreshWhois(name = "") {
 
   const parts = [];
 
-  if (!data.have_whois) {
-    parts.push(note("The whois command is not installed here."));
+  if (!data.ok) {
+    /*
+     * "Not installed here" is a dead end; "asked the host" is a next step.
+     *
+     * whois is routinely absent inside a cage and present on the machine, so
+     * the account leaves a request for root's collector rather than stopping.
+     * The pending banner above carries the countdown.
+     */
+    if (data.from_host?.pending) {
+      parts.push(note(
+        "whois is not available to this account, so root's collector has been asked to run it. "
+        + "It answers on its next run \u2014 the countdown is at the top of the page, and this "
+        + "page will have the answer once it lands."
+        + (data.from_host.previous_error
+          ? ` The last attempt on the host said: ${data.from_host.previous_error}`
+          : "")
+      ));
+    } else {
+      parts.push(note(data.error || "The lookup failed."));
+    }
     body.replaceChildren(...parts);
     return;
   }
 
-  if (!data.ok) {
-    parts.push(note(data.error || "The lookup failed."));
-    body.replaceChildren(...parts);
-    return;
+  if (data.from_host?.answered_at) {
+    parts.push(note(`Answered by root's collector ${ago(data.from_host.answered_at)}, because `
+      + "whois is not available to this account."));
   }
 
   const p = data.parsed || {};
@@ -12833,6 +13070,13 @@ const VIEWS = {
   },
   calendar: { label: "Calendar", refresh: () => refreshCalendar() },
   domains: { label: "Domain names", parent: "network", refresh: () => refreshDomains() },
+  "net-fetch": {
+    label: "Ask for a page",
+    parent: "network",
+    // Every refresh is a real outbound request, so it happens when asked.
+    manual: true,
+    refresh: () => refreshFetch(),
+  },
   whois: {
     label: "Look a name up",
     parent: "network",
@@ -13039,6 +13283,15 @@ const poll = { busy: false, nextAt: 0, every: 0, raf: null };
  */
 const hostClock = { lastAt: null, interval: null, at: 0 };
 
+/*
+ * The same for this account's own collector.
+ *
+ * Two rings because they are two jobs: a user crontab and root's. Either can
+ * stop while the other keeps running, and one indicator covering both would
+ * report the working half and hide the broken one.
+ */
+const accountClock = { lastAt: null, interval: null };
+
 function setPollState(busy, every) {
   poll.busy = busy;
   if (!busy && every) {
@@ -13046,77 +13299,90 @@ function setPollState(busy, every) {
     poll.nextAt = Date.now() + every;
   }
   const el = $("pollState");
+  // `busy` brightens the account ring; it never moves an arc. See drawPoll.
   if (el) el.classList.toggle("busy", busy);
   drawPoll();
 }
 
+/*
+ * Both rings, each counting down to its own collector.
+ *
+ * Neither of them tracks the browser's polling. The page asking the server
+ * again is not a measurement arriving, and an indicator that spun on every
+ * fetch said "something is happening" several times a minute while nothing
+ * had actually changed - which is how it stopped meaning anything.
+ */
 function drawPoll() {
-  const fill = document.querySelector(".poll-fill");
-  if (!fill) return;
-
-  const circumference = 2 * Math.PI * 15;
-  fill.style.strokeDasharray = String(circumference);
-
-  if (poll.busy) {
-    // A quarter-arc, spun by CSS: an indeterminate wait needs an
-    // indeterminate indicator rather than a progress bar that is lying.
-    fill.style.strokeDashoffset = String(circumference * 0.75);
-  } else if (poll.every > 0) {
-    const left = Math.max(0, poll.nextAt - Date.now());
-    const done = 1 - left / poll.every;
-    fill.style.strokeDashoffset = String(circumference * (1 - done));
-    const el = $("pollState");
-    if (el) {
-      el.title = `Next refresh in ${Math.ceil(left / 1000)}s — click to refresh now`;
-    }
-  }
-
-  drawHostRing();
+  drawClockRing(".poll-fill", 15, accountClock, "account");
+  drawClockRing(".poll-host-fill", 9, hostClock, "host");
+  setPollTitle();
 
   cancelAnimationFrame(poll.raf);
-  if (!poll.busy && poll.every > 0) {
-    poll.raf = requestAnimationFrame(drawPoll);
-  }
+  poll.raf = requestAnimationFrame(() => setTimeout(drawPoll, 250));
 }
 
-/*
- * The inner ring: how long until the host collector could have anything new.
+/**
+ * One ring: how far through its collector's interval we are.
  *
- * Drawn only when there is a measured interval to draw against. A single host
- * reading gives no interval, and a ring counting down to a moment nobody
- * measured would be an invented deadline.
+ * Filling means "a reading is due soon"; full and pulsing means it is late.
+ * Fetching is shown by the ring brightening rather than by the arc moving,
+ * because the arc means elapsed time and a fetch is not time passing.
  */
-function drawHostRing() {
-  const fill = document.querySelector(".poll-host-fill");
+function drawClockRing(selector, radius, clock, which) {
+  const fill = document.querySelector(selector);
   const button = $("pollState");
   if (!fill || !button) return;
 
-  const circumference = 2 * Math.PI * 9;
+  const circumference = 2 * Math.PI * radius;
   fill.style.strokeDasharray = String(circumference);
 
-  if (!hostClock.lastAt || !hostClock.interval) {
+  if (!clock.lastAt || !clock.interval) {
     fill.style.strokeDashoffset = String(circumference);
-    button.classList.remove("host-late", "host-stopped");
+    button.classList.remove(`${which}-late`, `${which}-stopped`);
     return;
   }
 
-  const due = hostClock.lastAt + hostClock.interval;
   const now = Date.now() / 1000;
+  const due = clock.lastAt + clock.interval;
   const left = due - now;
+  const done = left <= 0 ? 1 : 1 - left / clock.interval;
 
-  const done = left <= 0 ? 1 : 1 - left / hostClock.interval;
   fill.style.strokeDashoffset = String(circumference * (1 - Math.max(0, Math.min(1, done))));
 
   const late = -left;
-  button.classList.toggle("host-late", late > 0 && late <= hostClock.interval * 4);
-  button.classList.toggle("host-stopped", late > hostClock.interval * 4);
+  button.classList.toggle(`${which}-late`, late > 0 && late <= clock.interval * 4);
+  button.classList.toggle(`${which}-stopped`, late > clock.interval * 4);
+}
 
-  button.title = left > 0
-    ? `Next refresh in ${Math.ceil(Math.max(0, poll.nextAt - Date.now()) / 1000)}s. `
-      + `The host collector is next expected in ${humanDuration(left)}.`
-    : `Next refresh in ${Math.ceil(Math.max(0, poll.nextAt - Date.now()) / 1000)}s. `
-      + `The host collector is ${humanDuration(late)} late \u2014 it usually runs every `
-      + `${humanDuration(hostClock.interval)}.`;
+/*
+ * One sentence per collector, and what the page itself is doing.
+ *
+ * The rings carry the state; this carries the detail for whoever hovers, which
+ * is where "updated 43s ago" used to live.
+ */
+function setPollTitle() {
+  const button = $("pollState");
+  if (!button) return;
+
+  const said = [];
+  for (const [name, clock] of [["This account", accountClock], ["The host collector", hostClock]]) {
+    if (!clock.lastAt) {
+      said.push(`${name}: nothing recorded.`);
+      continue;
+    }
+    const age = Date.now() / 1000 - clock.lastAt;
+    const left = clock.interval ? clock.lastAt + clock.interval - Date.now() / 1000 : null;
+
+    said.push(left === null
+      ? `${name}: last reading ${humanDuration(age)} ago.`
+      : left > 0
+        ? `${name}: last reading ${humanDuration(age)} ago, next expected in ${humanDuration(left)}.`
+        : `${name}: ${humanDuration(-left)} late \u2014 it usually runs every `
+          + `${humanDuration(clock.interval)}.`);
+  }
+
+  said.push(poll.busy ? "Asking the server now." : "Click to ask the server now.");
+  button.title = said.join("\n");
 }
 
 async function refreshCurrent(fromPoll = false) {
@@ -13151,10 +13417,52 @@ async function refreshCurrent(fromPoll = false) {
   }
 }
 
+/*
+ * How long to wait before asking the server again.
+ *
+ * Not a fixed cadence. The numbers on this page only change when one of the two
+ * collectors writes a reading, so the useful moment to ask is a second or two
+ * after one is due - and asking every few seconds in between is work for
+ * nothing on both ends.
+ *
+ * When something is expected and has not arrived, the wait shortens rather than
+ * jumping back to the full interval: a collector running slightly late should
+ * be picked up promptly, not on the next whole cycle. Once a reading lands the
+ * schedule realigns to it, so the two stay in step even if the cron drifts.
+ */
 function pollInterval() {
   if (state.live) return LIVE_POLL_MS;
   if (state.scanRunning) return SCAN_POLL_MS;
-  return IDLE_POLL_MS;
+
+  // Something outstanding from root deserves a closer watch than an idle page.
+  if (pendingState.rows.length) return CATCHUP_POLL_MS;
+
+  const now = Date.now() / 1000;
+  let soonest = null;
+
+  for (const clock of [accountClock, hostClock]) {
+    if (!clock.lastAt || !clock.interval) continue;
+
+    let due = clock.lastAt + clock.interval + POLL_GRACE_SECONDS;
+    // A collector that is late is due now, and is chased rather than waited on.
+    const wait = due > now ? (due - now) * 1000 : CATCHUP_POLL_MS;
+    soonest = soonest === null ? wait : Math.min(soonest, wait);
+  }
+
+  if (soonest === null) return IDLE_POLL_MS;
+
+  /*
+   * Bounded at both ends, but the ceiling is generous.
+   *
+   * A floor, so a collector writing every ten seconds cannot turn this into a
+   * busy loop. The ceiling exists only so that a daily collector does not leave
+   * the page asleep for a day - other things change underneath it, an alert or
+   * a finished scan - and is deliberately well past any ordinary interval: an
+   * earlier version capped this at the old idle cadence, which meant asking
+   * seven times while waiting for one five-minute reading. That is precisely
+   * the polling this was meant to stop.
+   */
+  return Math.max(CATCHUP_POLL_MS, Math.min(soonest, MAX_POLL_MS));
 }
 
 /* --------------------------------------------------------------- navigation -- */
@@ -13580,6 +13888,17 @@ $("domainForm").addEventListener("submit", async event => {
   } catch (error) {
     notice(String(error.message || error));
   }
+});
+
+$("fetchForm").addEventListener("submit", event => {
+  event.preventDefault();
+  const url = $("fetchUrl").value.trim();
+  if (url === "") return;
+  refreshFetch({
+    url,
+    method: $("fetchMethod").value,
+    follow: $("fetchFollow").checked ? "1" : "0",
+  }).catch(error => notice(String(error.message || error)));
 });
 
 $("whoisForm").addEventListener("submit", event => {

@@ -59,20 +59,22 @@
     -->
     <button id="pollState" class="poll" aria-label="Refresh now" title="Refresh now">
       <svg viewBox="0 0 36 36" aria-hidden="true">
+        <!--
+          Two rings for two collectors, and they are independent.
+
+          The outer one is this account's cron; the inner is root's. They run on
+          separate clocks, fail separately, and the page asking the server again
+          is a third thing that is not either of them - so nothing the browser
+          does is allowed to make either ring move.
+        -->
         <circle class="poll-track" cx="18" cy="18" r="15"></circle>
         <circle class="poll-fill" cx="18" cy="18" r="15"></circle>
-        <!--
-          The inner ring is the host collector, which runs on its own clock and
-          is the thing you are usually waiting for. The page refreshing every
-          few seconds tells you nothing new until root's cron has run again.
-        -->
         <circle class="poll-host-track" cx="18" cy="18" r="9"></circle>
         <circle class="poll-host-fill" cx="18" cy="18" r="9"></circle>
       </svg>
       <span class="poll-dot" aria-hidden="true"></span>
     </button>
 
-    <span id="lastSeen" class="muted small"></span>
     <button id="signInOut" class="primary">Sign in</button>
   </div>
 </header>
@@ -263,6 +265,11 @@
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Look a name up</span>
       <span class="nav-badge" data-badge="whois" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/net-fetch" data-nav="net-fetch" data-parent="network">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Ask for a page</span>
+      <span class="nav-badge" data-badge="net-fetch" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/net-labels" data-nav="net-labels" data-parent="network">
       <span class="nav-icon" aria-hidden="true">›</span>
@@ -1246,6 +1253,32 @@
 </section>
 </section>
 
+<section class="view" data-view="net-fetch" hidden>
+<section class="panel" id="fetchPanel">
+  <div class="panel-head">
+    <h2>Ask for a page</h2>
+  </div>
+  <p class="muted small sub-note">
+    One request, made now, reported in full — what the server actually sends,
+    which is the question while you are setting a check up or arguing with a
+    cache. Nothing is stored. The body is shown as text and never inserted as
+    markup; the preview runs in a sandboxed frame with no access to this page.
+  </p>
+  <form id="fetchForm" class="pattern-row">
+    <input type="url" id="fetchUrl" spellcheck="false" autocomplete="off"
+           placeholder="https://example.com/">
+    <select id="fetchMethod">
+      <option value="GET">GET</option>
+      <option value="HEAD">HEAD</option>
+      <option value="OPTIONS">OPTIONS</option>
+    </select>
+    <label class="pill"><input type="checkbox" id="fetchFollow" checked> Follow redirects</label>
+    <button type="submit">Ask</button>
+  </form>
+  <div id="fetchBody"></div>
+</section>
+</section>
+
 <section class="view" data-view="net-labels" hidden>
 <section class="panel" id="labelsPanel">
   <div class="panel-head">
@@ -1378,7 +1411,7 @@
     <input type="text" id="domainName" spellcheck="false" autocomplete="off"
            placeholder="example.com">
     <label class="pill">warn
-      <input type="number" id="domainWarn" min="1" max="365" value="45" style="width:5em">
+      <input type="number" id="domainWarn" min="1" max="365" value="45" class="narrow">
       days before
     </label>
     <button type="submit">Watch it</button>
