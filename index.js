@@ -7777,6 +7777,70 @@ async function refreshUptime() {
  * recorded. The fourth is not a failure and is not downtime; it is the absence
  * of evidence, drawn as such.
  */
+/**
+ * A line per collector, saying whether it is keeping up.
+ *
+ * The bar shows the shape; this says the number. "Reporting every 5 min, last
+ * one 3 min ago" and "reporting every 5 min, last one 4 hours ago" look
+ * similar at the right-hand end of a week-long chart and mean entirely
+ * different things.
+ */
+function renderTrackSummary(tracks, to) {
+  const holder = $("uptimeTracks");
+  if (!holder) return;
+
+  if (!tracks.length) {
+    holder.replaceChildren();
+    return;
+  }
+
+  const rows = tracks.map(track => {
+    const said = [];
+
+    if (track.unreadable) {
+      said.push("its database cannot be read from this account, so nothing can be said "
+        + "about whether it is running");
+    } else if (!track.readings) {
+      said.push("nothing recorded in this window");
+    } else {
+      said.push(`${humanCount(track.readings)} readings`);
+      if (track.interval) said.push(`about every ${humanSpan(track.interval)}`);
+
+      const age = to - track.last;
+      const late = track.interval && age > track.interval * 2.5;
+      said.push(`last one ${humanSpan(age)} ago${late ? " — later than usual" : ""}`);
+
+      const holes = (track.gaps || []).length;
+      if (holes) said.push(`${count(holes, "gap")} in this window`);
+      if ((track.marks || []).length) {
+        said.push(`${count(track.marks.length, "request")} answered`);
+      }
+    }
+
+    const line = document.createElement("div");
+    line.className = "track-line";
+
+    const name = document.createElement("strong");
+    name.textContent = track.label;
+    line.appendChild(name);
+
+    const text = document.createElement("span");
+    const stale = track.interval && (to - track.last) > track.interval * 2.5;
+    text.className = stale || track.unreadable || !track.readings ? "band-warn" : "muted";
+    text.textContent = ` — ${said.join(", ")}.`;
+    line.appendChild(text);
+
+    const why = document.createElement("div");
+    why.className = "muted small";
+    why.textContent = track.what;
+    line.appendChild(why);
+
+    return line;
+  });
+
+  holder.replaceChildren(...rows);
+}
+
 function drawUptimeChart(from, to) {
   const canvas = $("uptimeChart");
   if (!canvas) return;
@@ -7796,8 +7860,33 @@ function drawUptimeChart(from, to) {
   const width = canvas.clientWidth;
   if (!width) return;
 
+  const data = state.uptime;
+  const a = data?.analysis || {};
+  const tracks = data?.tracks || [];
+
+  /*
+   * A row for the machine, and a row for each collector.
+   *
+   * The machine being up and a collector reporting are different facts, and
+   * merging them was hiding the more common failure: a cron that stopped looks
+   * exactly like a machine that went away, and the two need completely
+   * different responses. Two collectors, separately, because they fail
+   * independently - one is in a crontab this account owns and the other is
+   * root's.
+   */
+  const rows = [
+    { key: "machine", label: "The machine", height: 34 },
+    ...tracks.map(track => ({ key: track.key, label: track.label, track, height: 22 })),
+  ];
+
+  const pad = { left: 8, right: 8, top: 18, bottom: 34 };
+  const rowGap = 16;
+  const labelW = 132;
+  const height = pad.top + pad.bottom
+    + rows.reduce((sum, row) => sum + row.height, 0)
+    + rowGap * (rows.length - 1);
+
   const dpr = window.devicePixelRatio || 1;
-  const height = 132;
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
   canvas.style.height = height + "px";
@@ -7805,104 +7894,209 @@ function drawUptimeChart(from, to) {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
+  ctx.font = "11px system-ui, sans-serif";
 
-  const pad = { left: 8, right: 8, top: 16, bottom: 30 };
-  const plotW = Math.max(1, width - pad.left - pad.right);
-  const barTop = pad.top;
-  const barH = 42;
-
+  const plotLeft = pad.left + labelW;
+  const plotW = Math.max(1, width - plotLeft - pad.right);
   const span = Math.max(1, to - from);
-  const x = at => pad.left + ((Math.max(from, Math.min(to, at)) - from) / span) * plotW;
-
-  const data = state.uptime;
-  const a = data?.analysis || {};
+  const x = at => plotLeft + ((Math.max(from, Math.min(to, at)) - from) / span) * plotW;
 
   const COLOURS = {
     up: "#3f7f5f",
     restart: "#f2616b",
     gap: "#4a5563",
     unknown: "#232d3a",
+    reporting: "#4c7fa8",
+    work: "#d8b25e",
   };
 
   /*
-   * The baseline is "not recorded", and evidence is painted over it.
+   * The time axis first, behind everything.
    *
-   * Starting from "up" and cutting holes would mean any stretch nobody has data
-   * for is drawn as a working machine, which is a claim rather than a reading.
+   * Drawn across the whole stack rather than per row: the point of putting the
+   * tracks one above another is reading down a vertical to see what all of
+   * them were doing at the same moment, and that only works if the verticals
+   * are shared.
    */
-  ctx.fillStyle = COLOURS.unknown;
-  ctx.fillRect(pad.left, barTop, plotW, barH);
+  const axis = timeTicks(from, to, plotW, text => ctx.measureText(text).width);
+  const plotTop = pad.top;
+  const plotBottom = height - pad.bottom;
 
-  const covered = [];
-  if (a.tracking_from) {
-    const start = Math.max(from, Number(a.tracking_from));
-    if (start < to) {
-      ctx.fillStyle = COLOURS.up;
-      ctx.fillRect(x(start), barTop, Math.max(1, x(to) - x(start)), barH);
-      covered.push([start, to]);
-    }
+  for (const tick of axis.ticks) {
+    const at = plotLeft + tick.x;
+
+    ctx.strokeStyle = tick.ends
+      ? "rgba(255, 255, 255, 0.14)"
+      : "rgba(255, 255, 255, 0.07)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(at, plotTop - 6);
+    ctx.lineTo(at, plotBottom + 5);
+    ctx.stroke();
+
+    if (!tick.label) continue;
+    ctx.fillStyle = tick.ends ? "#8b98a8" : "#66717f";
+    ctx.textAlign = "center";
+    ctx.fillText(tick.label, at, height - 12);
   }
 
-  const bands = [
-    ...(a.outages || []).map(o => ({ ...o, colour: COLOURS.restart, kind: "restart" })),
-    ...(a.gaps || []).map(g => ({ ...g, colour: COLOURS.gap, kind: "gap" })),
-  ];
+  let y = pad.top;
 
-  for (const band of bands) {
-    const left = x(band.from);
-    const right = x(band.to);
-    if (right < pad.left || left > pad.left + plotW) continue;
-    ctx.fillStyle = band.colour;
-    ctx.fillRect(left, barTop, Math.max(2, right - left), barH);
+  for (const row of rows) {
+    ctx.fillStyle = "#8b98a8";
+    ctx.textAlign = "right";
+    ctx.fillText(row.label, plotLeft - 10, y + row.height / 2 + 4);
+    ctx.textAlign = "left";
+
+    if (row.key === "machine") {
+      drawMachineRow(ctx, a, x, from, to, plotLeft, plotW, y, row.height, COLOURS);
+    } else {
+      drawTrackRow(ctx, row.track, x, plotW, plotLeft, y, row.height, COLOURS);
+    }
+
+    y += row.height + rowGap;
   }
 
   /*
-   * Restarts as ticks above the bar, including ones that left no gap at all.
+   * Restart ticks span every row.
    *
-   * A reboot the collector resumes after within a minute has nothing to shade,
-   * and is exactly the reboot somebody is looking for when they ask why a
-   * process is younger than they expected.
+   * A reboot is the one event that explains a hole in all three at once, so
+   * drawing it inside one of them would suggest it belonged to that one.
    */
   const boots = bootTimes(data).filter(at => at >= from && at <= to);
-  ctx.strokeStyle = "#f2616b";
+  ctx.strokeStyle = COLOURS.restart;
   ctx.lineWidth = 1.5;
   for (const at of boots) {
     const bx = x(at);
     ctx.beginPath();
-    ctx.moveTo(bx, barTop - 8);
-    ctx.lineTo(bx, barTop + barH);
+    ctx.moveTo(bx, plotTop - 6);
+    ctx.lineTo(bx, plotBottom);
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(bx, barTop - 10, 3, 0, Math.PI * 2);
-    ctx.fillStyle = "#f2616b";
+    ctx.arc(bx, plotTop - 9, 3, 0, Math.PI * 2);
+    ctx.fillStyle = COLOURS.restart;
     ctx.fill();
   }
 
-  // The ends of the window, said in full - this is the range that was asked
-  // for, whether or not anything was recorded in it.
-  ctx.fillStyle = "#8b98a8";
-  ctx.font = "11px system-ui, sans-serif";
-  ctx.textAlign = "left";
-  ctx.fillText(humanTime(from), pad.left, barTop + barH + 18);
-  ctx.textAlign = "right";
-  ctx.fillText(humanTime(to), pad.left + plotW, barTop + barH + 18);
-
-  const unknown = Math.max(0, span - covered.reduce((sum, [s2, e]) => sum + (e - s2), 0));
+  const anyWork = tracks.some(track => (track.marks || []).length);
   const legend = document.createDocumentFragment();
-  const entries = [
+
+  for (const [label, colour, extra] of [
     ["up and recorded", COLOURS.up, null],
-    ...(bands.some(b => b.kind === "restart") ? [["restarted", COLOURS.restart, null]] : []),
-    ...(bands.some(b => b.kind === "gap") ? [["readings missing", COLOURS.gap, null]] : []),
-    ...(unknown > 0 ? [["nothing recorded", COLOURS.unknown, humanDuration(unknown)]] : []),
-  ];
-  for (const [label, colour, extra] of entries) {
-    const span_ = document.createElement("span");
-    span_.style.setProperty("--dot", colour);
-    span_.textContent = extra ? `${label} (${extra})` : label;
-    legend.appendChild(span_);
+    ...(a.outages?.length ? [["restarted", COLOURS.restart, null]] : []),
+    ...(a.gaps?.length ? [["readings missing", COLOURS.gap, null]] : []),
+    ["a collector reporting", COLOURS.reporting, null],
+    ...(anyWork ? [["work the host did for us", COLOURS.work, null]] : []),
+    ["nothing recorded", COLOURS.unknown, null],
+  ]) {
+    const item = document.createElement("span");
+    item.style.setProperty("--dot", colour);
+    item.textContent = extra ? `${label} (${extra})` : label;
+    legend.appendChild(item);
   }
   $("uptimeLegend").replaceChildren(legend);
+}
+
+/** The machine's own row: up, restarted, unrecorded. */
+function drawMachineRow(ctx, a, x, from, to, plotLeft, plotW, y, h, COLOURS) {
+  /*
+   * The baseline is "not recorded", and evidence is painted over it.
+   *
+   * Starting from "up" and cutting holes would mean any stretch nobody has
+   * data for is drawn as a working machine, which is a claim rather than a
+   * reading.
+   */
+  ctx.fillStyle = COLOURS.unknown;
+  ctx.fillRect(plotLeft, y, plotW, h);
+
+  if (a.tracking_from) {
+    const start = Math.max(from, Number(a.tracking_from));
+    if (start < to) {
+      ctx.fillStyle = COLOURS.up;
+      ctx.fillRect(x(start), y, Math.max(1, x(to) - x(start)), h);
+    }
+  }
+
+  for (const band of [
+    ...(a.outages || []).map(o => ({ ...o, colour: COLOURS.restart })),
+    ...(a.gaps || []).map(g => ({ ...g, colour: COLOURS.gap })),
+  ]) {
+    const left = x(band.from);
+    const right = x(band.to);
+    if (right < plotLeft || left > plotLeft + plotW) continue;
+    ctx.fillStyle = band.colour;
+    ctx.fillRect(left, y, Math.max(2, right - left), h);
+  }
+}
+
+/** One collector's row: when it was reporting, and what it did while it ran. */
+function drawTrackRow(ctx, track, x, plotW, plotLeft, y, h, COLOURS) {
+  ctx.fillStyle = COLOURS.unknown;
+  ctx.fillRect(plotLeft, y, plotW, h);
+
+  if (track.unreadable) {
+    ctx.fillStyle = "#66717f";
+    ctx.textAlign = "left";
+    ctx.fillText("its database cannot be read from this account", plotLeft + 8, y + h / 2 + 4);
+    return;
+  }
+
+  for (const band of track.spans || []) {
+    const left = x(band.from);
+    const right = x(band.to);
+    ctx.fillStyle = COLOURS.reporting;
+    // A minimum width, or a collector that reported twice in a wide window
+    // draws nothing at all and reads as one that never ran.
+    ctx.fillRect(left, y, Math.max(2, right - left), h);
+  }
+
+  /*
+   * A silence is drawn hatched rather than left blank.
+   *
+   * Blank is what "outside the window" looks like, and the difference between
+   * "no readings because the range starts here" and "no readings because it
+   * stopped" is the whole reason for this row.
+   */
+  for (const gap of track.gaps || []) {
+    const left = x(gap.from);
+    const right = x(gap.to);
+    const w = Math.max(2, right - left);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left, y, w, h);
+    ctx.clip();
+
+    ctx.strokeStyle = "rgba(242, 97, 107, 0.55)";
+    ctx.lineWidth = 1;
+    for (let at = left - h; at < left + w + h; at += 5) {
+      ctx.beginPath();
+      ctx.moveTo(at, y + h);
+      ctx.lineTo(at + h, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /*
+   * A blip for each thing the collector did on our behalf.
+   *
+   * A request left on the queue is answered whenever root's cron next runs,
+   * and otherwise the answer arrives with a timestamp and no context. On the
+   * track it sits exactly on the run that produced it, which is what connects
+   * "I asked at 10:02" to "it ran at 10:05".
+   */
+  for (const mark of track.marks || []) {
+    const at = x(mark.at);
+    ctx.fillStyle = mark.ok ? COLOURS.work : COLOURS.restart;
+    ctx.beginPath();
+    ctx.moveTo(at, y - 3);
+    ctx.lineTo(at - 3, y - 8);
+    ctx.lineTo(at + 3, y - 8);
+    ctx.closePath();
+    ctx.fill();
+  }
 }
 
 function renderUptime() {
@@ -7965,6 +8159,7 @@ function renderUptime() {
     ? parts.join(" · ") + "."
     : "No readings in this window.";
 
+  renderTrackSummary(data.tracks || [], to);
   drawUptimeChart(from, to);
 
   const bands = [

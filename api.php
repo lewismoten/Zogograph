@@ -3276,6 +3276,16 @@ function uptimeView(array $config, PDO $pdo, bool $signedIn): array
         // from a stale boot time, which is worth flagging rather than hiding.
         'reading_age' => $latest ? max(0, time() - (int)$latest['taken_at']) : null,
         'analysis' => $analysis,
+        'window' => ['from' => $from, 'to' => $to],
+        /*
+         * Two collectors, two tracks.
+         *
+         * They fail independently and for different reasons - the account's
+         * cron is in a crontab this user owns, root's is not - and a single
+         * bar merged from both cannot say which one stopped. Which is the only
+         * question worth asking when a page goes quiet.
+         */
+        'tracks' => collectorTracks($config, $pdo, $from, $to),
     ];
 
     if (!$signedIn) {
@@ -5273,4 +5283,112 @@ function noteSnapshotsView(PDO $pdo, bool $signedIn): array
 
     $id = clampInt($_GET['id'] ?? 0, 1, PHP_INT_MAX);
     return ['rows' => noteSnapshotList($pdo, $id)];
+}
+
+/**
+ * When each collector was reporting, and what the host one did while it ran.
+ *
+ * @return list<array<string, mixed>>
+ */
+function collectorTracks(array $config, PDO $pdo, int $from, int $to): array
+{
+    $tracks = [];
+
+    $account = $pdo->prepare(
+        'SELECT taken_at FROM vitals WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
+    );
+    $account->execute([$from, $to]);
+
+    $tracks[] = [
+        'key' => 'account',
+        'label' => "This account's collector",
+        'what' => 'cron.php, in this account\'s own crontab. Every reading on this site '
+            . 'that is about the account comes from it.',
+        'marks' => [],
+    ] + reportingTrack($account->fetchAll(PDO::FETCH_COLUMN, 0), $from, $to);
+
+    if (!($config['host']['enabled'] ?? false)) {
+        return $tracks;
+    }
+
+    $host = null;
+    try {
+        $host = hostDb($config, false);
+    } catch (Throwable) {
+        $host = null;
+    }
+
+    if ($host === null) {
+        $tracks[] = [
+            'key' => 'host',
+            'label' => "The host's collector",
+            'what' => 'host-cron.php, run by root. This account cannot read its database, '
+                . 'so nothing can be said about whether it is running.',
+            'spans' => [], 'gaps' => [], 'marks' => [],
+            'interval' => null, 'first' => null, 'last' => null, 'readings' => 0,
+            'unreadable' => true,
+        ];
+        return $tracks;
+    }
+
+    $times = [];
+    try {
+        $stmt = $host->prepare(
+            'SELECT taken_at FROM host_samples WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
+        );
+        $stmt->execute([$from, $to]);
+        $times = $stmt->fetchAll(PDO::FETCH_COLUMN, 0);
+    } catch (Throwable) {
+        $times = [];
+    }
+
+    $tracks[] = [
+        'key' => 'host',
+        'label' => "The host's collector",
+        'what' => 'host-cron.php, run by root. Everything about the machine as a whole - '
+            . 'the other tenants, the filesystems, the processes this account cannot see.',
+        /*
+         * Blips for work it did on our behalf.
+         *
+         * A request left on the queue is answered whenever root's cron next
+         * runs, and "when did it actually pick that up" is otherwise invisible -
+         * the answer arrives with a timestamp and no context. On the track it
+         * sits exactly where the run that produced it does.
+         */
+        'marks' => hostWorkMarks($host, $from, $to),
+    ] + reportingTrack($times, $from, $to);
+
+    return $tracks;
+}
+
+/**
+ * Moments the host collector answered something this account asked for.
+ *
+ * @return list<array{at: int, what: string}>
+ */
+function hostWorkMarks(PDO $host, int $from, int $to, int $limit = 200): array
+{
+    $out = [];
+
+    try {
+        $stmt = $host->prepare(
+            'SELECT verb, argument, answered_at, ok FROM host_answers
+              WHERE answered_at BETWEEN ? AND ? ORDER BY answered_at DESC LIMIT ' . $limit
+        );
+        $stmt->execute([$from, $to]);
+
+        foreach ($stmt->fetchAll() as $row) {
+            $out[] = [
+                'at' => (int)$row['answered_at'],
+                'what' => trim((string)$row['verb'] . ' ' . (string)$row['argument']),
+                'ok' => (bool)$row['ok'],
+            ];
+        }
+    } catch (Throwable) {
+        // The table is the host collector's, and an older one may not have it.
+        return [];
+    }
+
+    usort($out, fn(array $a, array $b): int => $a['at'] <=> $b['at']);
+    return $out;
 }

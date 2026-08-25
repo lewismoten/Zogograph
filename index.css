@@ -1700,3 +1700,7 @@ canvas.gauge-spark {
   height: 32px;
   margin: 6px 0 2px;
 }
+
+/* One line per collector, above the tracks they describe. */
+.track-line { margin: 0 0 8px; }
+.track-line strong { font-weight: 600; }

@@ -426,3 +426,102 @@ function bootReason(string $ended): string
             . 'cannot be told from here.',
     };
 }
+
+/**
+ * When a collector was actually reporting, as spans rather than points.
+ *
+ * A list of timestamps is not a track: the useful question is "was it running
+ * between these two readings", and the answer depends on how often it is meant
+ * to run. Two readings a minute apart on a one-minute collector is continuous
+ * coverage; the same two on a five-minute collector still is; two an hour apart
+ * on either is a hole.
+ *
+ * The threshold is the median step times a slack factor, measured rather than
+ * configured - this account cannot read root's crontab, and on a shared box it
+ * often cannot read its own either.
+ *
+ * @return array{
+ *   spans: list<array{from: int, to: int}>,
+ *   gaps: list<array{from: int, to: int}>,
+ *   interval: ?int, first: ?int, last: ?int, readings: int
+ * }
+ */
+function reportingTrack(array $times, int $from, int $to, float $slack = 2.5): array
+{
+    $times = array_values(array_unique(array_map('intval', $times)));
+    sort($times);
+
+    $empty = [
+        'spans' => [], 'gaps' => [], 'interval' => null,
+        'first' => null, 'last' => null, 'readings' => count($times),
+    ];
+
+    if (count($times) < 2) {
+        /*
+         * One reading is a point, not a track.
+         *
+         * Drawn as a moment rather than as a span, because turning it into one
+         * would mean inventing a duration - and "it reported once" is a
+         * different fact from "it reported for a while".
+         */
+        // array_merge, not +: the union operator keeps the LEFT operand's keys,
+        // and $empty already has first and last set to null.
+        return $times === []
+            ? $empty
+            : array_merge($empty, ['first' => $times[0], 'last' => $times[0]]);
+    }
+
+    $steps = [];
+    for ($i = 1, $n = count($times); $i < $n; $i++) {
+        $step = $times[$i] - $times[$i - 1];
+        if ($step > 0) {
+            $steps[] = $step;
+        }
+    }
+
+    if ($steps === []) {
+        return $empty;
+    }
+
+    sort($steps);
+    $interval = $steps[intdiv(count($steps), 2)];
+    $tolerated = max(60, (int)round($interval * $slack));
+
+    $spans = [];
+    $gaps = [];
+    $spanFrom = $times[0];
+
+    for ($i = 1, $n = count($times); $i < $n; $i++) {
+        $step = $times[$i] - $times[$i - 1];
+        if ($step <= $tolerated) {
+            continue;
+        }
+
+        $spans[] = ['from' => $spanFrom, 'to' => $times[$i - 1]];
+        $gaps[] = ['from' => $times[$i - 1], 'to' => $times[$i], 'seconds' => $step];
+        $spanFrom = $times[$i];
+    }
+
+    $spans[] = ['from' => $spanFrom, 'to' => $times[count($times) - 1]];
+
+    /*
+     * A silence that runs to the end of the window is a gap too.
+     *
+     * Without this, a collector that stopped an hour ago shows a track ending
+     * an hour early with nothing after it - which looks like the chart running
+     * out of room rather than the collector running out of life.
+     */
+    $last = $times[count($times) - 1];
+    if ($to - $last > $tolerated) {
+        $gaps[] = ['from' => $last, 'to' => $to, 'seconds' => $to - $last, 'ongoing' => true];
+    }
+
+    return [
+        'spans' => $spans,
+        'gaps' => $gaps,
+        'interval' => $interval,
+        'first' => $times[0],
+        'last' => $last,
+        'readings' => count($times),
+    ];
+}
