@@ -176,10 +176,11 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'cancel-task' => doCancelTask($pdo, $post),
         'label-save' => doLabelSave($pdo, $post),
         'label-delete' => doLabelDelete($pdo, $post),
-        'url-save' => doUrlSave($pdo, $post),
+        'url-save' => doUrlSave($config, $pdo, $post),
         'url-delete' => doUrlDelete($pdo, $post),
-        'url-run' => doUrlRun($pdo, $post),
+        'url-run' => doUrlRun($config, $pdo, $post),
         'url-toggle' => doUrlToggle($pdo, $post),
+        'regex-try' => doRegexTry($post),
         'domain-save' => doDomainSave($config, $pdo, $post),
         'domain-delete' => doDomainDelete($config, $pdo, $post),
         'domain-check' => doDomainCheck($config, $pdo, $post),
@@ -1716,6 +1717,9 @@ function urlsView(PDO $pdo, bool $signedIn): array
         'rows' => $rows,
         'selected' => $selected,
         'history' => $selected === null ? null : urlWatchHistory($pdo, $selected, $from, $to),
+        // The moments a watched value changed, for marking on the chart. A
+        // deploy at 04:12 is the explanation for the response time after it.
+        'changes' => $selected === null ? [] : urlWatchChanges($pdo, $selected, $from),
         'intervals' => urlWatchIntervals(),
         'checks' => urlWatchChecks(),
         'max' => URLWATCH_MAX,
@@ -1732,7 +1736,7 @@ function urlsView(PDO $pdo, bool $signedIn): array
     ];
 }
 
-function doUrlSave(PDO $pdo, bool $post): array
+function doUrlSave(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
 
@@ -1744,7 +1748,12 @@ function doUrlSave(PDO $pdo, bool $post): array
         'expect_status' => $_POST['expect_status'] ?? 200,
         'check_kind' => $_POST['check_kind'] ?? 'none',
         'check_value' => $_POST['check_value'] ?? '',
+        'capture_group' => $_POST['capture_group'] ?? 1,
+        'notify_change' => ($_POST['notify_change'] ?? '0') === '1',
         'enabled' => ($_POST['enabled'] ?? '1') === '1',
+        'follow_redirects' => ($_POST['follow_redirects'] ?? '1') === '1',
+        'send_etag' => ($_POST['send_etag'] ?? '0') === '1',
+        'method' => $_POST['method'] ?? 'GET',
     ]);
 
     logAction($pdo, 'url_save', (string)($_POST['url'] ?? ''), 'ok', 0, 0, null);
@@ -1756,7 +1765,7 @@ function doUrlSave(PDO $pdo, bool $post): array
      * tell they configured correctly - and a typo in a selector is best found
      * while the person who typed it is still there.
      */
-    $result = urlWatchRunDue($pdo, $id);
+    $result = urlWatchRunDue($pdo, $id, null, $config);
 
     return ['ok' => true, 'id' => $id, 'first' => $result['rows'][0] ?? null]
         + urlsView($pdo, true);
@@ -1812,12 +1821,12 @@ function doUrlDelete(PDO $pdo, bool $post): array
     return ['ok' => true] + urlsView($pdo, true);
 }
 
-function doUrlRun(PDO $pdo, bool $post): array
+function doUrlRun(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
 
     $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
-    $result = urlWatchRunDue($pdo, $id);
+    $result = urlWatchRunDue($pdo, $id, null, $config);
 
     if ($result['ran'] === 0) {
         throw new ActionRefused('no such check');
@@ -4817,4 +4826,31 @@ function doStoreRollup(array $config, PDO $pdo, bool $post): array
     ));
 
     return ['ok' => true, 'result' => $result] + storeView($config, $pdo, true);
+}
+
+/**
+ * Tries a pattern against pasted text and reports exactly what it found.
+ *
+ * No database, no network, no side effects - this only answers a question. A
+ * pattern that looks right and quietly captures the wrong group produces a
+ * chart of a constant, and the only way to know beforehand is to have tried it
+ * against real text.
+ */
+function doRegexTry(bool $post): array
+{
+    requireWrite($post);
+
+    $pattern = (string)($_POST['pattern'] ?? '');
+    $text = (string)($_POST['text'] ?? '');
+
+    // Bounded because this runs a regular expression somebody typed against
+    // text somebody pasted, and both are ways to spend a lot of CPU.
+    if (strlen($text) > 512 * 1024) {
+        throw new ActionRefused('that is more text than this will test against');
+    }
+    if (strlen($pattern) > 2000) {
+        throw new ActionRefused('that pattern is too long');
+    }
+
+    return urlWatchTryRegex($pattern, $text);
 }

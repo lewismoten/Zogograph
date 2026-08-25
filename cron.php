@@ -126,7 +126,7 @@ try {
      */
     if ($wants('--vitals') || $wants('--urls')) {
         try {
-            $urls = urlWatchRunDue($pdo);
+            $urls = urlWatchRunDue($pdo, null, null, $config);
             if ($urls['ran'] > 0) {
                 $say(sprintf('urls    checked %d, %d failing', $urls['ran'], $urls['failed']));
                 foreach ($urls['rows'] as $row) {

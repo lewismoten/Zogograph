@@ -1577,3 +1577,49 @@ input.days {
   font: inherit;
 }
 input.days:disabled { opacity: .5; }
+
+/* ---------------------------------------------------- collector progress -- */
+
+/*
+ * How far through the wait for the next reading.
+ *
+ * A count of seconds needs arithmetic before it means anything - four minutes
+ * is fine or alarming depending entirely on the interval. The ring does the
+ * arithmetic.
+ */
+svg.dial { display: block; margin: 2px auto 6px; }
+.dial-track { stroke: var(--line); }
+.dial-value { stroke: var(--ok); stroke-linecap: round; transition: stroke-dashoffset .4s ease; }
+.dial-due { stroke: var(--warn); }
+.dial-dead { stroke: var(--dim); opacity: .55; }
+
+/* Due about now: the second before you would start wondering. */
+svg.dial.is-due { animation: dialDue 1.6s ease-in-out infinite; }
+@keyframes dialDue {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+
+/* Stopped is not due, and must not pulse as though the next one were coming. */
+svg.dial.is-dead { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  svg.dial.is-due { animation: none; }
+  .dial-value { transition: none; }
+}
+
+/* Inputs in a dialog have the whole width to use; the form grid is elsewhere. */
+#listDialogBody input.wide,
+#listDialogBody textarea.wide {
+  width: 100%;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .9em;
+}
+#listDialogBody textarea.wide { resize: vertical; min-height: 8em; }
+#listDialogBody .settings-row > div { min-width: 0; }

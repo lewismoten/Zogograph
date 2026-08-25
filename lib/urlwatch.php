@@ -95,8 +95,11 @@ function urlWatchChecks(): array
         ],
         'regex' => [
             'label' => 'A regular expression matches',
-            'hint' => 'If it has a capturing group, whatever the first group matches is '
-                . 'recorded as a number and charted over time.',
+            'hint' => 'Records what one bracketed group matches, every run. The text is '
+                . 'compared against last time so a change can be noticed, and charted as a '
+                . 'number where it is one. Try it against real text first — a pattern '
+                . 'that captures the wrong group draws a chart of a constant, and nothing '
+                . 'about that looks like a mistake.',
             'needs_value' => true,
             'extracts' => true,
         ],
@@ -161,8 +164,12 @@ function urlWatchList(PDO $pdo): array
  *
  * @return array{ran: int, failed: int, rows: list<array>}
  */
-function urlWatchRunDue(PDO $pdo, ?int $only = null, ?callable $fetcher = null): array
-{
+function urlWatchRunDue(
+    PDO $pdo,
+    ?int $only = null,
+    ?callable $fetcher = null,
+    array $config = []
+): array {
     $now = time();
     $ran = 0;
     $failed = 0;
@@ -178,6 +185,15 @@ function urlWatchRunDue(PDO $pdo, ?int $only = null, ?callable $fetcher = null):
         }
 
         $result = urlWatchRunOne($check, $fetcher);
+
+        /*
+         * Noticed before it is stored, because storing overwrites last_text.
+         *
+         * The comparison is against what the check remembered, and the store
+         * is what moves that memory forward - so the order here is the whole
+         * mechanism rather than a matter of taste.
+         */
+        urlWatchNoteChange($pdo, $config, $check, $result);
         urlWatchStore($pdo, (int)$check['id'], $result);
 
         $ran++;
@@ -259,12 +275,25 @@ function urlWatchRunOne(array $check, ?callable $fetcher = null): array
     $inspection = urlWatchInspect(
         (string)($check['check_kind'] ?? 'none'),
         (string)($check['check_value'] ?? ''),
-        (string)$fetched['body']
+        (string)$fetched['body'],
+        max(0, (int)($check['capture_group'] ?? 1))
     );
 
     $result['matched'] = $inspection['matched'];
     $result['value'] = $inspection['value'];
+    $result['text'] = $inspection['text'] ?? null;
     $result['ok'] = $statusOk && $inspection['matched'] !== false;
+
+    /*
+     * Whether what was captured is different from last time.
+     *
+     * Compared against what was stored rather than against the previous row,
+     * so a check that failed for an hour and came back does not report every
+     * intervening blank as a change.
+     */
+    $was = $check['last_text'] ?? null;
+    $result['changed'] = $result['text'] !== null && $was !== null && $result['text'] !== $was;
+    $result['was'] = $was;
 
     if (!$statusOk) {
         $result['error'] = sprintf(
@@ -286,11 +315,16 @@ function urlWatchRunOne(array $check, ?callable $fetcher = null): array
  * passed or failed. That is deliberately distinct from false: a check with no
  * body rule must not be reported as having satisfied one.
  *
- * @return array{matched: ?bool, value: ?float, why: string}
+ * `$group` is which capturing group a regex should take. Usually 1, because a
+ * pattern nearly always needs context around the part that matters - matching
+ * `index\.css\?v=(\d+\.\d+\.\d+)` only works because of the bits that are not
+ * the version. Zero means the whole match.
+ *
+ * @return array{matched: ?bool, value: ?float, text: ?string, why: string}
  */
-function urlWatchInspect(string $kind, string $needle, string $body): array
+function urlWatchInspect(string $kind, string $needle, string $body, int $group = 1): array
 {
-    $none = ['matched' => null, 'value' => null, 'why' => ''];
+    $none = ['matched' => null, 'value' => null, 'text' => null, 'why' => ''];
 
     if ($kind === 'none' || $needle === '') {
         return $none;
@@ -299,13 +333,13 @@ function urlWatchInspect(string $kind, string $needle, string $body): array
     switch ($kind) {
         case 'contains':
             $found = str_contains($body, $needle);
-            return ['matched' => $found, 'value' => null,
-                    'why' => $found ? '' : 'the body does not contain that text'];
+            return ['matched' => $found,
+                    'why' => $found ? '' : 'the body does not contain that text'] + $none;
 
         case 'missing':
             $found = str_contains($body, $needle);
-            return ['matched' => !$found, 'value' => null,
-                    'why' => $found ? 'the body contains text it should not' : ''];
+            return ['matched' => !$found,
+                    'why' => $found ? 'the body contains text it should not' : ''] + $none;
 
         case 'regex':
             /*
@@ -320,26 +354,57 @@ function urlWatchInspect(string $kind, string $needle, string $body): array
             $found = @preg_match($pattern, $body, $m);
 
             if ($found === false) {
-                return ['matched' => false, 'value' => null,
-                        'why' => 'that is not a valid regular expression'];
+                return ['matched' => false,
+                        'why' => 'that is not a valid regular expression'] + $none;
             }
             if ($found === 0) {
-                return ['matched' => false, 'value' => null, 'why' => 'the pattern did not match'];
+                return ['matched' => false, 'why' => 'the pattern did not match'] + $none;
             }
-            return ['matched' => true, 'value' => urlWatchNumber($m[1] ?? null), 'why' => ''];
+
+            if (!array_key_exists($group, $m)) {
+                return [
+                    'matched' => false,
+                    'why' => sprintf(
+                        'the pattern matched, but it has no group %d - it has %d',
+                        $group,
+                        count($m) - 1
+                    ),
+                ] + $none;
+            }
+
+            /*
+             * The text as well as the number.
+             *
+             * A version string is the thing people most want to watch and it
+             * is not a number - `2.14.1` parses to 2.14 and loses the part
+             * that changed. So the text is what is compared for changes and
+             * the number is only for the chart, where it is often nothing.
+             */
+            $captured = (string)$m[$group];
+            return [
+                'matched' => true,
+                'value' => urlWatchNumber($captured),
+                'text' => $captured,
+                'why' => '',
+            ];
 
         case 'json':
             $data = json_decode($body, true);
             if (!is_array($data)) {
-                return ['matched' => false, 'value' => null,
-                        'why' => 'the response is not JSON'];
+                return ['matched' => false,
+                        'why' => 'the response is not JSON'] + $none;
             }
             $found = urlWatchDig($data, $needle);
             if ($found === null) {
-                return ['matched' => false, 'value' => null,
-                        'why' => 'there is nothing at that path'];
+                return ['matched' => false,
+                        'why' => 'there is nothing at that path'] + $none;
             }
-            return ['matched' => true, 'value' => urlWatchNumber($found), 'why' => ''];
+            return [
+                'matched' => true,
+                'value' => urlWatchNumber($found),
+                'text' => is_scalar($found) ? (string)$found : json_encode($found),
+                'why' => '',
+            ];
 
         case 'meta':
             $quoted = preg_quote($needle, '/');
@@ -352,9 +417,14 @@ function urlWatchInspect(string $kind, string $needle, string $body): array
                 $body,
                 $m
             )) {
-                return ['matched' => true, 'value' => urlWatchNumber($m[1]), 'why' => ''];
+                return [
+                    'matched' => true,
+                    'value' => urlWatchNumber($m[1]),
+                    'text' => (string)$m[1],
+                    'why' => '',
+                ];
             }
-            return ['matched' => false, 'value' => null, 'why' => 'no meta tag by that name'];
+            return ['matched' => false, 'why' => 'no meta tag by that name'] + $none;
 
         case 'xpath':
             return urlWatchXpath($body, $needle);
@@ -372,9 +442,13 @@ function urlWatchInspect(string $kind, string $needle, string $body): array
  */
 function urlWatchXpath(string $body, string $expression): array
 {
+    // Its own defaults: this is a separate function, and $none belongs to the
+    // caller's scope.
+    $none = ['matched' => null, 'value' => null, 'text' => null, 'why' => ''];
+
     if (!class_exists('DOMDocument')) {
-        return ['matched' => false, 'value' => null,
-                'why' => 'this PHP has no DOM extension, so XPath cannot be used'];
+        return ['matched' => false,
+                'why' => 'this PHP has no DOM extension, so XPath cannot be used'] + $none;
     }
 
     $previous = libxml_use_internal_errors(true);
@@ -388,21 +462,21 @@ function urlWatchXpath(string $body, string $expression): array
     libxml_use_internal_errors($previous);
 
     if (!$loaded) {
-        return ['matched' => false, 'value' => null, 'why' => 'the response could not be parsed'];
+        return ['matched' => false, 'why' => 'the response could not be parsed'] + $none;
     }
 
     $xpath = new DOMXPath($document);
     $nodes = @$xpath->query($expression);
 
     if ($nodes === false) {
-        return ['matched' => false, 'value' => null, 'why' => 'that is not a valid XPath expression'];
+        return ['matched' => false, 'why' => 'that is not a valid XPath expression'] + $none;
     }
     if ($nodes->length === 0) {
-        return ['matched' => false, 'value' => null, 'why' => 'nothing matched that expression'];
+        return ['matched' => false, 'why' => 'nothing matched that expression'] + $none;
     }
 
     $text = trim((string)$nodes->item(0)?->textContent);
-    return ['matched' => true, 'value' => urlWatchNumber($text), 'why' => ''];
+    return ['matched' => true, 'value' => urlWatchNumber($text), 'text' => $text, 'why' => ''];
 }
 
 /**
@@ -585,11 +659,13 @@ function urlWatchStore(PDO $pdo, int $id, array $result): void
 {
     $pdo->prepare(
         'INSERT INTO url_results
-            (check_id, at, status, ms, bytes, value, matched, ok, error, redirected_to, hops)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            (check_id, at, status, ms, bytes, value, text_value, matched, ok, error,
+             redirected_to, hops)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )->execute([
         $id, $result['at'], $result['status'], $result['ms'], $result['bytes'],
         $result['value'],
+        $result['text'] ?? null,
         $result['matched'] === null ? null : ($result['matched'] ? 1 : 0),
         $result['ok'] ? 1 : 0,
         $result['error'],
@@ -603,13 +679,21 @@ function urlWatchStore(PDO $pdo, int $id, array $result): void
      * Only worth keeping when the check asked for it; storing one otherwise
      * would quietly change what the next request looks like.
      */
+    /*
+     * last_text only moves when something was actually captured.
+     *
+     * COALESCE rather than a plain assignment: a check that failed to match
+     * this once should not forget what it saw last time, or the next
+     * successful run reports a change that is really just the gap closing.
+     */
     $pdo->prepare(
         'UPDATE url_checks SET last_at = ?, last_ok = ?, last_status = ?, last_error = ?,
-                last_etag = COALESCE(?, last_etag)
+                last_etag = COALESCE(?, last_etag),
+                last_text = COALESCE(?, last_text)
           WHERE id = ?'
     )->execute([
         $result['at'], $result['ok'] ? 1 : 0, $result['status'], $result['error'],
-        $result['etag'] ?? null, $id,
+        $result['etag'] ?? null, $result['text'] ?? null, $id,
     ]);
 }
 
@@ -650,6 +734,18 @@ function urlWatchSave(PDO $pdo, array $input): int
         throw new ActionRefused('that regular expression will not compile');
     }
 
+    /*
+     * Which capturing group to keep.
+     *
+     * Nearly always 1, because a pattern needs context around the part that
+     * matters - `index\.css\?v=(\d+\.\d+\.\d+)` only finds the version
+     * because of the bits that are not the version. Zero means the whole match.
+     */
+    $group = max(0, (int)($input['capture_group'] ?? 1));
+    if ($group > 20) {
+        throw new ActionRefused('a pattern with more than twenty groups is a pattern to split up');
+    }
+
     $expect = (int)($input['expect_status'] ?? 200);
     if ($expect !== 0 && ($expect < 100 || $expect > 599)) {
         throw new ActionRefused('that is not a status code');
@@ -684,10 +780,12 @@ function urlWatchSave(PDO $pdo, array $input): int
         $pdo->prepare(
             'UPDATE url_checks SET url = ?, label = ?, interval_seconds = ?, expect_status = ?,
                     check_kind = ?, check_value = ?, enabled = ?, follow_redirects = ?,
-                    method = ?, send_etag = ? WHERE id = ?'
+                    method = ?, send_etag = ?, capture_group = ?, notify_change = ?
+              WHERE id = ?'
         )->execute([
             $url, $label, $interval, $expect, $kind, $value,
-            empty($input['enabled']) ? 0 : 1, $follow, $method, $etag, $id,
+            empty($input['enabled']) ? 0 : 1, $follow, $method, $etag,
+            $group, empty($input['notify_change']) ? 0 : 1, $id,
         ]);
         return $id;
     }
@@ -700,11 +798,12 @@ function urlWatchSave(PDO $pdo, array $input): int
     $pdo->prepare(
         'INSERT INTO url_checks
             (url, label, interval_seconds, expect_status, check_kind, check_value, enabled,
-             follow_redirects, method, send_etag, added_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+             follow_redirects, method, send_etag, capture_group, notify_change, added_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )->execute([
         $url, $label, $interval, $expect, $kind, $value,
-        empty($input['enabled']) ? 0 : 1, $follow, $method, $etag, time(),
+        empty($input['enabled']) ? 0 : 1, $follow, $method, $etag,
+        $group, empty($input['notify_change']) ? 0 : 1, time(),
     ]);
 
     return (int)$pdo->lastInsertId();
@@ -746,5 +845,171 @@ function urlWatchHistory(PDO $pdo, int $id, int $from, int $to): array
         'slowest_ms' => $slowest,
         // Whether the extracted value is worth charting at all.
         'has_value' => (bool)array_filter($rows, fn(array $r): bool => $r['value'] !== null),
+    ];
+}
+
+/**
+ * Raises an alert when a watched value changes.
+ *
+ * The point of watching a version string is not its value but the moment it
+ * moves: "gitea went from 1.22.0 to 1.23.1 at 04:12" is the sentence somebody
+ * wants three days later when something has been subtly wrong since Tuesday.
+ * A number changing is ordinary; this is only for checks that asked.
+ */
+function urlWatchNoteChange(PDO $pdo, array $config, array $check, array $result): void
+{
+    if (!($check['notify_change'] ?? false) || empty($result['changed'])) {
+        return;
+    }
+
+    recordAlert($pdo, $config['alerts'] ?? [], [
+        /*
+         * The check's id is part of the rule name, so each has its own cooldown.
+         *
+         * The cooldown is keyed on rule and path together, and these alerts
+         * carry no path - so one rule name would mean a version change on one
+         * check silently suppressing a version change on another for the next
+         * six hours. Following the same shape as projected_full:<field>.
+         */
+        'rule' => 'url_value_changed:' . (int)$check['id'],
+        'severity' => 'warning',
+        'subject' => sprintf('%s changed what it reports', $check['label']),
+        'detail' => sprintf(
+            'Was %s, now %s. Watched with %s on %s.',
+            $result['was'] === null || $result['was'] === '' ? 'blank' : $result['was'],
+            $result['text'],
+            $check['check_kind'],
+            $check['url']
+        ),
+        'path_id' => null,
+    ]);
+}
+
+/**
+ * Every moment a watched value changed, for marking on a chart.
+ *
+ * Worked out by reading the history in order rather than by storing a flag,
+ * so that history imported or repaired after the fact still lines up - and so
+ * that turning the notification on does not retroactively invent markers that
+ * were never raised.
+ *
+ * @return list<array{at: int, from: ?string, to: string}>
+ */
+function urlWatchChanges(PDO $pdo, int $id, int $since, int $limit = 200): array
+{
+    $stmt = $pdo->prepare(
+        'SELECT at, text_value FROM url_results
+          WHERE check_id = ? AND at >= ? AND text_value IS NOT NULL
+          ORDER BY at'
+    );
+    $stmt->execute([$id, $since]);
+
+    $out = [];
+    $previous = null;
+
+    foreach ($stmt->fetchAll() as $row) {
+        $text = (string)$row['text_value'];
+
+        // The first value in a window is not a change - it is where the window
+        // starts, and marking it would put a line on every chart.
+        if ($previous !== null && $text !== $previous) {
+            $out[] = ['at' => (int)$row['at'], 'from' => $previous, 'to' => $text];
+        }
+        $previous = $text;
+    }
+
+    return count($out) > $limit ? array_slice($out, -$limit) : $out;
+}
+
+/**
+ * Tries a pattern against some text and says exactly what it found.
+ *
+ * The point is to fail here rather than in production. A pattern that looks
+ * right and quietly captures the wrong group produces a chart of a constant,
+ * and the only way to know is to have tried it against real text first.
+ *
+ * Every match is returned, not just the first, because "it matched" and "it
+ * matched the one I meant" are different questions when a page mentions four
+ * stylesheets.
+ *
+ * @return array<string, mixed>
+ */
+function urlWatchTryRegex(string $pattern, string $text, int $limit = 50): array
+{
+    if (trim($pattern) === '') {
+        return ['ok' => false, 'error' => 'no pattern given', 'matches' => []];
+    }
+
+    // Delimited here, exactly as the real check does, so what is tested is
+    // what will run.
+    $delimited = '/' . str_replace('/', '\\/', $pattern) . '/u';
+
+    /*
+     * PREG_UNMATCHED_AS_NULL, or an optional group that did not take part
+     * simply vanishes from the end of the set.
+     *
+     * Which is exactly the case somebody is testing for. `(a)(z)?` against "a"
+     * would otherwise report one group, and the person reading it would
+     * conclude their pattern has one - and then set the capture group to the
+     * wrong number.
+     */
+    $flags = PREG_SET_ORDER | PREG_OFFSET_CAPTURE | PREG_UNMATCHED_AS_NULL;
+
+    /*
+     * The compiler's actual complaint, not preg_last_error_msg().
+     *
+     * A pattern that fails to compile sets PREG_INTERNAL_ERROR, whose message
+     * is the useless "Internal error". The warning PHP emits says where the
+     * problem is - "missing closing parenthesis at offset 4" - which is the
+     * whole point of a tester.
+     */
+    $complaint = null;
+    set_error_handler(function (int $level, string $message) use (&$complaint): bool {
+        $complaint = (string)preg_replace('/^preg_match_all\\(\\)[^:]*:\\s*/', '', $message);
+        return true;
+    });
+    $found = preg_match_all($delimited, $text, $all, $flags);
+    restore_error_handler();
+
+    if ($found === false) {
+        return [
+            'ok' => false,
+            'error' => $complaint === null
+                ? 'that is not a valid regular expression'
+                : 'that is not a valid regular expression: ' . $complaint,
+            'matches' => [],
+        ];
+    }
+
+    $matches = [];
+    foreach (array_slice($all, 0, $limit) as $set) {
+        $groups = [];
+        foreach ($set as $index => $part) {
+            // Named groups arrive under both the name and the number; only the
+            // numbered ones are what a capture-group setting refers to.
+            if (!is_int($index)) {
+                continue;
+            }
+            $groups[] = [
+                'n' => $index,
+                'text' => $part[0] === null ? null : (string)$part[0],
+                'at' => (int)$part[1],
+                // -1 means the group is in the pattern but took no part in
+                // this match, which is different from matching an empty string.
+                'matched' => $part[0] !== null,
+            ];
+        }
+        $matches[] = ['groups' => $groups, 'at' => (int)$set[0][1]];
+    }
+
+    return [
+        'ok' => true,
+        'error' => null,
+        'matches' => $matches,
+        'total' => $found,
+        'truncated' => $found > $limit,
+        // How many capturing groups the pattern has, whether or not they took
+        // part in any particular match.
+        'groups' => $matches === [] ? 0 : count($matches[0]['groups']) - 1,
     ];
 }

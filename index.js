@@ -1194,6 +1194,40 @@ function drawLineChart(canvas, rows, series, options = {}) {
     ctx.restore();
   }
 
+  /*
+   * A second kind of marker, in a second colour, for something noticed.
+   *
+   * Deliberately not the restart colour. A restart is the machine going away
+   * and coming back; a noticed change is somebody else's software becoming a
+   * different version underneath you. Both explain a chart bending, and
+   * drawing them identically would make one look like the other.
+   */
+  for (const mark of options.notes ?? []) {
+    const at = Number(mark.at ?? mark);
+    if (at < t0 || at > t1) continue;
+    const mx = x(at);
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(120, 170, 255, 0.8)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([2, 4]);
+    ctx.beginPath();
+    ctx.moveTo(mx, pad.top);
+    ctx.lineTo(mx, pad.top + h);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    ctx.fillStyle = "rgba(120, 170, 255, 0.95)";
+    ctx.beginPath();
+    ctx.moveTo(mx, pad.top);
+    ctx.lineTo(mx - 4, pad.top + 6);
+    ctx.lineTo(mx + 4, pad.top + 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
   // Gridlines follow the left axis; the right one only gets labels, or two
   // sets of lines cross each other and the chart turns into a net.
   const gridding = scales.left || scales.right;
@@ -3541,6 +3575,118 @@ function highlightMatches(text, needle) {
 
   out.push(document.createTextNode(text.slice(at)));
   return out;
+}
+
+/**
+ * How far through the wait for the next reading this collector is.
+ *
+ * A number of seconds since the last run is a fact that needs arithmetic before
+ * it means anything - is four minutes fine? It depends entirely on whether this
+ * one runs every minute or every hour. The ring does that arithmetic: three
+ * quarters round is three quarters of the way to the next one, whatever the
+ * interval happens to be.
+ *
+ * Three states, because they call for three different reactions:
+ *
+ *   filling   ordinary. The next one is coming.
+ *   pulsing   full. One is due about now, and this is the second before you
+ *             would start wondering.
+ *   dashed    nothing is arriving, or nothing ever has. Grey and broken rather
+ *             than a full red ring, because a full ring means "due" and a
+ *             collector that stopped last Tuesday is not due, it is gone.
+ *
+ * The interval is measured from the gaps between the last few runs, never read
+ * from a crontab - this account usually cannot see root's. So when there is no
+ * interval there is no ring, rather than a ring against an invented schedule.
+ */
+function collectorDial(collector) {
+  const size = 46;
+  const stroke = 5;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("class", "dial");
+  svg.setAttribute("aria-hidden", "true");
+
+  const ring = (cls, dash) => {
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("cx", String(size / 2));
+    circle.setAttribute("cy", String(size / 2));
+    circle.setAttribute("r", String(radius));
+    circle.setAttribute("fill", "none");
+    circle.setAttribute("stroke-width", String(stroke));
+    circle.setAttribute("class", cls);
+    if (dash) circle.setAttribute("stroke-dasharray", dash);
+    svg.appendChild(circle);
+    return circle;
+  };
+
+  const interval = Number(collector.interval || 0);
+  const age = Number(collector.age || 0);
+  const known = collector.last_at && interval > 0;
+
+  /*
+   * No interval, or nothing has ever arrived: a broken grey ring.
+   *
+   * Two readings is not a schedule, and drawing a confident ring from one gap
+   * would be inventing the thing this whole panel exists to report on.
+   */
+  if (!known) {
+    ring("dial-track dial-dead", "4 5");
+    const said = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    said.textContent = collector.last_at
+      ? "Not enough runs yet to know how often this should happen."
+      : "This has never run.";
+    svg.appendChild(said);
+    svg.classList.add("is-dead");
+    return svg;
+  }
+
+  ring("dial-track");
+
+  const share = Math.min(1, age / interval);
+  const due = age >= interval;
+
+  /*
+   * Stopped is not the same as due, and must not look like it.
+   *
+   * A ring that filled twenty minutes ago on a one-minute collector has not
+   * been "due" for twenty minutes - it has stopped. Past twice the interval
+   * the ring goes dashed and grey, matching the card's own verdict rather
+   * than sitting there full and pulsing as though the next one were imminent.
+   */
+  const stopped = collector.state === "stopped" || age > interval * 2;
+
+  const progress = ring(
+    stopped ? "dial-value dial-dead" : due ? "dial-value dial-due" : "dial-value",
+    stopped ? "4 5" : null
+  );
+
+  if (!stopped) {
+    progress.setAttribute("stroke-dasharray", String(circumference));
+    progress.setAttribute("stroke-dashoffset", String(circumference * (1 - share)));
+    // Starts at twelve o'clock rather than three, which is where everybody
+    // reads a dial from.
+    progress.setAttribute("transform", `rotate(-90 ${size / 2} ${size / 2})`);
+  }
+
+  if (due && !stopped) svg.classList.add("is-due");
+  if (stopped) svg.classList.add("is-dead");
+
+  const said = document.createElementNS("http://www.w3.org/2000/svg", "title");
+  said.textContent = stopped
+    ? `Nothing for ${humanSpan(age)}, on something that usually runs every `
+      + `${humanSpan(interval)}.`
+    : due
+      ? "Due about now."
+      : `Next one in about ${humanSpan(interval - age)}.`;
+  svg.appendChild(said);
+
+  return svg;
 }
 
 /* ------------------------------------------------------------ keeping it -- */
@@ -10514,15 +10660,52 @@ function renderUrlHistory(data) {
     failed: Number(r.ok) === 1 ? null : Number(r.ms),
   }));
 
+  const changes = data.changes || [];
+
   drawLineChart($("urlChart"), rows, [
     { key: "ms", label: "Response time" },
     { key: "failed", label: "Failed" },
-  ], { xKey: "at", axis: msAxis, zeroBased: true, empty: "No checks in this range yet" });
+  ], {
+    xKey: "at", axis: msAxis, zeroBased: true, empty: "No checks in this range yet",
+    // Blue marks are the moments the watched value changed, which is usually
+    // the explanation for whatever the response time does next.
+    notes: changes,
+  });
 
   $("urlChartNote").textContent = history.checks
     ? "Every check in this range. A gap is the cron not running rather than the site "
       + "being down \u2014 the two look identical on a chart and are opposite problems."
+      + (changes.length
+        ? " Blue marks are where what this check records changed."
+        : "")
     : "";
+
+  /*
+   * The changes themselves, listed under the chart.
+   *
+   * A mark on a chart says when; it cannot say from what to what, and that is
+   * the half somebody is actually after - "1.22.0 to 1.23.1 at 04:12" is the
+   * sentence that explains the rest of the page.
+   */
+  const changeBox = $("urlChanges");
+  if (changes.length) {
+    changeBox.hidden = false;
+    changeBox.replaceChildren(section(
+      count(changes.length, "change") + " in this range",
+      simpleTable(
+        ["When", "Was", "Became"],
+        [...changes].reverse().slice(0, 50).map(change => [
+          humanTime(change.at),
+          change.from ?? "—",
+          change.to,
+        ]),
+        [null, "cmd", "cmd"]
+      )
+    ));
+  } else {
+    changeBox.hidden = true;
+    changeBox.replaceChildren();
+  }
 
   const valueChart = $("urlValueChart");
   if (history.has_value) {
@@ -10566,6 +10749,226 @@ function renderUrlHistory(data) {
  * on which is chosen - a static form would either show a value box that does
  * nothing for "just the status code", or hide it and leave nowhere to type.
  */
+const regexState = { at: 0, result: null, pattern: "", text: "" };
+
+/**
+ * A place to be wrong about a pattern before it goes into production.
+ *
+ * A regular expression that looks right and captures the wrong group produces
+ * a chart of a constant, and nothing about that looks like a mistake - the
+ * check passes, the value never moves, and the first anybody knows is when the
+ * thing it was supposed to catch goes past unnoticed. So it can be run against
+ * real pasted text, showing every group by number with what it took.
+ *
+ * Every match, not just the first: "it matched" and "it matched the one I
+ * meant" are different questions on a page that mentions four stylesheets.
+ */
+function showRegexTester(patternInput, groupInput) {
+  regexState.pattern = patternInput.value;
+  regexState.result = null;
+  regexState.at = 0;
+
+  const nodes = [];
+
+  const pattern = document.createElement("input");
+  pattern.type = "text";
+  pattern.className = "wide";
+  pattern.spellcheck = false;
+  pattern.value = regexState.pattern;
+  nodes.push(fieldRow("Pattern", pattern,
+    "Written without slashes around it — they are added for you, so a / in the pattern "
+    + "needs no escaping."));
+
+  const sample = document.createElement("textarea");
+  sample.rows = 8;
+  sample.className = "wide";
+  sample.spellcheck = false;
+  sample.placeholder = "Paste some of the page here — view source and take the part "
+    + "you are matching against.";
+  sample.value = regexState.text;
+  nodes.push(fieldRow("Against", sample, ""));
+
+  const tools = document.createElement("div");
+  tools.className = "inspect-actions";
+
+  const run = document.createElement("button");
+  run.textContent = "Test it";
+  tools.appendChild(run);
+
+  const grab = document.createElement("button");
+  grab.type = "button";
+  grab.className = "link";
+  grab.textContent = "Fetch the page and use that";
+  grab.title = "Ask for the URL in the form above and paste its body in here";
+  tools.appendChild(grab);
+
+  nodes.push(tools);
+
+  const out = document.createElement("div");
+  out.id = "regexOut";
+  nodes.push(out);
+
+  const draw = () => renderRegexResult(out, groupInput);
+
+  run.addEventListener("click", async event => {
+    event.preventDefault();
+    run.disabled = true;
+    out.replaceChildren(spinner("Testing…"));
+
+    regexState.pattern = pattern.value;
+    regexState.text = sample.value;
+    regexState.at = 0;
+
+    try {
+      regexState.result = await post("regex-try", {
+        pattern: pattern.value,
+        text: sample.value,
+      });
+      // Carried back to the form, so testing a pattern is also editing it.
+      patternInput.value = pattern.value;
+      draw();
+    } catch (error) {
+      out.replaceChildren(note(String(error.message || error)));
+    } finally {
+      run.disabled = false;
+    }
+  });
+
+  grab.addEventListener("click", async () => {
+    const url = $("urlUrl")?.value?.trim();
+    if (!url) {
+      notice("Put an address in the form first.");
+      return;
+    }
+
+    grab.disabled = true;
+    grab.textContent = "Fetching…";
+    try {
+      const got = await api("fetch", { url, method: "GET", follow: "1" });
+      if (!got.ok) throw new Error(got.error || "nothing came back");
+      sample.value = got.body || "";
+      notice(`Fetched ${humanBytes(got.bytes)} from ${got.url}.`, true);
+    } catch (error) {
+      notice(String(error.message || error));
+    } finally {
+      grab.disabled = false;
+      grab.textContent = "Fetch the page and use that";
+    }
+  });
+
+  showListDialog(
+    "Try a pattern",
+    nodes,
+    "Nothing here is saved or requested on a schedule. It runs the pattern exactly the way "
+    + "the check will, against whatever you paste."
+  );
+
+  draw();
+}
+
+function renderRegexResult(out, groupInput) {
+  const result = regexState.result;
+
+  if (!result) {
+    out.replaceChildren(note(
+      "Paste some text and press Test it. Every match is shown with its groups numbered, so "
+      + "you can see which number to keep."
+    ));
+    return;
+  }
+
+  if (!result.ok) {
+    out.replaceChildren(note(result.error));
+    return;
+  }
+
+  const parts = [];
+
+  if (!result.total) {
+    parts.push(note(
+      "The pattern is valid but matched nothing in that text. Which is worth knowing now "
+      + "rather than as a check that fails every five minutes."
+    ));
+    out.replaceChildren(...parts);
+    return;
+  }
+
+  const said = document.createElement("p");
+  said.className = "band-ok";
+  said.textContent = `${count(result.total, "match", "matches")}, `
+    + `with ${count(result.groups, "group")} in the pattern.`;
+  parts.push(said);
+
+  if (result.truncated) {
+    parts.push(note(`Showing the first ${result.matches.length}.`));
+  }
+
+  /*
+   * One match at a time, with a way to step between them.
+   *
+   * All of them at once on a page with forty stylesheets is a wall. The
+   * question being answered is "is this the one I meant", which is about a
+   * particular match rather than the set.
+   */
+  if (result.matches.length > 1) {
+    const nav = document.createElement("div");
+    nav.className = "inspect-actions";
+
+    for (const [text, step] of [["‹ Previous", -1], ["Next ›", 1]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "link";
+      button.textContent = text;
+      button.disabled = step < 0
+        ? regexState.at === 0
+        : regexState.at >= result.matches.length - 1;
+      button.addEventListener("click", () => {
+        regexState.at += step;
+        renderRegexResult(out, groupInput);
+      });
+      nav.appendChild(button);
+    }
+
+    const which = document.createElement("span");
+    which.className = "muted small";
+    which.textContent = `Match ${regexState.at + 1} of ${result.matches.length}`;
+    nav.appendChild(which);
+    parts.push(nav);
+  }
+
+  const match = result.matches[regexState.at];
+  const rows = match.groups.map(group => {
+    const keep = document.createElement("button");
+    keep.type = "button";
+    keep.className = "link";
+    keep.textContent = "Keep this one";
+    keep.title = `Record group ${group.n} on every run`;
+    keep.disabled = !groupInput || Number(groupInput.value) === group.n;
+    keep.addEventListener("click", () => {
+      groupInput.value = String(group.n);
+      notice(`This check will record group ${group.n}.`, true);
+      renderRegexResult(out, groupInput);
+    });
+
+    return [
+      group.n === 0 ? "whole match" : String(group.n),
+      group.matched
+        ? group.text
+        : "— did not take part in this match",
+      keep,
+    ];
+  });
+
+  parts.push(simpleTable(["Group", "Took", ""], rows, ["name", "cmd", "row-actions"]));
+
+  parts.push(note(
+    "A group that did not take part is not the same as one that matched nothing — an "
+    + "optional group is simply absent, and the check would record nothing on that run."
+  ));
+
+  out.replaceChildren(...parts);
+}
+
 function openUrlForm(row = null) {
   const data = urlState.data;
   if (!data) return;
@@ -10661,6 +11064,39 @@ function openUrlForm(row = null) {
   value.value = row?.check_value ?? "";
   const valueRow = field("urlValue", "Looking for", value, "");
 
+  /*
+   * A pattern is easy to get subtly wrong and impossible to check by reading.
+   *
+   * One that captures the wrong group produces a chart of a constant, and
+   * nothing about that looks like a mistake. So it can be tried against real
+   * pasted text before it is saved.
+   */
+  const tryIt = document.createElement("button");
+  tryIt.type = "button";
+  tryIt.className = "link";
+  tryIt.textContent = "Try it against some text";
+  tryIt.addEventListener("click", () => showRegexTester(value, group));
+  const tryRow = field("urlTry", "", tryIt, "");
+
+  const group = document.createElement("input");
+  group.type = "number";
+  group.min = "0";
+  group.max = "20";
+  group.value = String(row?.capture_group ?? 1);
+  group.className = "days";
+  const groupRow = field("urlGroup", "Keep group", group,
+    "Which bracketed part of the pattern to record. Nearly always 1 \u2014 a pattern needs "
+    + "context around the part that matters. 0 keeps the whole match.");
+
+  const notify = document.createElement("input");
+  notify.type = "checkbox";
+  notify.checked = row ? Boolean(Number(row.notify_change)) : false;
+  const notifyRow = field("urlNotify", "Tell me when it changes", notify,
+    "Raises an alert the moment the captured text is different from last time. This is how "
+    + "you watch a version string: what matters is not its value but when it moved. The "
+    + "alert obeys the usual cooldown, so a value that flaps does not flood \u2014 but every "
+    + "change is marked on the chart and listed under it either way.");
+
   const enabled = document.createElement("input");
   enabled.type = "checkbox";
   enabled.checked = row ? Boolean(row.enabled) : true;
@@ -10675,6 +11111,14 @@ function openUrlForm(row = null) {
     const wrap = value.closest(".settings-row");
     if (wrap) wrap.hidden = !meta.needs_value;
     hint.innerHTML = meta.hint;
+
+    // Only a regex has groups to choose between; the tester is for regexes.
+    const isRegex = kind.value === "regex";
+    for (const [node, show] of [[tryRow, isRegex], [groupRow, isRegex],
+                                [notifyRow, meta.needs_value]]) {
+      const holder = node.closest ? node.closest(".settings-row") || node : node;
+      holder.hidden = !show;
+    }
 
     /*
      * A body rule and a HEAD request cannot both be chosen.
@@ -10711,6 +11155,8 @@ function openUrlForm(row = null) {
         expect_status: expect.value,
         check_kind: kind.value,
         check_value: value.value.trim(),
+        capture_group: group.value,
+        notify_change: notify.checked ? "1" : "0",
         enabled: enabled.checked ? "1" : "0",
         method: method.value,
         follow_redirects: follow.checked ? "1" : "0",
@@ -13241,6 +13687,8 @@ async function refreshSelf() {
     label.textContent = c.name;
     card.appendChild(label);
 
+    card.appendChild(collectorDial(c));
+
     const value = document.createElement("div");
     value.className = "value";
     value.textContent = c.last_at ? `${humanDuration(c.age)} ago` : "never";
@@ -13273,6 +13721,12 @@ async function refreshSelf() {
     cards.appendChild(card);
   }
   parts.push(section("Is it still collecting?", cards));
+  parts.push(note(
+    "The ring fills as the next run approaches. A ring that has filled and is pulsing means "
+    + "one is due about now; a dashed grey one means nothing is arriving and the schedule is "
+    + "a guess from the gaps between the last few runs, not from a crontab this account can "
+    + "read."
+  ));
 
   parts.push(section("What it is using", databaseFacts(data)));
 

@@ -595,6 +595,29 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        25 => [
+            /*
+             * Watching a value that is not a number.
+             *
+             * A regex check already pulled out group 1 and stored it as a REAL,
+             * which is right for a queue depth and useless for the thing people
+             * actually want to watch: a version string. `2.14.1` is not a
+             * number and never will be, and the interesting event is not its
+             * size but the moment it changes.
+             *
+             * So the text is kept beside the number, and which group to take is
+             * a setting rather than always the first - a pattern often needs
+             * context around the part that matters.
+             */
+            'ALTER TABLE url_results ADD COLUMN text_value TEXT',
+            'ALTER TABLE url_checks ADD COLUMN capture_group INTEGER NOT NULL DEFAULT 1',
+            // Whether a change in that value should raise an alert.
+            'ALTER TABLE url_checks ADD COLUMN notify_change INTEGER NOT NULL DEFAULT 0',
+            // The last text seen, so a change can be noticed without reading
+            // back through the history on every run.
+            'ALTER TABLE url_checks ADD COLUMN last_text TEXT',
+        ],
+
         24 => [
             /*
              * What the last complete symlink walk found.
