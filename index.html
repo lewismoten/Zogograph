@@ -61,6 +61,13 @@
       <svg viewBox="0 0 36 36" aria-hidden="true">
         <circle class="poll-track" cx="18" cy="18" r="15"></circle>
         <circle class="poll-fill" cx="18" cy="18" r="15"></circle>
+        <!--
+          The inner ring is the host collector, which runs on its own clock and
+          is the thing you are usually waiting for. The page refreshing every
+          few seconds tells you nothing new until root's cron has run again.
+        -->
+        <circle class="poll-host-track" cx="18" cy="18" r="9"></circle>
+        <circle class="poll-host-fill" cx="18" cy="18" r="9"></circle>
       </svg>
       <span class="poll-dot" aria-hidden="true"></span>
     </button>
@@ -227,10 +234,20 @@
       <span class="nav-label">What is on the wire</span>
       <span class="nav-badge" data-badge="net-capture" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/net-captures" data-nav="net-captures" data-parent="network">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">What was on the wire</span>
+      <span class="nav-badge" data-badge="net-captures" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/net-dns" data-nav="net-dns" data-parent="network">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Name lookups</span>
       <span class="nav-badge" data-badge="net-dns" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/net-labels" data-nav="net-labels" data-parent="network">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Your own names</span>
+      <span class="nav-badge" data-badge="net-labels" hidden></span>
     </a>
     <a class="nav-item" href="#/capabilities" data-nav="capabilities">
       <span class="nav-icon" aria-hidden="true">✓</span>
@@ -277,6 +294,13 @@
   <main id="main">
     <div id="notice"></div>
     <section id="alertBanner" hidden></section>
+    <!--
+      Work asked of the host collector that has not come back yet. Above every
+      page rather than on the one that asked, because the wait is minutes and
+      nobody stands still for it.
+    -->
+    <section id="pendingBanner" hidden></section>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
 
 
 <section class="view" data-view="overview" hidden>
@@ -1144,6 +1168,53 @@
     <button type="submit">Look it up</button>
   </form>
   <div id="dnsBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="net-captures" hidden>
+<section class="panel" id="captureHistoryPanel">
+  <div class="panel-head">
+    <h2>What was on the wire</h2>
+    <button id="captureHistoryRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note">
+    Every capture that has been taken. One report answers &ldquo;what is
+    happening now&rdquo;; two an hour apart answer &ldquo;is this getting
+    worse&rdquo;, which is usually the real question. Rates are shown rather
+    than totals, because two samples of different lengths cannot be compared
+    any other way.
+  </p>
+  <div id="captureHistoryBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="net-labels" hidden>
+<section class="panel" id="labelsPanel">
+  <div class="panel-head">
+    <h2>Your own names</h2>
+  </div>
+  <p class="muted small sub-note">
+    A report full of <code>165.245.160.135</code> and <code>8000</code> is one
+    you decode in your head every time you read it. Give them names once and
+    every network page here shows them. An address can be exact or a whole
+    network in CIDR form, and the more specific one always wins. The number is
+    still shown beside the name — a label is a note about a fact, never a
+    replacement for it.
+  </p>
+  <form id="labelForm" class="pattern-row">
+    <select id="labelKind">
+      <option value="address">Address or network</option>
+      <option value="port">Port</option>
+    </select>
+    <input type="text" id="labelMatch" spellcheck="false" autocomplete="off"
+           placeholder="1.2.3.4, 10.0.0.0/8, or 8000">
+    <input type="text" id="labelText" spellcheck="false" autocomplete="off"
+           placeholder="Lewis: home">
+    <input type="text" id="labelNote" spellcheck="false" autocomplete="off"
+           placeholder="a note (optional)">
+    <button type="submit">Add it</button>
+  </form>
+  <div id="labelsBody"></div>
 </section>
 </section>
 

@@ -1847,6 +1847,26 @@ async function refreshShared() {
   state.lastReadingAt = overview.vitals ? Number(overview.vitals.taken_at) : null;
   renderLastSeen();
 
+  /*
+   * The host collector's clock, and whether anything it owes has arrived.
+   *
+   * Done here rather than per page because both belong to every page: the ring
+   * is in the top bar, and a result you asked for twenty minutes ago should
+   * announce itself wherever you happen to be standing when it lands.
+   */
+  const clock = overview.host_clock || {};
+  const arrived = hostClock.lastAt !== null
+    && clock.last_at !== null
+    && Number(clock.last_at) > hostClock.lastAt;
+
+  hostClock.lastAt = clock.last_at === null ? null : Number(clock.last_at);
+  hostClock.interval = clock.interval === null ? null : Number(clock.interval);
+  drawHostRing();
+
+  // Announced before the list is replaced, so it can see what has just gone.
+  if (arrived) noticeHostArrival();
+  renderPending(clock.pending || []);
+
   if (wasScanning && !state.scanRunning) {
     notice("Scan finished.", true);
     // A finished scan changes what Storage shows, wherever you are standing.
@@ -8540,6 +8560,239 @@ async function refreshDiagnosis() {
   body.replaceChildren(wrap);
 }
 
+/* ------------------------------------------------------- waiting for root -- */
+
+/*
+ * Work asked of the host collector, and how long until it can answer.
+ *
+ * The dashboard cannot run anything as root; it leaves a request and root's
+ * cron picks it up. That wait is minutes, and "waiting for the next host
+ * collection" with no clock on it is the same sentence whether the answer is
+ * due in ten seconds or the collector died last Tuesday.
+ *
+ * The bar counts down to the next expected run, measured from the readings
+ * themselves. Past that it stops pretending to be a progress bar and says how
+ * late the thing is, because a bar that sits at 100% forever is worse than no
+ * bar - it implies something is still happening.
+ */
+const pendingState = { rows: [], raf: null, unseen: new Map() };
+
+function renderPending(rows) {
+  pendingState.rows = rows || [];
+  const banner = $("pendingBanner");
+  if (!banner) return;
+
+  if (!pendingState.rows.length) {
+    // Emptied as well as hidden: leaving the old items in place keeps a
+    // countdown ticking against something that has already arrived.
+    banner.hidden = true;
+    banner.replaceChildren();
+    cancelAnimationFrame(pendingState.raf);
+    return;
+  }
+
+  banner.hidden = false;
+
+  const frag = document.createDocumentFragment();
+  for (const row of pendingState.rows) {
+    const item = document.createElement("div");
+    item.className = "pending-item";
+    item.dataset.task = row.task;
+
+    const head = document.createElement("div");
+    head.className = "pending-head";
+
+    const what = document.createElement("strong");
+    what.textContent = `Waiting on root for ${row.label}`;
+    head.appendChild(what);
+
+    const when = document.createElement("span");
+    when.className = "pending-when muted small";
+    head.appendChild(when);
+
+    item.appendChild(head);
+
+    const track = document.createElement("div");
+    track.className = "pending-track";
+    const fill = document.createElement("div");
+    fill.className = "pending-fill";
+    track.appendChild(fill);
+    item.appendChild(track);
+
+    frag.appendChild(item);
+  }
+  banner.replaceChildren(frag);
+
+  cancelAnimationFrame(pendingState.raf);
+  tickPending();
+}
+
+function tickPending() {
+  const now = Date.now() / 1000;
+  let animate = false;
+
+  for (const item of document.querySelectorAll(".pending-item")) {
+    const row = pendingState.rows.find(r => r.task === item.dataset.task);
+    if (!row) continue;
+
+    const when = item.querySelector(".pending-when");
+    const fill = item.querySelector(".pending-fill");
+
+    /*
+     * The wait runs from when it was asked to the next expected collection.
+     *
+     * Not from "now plus the interval": a request made four minutes into a
+     * five-minute cycle is answered in one, and a bar that restarted at zero
+     * on every render would never reach the end.
+     */
+    if (!hostClock.lastAt || !hostClock.interval) {
+      when.textContent = "the collector's schedule is not known yet, so there is no "
+        + "countdown to give";
+      fill.style.width = "0%";
+      continue;
+    }
+
+    /*
+     * A countdown only makes sense if the collector is actually running.
+     *
+     * Walking the schedule forward from the last reading gives a slot a couple
+     * of minutes away even when that reading was nine hours ago - an arithmetic
+     * answer to a question about a job that has stopped. The ring already knows
+     * the collector is overdue; the bar must not contradict it with an invented
+     * deadline.
+     */
+    const overdue = now - hostClock.lastAt - hostClock.interval;
+    if (overdue > hostClock.interval) {
+      fill.classList.add("late");
+      fill.style.width = "100%";
+      when.textContent = `the collector last ran ${humanDuration(now - hostClock.lastAt)} ago `
+        + `and runs every ${humanDuration(hostClock.interval)} \u2014 this will not arrive `
+        + "until it runs again";
+      animate = true;
+      continue;
+    }
+
+    let due = hostClock.lastAt + hostClock.interval;
+    while (due < row.requested_at) due += hostClock.interval;
+
+    const total = Math.max(1, due - row.requested_at);
+    const left = due - now;
+
+    if (left > 0) {
+      animate = true;
+      fill.classList.remove("late");
+      fill.style.width = `${Math.max(0, Math.min(100, (1 - left / total) * 100))}%`;
+      when.textContent = `expected in ${humanDuration(left)}`;
+    } else {
+      /*
+       * Past due: stop pretending to be a progress bar.
+       *
+       * A full bar sitting there implies work in progress. What is actually
+       * true is that the moment passed and nothing arrived, which is a
+       * different thing and is the one worth acting on.
+       */
+      fill.classList.add("late");
+      fill.style.width = "100%";
+      when.textContent = -left < hostClock.interval
+        ? "due now"
+        : `${humanDuration(-left)} past due \u2014 the collector may not be running`;
+      animate = true;
+    }
+  }
+
+  if (animate) {
+    pendingState.raf = requestAnimationFrame(() => setTimeout(tickPending, 500));
+  }
+}
+
+/*
+ * Something the collector owed has arrived.
+ *
+ * A toast rather than a line in a panel, because the reader is very unlikely to
+ * be on the page that asked - the whole reason the wait is minutes is that they
+ * went to do something else. The link is the point: "it is ready" without
+ * "here" leaves them to remember which page they asked from.
+ */
+function noticeHostArrival() {
+  const settled = pendingState.rows.filter(row =>
+    !(state.overview?.host_clock?.pending || []).some(p => p.task === row.task));
+
+  if (!settled.length) {
+    // A new reading with nothing outstanding: no announcement needed.
+    return;
+  }
+
+  for (const row of settled) {
+    toast(`${row.label} is ready.`, row.view);
+
+    /*
+     * Marked on the navigation until it has been looked at.
+     *
+     * A toast can be missed - it is on screen for a few seconds and the reader
+     * may be reading something else - so the badge is what carries it until the
+     * page is actually opened.
+     */
+    if (row.view && row.view !== state.view) {
+      pendingState.unseen.set(row.view, true);
+      markUnseen(row.view, true);
+    }
+  }
+}
+
+function markUnseen(view, unseen) {
+  const link = document.querySelector(`[data-nav="${view}"]`);
+  if (!link) return;
+  link.classList.toggle("has-new", unseen);
+
+  const badge = link.querySelector(".nav-badge");
+  if (!badge) return;
+
+  if (unseen) {
+    badge.hidden = false;
+    badge.textContent = "new";
+    badge.className = "nav-badge badge-new";
+  } else if (badge.textContent === "new") {
+    badge.hidden = true;
+    badge.textContent = "";
+  }
+}
+
+/** A short-lived message with somewhere to go. */
+function toast(text, view = "") {
+  const holder = $("toasts");
+  if (!holder) return;
+
+  const box = document.createElement("div");
+  box.className = "toast";
+
+  const said = document.createElement("span");
+  said.textContent = text;
+  box.appendChild(said);
+
+  if (view && VIEWS[view]) {
+    const go = document.createElement("button");
+    go.className = "link";
+    go.textContent = `Open ${VIEWS[view].label}`;
+    go.addEventListener("click", () => {
+      showView(view);
+      box.remove();
+    });
+    box.appendChild(go);
+  }
+
+  const close = document.createElement("button");
+  close.className = "toast-close";
+  close.setAttribute("aria-label", "Dismiss");
+  close.textContent = "\u00d7";
+  close.addEventListener("click", () => box.remove());
+  box.appendChild(close);
+
+  holder.appendChild(box);
+
+  // Long enough to read a sentence and press a button, and no longer.
+  setTimeout(() => box.remove(), 12000);
+}
+
 /* ---------------------------------------------------------------- network -- */
 
 const networkState = { data: null, publicOnly: false };
@@ -8895,8 +9148,35 @@ function renderCaptureRequest(data) {
   holder.replaceChildren(wrap);
 }
 
-function renderCapture(capture) {
-  const body = $("captureBody");
+/*
+ * A name for an address or a port, where one has been given.
+ *
+ * The number is never replaced, only accompanied. A label is somebody's note
+ * about a number, and one that hid the number would make a typo in the notes
+ * indistinguishable from a change on the network.
+ */
+function labelled(value, label) {
+    const span = document.createElement("span");
+    span.textContent = String(value);
+    if (label) {
+      const tag = document.createElement("span");
+      tag.className = "own-label";
+      tag.textContent = ` ${label}`;
+      span.appendChild(tag);
+    }
+    return span;
+}
+
+/*
+ * Draws one capture into whichever element is asked for.
+ *
+ * Both the live page and the history page show a capture, and they must show it
+ * identically - two renderers for one report is how the same numbers come to be
+ * described differently in two places. So the target is a parameter rather than
+ * a fixed id.
+ */
+function renderCapture(capture, target = "captureBody") {
+  const body = typeof target === "string" ? $(target) : target;
   if (!body) return;
 
   if (!capture) {
@@ -8906,90 +9186,328 @@ function renderCapture(capture) {
 
   if (!capture.ok) {
     body.replaceChildren(
-      note(`The last capture, ${ago(capture.taken_at)}, did not run: ${capture.reason}`)
+      note(`The capture of ${humanTime(capture.taken_at)} did not run: ${capture.reason}`)
     );
     return;
   }
 
   const parts = [];
+  const seconds = Number(capture.seconds) || 0;
+  const packets = Number(capture.packets) || 0;
 
+  /*
+   * The headline is a rate, not a total.
+   *
+   * "20,004 packets" says nothing without the period it covers, and comparing
+   * two captures of different lengths by their totals is meaningless. Rates
+   * compare; totals do not.
+   */
   const facts = [
-    ["Interface", capture.interface],
-    ["Filter", capture.label || capture.filter],
     ["Taken", `${humanTime(capture.taken_at)} (${ago(capture.taken_at)})`],
-    ["Ran for", `${capture.seconds}s`],
-    ["Packets", `${humanCount(capture.packets)}`
-      + (Number(capture.seconds) > 0
-        ? ` \u2014 ${humanCount(Math.round(capture.packets / Number(capture.seconds)))} a second`
-        : "")],
-    ["Distinct addresses", humanCount(capture.distinct_peers)],
+    ["Interface and filter", `${capture.interface} \u00b7 ${capture.filter_label || capture.filter}`],
+    ["Over", `${seconds}s`],
+    ["Packets", seconds > 0
+      ? `${humanCount(packets)} \u2014 ${humanCount(Math.round(packets / seconds))} a second`
+      : humanCount(packets)],
+    ["Arriving", `${humanCount(capture.in_packets)} packets, ${humanBytes(capture.in_bytes)}`
+      + (seconds > 0 ? ` \u2014 ${humanBytes(capture.in_bytes / seconds)}/s` : "")],
+    ["Leaving", `${humanCount(capture.out_packets)} packets, ${humanBytes(capture.out_bytes)}`
+      + (seconds > 0 ? ` \u2014 ${humanBytes(capture.out_bytes / seconds)}/s` : "")],
+    ["Distinct remote addresses", humanCount(capture.distinct_peers)],
   ];
 
   if (Number(capture.distinct_names) > 0) {
     facts.push(["Distinct names asked for", humanCount(capture.distinct_names)]);
   }
   if (capture.unparsed > 0) {
-    /*
-     * Said out loud rather than quietly dropped.
-     *
-     * ARP, ICMP and anything tcpdump wrote in a shape this does not parse are
-     * counted as packets and not attributed to an address. Reporting the
-     * remainder is what lets somebody check that the columns add up.
-     */
     facts.push(["Counted but not attributed", `${humanCount(capture.unparsed)} \u2014 `
       + "ARP, ICMP and anything not in a shape this parses"]);
   }
+  if (capture.inferred_local) {
+    /*
+     * Said out loud, because it is an inference rather than a reading.
+     *
+     * When this machine's own addresses could not be read, the address in
+     * nearly every packet is taken to be it. That is almost always right and
+     * is still a guess, and a guess presented as a measurement is how a report
+     * quietly becomes wrong.
+     */
+    facts.push(["This machine assumed to be", `${capture.inferred_local} \u2014 inferred from `
+      + "appearing in most packets, because its addresses could not be read directly"]);
+  }
   if (capture.hit_limit) {
-    facts.push(["Stopped early", "The packet ceiling was reached before the time ran out, "
-      + "so this is the first part of the period rather than all of it. The proportions "
-      + "still hold; the totals are a floor."]);
+    facts.push(["Stopped early", "The packet ceiling was reached before the time ran out, so "
+      + "this covers the first part of the period rather than all of it."]);
   }
 
   parts.push(section("The sample", factGrid(facts)));
 
+  /*
+   * The flags, because they say what kind of busy this is.
+   *
+   * Mostly ACK and PSH+ACK is established traffic doing work - a large clone, a
+   * busy API. Mostly SYN from many changing addresses is scanning or a flood.
+   * The packet rate is identical in both cases and this is the only thing that
+   * tells them apart.
+   */
+  if ((capture.flags || []).length) {
+    const total = capture.flags.reduce((sum, f) => sum + Number(f.packets), 0);
+    const byName = Object.fromEntries(capture.flags.map(f => [f.label, Number(f.packets)]));
+    const syn = byName.SYN || 0;
+    const established = (byName.ACK || 0) + (byName["PSH+ACK"] || 0);
+
+    const wrap = document.createDocumentFragment();
+    wrap.appendChild(simpleTable(
+      ["Flag", "Packets", "Share", "What it is"],
+      capture.flags.map(f => [
+        f.label,
+        humanCount(f.packets),
+        total ? `${((f.packets / total) * 100).toFixed(1)}%` : "\u2014",
+        FLAG_MEANING[f.label] || "",
+      ]),
+      [null, "size", "size", null]
+    ));
+
+    if (total > 0) {
+      wrap.appendChild(note(
+        syn > established
+          ? "Mostly connection attempts rather than established traffic. From a few addresses "
+            + "that is a client reconnecting in a loop; from many changing ones it is scanning "
+            + "or a flood \u2014 the remote list below says which."
+          : "Mostly established traffic doing work rather than new connections. This is what a "
+            + "busy site looks like, not an attack."
+      ));
+    }
+    parts.push(section("What kind of traffic", wrap));
+  }
+
+  /*
+   * Remote addresses only, with direction and bytes.
+   *
+   * The earlier version counted both ends of every packet, which put this
+   * machine at the top of its own report with 99.7% - true, useless, and it
+   * made the shares add past 100. Only the other end is a peer, and bytes are
+   * what tell a large clone apart from a scanner sending hundreds of tiny
+   * requests: identical packet counts, three orders of magnitude apart in load.
+   */
   if ((capture.peers || []).length) {
-    parts.push(section("Busiest addresses", simpleTable(
-      ["Address", "Packets", "Share", ""],
-      capture.peers.slice(0, 20).map(p => [
-        p.label,
-        humanCount(p.packets),
-        capture.packets ? `${((p.packets / capture.packets) * 100).toFixed(1)}%` : "\u2014",
+    const wrap = document.createDocumentFragment();
+
+    const table = simpleTable(
+      ["Remote address", "In", "Out", "Arriving", "Leaving", "Opened", ""],
+      capture.peers.slice(0, 25).map(p => [
+        labelled(p.address, p.label),
+        humanCount(p.in_packets),
+        humanCount(p.out_packets),
+        humanBytes(p.in_bytes),
+        humanBytes(p.out_bytes),
+        p.opened ? humanCount(p.opened) : "\u2014",
         p.private ? "private address" : "",
       ]),
-      ["name", "size", "size", null]
-    )));
+      ["name", "size", "size", "size", "size", "size", null]
+    );
+    wrap.appendChild(table);
+
+    wrap.appendChild(note(
+      "This machine's own addresses are excluded: they appear in nearly every packet and "
+      + "would top the table saying nothing. \u201cOpened\u201d counts SYN packets \u2014 new "
+      + "connections rather than traffic on existing ones."
+      + (capture.distinct_peers > capture.peers.length
+        ? ` The busiest ${capture.peers.length} of ${humanCount(capture.distinct_peers)} are shown, `
+          + "so these will not add up to the total."
+        : "")
+    ));
+
+    parts.push(section("Who is on the other end", wrap));
   }
 
   if ((capture.ports || []).length) {
-    parts.push(section("Busiest ports", simpleTable(
-      ["Port", "Packets", "Usually"],
+    const total = capture.ports.reduce((sum, p) => sum + Number(p.packets), 0);
+    parts.push(section("Which service", simpleTable(
+      ["Port", "Packets", "Share", "Bytes", "Usually"],
       capture.ports.slice(0, 20).map(p => [
-        p.label, humanCount(p.packets), p.service?.name ?? "",
+        labelled(`${p.port}`, p.label),
+        humanCount(p.packets),
+        total ? `${((p.packets / total) * 100).toFixed(1)}%` : "\u2014",
+        humanBytes(p.bytes),
+        p.service?.name ?? "",
       ]),
-      ["size", "size", "name"]
+      ["size", "size", "size", "size", "name"]
     )));
   }
 
   if ((capture.names || []).length) {
-    /*
-     * The one field kept beyond a count, and worth it.
-     *
-     * "Four thousand queries" is a symptom. "Four thousand queries for one zone
-     * that is not ours" is a diagnosis - and the classic reflection attack is
-     * exactly that shape: many sources, one name, ANY records.
-     */
     parts.push(section("Names asked for", simpleTable(
-      ["Name", "Queries", "Share"],
-      capture.names.slice(0, 25).map(n => [
-        n.label,
-        humanCount(n.packets),
-        capture.packets ? `${((n.packets / capture.packets) * 100).toFixed(1)}%` : "\u2014",
-      ]),
-      ["name", "size", "size"]
+      ["Name", "Queries"],
+      capture.names.slice(0, 25).map(n => [n.label, humanCount(n.packets)]),
+      ["name", "size"]
     )));
   }
 
   body.replaceChildren(...parts);
+}
+
+const FLAG_MEANING = {
+  SYN: "a new connection being attempted",
+  "SYN+ACK": "a connection being accepted",
+  ACK: "ordinary traffic on an established connection",
+  "PSH+ACK": "application data on an established connection",
+  FIN: "a connection closing tidily",
+  RST: "a connection refused or aborted",
+  other: "",
+};
+
+/* ------------------------------------------------------- capture history -- */
+
+const captureHistoryState = { showing: null };
+
+/*
+ * Every capture taken, so two can be compared.
+ *
+ * One report answers "what is happening now"; two an hour apart answer "is this
+ * getting worse", which is usually the real question - and the one nothing here
+ * could answer while only the newest was kept.
+ */
+async function refreshCaptures() {
+  const body = $("captureHistoryBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see captures."));
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner());
+
+  let data;
+  try {
+    data = await api("captures", captureHistoryState.showing
+      ? { id: captureHistoryState.showing }
+      : {});
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  if (!data.available) {
+    body.replaceChildren(note(data.reason));
+    return;
+  }
+
+  if (!data.rows.length) {
+    body.replaceChildren(note("No captures have been taken yet. Ask for one on "
+      + "What is on the wire."));
+    return;
+  }
+
+  const wrap = document.createDocumentFragment();
+  const holder = document.createElement("div");
+  holder.id = "captureList";
+  wrap.appendChild(holder);
+  body.replaceChildren(wrap);
+
+  renderTable("captureList", data.rows, [
+    { label: "Taken", render: row => humanTime(row.taken_at) },
+    { label: "Interface", render: row => row.interface },
+    { label: "Filter", render: row => row.filter_label },
+    { label: "Over", className: "size", render: row => `${row.seconds}s` },
+    {
+      label: "Packets/s",
+      className: "size",
+      render: row => row.packets_per_second == null ? "\u2014" : humanCount(row.packets_per_second),
+    },
+    {
+      label: "Bytes/s",
+      className: "size",
+      render: row => row.bytes_per_second == null ? "\u2014" : `${humanBytes(row.bytes_per_second)}/s`,
+    },
+    { label: "Arriving", className: "size", render: row => humanBytes(row.in_bytes) },
+    { label: "Leaving", className: "size", render: row => humanBytes(row.out_bytes) },
+    { label: "Peers", className: "size", render: row => humanCount(row.distinct_peers) },
+    {
+      label: "",
+      render: row => {
+        const button = document.createElement("button");
+        button.className = "link";
+        const showing = Number(data.capture?.id) === Number(row.id);
+        button.textContent = showing ? "shown below" : "Open";
+        button.disabled = showing;
+        button.addEventListener("click", () => {
+          captureHistoryState.showing = Number(row.id);
+          refreshCaptures().catch(error => notice(String(error.message || error)));
+        });
+        return button;
+      },
+    },
+  ], null, null, row => String(row.id));
+
+  const detail = document.createElement("div");
+  detail.className = "capture-detail";
+  body.appendChild(detail);
+
+  // The same renderer the live page uses, pointed at a different element.
+  renderCapture(data.capture, detail);
+}
+
+/* --------------------------------------------------------------- labels -- */
+
+async function refreshLabels() {
+  const body = $("labelsBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to keep your own names."));
+    return;
+  }
+
+  let data;
+  try {
+    data = await api("labels");
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  renderLabels(data);
+}
+
+function renderLabels(data) {
+  const body = $("labelsBody");
+
+  if (!data.rows.length) {
+    body.replaceChildren(note(
+      "Nothing named yet. Start with this machine's own address and anything you recognise "
+      + "in a capture \u2014 those are the two that save the most reading."
+    ));
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.id = "labelsTable";
+  body.replaceChildren(holder);
+
+  renderTable("labelsTable", data.rows, [
+    { label: "Kind", render: row => row.kind },
+    { label: "Matches", className: "name", render: row => row.match },
+    { label: "Shown as", className: "name", render: row => row.label },
+    { label: "Note", className: "cmd", render: row => row.note || "" },
+    {
+      label: "",
+      render: row => {
+        const button = document.createElement("button");
+        button.className = "link danger";
+        button.textContent = "Remove";
+        button.addEventListener("click", async () => {
+          try {
+            const result = await post("label-delete", { id: row.id });
+            renderLabels(result);
+            // Everything that shows an address or a port has to be redrawn, or
+            // a name that has just been removed stays on screen.
+            if (networkState.data) await refreshNetwork();
+          } catch (error) {
+            notice(String(error.message || error));
+          }
+        });
+        return button;
+      },
+    },
+  ], null, null, row => String(row.id));
 }
 
 /* ------------------------------------------------------------------- DNS -- */
@@ -11161,6 +11679,12 @@ const VIEWS = {
   "net-ports": { label: "Open ports", parent: "network", refresh: () => refreshNetwork() },
   "net-peers": { label: "Who is connected", parent: "network", refresh: () => refreshNetwork() },
   "net-capture": { label: "What is on the wire", parent: "network", refresh: () => refreshNetwork() },
+  "net-captures": {
+    label: "What was on the wire",
+    parent: "network",
+    refresh: () => refreshCaptures(),
+  },
+  "net-labels": { label: "Your own names", parent: "network", refresh: () => refreshLabels() },
   "net-dns": {
     label: "Name lookups",
     parent: "network",
@@ -11285,6 +11809,12 @@ function showView(view, push = true) {
 
   document.title = `${VIEWS[view].label} · Hostscope`;
 
+  // Opening a page is looking at it, which is what the marker was waiting for.
+  if (pendingState.unseen.has(view)) {
+    pendingState.unseen.delete(view);
+    markUnseen(view, false);
+  }
+
   // The units picker only means anything where something is charted against a
   // unit; showing it on Capabilities is a control that does nothing.
   const unitsWrap = $("unitsWrap");
@@ -11331,6 +11861,23 @@ function showView(view, push = true) {
  */
 const poll = { busy: false, nextAt: 0, every: 0, raf: null };
 
+/*
+ * When the host collector is next expected, and what it last did.
+ *
+ * The outer ring counts down to this page asking the server again, which on
+ * most pages tells you nothing new: the numbers come from root's cron, which
+ * runs on a clock of its own. The inner ring counts down to *that* - the moment
+ * new data can actually exist - and goes amber and pulses once it is overdue,
+ * because "due in a minute" and "twenty minutes late" are different situations
+ * and a ring sitting full cannot say which.
+ *
+ * The interval is measured from the readings themselves rather than read from a
+ * crontab this process may not be able to see. Two readings five minutes apart
+ * are better evidence of the schedule than a config file that might describe a
+ * job nobody installed.
+ */
+const hostClock = { lastAt: null, interval: null, at: 0 };
+
 function setPollState(busy, every) {
   poll.busy = busy;
   if (!busy && every) {
@@ -11363,10 +11910,52 @@ function drawPoll() {
     }
   }
 
+  drawHostRing();
+
   cancelAnimationFrame(poll.raf);
   if (!poll.busy && poll.every > 0) {
     poll.raf = requestAnimationFrame(drawPoll);
   }
+}
+
+/*
+ * The inner ring: how long until the host collector could have anything new.
+ *
+ * Drawn only when there is a measured interval to draw against. A single host
+ * reading gives no interval, and a ring counting down to a moment nobody
+ * measured would be an invented deadline.
+ */
+function drawHostRing() {
+  const fill = document.querySelector(".poll-host-fill");
+  const button = $("pollState");
+  if (!fill || !button) return;
+
+  const circumference = 2 * Math.PI * 9;
+  fill.style.strokeDasharray = String(circumference);
+
+  if (!hostClock.lastAt || !hostClock.interval) {
+    fill.style.strokeDashoffset = String(circumference);
+    button.classList.remove("host-late", "host-stopped");
+    return;
+  }
+
+  const due = hostClock.lastAt + hostClock.interval;
+  const now = Date.now() / 1000;
+  const left = due - now;
+
+  const done = left <= 0 ? 1 : 1 - left / hostClock.interval;
+  fill.style.strokeDashoffset = String(circumference * (1 - Math.max(0, Math.min(1, done))));
+
+  const late = -left;
+  button.classList.toggle("host-late", late > 0 && late <= hostClock.interval * 4);
+  button.classList.toggle("host-stopped", late > hostClock.interval * 4);
+
+  button.title = left > 0
+    ? `Next refresh in ${Math.ceil(Math.max(0, poll.nextAt - Date.now()) / 1000)}s. `
+      + `The host collector is next expected in ${humanDuration(left)}.`
+    : `Next refresh in ${Math.ceil(Math.max(0, poll.nextAt - Date.now()) / 1000)}s. `
+      + `The host collector is ${humanDuration(late)} late \u2014 it usually runs every `
+      + `${humanDuration(hostClock.interval)}.`;
 }
 
 async function refreshCurrent(fromPoll = false) {
@@ -11810,6 +12399,29 @@ for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh",
 
 $("offenderDelete").addEventListener("click",
   () => deletePicked().catch(error => notice(String(error.message || error))));
+
+$("captureHistoryRefresh").addEventListener("click",
+  () => refreshCaptures().catch(error => notice(String(error.message || error))));
+
+$("labelForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    const result = await post("label-save", {
+      kind: $("labelKind").value,
+      match: $("labelMatch").value.trim(),
+      label: $("labelText").value.trim(),
+      note: $("labelNote").value.trim(),
+    });
+    $("labelMatch").value = "";
+    $("labelText").value = "";
+    $("labelNote").value = "";
+    renderLabels(result);
+    if (networkState.data) await refreshNetwork();
+    notice("Saved. It will show wherever that address or port appears.", true);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
 
 $("diagnoseRefresh").addEventListener("click",
   () => refreshDiagnosis().catch(error => notice(String(error.message || error))));

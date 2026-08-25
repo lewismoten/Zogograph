@@ -31,8 +31,16 @@ require_once __DIR__ . '/collect.php';
 /** Longest a requested capture may run, whatever is asked for. */
 const CAPTURE_MAX_SECONDS = 60;
 
-/** And a packet ceiling, so a busy link cannot make it run long anyway. */
-const CAPTURE_MAX_PACKETS = 20000;
+/*
+ * A packet ceiling, as a backstop rather than as the bound that usually applies.
+ *
+ * Counters are kept as packets arrive, so nothing is held in memory and a long
+ * capture costs no more than a short one. The previous limit of twenty thousand
+ * was reached by a busy web server in fifteen seconds, which quietly turned a
+ * sixty-second sample into a fifteen-second one - and the report said "20,004
+ * packets" as though that were the period's traffic.
+ */
+const CAPTURE_MAX_PACKETS = 2000000;
 
 /** How many distinct peers, ports and names to keep from one capture. */
 const CAPTURE_KEEP = 40;
@@ -502,6 +510,40 @@ function addressIsPrivate(string $address): bool
 /* ------------------------------------------------------- packet sampling -- */
 
 /**
+ * The addresses this machine answers on.
+ *
+ * Needed to tell inbound from outbound, which is the difference between a
+ * useful capture report and a useless one. Without it the local address turns
+ * up in ~100% of packets and sits at the top of "busiest addresses" telling you
+ * nothing, while the shares add to well over 100% because both ends of every
+ * packet are counted.
+ *
+ * @return list<string>
+ */
+function localAddresses(): array
+{
+    $out = [];
+
+    $ip = whichBinary('ip');
+    if ($ip !== null) {
+        $lines = shellRead(escapeshellarg($ip) . ' -o addr show 2>/dev/null');
+        foreach (preg_split('/\R/', (string)$lines) ?: [] as $line) {
+            if (preg_match('/\binet6?\s+([0-9a-f.:]+)/i', $line, $m)) {
+                $out[] = $m[1];
+            }
+        }
+    }
+
+    if ($out === []) {
+        // Nothing exotic: the loopback addresses are always ours, and anything
+        // else we cannot determine is handled by the fallback in the summariser.
+        $out = ['127.0.0.1', '::1'];
+    }
+
+    return array_values(array_unique($out));
+}
+
+/**
  * A bounded look at what is actually on the wire.
  *
  * This is the tool of last resort and it is treated as one. Everything above is
@@ -509,18 +551,18 @@ function addressIsPrivate(string $address): bool
  * root, and is therefore run only when somebody asks for it and only for as
  * long as they asked.
  *
- * Four bounds, because any one of them can fail on a busy link:
+ * Counters are kept as packets arrive rather than by collecting the output and
+ * summarising it afterwards. That is what makes a sixty-second sample of a busy
+ * link possible: an earlier version read everything into memory and needed a
+ * twenty-thousand packet ceiling to stay safe, which a busy server hits in
+ * fifteen seconds - so the "sample" was the first fifteen seconds of the minute
+ * and the rest of the period was never looked at.
  *
- *   timeout     wall clock, enforced outside tcpdump by `timeout`
- *   -c          a packet ceiling, so a gigabit of DNS cannot make it run long
- *   -s          a snap length just past the headers we parse
- *   no -w       nothing is written to disk; the output is parsed and discarded
- *
- * What is kept is counts: how many packets, between which addresses, on which
- * ports, and for DNS the names asked for. No payload is stored. A monitor that
- * quietly wrote other people's traffic into a file on a shared host would be a
- * far worse problem than whatever it was pointed at, and "we only kept the
- * interesting part" is what everyone says before the leak.
+ * What is kept is counts: how many packets and bytes, in which direction,
+ * between which addresses, on which ports, with which TCP flags, and for DNS
+ * the names asked for. No payload is stored. A monitor that quietly wrote other
+ * people's traffic into a file on a shared host would be a far worse problem
+ * than whatever it was pointed at.
  *
  * @return array<string, mixed>
  */
@@ -528,7 +570,7 @@ function captureTraffic(
     string $interface,
     int $seconds,
     string $filter = '',
-    ?callable $runner = null
+    ?array $local = null
 ): array {
     $seconds = max(5, min(CAPTURE_MAX_SECONDS, $seconds));
 
@@ -550,41 +592,79 @@ function captureTraffic(
         return captureFailure('tcpdump is not installed, or is not on this PATH.');
     }
 
+    if (!function_exists('popen')) {
+        return captureFailure('popen is disabled in this PHP, so a capture cannot be read.');
+    }
+
     $timeout = whichBinary('timeout');
     $command = sprintf(
-        '%s%s -nn -q -l -s 96 -c %d -i %s %s 2>&1',
-        $timeout === null ? '' : escapeshellarg($timeout) . ' ' . ($seconds + 2) . ' ',
+        '%s%s -nn -q -l -s 128 -c %d -i %s %s 2>&1',
+        $timeout === null ? '' : escapeshellarg($timeout) . ' ' . ($seconds + 3) . ' ',
         escapeshellarg($tcpdump),
         CAPTURE_MAX_PACKETS,
         escapeshellarg($interface),
         $expression['argument'] === '' ? '' : escapeshellarg($expression['argument'])
     );
 
+    $local ??= localAddresses();
     $started = microtime(true);
-    $out = shellRead($command);
-    $elapsed = round(microtime(true) - $started, 1);
 
-    if ($out === null) {
-        return captureFailure('tcpdump produced no output. It needs root, and the interface '
-            . 'has to exist and be up.');
+    $handle = @popen($command, 'r');
+    if ($handle === false) {
+        return captureFailure('The capture could not be started.');
     }
 
-    /*
-     * tcpdump's own complaints look like output, so they are checked for.
-     *
-     * "You don't have permission" and "No such device" both arrive on stderr,
-     * which is folded into the same stream - and an empty summary from a failed
-     * command reads as "no traffic", which is the opposite of the truth.
-     */
-    foreach (['permission' => 'This needs root: tcpdump could not open the interface.',
-              'No such device' => 'There is no interface by that name on this machine.',
-              'not found' => 'tcpdump is not installed here.'] as $needle => $said) {
-        if (stripos($out, $needle) !== false && substr_count($out, "\n") < 5) {
-            return captureFailure($said);
+    $state = newCaptureState($local);
+    $complaints = [];
+
+    while (($line = fgets($handle)) !== false) {
+        $line = rtrim($line, "\r\n");
+        if ($line === '') {
+            continue;
+        }
+
+        if (str_starts_with($line, 'tcpdump:') || str_starts_with($line, 'listening on')) {
+            $complaints[] = $line;
+            continue;
+        }
+
+        countPacket($state, $line);
+
+        // A second guard on the clock: `timeout` may be missing, and a filter
+        // that matches nothing would otherwise block here for ever.
+        if ($state['packets'] % 512 === 0 && microtime(true) - $started > $seconds + 5) {
+            break;
         }
     }
+    pclose($handle);
 
-    $summary = summariseCapture($out);
+    $elapsed = round(microtime(true) - $started, 1);
+
+    if ($state['packets'] === 0) {
+        /*
+         * tcpdump's own complaints look like an empty capture.
+         *
+         * "You don't have permission" and "No such device" arrive on stderr,
+         * folded into the same stream - and an empty summary from a failed
+         * command reads as "no traffic", which is the opposite of the truth.
+         */
+        $said = implode(' ', $complaints);
+        foreach (['permission' => 'This needs root: tcpdump could not open the interface.',
+                  'No such device' => 'There is no interface by that name on this machine.',
+                  'not found' => 'tcpdump is not installed here.'] as $needle => $because) {
+            if (stripos($said, $needle) !== false) {
+                return captureFailure($because);
+            }
+        }
+
+        return captureFailure(sprintf(
+            'Nothing matched in %ss. The interface is up and the filter caught no packets, '
+            . 'which for a narrow filter on a quiet link is an ordinary answer.',
+            $elapsed
+        ));
+    }
+
+    $summary = finishCapture($state);
     $summary['ok'] = true;
     $summary['reason'] = '';
     $summary['interface'] = $interface;
@@ -593,6 +673,7 @@ function captureTraffic(
     $summary['filter'] = $expression['key'];
     $summary['filter_label'] = $expression['label'];
     $summary['hit_packet_limit'] = $summary['packets'] >= CAPTURE_MAX_PACKETS;
+    $summary['local'] = $state['local'];
 
     return $summary;
 }
@@ -601,27 +682,196 @@ function captureFailure(string $reason): array
 {
     return [
         'ok' => false, 'reason' => $reason, 'packets' => 0, 'bytes' => 0,
-        'peers' => [], 'ports' => [], 'names' => [], 'protocols' => [],
+        'peers' => [], 'ports' => [], 'names' => [], 'flags' => [],
+        'in_packets' => 0, 'out_packets' => 0, 'in_bytes' => 0, 'out_bytes' => 0,
+        'unparsed' => 0, 'distinct_peers' => 0, 'distinct_names' => 0,
         'seconds' => 0, 'interface' => '', 'filter' => '', 'filter_label' => '',
-        'hit_packet_limit' => false, 'requested_seconds' => 0,
+        'hit_packet_limit' => false, 'requested_seconds' => 0, 'local' => [],
     ];
+}
+
+/** The counters a capture accumulates, one packet at a time. */
+function newCaptureState(array $local): array
+{
+    return [
+        'local' => array_flip($local),
+        'seen' => [],
+        'peers' => [],
+        'ports' => [],
+        'names' => [],
+        'flags' => [],
+        'packets' => 0,
+        'bytes' => 0,
+        'in_packets' => 0,
+        'out_packets' => 0,
+        'in_bytes' => 0,
+        'out_bytes' => 0,
+        'unparsed' => 0,
+    ];
+}
+
+/**
+ * One line of tcpdump output, folded into the counters.
+ *
+ * Parsed with deliberately loose patterns. tcpdump's format varies by version,
+ * by protocol and by whether `-q` is in effect, and a strict parser that
+ * silently matched nothing would report a quiet network on a machine falling
+ * over. Anything unrecognised is counted as a packet and not attributed, and
+ * that remainder is reported so the arithmetic can be checked.
+ */
+function countPacket(array &$state, string $line): void
+{
+    $state['packets']++;
+
+    if (!preg_match('/\s(\S+?)\.(\d+) > (\S+?)\.(\d+):/', $line, $m)) {
+        $state['unparsed']++;
+        return;
+    }
+
+    [, $source, $sourcePort, $destination, $destinationPort] = $m;
+
+    /*
+     * Bytes: the length tcpdump reports, which is payload rather than frame.
+     *
+     * `-q` writes "tcp 517" for TCP and "(29)" for UDP and DNS. Neither counts
+     * headers, so these totals are a floor on what crossed the wire - stated,
+     * rather than quietly inflated by a guess at header size.
+     */
+    $bytes = 0;
+    if (preg_match('/\blength (\d+)/', $line, $size)) {
+        // The usual form, and the one TCP uses once flags are being printed.
+        $bytes = (int)$size[1];
+    } elseif (preg_match('/\b(?:tcp|UDP|udp)\s+(\d+)/', $line, $size)) {
+        // `-q` without flags: "tcp 517".
+        $bytes = (int)$size[1];
+    } elseif (preg_match('/\((\d+)\)\s*$/', $line, $size)) {
+        // DNS and other UDP, which carry the length in brackets at the end.
+        $bytes = (int)$size[1];
+    }
+    $state['bytes'] += $bytes;
+
+    /*
+     * Which end is ours, and therefore which way this packet went.
+     *
+     * The whole point of the report: without this the local address appears in
+     * every packet and tops the table telling you nothing, and the shares add
+     * past 100% because both ends are counted. When neither end is recognised -
+     * a machine whose addresses could not be read - the packet is counted and
+     * left undirected rather than being attributed to a guess.
+     */
+    $sourceIsLocal = isset($state['local'][$source]);
+    $destinationIsLocal = isset($state['local'][$destination]);
+
+    if ($sourceIsLocal === $destinationIsLocal) {
+        // Both or neither: local-to-local traffic, or addresses we do not know.
+        $state['seen'][$source] = ($state['seen'][$source] ?? 0) + 1;
+        $state['seen'][$destination] = ($state['seen'][$destination] ?? 0) + 1;
+    } else {
+        $remote = $sourceIsLocal ? $destination : $source;
+        $inbound = $destinationIsLocal;
+
+        if (!isset($state['peers'][$remote])) {
+            $state['peers'][$remote] = [
+                'in_packets' => 0, 'out_packets' => 0,
+                'in_bytes' => 0, 'out_bytes' => 0, 'opened' => 0,
+            ];
+        }
+
+        if ($inbound) {
+            $state['peers'][$remote]['in_packets']++;
+            $state['peers'][$remote]['in_bytes'] += $bytes;
+            $state['in_packets']++;
+            $state['in_bytes'] += $bytes;
+        } else {
+            $state['peers'][$remote]['out_packets']++;
+            $state['peers'][$remote]['out_bytes'] += $bytes;
+            $state['out_packets']++;
+            $state['out_bytes'] += $bytes;
+        }
+    }
+
+    /*
+     * The service port, which is the lower of the two.
+     *
+     * One side of every conversation is an ephemeral port picked at random, and
+     * counting those produces thousands of ports each seen once.
+     */
+    $port = min((int)$sourcePort, (int)$destinationPort);
+    if (!isset($state['ports'][$port])) {
+        $state['ports'][$port] = ['packets' => 0, 'bytes' => 0];
+    }
+    $state['ports'][$port]['packets']++;
+    $state['ports'][$port]['bytes'] += $bytes;
+
+    /*
+     * TCP flags, which say what *kind* of busy this is.
+     *
+     * Mostly ACK and PSH+ACK is established traffic doing work - a large clone,
+     * a busy API. Mostly SYN from many changing addresses is something else
+     * entirely: scanning, or a flood. The packet rate is identical in both
+     * cases and the flags are the only thing that tells them apart.
+     */
+    if (preg_match('/Flags \[([^\]]+)\]/', $line, $f)) {
+        $flag = captureFlagName($f[1]);
+        $state['flags'][$flag] = ($state['flags'][$flag] ?? 0) + 1;
+        if ($flag === 'SYN') {
+            $remote = $sourceIsLocal ? $destination : $source;
+            if (isset($state['peers'][$remote])) {
+                $state['peers'][$remote]['opened']++;
+            }
+        }
+    }
+
+    if (preg_match('/\s(?:A|AAAA|NS|MX|TXT|SOA|PTR|CNAME|SRV|ANY)\?\s+([A-Za-z0-9._-]+)/', $line, $q)) {
+        $name = strtolower(rtrim($q[1], '.'));
+        if ($name !== '') {
+            $state['names'][$name] = ($state['names'][$name] ?? 0) + 1;
+        }
+    }
+}
+
+/** tcpdump's flag letters, named for what they mean. */
+function captureFlagName(string $letters): string
+{
+    $syn = str_contains($letters, 'S');
+    $ack = str_contains($letters, '.');
+    $push = str_contains($letters, 'P');
+
+    if (str_contains($letters, 'R')) {
+        return 'RST';
+    }
+    if (str_contains($letters, 'F')) {
+        return 'FIN';
+    }
+    if ($syn && $ack) {
+        return 'SYN+ACK';
+    }
+    if ($syn) {
+        return 'SYN';
+    }
+    if ($push) {
+        return 'PSH+ACK';
+    }
+    if ($ack) {
+        return 'ACK';
+    }
+    return 'other';
 }
 
 /**
  * The capture filters on offer, and what each is for.
  *
  * A fixed list rather than a text box. The expression is handed to a program
- * running as root, and while escapeshellarg would stop a shell escape, tcpdump's
- * own filter language can itself open files (`-F`) and is not something to
- * accept from a web form. Every one of these is a question somebody actually
- * asks when a machine is being hammered.
+ * running as root, and while escapeshellarg would stop a shell escape,
+ * tcpdump's own filter language can itself open files (`-F`) and is not
+ * something to accept from a web form. Every one of these is a question
+ * somebody actually asks when a machine is being hammered.
  *
  * @return array{key: string, label: string, argument: string, about: string}|null
  */
 function captureFilter(string $key): ?array
 {
-    $filters = captureFilters();
-    foreach ($filters as $filter) {
+    foreach (captureFilters() as $filter) {
         if ($filter['key'] === $key || ($key === '' && $filter['key'] === 'all')) {
             return $filter;
         }
@@ -638,15 +888,16 @@ function captureFilters(): array
             'label' => 'Everything',
             'argument' => '',
             'about' => 'Every packet crossing the interface. The right place to start when '
-                . 'you do not yet know what is busy.',
+                . 'you do not yet know what is busy - and the only one whose port breakdown '
+                . 'is a share of the whole, rather than of whatever the filter let through.',
         ],
         [
             'key' => 'dns',
             'label' => 'DNS (port 53)',
             'argument' => 'port 53',
-            'about' => 'Both UDP and TCP. If this machine answers for a zone, this is very '
-                . 'often the busiest thing on it — and the one nothing else on this site '
-                . 'would show you.',
+            'about' => 'Both UDP and TCP. Dramatic to watch scrolling past and very often a '
+                . 'small fraction of the actual load - which is worth knowing before you go '
+                . 'looking at the nameserver.',
         ],
         [
             'key' => 'dns-udp',
@@ -659,22 +910,32 @@ function captureFilters(): array
             'key' => 'https',
             'label' => 'HTTPS (port 443)',
             'argument' => 'tcp port 443',
-            'about' => 'Web traffic in both directions.',
+            'about' => 'Web traffic in both directions. On a machine hosting anything at all '
+                . 'this is usually where the packets actually are.',
+        ],
+        [
+            'key' => 'https-in',
+            'label' => 'HTTPS arriving here',
+            'argument' => 'tcp dst port 443',
+            'about' => 'Only packets addressed to this machine\'s web port, so the counts are '
+                . 'what clients are sending rather than what is being served back. This is the '
+                . 'one that names who is generating the load.',
         ],
         [
             'key' => 'https-syn',
             'label' => 'New HTTPS connections only',
             'argument' => 'tcp dst port 443 and tcp[tcpflags] & tcp-syn != 0',
-            'about' => 'Only the opening packet of each connection, so the count is '
-                . '"how many connections are being attempted" rather than "how much data". '
-                . 'This is the shape a flood makes.',
+            'about' => 'Only the opening packet of each connection, so the count is "how many '
+                . 'connections are being attempted" rather than "how much data". Many from one '
+                . 'address is a busy client; a few each from hundreds of changing addresses is '
+                . 'scanning or a flood.',
         ],
         [
             'key' => 'mail',
             'label' => 'Mail (25, 465, 587)',
             'argument' => 'port 25 or port 465 or port 587',
-            'about' => 'A compromised account sending spam shows up here long before it '
-                . 'shows up in the disk figures.',
+            'about' => 'A compromised account sending spam shows up here long before it shows '
+                . 'up in the disk figures.',
         ],
         [
             'key' => 'web',
@@ -685,130 +946,91 @@ function captureFilters(): array
     ];
 }
 
-/**
- * Counts out of tcpdump's one-line-per-packet output.
- *
- * Parsed with deliberately loose patterns. tcpdump's format varies by version,
- * by protocol and by whether `-q` is in effect, and a strict parser that
- * silently matched nothing would report a quiet network on a machine falling
- * over. Anything unrecognised is counted as a packet and not attributed, and
- * the unattributed count is reported so the arithmetic can be checked.
- */
-function summariseCapture(string $out): array
+/** The accumulated counters, sorted and trimmed for storage. */
+function finishCapture(array $state): array
 {
-    $peers = [];
-    $ports = [];
-    $names = [];
-    $protocols = [];
-    $packets = 0;
-    $bytes = 0;
-    $unparsed = 0;
+    $peers = $state['peers'];
 
-    foreach (preg_split('/\R/', trim($out)) ?: [] as $line) {
-        if ($line === '' || str_starts_with($line, 'tcpdump:') || str_starts_with($line, 'listening on')) {
-            continue;
-        }
-
-        $packets++;
-
-        // "10.0.0.1.54321 > 10.0.0.2.53: 12345+ A? example.com. (29)"
-        if (!preg_match('/\s(\S+?)\.(\d+) > (\S+?)\.(\d+):/', $line, $m)) {
-            $unparsed++;
-            continue;
-        }
-
-        [, $source, $sourcePort, $destination, $destinationPort] = $m;
-
-        $peers[$source] = ($peers[$source] ?? 0) + 1;
-        $peers[$destination] = ($peers[$destination] ?? 0) + 1;
-
-        /*
-         * The lower port is counted, not both.
-         *
-         * One side of every conversation is an ephemeral port picked at random,
-         * and counting those produces a list of thousands of ports each seen
-         * once. The low port is the service, which is the question.
-         */
-        $port = min((int)$sourcePort, (int)$destinationPort);
-        $ports[$port] = ($ports[$port] ?? 0) + 1;
-
-        if (preg_match('/\((\d+)\)\s*$/', $line, $size)) {
-            $bytes += (int)$size[1];
-        }
-
-        if (preg_match('/\b(UDP|tcp|ICMP|IP6)\b/i', $line, $protocol)) {
-            $key = strtolower($protocol[1]);
-            $protocols[$key] = ($protocols[$key] ?? 0) + 1;
-        }
-
-        /*
-         * The name asked for, when this is a DNS query.
-         *
-         * This is the one field worth keeping beyond a count: "four thousand
-         * queries" is a symptom and "four thousand queries for one zone that is
-         * not ours" is a diagnosis. It is a hostname from a query header, not
-         * payload from anybody's session.
-         */
-        if (preg_match('/\s(?:A|AAAA|NS|MX|TXT|SOA|PTR|CNAME|SRV|ANY)\?\s+([A-Za-z0-9._-]+)/', $line, $q)) {
-            $name = strtolower(rtrim($q[1], '.'));
-            if ($name !== '') {
-                $names[$name] = ($names[$name] ?? 0) + 1;
+    /*
+     * A fallback when no address could be recognised as ours.
+     *
+     * `ip addr` can be missing, and a capture on an interface whose addresses
+     * we could not read would otherwise produce no peers at all. The address
+     * appearing in nearly every packet is this machine, so it is treated as
+     * local and everything else becomes a peer - stated in the result, because
+     * it is an inference rather than a reading.
+     */
+    $inferred = null;
+    if ($peers === [] && $state['seen'] !== []) {
+        arsort($state['seen']);
+        $top = array_key_first($state['seen']);
+        if ($state['seen'][$top] >= $state['packets'] * 0.5) {
+            $inferred = $top;
+            foreach ($state['seen'] as $address => $count) {
+                if ($address === $top) {
+                    continue;
+                }
+                $peers[$address] = [
+                    'in_packets' => $count, 'out_packets' => 0,
+                    'in_bytes' => 0, 'out_bytes' => 0, 'opened' => 0,
+                ];
             }
         }
     }
 
-    arsort($peers);
-    arsort($ports);
-    arsort($names);
-    arsort($protocols);
+    uasort($peers, fn(array $a, array $b): int =>
+        ($b['in_bytes'] + $b['out_bytes'] <=> $a['in_bytes'] + $a['out_bytes'])
+        ?: ($b['in_packets'] + $b['out_packets'] <=> $a['in_packets'] + $a['out_packets']));
 
-    $top = fn(array $counts, string $key): array => array_map(
-        fn($k, int $v): array => [$key => $k, 'packets' => $v],
-        array_keys(array_slice($counts, 0, CAPTURE_KEEP, true)),
-        array_values(array_slice($counts, 0, CAPTURE_KEEP, true))
-    );
-
-    $portRows = $top($ports, 'port');
-    foreach ($portRows as &$row) {
-        $row['service'] = portService((int)$row['port']);
+    $peerRows = [];
+    foreach (array_slice($peers, 0, CAPTURE_KEEP, true) as $address => $counts) {
+        $peerRows[] = [
+            'address' => (string)$address,
+            'packets' => $counts['in_packets'] + $counts['out_packets'],
+            'in_packets' => $counts['in_packets'],
+            'out_packets' => $counts['out_packets'],
+            'in_bytes' => $counts['in_bytes'],
+            'out_bytes' => $counts['out_bytes'],
+            'opened' => $counts['opened'],
+            'private' => addressIsPrivate((string)$address),
+        ];
     }
-    unset($row);
 
-    $peerRows = $top($peers, 'address');
-    foreach ($peerRows as &$peer) {
-        $peer['private'] = addressIsPrivate((string)$peer['address']);
+    uasort($state['ports'], fn(array $a, array $b): int => $b['packets'] <=> $a['packets']);
+    $portRows = [];
+    foreach (array_slice($state['ports'], 0, CAPTURE_KEEP, true) as $port => $counts) {
+        $portRows[] = [
+            'port' => (int)$port,
+            'packets' => $counts['packets'],
+            'bytes' => $counts['bytes'],
+            'service' => portService((int)$port),
+        ];
     }
-    unset($peer);
+
+    arsort($state['names']);
+    $nameRows = [];
+    foreach (array_slice($state['names'], 0, CAPTURE_KEEP, true) as $name => $count) {
+        $nameRows[] = ['name' => (string)$name, 'packets' => $count];
+    }
+
+    arsort($state['flags']);
 
     return [
-        'packets' => $packets,
-        'bytes' => $bytes,
-        'unparsed' => $unparsed,
+        'packets' => $state['packets'],
+        'bytes' => $state['bytes'],
+        'in_packets' => $state['in_packets'],
+        'out_packets' => $state['out_packets'],
+        'in_bytes' => $state['in_bytes'],
+        'out_bytes' => $state['out_bytes'],
+        'unparsed' => $state['unparsed'],
         'peers' => $peerRows,
         'ports' => $portRows,
-        'names' => $top($names, 'name'),
-        'protocols' => $protocols,
+        'names' => $nameRows,
+        'flags' => $state['flags'],
         'distinct_peers' => count($peers),
-        'distinct_names' => count($names),
+        'distinct_names' => count($state['names']),
+        'inferred_local' => $inferred,
     ];
-}
-
-/** An absolute path to a binary, searched rather than assumed. */
-function whichBinary(string $name): ?string
-{
-    if (!preg_match('/^[a-z0-9_-]{1,32}$/i', $name)) {
-        return null;
-    }
-
-    foreach (['/usr/sbin/', '/sbin/', '/usr/bin/', '/bin/', '/usr/local/sbin/', '/usr/local/bin/'] as $dir) {
-        if (@is_executable($dir . $name)) {
-            return $dir . $name;
-        }
-    }
-
-    $found = shellRead('command -v ' . escapeshellarg($name) . ' 2>/dev/null');
-    $found = $found === null ? '' : trim($found);
-    return $found !== '' && @is_executable($found) ? $found : null;
 }
 
 /* ------------------------------------------------------------------ DNS -- */
@@ -1240,34 +1462,54 @@ function storeNetwork(PDO $host, int $sampleId): array
     return $counts;
 }
 
-/** Writes one capture and the counts it produced. */
+/**
+ * Writes one capture and the counts it produced.
+ *
+ * Every capture is kept, not just the newest. Two samples an hour apart are the
+ * only way to answer "is this getting worse", and a report you cannot compare
+ * with anything is a snapshot of a number you had to be watching to catch.
+ */
 function storeCapture(PDO $host, array $capture): int
 {
     $host->prepare(
         'INSERT INTO host_captures
             (taken_at, interface, filter, seconds, packets, bytes, unparsed,
-             distinct_peers, distinct_names, hit_limit, ok, reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+             distinct_peers, distinct_names, hit_limit, ok, reason,
+             in_packets, out_packets, in_bytes, out_bytes, inferred_local)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )->execute([
         time(), $capture['interface'], $capture['filter'], $capture['seconds'],
         $capture['packets'], $capture['bytes'], $capture['unparsed'] ?? 0,
         $capture['distinct_peers'] ?? 0, $capture['distinct_names'] ?? 0,
         $capture['hit_packet_limit'] ? 1 : 0, $capture['ok'] ? 1 : 0, $capture['reason'],
+        $capture['in_packets'] ?? 0, $capture['out_packets'] ?? 0,
+        $capture['in_bytes'] ?? 0, $capture['out_bytes'] ?? 0,
+        $capture['inferred_local'] ?? null,
     ]);
 
     $id = (int)$host->lastInsertId();
 
     $insert = $host->prepare(
-        'INSERT OR REPLACE INTO host_capture_rows (capture_id, kind, label, packets, private)
-         VALUES (?, ?, ?, ?, ?)'
+        'INSERT OR REPLACE INTO host_capture_rows
+            (capture_id, kind, label, packets, private,
+             in_packets, out_packets, in_bytes, out_bytes, opened, bytes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     foreach (['peers' => 'address', 'ports' => 'port', 'names' => 'name'] as $kind => $field) {
         foreach ($capture[$kind] ?? [] as $row) {
             $insert->execute([
                 $id, $kind, (string)$row[$field], (int)$row['packets'],
                 (int)($row['private'] ?? 0),
+                (int)($row['in_packets'] ?? 0), (int)($row['out_packets'] ?? 0),
+                (int)($row['in_bytes'] ?? 0), (int)($row['out_bytes'] ?? 0),
+                (int)($row['opened'] ?? 0), (int)($row['bytes'] ?? 0),
             ]);
         }
+    }
+
+    // The flag tally, stored as rows of its own kind so it needs no new table.
+    foreach ($capture['flags'] ?? [] as $flag => $count) {
+        $insert->execute([$id, 'flags', (string)$flag, (int)$count, 0, 0, 0, 0, 0, 0, 0]);
     }
 
     return $id;

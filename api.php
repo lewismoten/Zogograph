@@ -65,6 +65,7 @@ require_once __DIR__ . '/lib/inspect.php';
 require_once __DIR__ . '/lib/network.php';
 require_once __DIR__ . '/lib/logstream.php';
 require_once __DIR__ . '/lib/diagnose.php';
+require_once __DIR__ . '/lib/labels.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
@@ -113,6 +114,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'network' => networkView($config, $pdo, $signedIn),
         'units' => unitsView($config, $signedIn),
         'dns' => dnsView($config, $signedIn),
+        'captures' => capturesView($config, $pdo, $signedIn),
+        'labels' => labelsView($pdo, $signedIn),
         'capability-changes' => capabilityChangesView($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'last-lines' => lastLines($config, $pdo, $signedIn),
@@ -146,6 +149,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'daemon-watch' => doDaemonWatch($config, $pdo, $post),
         'request-host-walk' => doRequestHostWalk($config, $pdo, $post),
         'request-capture' => doRequestCapture($config, $pdo, $post),
+        'label-save' => doLabelSave($pdo, $post),
+        'label-delete' => doLabelDelete($pdo, $post),
         'check-capabilities' => doCheckCapabilities($config, $pdo, $post),
         'request-host-task' => doRequestHostTask($config, $pdo, $post),
         'match-processes' => doMatchProcesses($config, $post),
@@ -235,6 +240,8 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
          * cores out of thirty-two has told you the wrong thing first.
          */
         'limits' => accountLimits($vitals, latestHostSample($config)),
+        // The inner countdown ring and the pending-task banners read this.
+        'host_clock' => hostClock($config),
         'deletable' => $config['deletable_categories'] ?? [],
         // What the delete buttons are allowed to reach - see resolveDeletable.
         'deletable_scope' => (string)($config['deletable_scope'] ?? 'account'),
@@ -906,12 +913,25 @@ function networkView(array $config, PDO $account, bool $signedIn): array
         ];
     }
 
+    /*
+     * Captures are read before anything else, and independently.
+     *
+     * They survive pruning - they hang off no sample - so a machine whose
+     * readings have aged out still has its captures. Returning early here
+     * because there is no *sample* hid them completely, which is how a capture
+     * somebody had just taken could vanish on a reload.
+     */
+    $capture = latestCapture($host, $pdo);
+
     $latest = (int)$host->query('SELECT MAX(id) FROM host_samples')->fetchColumn();
     if ($latest <= 0) {
         return [
             'available' => false,
-            'reason' => 'No host readings yet.',
+            'reason' => 'No host readings yet. Anything captured is still below.',
             'filters' => captureFilters(),
+            'capture' => $capture,
+            'pending' => pendingCaptures($account, $host),
+            'max_seconds' => CAPTURE_MAX_SECONDS,
         ];
     }
 
@@ -939,18 +959,20 @@ function networkView(array $config, PDO $account, bool $signedIn): array
     );
     $peers->execute([$latest]);
 
-    $capture = latestCapture($host);
+    $labels = loadLabels($pdo);
+    $portRows = applyLabels($labels, $portRows, 'port', 'port');
 
     return [
         'available' => true,
         'reason' => '',
+        'labelled' => $labels['count'],
         'taken_at' => (int)$host->query('SELECT taken_at FROM host_samples WHERE id = ' . $latest)->fetchColumn(),
         'ports' => $portRows,
         'interfaces' => $interfaces,
-        'peers' => array_map(function (array $row): array {
+        'peers' => applyLabels($labels, array_map(function (array $row): array {
             $row['private'] = (bool)$row['private'];
             return $row;
-        }, $peers->fetchAll()),
+        }, $peers->fetchAll()), 'address', 'address'),
         'capture' => $capture,
         'filters' => captureFilters(),
         'pending' => pendingCaptures($account, $host),
@@ -1029,11 +1051,17 @@ function interfaceRates(PDO $host, int $latest): array
     return $out;
 }
 
-/** The most recent capture, with its summary rows. */
-function latestCapture(PDO $host): ?array
+/** One capture with its summary rows, the newest by default. */
+function latestCapture(PDO $host, ?PDO $account = null, ?int $id = null): ?array
 {
     try {
-        $capture = $host->query('SELECT * FROM host_captures ORDER BY id DESC LIMIT 1')->fetch();
+        if ($id === null) {
+            $capture = $host->query('SELECT * FROM host_captures ORDER BY id DESC LIMIT 1')->fetch();
+        } else {
+            $stmt = $host->prepare('SELECT * FROM host_captures WHERE id = ?');
+            $stmt->execute([$id]);
+            $capture = $stmt->fetch();
+        }
     } catch (Throwable) {
         return null;
     }
@@ -1042,30 +1070,156 @@ function latestCapture(PDO $host): ?array
     }
 
     $rows = $host->prepare(
-        'SELECT kind, label, packets, private FROM host_capture_rows
-          WHERE capture_id = ? ORDER BY packets DESC'
+        'SELECT * FROM host_capture_rows WHERE capture_id = ? ORDER BY packets DESC'
     );
     $rows->execute([(int)$capture['id']]);
 
-    $grouped = ['peers' => [], 'ports' => [], 'names' => []];
+    $grouped = ['peers' => [], 'ports' => [], 'names' => [], 'flags' => []];
     foreach ($rows->fetchAll() as $row) {
         $kind = (string)$row['kind'];
         if (!isset($grouped[$kind])) {
             continue;
         }
-        $entry = ['label' => $row['label'], 'packets' => (int)$row['packets']];
+
+        $entry = [
+            'label' => $row['label'],
+            'packets' => (int)$row['packets'],
+            'in_packets' => (int)($row['in_packets'] ?? 0),
+            'out_packets' => (int)($row['out_packets'] ?? 0),
+            'in_bytes' => (int)($row['in_bytes'] ?? 0),
+            'out_bytes' => (int)($row['out_bytes'] ?? 0),
+            'opened' => (int)($row['opened'] ?? 0),
+            'bytes' => (int)($row['bytes'] ?? 0),
+        ];
         if ($kind === 'peers') {
+            $entry['address'] = $row['label'];
             $entry['private'] = (bool)$row['private'];
         }
         if ($kind === 'ports') {
+            $entry['port'] = (int)$row['label'];
             $entry['service'] = portService((int)$row['label']);
         }
         $grouped[$kind][] = $entry;
     }
 
+    if ($account !== null) {
+        $labels = loadLabels($account);
+        $grouped['peers'] = applyLabels($labels, $grouped['peers'], 'address', 'address');
+        $grouped['ports'] = applyLabels($labels, $grouped['ports'], 'port', 'port');
+    }
+
     $capture['ok'] = (bool)$capture['ok'];
     $capture['hit_limit'] = (bool)$capture['hit_limit'];
-    return $capture + $grouped + ['label' => captureFilter((string)$capture['filter'])['label'] ?? ''];
+    return $capture + $grouped
+        + ['filter_label' => captureFilter((string)$capture['filter'])['label'] ?? ''];
+}
+
+/**
+ * Every capture taken, so two can be compared.
+ *
+ * A single report answers "what is happening"; two an hour apart answer "is it
+ * getting worse", which is usually the actual question. The list carries only
+ * the headline numbers - the detail rows are fetched for the one being looked
+ * at, because forty captures of forty peers each is a lot of rows to send in
+ * order to draw a list of dates.
+ */
+function capturesView(array $config, PDO $account, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see captures');
+    }
+
+    try {
+        $host = hostDb($config, false);
+    } catch (Throwable) {
+        $host = null;
+    }
+    if ($host === null) {
+        return ['available' => false, 'reason' => 'This needs the host collector.', 'rows' => []];
+    }
+
+    try {
+        $rows = $host->query(
+            'SELECT id, taken_at, interface, filter, seconds, packets, bytes,
+                    in_packets, out_packets, in_bytes, out_bytes,
+                    distinct_peers, hit_limit, ok, reason
+               FROM host_captures ORDER BY taken_at DESC LIMIT 200'
+        )->fetchAll();
+    } catch (Throwable) {
+        return [
+            'available' => false, 'rows' => [],
+            'reason' => 'The host database predates packet captures. Upload host-cron.php '
+                . 'and lib/, then ask for one.',
+        ];
+    }
+
+    foreach ($rows as &$row) {
+        $row['ok'] = (bool)$row['ok'];
+        $row['hit_limit'] = (bool)$row['hit_limit'];
+        $row['filter_label'] = captureFilter((string)$row['filter'])['label'] ?? $row['filter'];
+        $seconds = (float)$row['seconds'];
+        // A rate, because the whole point of a list of captures is comparing
+        // them, and two samples of different lengths are not comparable raw.
+        $row['packets_per_second'] = $seconds > 0 ? round((int)$row['packets'] / $seconds, 1) : null;
+        $row['bytes_per_second'] = $seconds > 0 ? round((int)$row['bytes'] / $seconds) : null;
+    }
+    unset($row);
+
+    $wanted = isset($_GET['id']) ? clampInt($_GET['id'], 1, PHP_INT_MAX) : null;
+
+    return [
+        'available' => true,
+        'reason' => '',
+        'rows' => $rows,
+        'capture' => latestCapture($host, $account, $wanted),
+        'filters' => captureFilters(),
+    ];
+}
+
+function labelsView(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see your labels');
+    }
+
+    try {
+        $rows = $pdo->query('SELECT * FROM labels ORDER BY kind, match')->fetchAll();
+    } catch (Throwable) {
+        $rows = [];
+    }
+
+    return ['rows' => $rows, 'max' => LABEL_MAX];
+}
+
+function doLabelSave(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    saveLabel(
+        $pdo,
+        (string)($_POST['kind'] ?? 'address'),
+        (string)($_POST['match'] ?? ''),
+        (string)($_POST['label'] ?? ''),
+        (string)($_POST['note'] ?? '')
+    );
+
+    logAction($pdo, 'label_save', (string)($_POST['match'] ?? ''), 'ok', 0, 0,
+        (string)($_POST['label'] ?? ''));
+
+    return ['ok' => true] + labelsView($pdo, true);
+}
+
+function doLabelDelete(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    if (!deleteLabel($pdo, $id)) {
+        throw new ActionRefused('no such label');
+    }
+
+    logAction($pdo, 'label_delete', (string)$id, 'ok', 0, 0, null);
+    return ['ok' => true] + labelsView($pdo, true);
 }
 
 /** Captures asked for and not yet taken. */
@@ -3209,9 +3363,123 @@ function doClearProblems(array $config, PDO $pdo, bool $post): array
     return ['ok' => true, 'removed' => $removed];
 }
 
+/**
+ * When the host collector last ran and how often it usually does.
+ *
+ * Carried on the session response, which every page already fetches, so the
+ * countdown ring costs no request of its own. The interval is the median gap
+ * between recent readings rather than anything read from a crontab: two
+ * readings five minutes apart are better evidence of the schedule than a config
+ * file describing a job that may never have been installed.
+ */
+function hostClock(array $config): array
+{
+    $out = ['last_at' => null, 'interval' => null, 'pending' => []];
+
+    try {
+        $host = hostDb($config, false);
+        if ($host === null) {
+            return $out;
+        }
+
+        $times = $host->query(
+            'SELECT taken_at FROM host_samples ORDER BY id DESC LIMIT 20'
+        )->fetchAll(PDO::FETCH_COLUMN);
+
+        if ($times !== []) {
+            $out['last_at'] = (int)$times[0];
+            $out['interval'] = medianGap($times);
+        }
+
+        $out['pending'] = outstandingHostTasks($config, $host);
+    } catch (Throwable) {
+        return $out;
+    }
+
+    return $out;
+}
+
+/**
+ * What has been asked of the host collector and not yet come back.
+ *
+ * Each carries where its result will appear, so a page can be linked to when it
+ * lands rather than the reader being told "it is ready" and left to find it.
+ *
+ * Completion is decided the same way everywhere: something was recorded at or
+ * after the moment it was asked for. No write back into the account's database
+ * is needed, which matters because the collector runs as root and the account's
+ * database is the one thing it deliberately only reads.
+ *
+ * @return list<array>
+ */
+function outstandingHostTasks(array $config, PDO $host): array
+{
+    $out = [];
+
+    try {
+        $account = db($config);
+        $rows = $account->query('SELECT task, requested_at FROM host_tasks')->fetchAll();
+    } catch (Throwable) {
+        return $out;
+    }
+
+    foreach ($rows as $row) {
+        $task = (string)$row['task'];
+        $requested = (int)$row['requested_at'];
+        $done = 0;
+        $what = null;
+
+        $capture = parseCaptureTask($task);
+        if ($capture !== null) {
+            $stmt = $host->prepare(
+                'SELECT MAX(taken_at) FROM host_captures WHERE interface = ? AND filter = ?'
+            );
+            $stmt->execute([$capture['interface'], $capture['filter']]);
+            $done = (int)$stmt->fetchColumn();
+            $what = [
+                'label' => sprintf('a %s capture on %s',
+                    captureFilter($capture['filter'])['label'] ?? $capture['filter'],
+                    $capture['interface']),
+                'view' => 'net-capture',
+            ];
+        } elseif ($task === HOSTDISK_TASK) {
+            try {
+                $done = (int)$host->query('SELECT MAX(taken_at) FROM host_walks')->fetchColumn();
+            } catch (Throwable) {
+                $done = 0;
+            }
+            $what = ['label' => 'a walk of the whole disk', 'view' => 'host-disk'];
+        } elseif ($task === 'capabilities' || str_starts_with($task, 'expose:')) {
+            try {
+                $done = (int)$host->query(
+                    'SELECT MAX(ran_at) FROM host_capability_runs'
+                )->fetchColumn();
+            } catch (Throwable) {
+                $done = 0;
+            }
+            $what = [
+                'label' => $task === 'capabilities'
+                    ? 'a check of which programs are available'
+                    : 'exposing ' . substr($task, 7) . ' inside the cage',
+                'view' => 'capabilities',
+            ];
+        }
+
+        if ($what === null || $done >= $requested) {
+            continue;
+        }
+
+        $out[] = $what + ['task' => $task, 'requested_at' => $requested];
+    }
+
+    return $out;
+}
+
 function sessionState(array $config): array
 {
     return [
+        // See hostClock: the inner countdown ring, and the pending-task banners.
+        'host_clock' => hostClock($config),
         'signed_in' => isSignedIn(),
         'csrf' => isSignedIn() ? csrfToken() : null,
         'configured' => ($config['password_hash'] ?? '') !== '',

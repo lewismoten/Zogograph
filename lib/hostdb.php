@@ -772,6 +772,31 @@ function hostMigrations(): array
          * differences, so they ride the sample. A packet capture happens only
          * when asked for and is the only one that costs anything to take.
          */
+        /*
+         * Captures get direction, bytes and TCP flags.
+         *
+         * The first version counted packets per address with both ends of every
+         * packet counted, which put this machine at the top of its own report
+         * with 99.7% and made the shares add past 100. Direction is what fixes
+         * that, and bytes are what tell a large clone apart from a scanner
+         * sending hundreds of tiny requests - the two look identical in a
+         * packet count.
+         */
+        20 => [
+            'ALTER TABLE host_captures ADD COLUMN in_packets INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE host_captures ADD COLUMN out_packets INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE host_captures ADD COLUMN in_bytes INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE host_captures ADD COLUMN out_bytes INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE host_captures ADD COLUMN inferred_local TEXT',
+
+            'ALTER TABLE host_capture_rows ADD COLUMN in_packets INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE host_capture_rows ADD COLUMN out_packets INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE host_capture_rows ADD COLUMN in_bytes INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE host_capture_rows ADD COLUMN out_bytes INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE host_capture_rows ADD COLUMN opened INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE host_capture_rows ADD COLUMN bytes INTEGER NOT NULL DEFAULT 0',
+        ],
+
         19 => [
             "CREATE TABLE host_ports (
                 sample_id INTEGER NOT NULL REFERENCES host_samples(id) ON DELETE CASCADE,

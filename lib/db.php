@@ -548,6 +548,30 @@ function migrations(): array
          * distinct extensions with one file each, and storing that tail every
          * scan would cost more than the answer is worth.
          */
+        /*
+         * Your own names for addresses and ports.
+         *
+         * `1.2.3.4` is a fact and `Lewis: home` is what you actually know about
+         * it, and the second one is the difference between reading a capture
+         * and decoding it. The same for ports: a catalogue can say 8000 is
+         * "often an app server" and only you know it is the Icecast stream.
+         *
+         * Kept in the account database rather than the host's, because these
+         * are the operator's notes and should survive the host collector being
+         * reinstalled, moved or run by somebody else.
+         */
+        18 => [
+            "CREATE TABLE labels (
+                id       INTEGER PRIMARY KEY,
+                kind     TEXT NOT NULL,
+                match    TEXT NOT NULL,
+                label    TEXT NOT NULL,
+                note     TEXT,
+                added_at INTEGER NOT NULL
+            )",
+            'CREATE UNIQUE INDEX labels_kind_match ON labels (kind, match)',
+        ],
+
         17 => [
             "CREATE TABLE scan_extensions (
                 scan_id   INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
