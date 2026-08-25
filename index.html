@@ -84,6 +84,11 @@
       <span class="nav-label">Overview</span>
       <span class="nav-badge" data-badge="overview" hidden></span>
     </a>
+    <a class="nav-item" href="#/calendar" data-nav="calendar">
+      <span class="nav-icon" aria-hidden="true">▦</span>
+      <span class="nav-label">Calendar</span>
+      <span class="nav-badge" data-badge="calendar" hidden></span>
+    </a>
     <a class="nav-item" href="#/storage" data-nav="storage">
       <span class="nav-icon" aria-hidden="true">▤</span>
       <span class="nav-label">Storage</span>
@@ -248,6 +253,16 @@
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Name lookups</span>
       <span class="nav-badge" data-badge="net-dns" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/domains" data-nav="domains" data-parent="network">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Domain names</span>
+      <span class="nav-badge" data-badge="domains" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/whois" data-nav="whois" data-parent="network">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Look a name up</span>
+      <span class="nav-badge" data-badge="whois" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/net-labels" data-nav="net-labels" data-parent="network">
       <span class="nav-icon" aria-hidden="true">›</span>
@@ -1308,6 +1323,94 @@
     which is the only presentation of that fact anybody can act on.
   </p>
   <div id="repeatBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="calendar" hidden>
+<section class="panel" id="calendarPanel">
+  <div class="panel-head">
+    <h2>What is coming up</h2>
+    <button id="eventAdd" class="link">Add a date</button>
+  </div>
+  <p class="muted small sub-note">
+    Three months back and twelve forward. Domain expiries and the projected
+    full-disk date are worked out here; renewals, invoices and anything else
+    only you know about are the ones you add. Behind us: the critical alerts
+    that fired, so &ldquo;what changed around then&rdquo; has an answer.
+  </p>
+  <div id="calendarUpcoming"></div>
+  <div id="calendarGrid"></div>
+</section>
+
+<section class="panel" id="eventFormPanel" hidden>
+  <div class="panel-head">
+    <h2 id="eventFormTitle">Add a date</h2>
+    <button id="eventFormClose" class="link">Close</button>
+  </div>
+  <div id="eventForm" class="settings"></div>
+</section>
+
+<section class="panel" id="eventListPanel">
+  <h2>Dates you keep</h2>
+  <p class="muted small sub-note">
+    Marked <strong>important</strong> means it appears on the dashboard and in
+    the alert emails as it approaches, until you mark it dealt with. Marking it
+    dealt with is reversible — it is a claim somebody makes, and sometimes makes
+    wrongly.
+  </p>
+  <div id="eventList"></div>
+</section>
+</section>
+
+<section class="view" data-view="domains" hidden>
+<section class="panel" id="domainPanel">
+  <div class="panel-head">
+    <h2>Domain names</h2>
+  </div>
+  <p class="muted small sub-note">
+    A domain expiring is the one outage nothing else here can see coming. Disk,
+    memory, CPU and the HTTP checks all stay green right up to the moment the
+    name stops resolving, and then everything fails at once for a reason that is
+    in no log. Checked weekly — a registration does not change between Tuesdays,
+    and whois servers throttle anybody who asks more often.
+  </p>
+  <form id="domainForm" class="pattern-row">
+    <input type="text" id="domainName" spellcheck="false" autocomplete="off"
+           placeholder="example.com">
+    <label class="pill">warn
+      <input type="number" id="domainWarn" min="1" max="365" value="45" style="width:5em">
+      days before
+    </label>
+    <button type="submit">Watch it</button>
+  </form>
+  <div id="domainBody"></div>
+</section>
+
+<section class="panel" id="domainWhoisPanel" hidden>
+  <div class="panel-head">
+    <h2 id="domainWhoisTitle">whois</h2>
+    <button id="domainWhoisClose" class="link">Close</button>
+  </div>
+  <pre class="paste" id="domainWhoisText"></pre>
+</section>
+</section>
+
+<section class="view" data-view="whois" hidden>
+<section class="panel" id="whoisPanel">
+  <div class="panel-head">
+    <h2>Look a name up</h2>
+  </div>
+  <p class="muted small sub-note">
+    A one-off lookup for a name you are not watching — whether it is taken, who
+    holds it, when it expires. Nothing is stored and no domain is added to the
+    list; there is a button for that if the answer makes you want one.
+  </p>
+  <form id="whoisForm" class="pattern-row">
+    <input type="text" id="whoisName" spellcheck="false" autocomplete="off"
+           placeholder="example.com">
+    <button type="submit">Ask</button>
+  </form>
+  <div id="whoisBody"></div>
 </section>
 </section>
 

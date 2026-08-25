@@ -67,6 +67,8 @@ require_once __DIR__ . '/lib/logstream.php';
 require_once __DIR__ . '/lib/diagnose.php';
 require_once __DIR__ . '/lib/labels.php';
 require_once __DIR__ . '/lib/urlwatch.php';
+require_once __DIR__ . '/lib/domains.php';
+require_once __DIR__ . '/lib/events.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
@@ -118,6 +120,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'captures' => capturesView($config, $pdo, $signedIn),
         'labels' => labelsView($pdo, $signedIn),
         'urls' => urlsView($pdo, $signedIn),
+        'domains' => domainsView($pdo, $signedIn),
+        'whois' => whoisView($pdo, $signedIn),
+        'calendar' => calendarView($config, $pdo, $signedIn),
         'capability-changes' => capabilityChangesView($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'last-lines' => lastLines($config, $pdo, $signedIn),
@@ -156,6 +161,12 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'url-save' => doUrlSave($pdo, $post),
         'url-delete' => doUrlDelete($pdo, $post),
         'url-run' => doUrlRun($pdo, $post),
+        'domain-save' => doDomainSave($pdo, $post),
+        'domain-delete' => doDomainDelete($pdo, $post),
+        'domain-check' => doDomainCheck($pdo, $post),
+        'event-save' => doEventSave($pdo, $post),
+        'event-delete' => doEventDelete($pdo, $post),
+        'event-resolve' => doEventResolve($pdo, $post),
         'check-capabilities' => doCheckCapabilities($config, $pdo, $post),
         'request-host-task' => doRequestHostTask($config, $pdo, $post),
         'match-processes' => doMatchProcesses($config, $post),
@@ -1189,6 +1200,198 @@ function capturesView(array $config, PDO $account, bool $signedIn): array
  * check, because a month of minute-by-minute results for forty checks is a
  * great deal of data to move in order to draw one chart.
  */
+/* ------------------------------------------------------------- domains -- */
+
+function domainsView(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the watched domains');
+    }
+
+    $rows = domainList($pdo);
+    $selected = isset($_GET['id']) ? clampInt($_GET['id'], 1, PHP_INT_MAX) : null;
+
+    $whois = null;
+    if ($selected !== null) {
+        $stmt = $pdo->prepare('SELECT whois FROM domains WHERE id = ?');
+        $stmt->execute([$selected]);
+        $whois = $stmt->fetchColumn() ?: null;
+    }
+
+    return [
+        'rows' => $rows,
+        'selected' => $selected,
+        'whois' => $whois,
+        'notes' => array_combine(
+            ['expired', 'urgent', 'soon', 'ok', 'unknown', 'error'],
+            array_map('domainStateNote', ['expired', 'urgent', 'soon', 'ok', 'unknown', 'error'])
+        ),
+        'max' => DOMAIN_MAX,
+        'default_warn_days' => DOMAIN_WARN_DAYS,
+        'have_whois' => whichBinary('whois') !== null,
+    ];
+}
+
+/**
+ * A one-off whois lookup for a name that is not being watched.
+ *
+ * Its own action because the question is different: "is this available" and
+ * "when does mine expire" want the same protocol and completely different
+ * answers, and running one should not add a domain to the watch list.
+ */
+function whoisView(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to run a whois lookup');
+    }
+
+    $name = strtolower(trim((string)($_GET['name'] ?? '')));
+    if ($name === '') {
+        return ['asked' => false, 'have_whois' => whichBinary('whois') !== null];
+    }
+
+    $answer = whoisLookup($name);
+    $parsed = $answer['ok'] ? parseWhois($answer['text']) : [];
+
+    return [
+        'asked' => true,
+        'name' => $name,
+        'ok' => $answer['ok'],
+        'error' => $answer['error'],
+        'text' => substr($answer['text'], 0, WHOIS_MAX_BYTES),
+        'parsed' => $parsed,
+        'have_whois' => whichBinary('whois') !== null,
+        // So the page can offer to start watching it without a second lookup.
+        'watched' => (bool)$pdo->query(
+            'SELECT COUNT(*) FROM domains WHERE name = ' . $pdo->quote($name)
+        )->fetchColumn(),
+    ];
+}
+
+function doDomainSave(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = domainSave(
+        $pdo,
+        (string)($_POST['name'] ?? ''),
+        (int)($_POST['warn_days'] ?? DOMAIN_WARN_DAYS),
+        (int)($_POST['interval_seconds'] ?? 604800)
+    );
+
+    logAction($pdo, 'domain_save', (string)($_POST['name'] ?? ''), 'ok', 0, 0, null);
+
+    // Looked up straight away, so the expiry is on screen rather than pending.
+    domainCheckDue($pdo, $id);
+
+    return ['ok' => true, 'id' => $id] + domainsView($pdo, true);
+}
+
+function doDomainDelete(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    $stmt = $pdo->prepare('DELETE FROM domains WHERE id = ?');
+    $stmt->execute([$id]);
+
+    if ($stmt->rowCount() === 0) {
+        throw new ActionRefused('no such domain');
+    }
+
+    logAction($pdo, 'domain_delete', (string)$id, 'ok', 0, 0, null);
+    return ['ok' => true] + domainsView($pdo, true);
+}
+
+function doDomainCheck(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    $result = domainCheckDue($pdo, $id);
+
+    if ($result['ran'] === 0) {
+        throw new ActionRefused('no such domain');
+    }
+
+    return ['ok' => true, 'result' => $result['rows'][0]] + domainsView($pdo, true);
+}
+
+/* ------------------------------------------------------------ calendar -- */
+
+function calendarView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the calendar');
+    }
+
+    return calendarEntries($config, $pdo) + [
+        'events' => $pdo->query('SELECT * FROM events ORDER BY at')->fetchAll(),
+        'repeats' => eventRepeats(),
+        'now' => time(),
+    ];
+}
+
+function doEventSave(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = eventSave($pdo, [
+        'id' => $_POST['id'] ?? 0,
+        'title' => $_POST['title'] ?? '',
+        'at' => $_POST['at'] ?? '',
+        'repeats' => $_POST['repeats'] ?? 'once',
+        'link' => $_POST['link'] ?? '',
+        'note' => $_POST['note'] ?? '',
+        'priority' => ($_POST['priority'] ?? '0') === '1',
+    ]);
+
+    logAction($pdo, 'event_save', (string)($_POST['title'] ?? ''), 'ok', 0, 0, null);
+    return ['ok' => true, 'id' => $id] + calendarView([], $pdo, true);
+}
+
+function doEventDelete(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    $stmt = $pdo->prepare('DELETE FROM events WHERE id = ?');
+    $stmt->execute([$id]);
+
+    if ($stmt->rowCount() === 0) {
+        throw new ActionRefused('no such event');
+    }
+
+    logAction($pdo, 'event_delete', (string)$id, 'ok', 0, 0, null);
+    return ['ok' => true] + calendarView([], $pdo, true);
+}
+
+/**
+ * Marks an event dealt with, or puts it back.
+ *
+ * Reversible on purpose. "Resolved" is a claim somebody makes and sometimes
+ * makes wrongly, and a one-way switch on a reminder about money is a poor idea.
+ */
+function doEventResolve(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    $resolved = ($_POST['resolved'] ?? '1') === '1';
+
+    $stmt = $pdo->prepare('UPDATE events SET resolved_at = ? WHERE id = ?');
+    $stmt->execute([$resolved ? time() : null, $id]);
+
+    if ($stmt->rowCount() === 0) {
+        throw new ActionRefused('no such event');
+    }
+
+    logAction($pdo, 'event_resolve', (string)$id, 'ok', 0, 0,
+        $resolved ? 'marked dealt with' : 'reopened');
+
+    return ['ok' => true] + calendarView([], $pdo, true);
+}
+
 function urlsView(PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
@@ -2693,7 +2896,7 @@ function emailConditions(array $config): array
             'name' => 'CPU held at the ceiling',
             'detail' => 'All three together: at least this share of readings over this many '
                 . 'minutes at or above this percentage. A single spike cannot satisfy that '
-                . 'however tall it is, which is the point \u2014 a backup starting is not an '
+                . 'however tall it is, which is the point — a backup starting is not an '
                 . 'incident. Inside CageFS the percentage is of the account\'s own allowance, '
                 . 'not of the machine.',
             'switch' => 'cpu_percent',
@@ -2711,7 +2914,7 @@ function emailConditions(array $config): array
             'key' => 'growth',
             'name' => 'Something grew suddenly',
             'detail' => 'A category or a single path gaining more than this in one scan '
-                . 'interval, or a directory gaining this many files \u2014 which is the shape a '
+                . 'interval, or a directory gaining this many files — which is the shape a '
                 . 'runaway log or a stuck job makes.',
             'switch' => 'category_jump_bytes',
             'on' => $number($a, 'category_jump_bytes', 0) > 0

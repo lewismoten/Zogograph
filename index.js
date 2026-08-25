@@ -4451,6 +4451,25 @@ function groupPaths(paths) {
     .sort((a, b) => b.members.length - a.members.length || a.prefix.localeCompare(b.prefix));
 }
 
+/**
+ * Shows arbitrary nodes in the shared dialog.
+ *
+ * The path list below is one caller of it; the calendar's day view is another,
+ * and it puts buttons in rather than strings. Sharing the dialog rather than
+ * building a second one keeps the escape handling, the focus trap and the
+ * scrolling in one place.
+ */
+function showListDialog(title, nodes, note = "") {
+  $("listDialogTitle").textContent = title;
+  $("listDialogNote").textContent = note;
+
+  const body = $("listDialogBody");
+  body.className = "dialog-body";
+  body.replaceChildren(...nodes);
+
+  $("listDialog").showModal();
+}
+
 /** Shows a long list of paths in a dialog that scrolls. */
 function showPathList(title, paths, note) {
   $("listDialogTitle").textContent = title;
@@ -9863,6 +9882,718 @@ function openUrlForm(row = null) {
   $("urlFormPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+/* -------------------------------------------------------------- calendar -- */
+
+const calendarState = { data: null };
+
+async function refreshCalendar() {
+  const grid = $("calendarGrid");
+  if (!state.signedIn) {
+    grid.replaceChildren(note("Sign in to see the calendar."));
+    return;
+  }
+
+  if (!grid.childElementCount) grid.replaceChildren(spinner());
+
+  let data;
+  try {
+    data = await api("calendar");
+  } catch (error) {
+    grid.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  renderCalendar(data);
+}
+
+function renderCalendar(data) {
+  calendarState.data = data;
+  renderUpcoming(data);
+  renderMonths(data);
+  renderEventList(data);
+}
+
+/*
+ * What is next, before the grid.
+ *
+ * A calendar is for orientation; a list is for acting. Somebody opening this
+ * wants "what do I have to do", and finding that by scanning fifteen months of
+ * squares is worse than reading four lines.
+ */
+function renderUpcoming(data) {
+  const holder = $("calendarUpcoming");
+
+  if (!data.upcoming.length) {
+    holder.replaceChildren(note("Nothing dated is coming up."));
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "upcoming";
+
+  for (const entry of data.upcoming.slice(0, 8)) {
+    const days = Math.round((entry.at - data.now) / 86400);
+
+    const row = document.createElement("div");
+    row.className = "upcoming-row level-" + entry.level;
+
+    const when = document.createElement("span");
+    when.className = "upcoming-when";
+    when.textContent = days === 0 ? "today" : (days === 1 ? "tomorrow" : `in ${days} days`);
+    row.appendChild(when);
+
+    const what = document.createElement("span");
+    what.textContent = entry.title;
+    if (entry.priority) what.className = "upcoming-priority";
+    row.appendChild(what);
+
+    const on = document.createElement("span");
+    on.className = "muted small";
+    on.textContent = humanTime(entry.at).split(",")[0];
+    row.appendChild(on);
+
+    if (entry.link) {
+      const go = document.createElement("a");
+      go.href = entry.link;
+      go.target = "_blank";
+      go.rel = "noopener noreferrer";
+      go.className = "link";
+      go.textContent = "open";
+      row.appendChild(go);
+    }
+    if (entry.view) {
+      const go = document.createElement("button");
+      go.className = "link";
+      go.textContent = VIEWS[entry.view] ? VIEWS[entry.view].label : "see";
+      go.addEventListener("click", () => showView(entry.view));
+      row.appendChild(go);
+    }
+
+    list.appendChild(row);
+  }
+
+  holder.replaceChildren(section("Next", list));
+}
+
+/*
+ * Fifteen months of squares, marked where something happens.
+ *
+ * Drawn as HTML rather than canvas: a month grid is a table of links and dates,
+ * and everything a canvas would cost - selection, keyboard access, the browser's
+ * own find - is exactly what makes this usable.
+ */
+function renderMonths(data) {
+  const grid = $("calendarGrid");
+  const frag = document.createDocumentFragment();
+
+  const start = new Date(data.from * 1000);
+  start.setDate(1);
+  const months = data.back_months + data.forward_months + 1;
+  const today = new Date();
+
+  for (let i = 0; i < months; i++) {
+    const month = new Date(start.getFullYear(), start.getMonth() + i, 1);
+    frag.appendChild(renderMonth(month, data, today));
+  }
+
+  grid.replaceChildren(Object.assign(document.createElement("div"), {
+    className: "months",
+  }));
+  grid.firstChild.appendChild(frag);
+}
+
+function renderMonth(month, data, today) {
+  const box = document.createElement("div");
+  box.className = "month";
+
+  const heading = document.createElement("h4");
+  heading.textContent = month.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  box.appendChild(heading);
+
+  const table = document.createElement("table");
+  table.className = "month-grid";
+
+  const head = table.createTHead().insertRow();
+  // Weekday initials from the browser's own locale, so a week starting on
+  // Monday or Sunday is whatever the reader's system says it is.
+  const sample = new Date(2026, 1, 1);
+  for (let d = 0; d < 7; d++) {
+    const th = document.createElement("th");
+    const day = new Date(sample.getFullYear(), sample.getMonth(), sample.getDate() + d);
+    th.textContent = day.toLocaleDateString(undefined, { weekday: "narrow" });
+    head.appendChild(th);
+  }
+
+  const body = table.createTBody();
+  const first = new Date(month.getFullYear(), month.getMonth(), 1);
+  const lead = first.getDay();
+  const days = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+
+  let row = body.insertRow();
+  for (let i = 0; i < lead; i++) row.insertCell().className = "empty";
+
+  for (let day = 1; day <= days; day++) {
+    if (row.cells.length === 7) row = body.insertRow();
+
+    const cell = row.insertCell();
+    const date = new Date(month.getFullYear(), month.getMonth(), day);
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-`
+      + String(day).padStart(2, "0");
+    const entries = data.days[key] || [];
+
+    cell.textContent = String(day);
+
+    if (date.toDateString() === today.toDateString()) cell.classList.add("today");
+
+    if (entries.length) {
+      /*
+       * The worst thing on a day decides its colour.
+       *
+       * A day with a routine renewal and an expired domain on it is an expired
+       * domain day; averaging them or taking the first would bury it.
+       */
+      const rank = { error: 0, warn: 1, info: 2, done: 3, past: 4 };
+      const worst = entries.reduce((w, e) => (rank[e.level] < rank[w] ? e.level : w), "past");
+
+      cell.classList.add("has-entries", "level-" + worst);
+      cell.tabIndex = 0;
+      cell.setAttribute("role", "button");
+      cell.title = entries.map(e => e.title).join("\n");
+
+      const open = () => openCalendarDay(key, entries);
+      cell.addEventListener("click", open);
+      cell.addEventListener("keydown", event => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open();
+        }
+      });
+    }
+  }
+
+  while (row.cells.length < 7) row.insertCell().className = "empty";
+
+  box.appendChild(table);
+  return box;
+}
+
+function openCalendarDay(key, entries) {
+  const dialog = $("listDialog");
+  if (!dialog) return;
+
+  const parts = [];
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "day-entry level-" + entry.level;
+
+    const title = document.createElement("strong");
+    title.textContent = entry.title;
+    row.appendChild(title);
+
+    const kind = document.createElement("span");
+    kind.className = "muted small";
+    kind.textContent = {
+      domain: "domain expiry",
+      event: entry.repeats && entry.repeats !== "once" ? `repeats ${entry.repeats}` : "a date you keep",
+      projection: "projected from the trend",
+      alert: "an alert that fired",
+    }[entry.kind] || entry.kind;
+    row.appendChild(kind);
+
+    if (entry.note) {
+      const note_ = document.createElement("div");
+      note_.className = "muted small";
+      note_.textContent = entry.note;
+      row.appendChild(note_);
+    }
+
+    if (entry.resolved) {
+      const done = document.createElement("div");
+      done.className = "band-ok small";
+      done.textContent = "marked dealt with";
+      row.appendChild(done);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "inspect-actions";
+
+    if (entry.link) {
+      const go = document.createElement("a");
+      go.href = entry.link;
+      go.target = "_blank";
+      go.rel = "noopener noreferrer";
+      go.className = "link";
+      go.textContent = "Open the link";
+      actions.appendChild(go);
+    }
+    if (entry.view && VIEWS[entry.view]) {
+      const go = document.createElement("button");
+      go.className = "link";
+      go.textContent = `Go to ${VIEWS[entry.view].label}`;
+      go.addEventListener("click", () => {
+        dialog.close();
+        showView(entry.view);
+      });
+      actions.appendChild(go);
+    }
+    if (entry.kind === "event") {
+      const mark = document.createElement("button");
+      mark.className = "link";
+      mark.textContent = entry.resolved ? "Reopen it" : "Mark it dealt with";
+      mark.addEventListener("click", async () => {
+        try {
+          const result = await post("event-resolve", {
+            id: entry.id,
+            resolved: entry.resolved ? "0" : "1",
+          });
+          dialog.close();
+          renderCalendar(result);
+        } catch (error) {
+          notice(String(error.message || error));
+        }
+      });
+      actions.appendChild(mark);
+    }
+
+    if (actions.childElementCount) row.appendChild(actions);
+    parts.push(row);
+  }
+
+  showListDialog(new Date(key + "T00:00:00").toLocaleDateString(undefined, {
+    weekday: "long", day: "numeric", month: "long", year: "numeric",
+  }), parts);
+}
+
+function renderEventList(data) {
+  const holder = $("eventList");
+
+  if (!data.events.length) {
+    holder.replaceChildren(note("Nothing kept yet. Renewals, invoices, certificate purchases "
+      + "\u2014 anything with a date that this machine could not work out for itself."));
+    return;
+  }
+
+  const box = document.createElement("div");
+  box.id = "eventTable";
+  holder.replaceChildren(box);
+
+  renderTable("eventTable", data.events, [
+    { label: "What", className: "name", render: row => row.title },
+    { label: "When", render: row => humanTime(row.at).split(",")[0] },
+    { label: "Repeats", render: row => data.repeats[row.repeats] || row.repeats },
+    {
+      label: "",
+      render: row => {
+        if (!Number(row.priority)) return "";
+        const span = document.createElement("span");
+        span.className = "band-warn small";
+        span.textContent = "important";
+        span.title = "Appears on the dashboard and in the alert emails as it approaches.";
+        return span;
+      },
+    },
+    {
+      label: "Dealt with",
+      render: row => (row.resolved_at ? humanTime(row.resolved_at).split(",")[0] : "\u2014"),
+    },
+    { label: "Note", className: "cmd", render: row => row.note || "" },
+    {
+      label: "",
+      render: row => {
+        const wrap = document.createDocumentFragment();
+
+        const edit = document.createElement("button");
+        edit.className = "link";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", () => openEventForm(row));
+        wrap.appendChild(edit);
+
+        const remove = document.createElement("button");
+        remove.className = "link danger";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", async () => {
+          if (!confirm(`Remove "${row.title}"?`)) return;
+          try {
+            renderCalendar(await post("event-delete", { id: row.id }));
+          } catch (error) {
+            notice(String(error.message || error));
+          }
+        });
+        wrap.appendChild(remove);
+
+        return wrap;
+      },
+    },
+  ], null, null, row => String(row.id));
+}
+
+function openEventForm(row = null) {
+  const data = calendarState.data;
+  if (!data) return;
+
+  $("eventFormPanel").hidden = false;
+  $("eventFormTitle").textContent = row ? `Editing ${row.title}` : "Add a date";
+
+  const parts = [];
+  const field = (id, label, control, hint) => {
+    control.id = id;
+    parts.push(fieldRow(label, control, hint));
+    return control;
+  };
+
+  const title = document.createElement("input");
+  title.type = "text";
+  title.size = 40;
+  title.value = row?.title ?? "";
+  title.placeholder = "VPS renews";
+  field("eventTitle", "What", title, "");
+
+  const when = document.createElement("input");
+  when.type = "date";
+  when.value = row ? new Date(row.at * 1000).toISOString().slice(0, 10) : "";
+  field("eventAt", "When", when, "");
+
+  const repeats = document.createElement("select");
+  for (const [key, text] of Object.entries(data.repeats)) {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = text;
+    option.selected = (row?.repeats ?? "once") === key;
+    repeats.appendChild(option);
+  }
+  field("eventRepeats", "Repeats", repeats,
+    "A monthly date set for the 31st falls on the last day of shorter months, not the 3rd "
+    + "of the next one.");
+
+  const link = document.createElement("input");
+  link.type = "url";
+  link.size = 40;
+  link.value = row?.link ?? "";
+  link.placeholder = "https://billing.example.com/";
+  field("eventLink", "Link", link, "Optional. Where you go to deal with it.");
+
+  const note_ = document.createElement("input");
+  note_.type = "text";
+  note_.size = 40;
+  note_.value = row?.note ?? "";
+  field("eventNote", "Note", note_, "");
+
+  const priority = document.createElement("input");
+  priority.type = "checkbox";
+  priority.checked = row ? Boolean(Number(row.priority)) : false;
+  field("eventPriority", "Important", priority,
+    "Appears on the dashboard and in the alert emails as it approaches, until it is marked "
+    + "dealt with.");
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+  const save = document.createElement("button");
+  save.textContent = row ? "Save it" : "Add it";
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    try {
+      const result = await post("event-save", {
+        id: row?.id ?? 0,
+        title: title.value.trim(),
+        at: when.value,
+        repeats: repeats.value,
+        link: link.value.trim(),
+        note: note_.value.trim(),
+        priority: priority.checked ? "1" : "0",
+      });
+      $("eventFormPanel").hidden = true;
+      renderCalendar(result);
+      notice("Saved.", true);
+    } catch (error) {
+      notice(String(error.message || error));
+      save.disabled = false;
+    }
+  });
+  actions.appendChild(save);
+  parts.push(actions);
+
+  $("eventForm").replaceChildren(...parts);
+  $("eventFormPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+/* --------------------------------------------------------------- domains -- */
+
+const domainState_ = { data: null };
+
+async function refreshDomains() {
+  const body = $("domainBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to watch a domain."));
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner());
+
+  let data;
+  try {
+    data = await api("domains");
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  renderDomains(data);
+}
+
+function renderDomains(data) {
+  domainState_.data = data;
+  const body = $("domainBody");
+  const parts = [];
+
+  if (!data.have_whois) {
+    parts.push(note(
+      "The whois command is not installed here, so expiry dates cannot be read. On Red Hat "
+      + "it is in the \u201cwhois\u201d package; on Debian, \u201cwhois\u201d. Domains can still be "
+      + "listed, and will show as unchecked."
+    ));
+  }
+
+  if (!data.rows.length) {
+    parts.push(note("No domains are being watched."));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.id = "domainTable";
+  parts.push(holder);
+  body.replaceChildren(...parts);
+
+  renderTable("domainTable", data.rows, [
+    {
+      label: "",
+      render: row => {
+        const span = document.createElement("span");
+        const marks = {
+          expired: ["\u25cf", "band-crit"], urgent: ["\u25cf", "band-crit"],
+          soon: ["\u25cf", "band-warn"], ok: ["\u25cf", "band-ok"],
+          unknown: ["\u25cb", "muted"], error: ["\u25cb", "band-warn"],
+        };
+        const [glyph, cls] = marks[row.state] || ["\u25cb", "muted"];
+        span.textContent = glyph;
+        span.className = cls;
+        span.title = data.notes[row.state] || "";
+        return span;
+      },
+    },
+    { label: "Domain", className: "name", render: row => row.name },
+    {
+      label: "Expires",
+      render: row => {
+        if (!row.expires_at) {
+          const span = document.createElement("span");
+          span.className = "muted";
+          span.textContent = row.last_error ? "lookup failed" : "not read";
+          span.title = row.last_error || data.notes.unknown;
+          return span;
+        }
+        const span = document.createElement("span");
+        span.textContent = humanTime(row.expires_at).split(",")[0];
+        return span;
+      },
+    },
+    {
+      label: "Left",
+      className: "size",
+      render: row => {
+        if (row.days_left === null) return "\u2014";
+        const span = document.createElement("span");
+        span.textContent = row.days_left < 0
+          ? `${Math.abs(row.days_left)} days ago`
+          : count(row.days_left, "day");
+        if (row.state === "expired" || row.state === "urgent") span.className = "band-crit";
+        else if (row.state === "soon") span.className = "band-warn";
+        return span;
+      },
+    },
+    { label: "Registrar", render: row => row.registrar || "\u2014" },
+    {
+      label: "Locks",
+      className: "cmd",
+      render: row => {
+        const span = document.createElement("span");
+        span.className = "lastline muted";
+        span.textContent = row.status || "";
+        // clientTransferProhibited is reassuring; pendingDelete is an
+        // emergency. Both live in this field and neither is obvious.
+        span.title = row.status || "";
+        return span;
+      },
+    },
+    {
+      label: "Checked",
+      render: row => (row.last_checked_at ? ago(row.last_checked_at) : "never"),
+    },
+    {
+      label: "",
+      render: row => {
+        const wrap = document.createDocumentFragment();
+
+        const now = document.createElement("button");
+        now.className = "link";
+        now.textContent = "Check now";
+        now.addEventListener("click", async () => {
+          now.disabled = true;
+          try {
+            const result = await post("domain-check", { id: row.id });
+            notice(result.result.ok
+              ? `${row.name}: ${result.result.expires_at
+                ? "expires " + humanTime(result.result.expires_at).split(",")[0]
+                : "the answer had no expiry date in it"}`
+              : `${row.name}: ${result.result.error}`, result.result.ok);
+            renderDomains(result);
+          } catch (error) {
+            notice(String(error.message || error));
+            now.disabled = false;
+          }
+        });
+        wrap.appendChild(now);
+
+        const raw = document.createElement("button");
+        raw.className = "link";
+        raw.textContent = "whois";
+        raw.addEventListener("click", async () => {
+          try {
+            const result = await api("domains", { id: row.id });
+            $("domainWhoisPanel").hidden = false;
+            $("domainWhoisTitle").textContent = `whois ${row.name}`;
+            $("domainWhoisText").textContent = result.whois
+              || "Nothing stored. Press Check now to fetch it.";
+            $("domainWhoisPanel").scrollIntoView({ behavior: "smooth", block: "nearest" });
+          } catch (error) {
+            notice(String(error.message || error));
+          }
+        });
+        wrap.appendChild(raw);
+
+        const remove = document.createElement("button");
+        remove.className = "link danger";
+        remove.textContent = "Stop watching";
+        remove.addEventListener("click", async () => {
+          if (!confirm(`Stop watching ${row.name}?`)) return;
+          try {
+            renderDomains(await post("domain-delete", { id: row.id }));
+          } catch (error) {
+            notice(String(error.message || error));
+          }
+        });
+        wrap.appendChild(remove);
+
+        return wrap;
+      },
+    },
+  ], null, null, row => String(row.id));
+}
+
+/* ----------------------------------------------------------------- whois -- */
+
+async function refreshWhois(name = "") {
+  const body = $("whoisBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to run a lookup."));
+    return;
+  }
+
+  if (name === "") {
+    body.replaceChildren(note("Type a name above."));
+    return;
+  }
+
+  body.replaceChildren(spinner("Asking the registry\u2026 this can take a few seconds."));
+
+  let data;
+  try {
+    data = await api("whois", { name });
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  const parts = [];
+
+  if (!data.have_whois) {
+    parts.push(note("The whois command is not installed here."));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  if (!data.ok) {
+    parts.push(note(data.error || "The lookup failed."));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  const p = data.parsed || {};
+
+  if (p.available) {
+    /*
+     * "No match" is the answer somebody checking availability wanted.
+     *
+     * Reporting it as a failed lookup would be technically defensible and
+     * completely unhelpful.
+     */
+    parts.push(Object.assign(document.createElement("p"), {
+      className: "band-ok",
+      textContent: `${data.name} appears to be unregistered. The registry has no record of `
+        + "it, which is what an available name looks like — though a registry that is simply "
+        + "not answering can look the same, so check with a registrar before celebrating.",
+    }));
+  } else {
+    const facts = [];
+    if (p.expires_at) {
+      const days = Math.floor((p.expires_at - Date.now() / 1000) / 86400);
+      facts.push(["Expires", `${humanTime(p.expires_at).split(",")[0]} \u2014 `
+        + (days < 0 ? `${Math.abs(days)} days ago` : count(days, "day") + " from now")]);
+    } else {
+      facts.push(["Expires", "the answer contained no date this recognises"]);
+    }
+    if (p.created_at) facts.push(["Registered", humanTime(p.created_at).split(",")[0]]);
+    if (p.registrar) facts.push(["Registrar", p.registrar]);
+    if (p.status) facts.push(["Status", p.status]);
+    if (p.nameservers) facts.push(["Nameservers", p.nameservers.split(" ").join(", ")]);
+    if (p.auto_renew !== null && p.auto_renew !== undefined) {
+      facts.push(["Auto renew", p.auto_renew ? "on" : "off"]);
+    }
+
+    parts.push(section("What the registry says", factGrid(facts)));
+
+    if (!data.watched) {
+      const actions = document.createElement("div");
+      actions.className = "inspect-actions";
+      const watch = document.createElement("button");
+      watch.textContent = "Watch this domain";
+      watch.addEventListener("click", async () => {
+        try {
+          await post("domain-save", { name: data.name, warn_days: 45, interval_seconds: 604800 });
+          notice(`Now watching ${data.name}.`, true);
+          showView("domains");
+        } catch (error) {
+          notice(String(error.message || error));
+        }
+      });
+      actions.appendChild(watch);
+      parts.push(actions);
+    }
+  }
+
+  const raw = document.createElement("details");
+  const summary = document.createElement("summary");
+  summary.textContent = "The whole answer";
+  raw.appendChild(summary);
+  const pre = document.createElement("pre");
+  pre.className = "paste";
+  pre.textContent = data.text;
+  raw.appendChild(pre);
+  parts.push(raw);
+
+  body.replaceChildren(...parts);
+}
+
 /* --------------------------------------------------------------- labels -- */
 
 async function refreshLabels() {
@@ -12100,6 +12831,15 @@ const VIEWS = {
     parent: "network",
     refresh: () => refreshCaptures(),
   },
+  calendar: { label: "Calendar", refresh: () => refreshCalendar() },
+  domains: { label: "Domain names", parent: "network", refresh: () => refreshDomains() },
+  whois: {
+    label: "Look a name up",
+    parent: "network",
+    // A lookup asks a registry, so it runs when asked and not on a timer.
+    manual: true,
+    refresh: () => refreshWhois($("whoisName")?.value.trim() ?? ""),
+  },
   "net-urls": {
     label: "Is the site answering?",
     parent: "network",
@@ -12822,6 +13562,31 @@ $("offenderDelete").addEventListener("click",
   () => deletePicked().catch(error => notice(String(error.message || error))));
 
 $("urlAdd").addEventListener("click", () => openUrlForm(null));
+$("eventAdd").addEventListener("click", () => openEventForm(null));
+$("eventFormClose").addEventListener("click", () => { $("eventFormPanel").hidden = true; });
+$("domainWhoisClose").addEventListener("click", () => { $("domainWhoisPanel").hidden = true; });
+
+$("domainForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    const result = await post("domain-save", {
+      name: $("domainName").value.trim(),
+      warn_days: $("domainWarn").value,
+      interval_seconds: 604800,
+    });
+    $("domainName").value = "";
+    renderDomains(result);
+    notice("Watching it. The expiry was looked up straight away.", true);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
+$("whoisForm").addEventListener("submit", event => {
+  event.preventDefault();
+  refreshWhois($("whoisName").value.trim())
+    .catch(error => notice(String(error.message || error)));
+});
 $("urlFormClose").addEventListener("click", () => { $("urlFormPanel").hidden = true; });
 
 $("captureHistoryRefresh").addEventListener("click",

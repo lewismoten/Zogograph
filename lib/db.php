@@ -569,6 +569,55 @@ function migrations(): array
          * losing its history - the history is usually the reason you are
          * looking at it.
          */
+        /*
+         * Domains, and the dates a person puts in a calendar.
+         *
+         * Together because they answer the same question - what is coming up
+         * that I will regret forgetting - and because the calendar draws from
+         * both. A domain expiry is an event this can discover; a VPS renewal is
+         * one only the operator knows about, and both belong on the same page.
+         */
+        20 => [
+            "CREATE TABLE domains (
+                id               INTEGER PRIMARY KEY,
+                name             TEXT NOT NULL UNIQUE,
+                warn_days        INTEGER NOT NULL DEFAULT 45,
+                interval_seconds INTEGER NOT NULL DEFAULT 604800,
+                added_at         INTEGER NOT NULL,
+                last_checked_at  INTEGER,
+                expires_at       INTEGER,
+                created_at       INTEGER,
+                updated_at       INTEGER,
+                registrar        TEXT,
+                status           TEXT,
+                nameservers      TEXT,
+                auto_renew       INTEGER,
+                last_error       TEXT,
+                whois            TEXT
+            )",
+
+            /*
+             * Dates the operator keeps, which nothing here could discover.
+             *
+             * A VPS renewing on the 3rd, a certificate bought outside this
+             * machine, an annual invoice. `resolved_at` rather than deletion,
+             * because "I have dealt with this" and "this never mattered" are
+             * different and the first one is worth keeping a record of.
+             */
+            "CREATE TABLE events (
+                id          INTEGER PRIMARY KEY,
+                title       TEXT NOT NULL,
+                at          INTEGER NOT NULL,
+                repeats     TEXT NOT NULL DEFAULT 'once',
+                link        TEXT,
+                note        TEXT,
+                priority    INTEGER NOT NULL DEFAULT 0,
+                resolved_at INTEGER,
+                added_at    INTEGER NOT NULL
+            )",
+            'CREATE INDEX events_at ON events (at)',
+        ],
+
         19 => [
             "CREATE TABLE url_checks (
                 id               INTEGER PRIMARY KEY,

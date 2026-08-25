@@ -44,6 +44,8 @@ require_once __DIR__ . '/lib/retention.php';
 require_once __DIR__ . '/lib/processes.php';
 // Outbound URL checks, which need no privilege and so ride the account's cron.
 require_once __DIR__ . '/lib/urlwatch.php';
+// Domain expiry, which is the one outage no amount of server monitoring sees.
+require_once __DIR__ . '/lib/domains.php';
 
 $flags = array_slice($argv, 1);
 $quiet = in_array('--quiet', $flags, true);
@@ -63,6 +65,7 @@ if (in_array('--help', $jobs, true) || in_array('-h', $jobs, true)) {
       php cron.php --vitals     take one cheap reading (disk, memory, cpu)
       php cron.php --scan       walk the tree and record what is where
       php cron.php --urls       run the URL checks that are due (also part of --vitals)
+      php cron.php --domains    look up domain expiry for any that are due
       php cron.php --alerts     evaluate the rules, email if anything tripped
       php cron.php --prune      thin readings older than the retention window
       php cron.php              all of the above
@@ -136,6 +139,27 @@ try {
         } catch (Throwable $e) {
             logProblem('warning', 'url checks: ' . $e->getMessage());
             $say('urls    could not run: ' . $e->getMessage());
+        }
+    }
+
+    /*
+     * Domain expiry, on its own much slower clock.
+     *
+     * Weekly per domain, and only the ones actually due - a registration does
+     * not change between Tuesdays, and whois servers throttle anybody who asks
+     * more often. Ridden along with --vitals for the same reason the URL checks
+     * are: a third cron line is a third thing to be missing.
+     */
+    if ($wants('--vitals') || $wants('--domains')) {
+        try {
+            $domains = domainCheckDue($pdo);
+            if ($domains['ran'] > 0) {
+                $say(sprintf('domains checked %d, %d could not be read',
+                    $domains['ran'], $domains['failed']));
+            }
+        } catch (Throwable $e) {
+            logProblem('warning', 'domain checks: ' . $e->getMessage());
+            $say('domains could not run: ' . $e->getMessage());
         }
     }
 

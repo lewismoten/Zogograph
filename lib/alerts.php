@@ -25,6 +25,8 @@ require_once __DIR__ . '/incident.php';
 require_once __DIR__ . '/logwatch.php';
 // logAction lives here: an email that went out is something the monitor did.
 require_once __DIR__ . '/actions.php';
+// Domains and dated events, which raise alerts of their own.
+require_once __DIR__ . '/events.php';
 
 /**
  * How far back a projection looks.
@@ -69,6 +71,14 @@ function evaluateAlerts(array $config, PDO $pdo): array
          * that two names for one file is one file.
          */
         ...logAlerts($pdo, $config),
+        /*
+         * Dates, which no threshold can detect.
+         *
+         * A domain expiring on Friday is invisible to every measurement on this
+         * machine right up to the moment it takes the site down, and a calendar
+         * page nobody opened is not a warning.
+         */
+        ...dateAlerts($config, $pdo),
     ]);
 
     foreach ($candidates as $alert) {
@@ -846,6 +856,56 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
  *
  * @return list<string>
  */
+/**
+ * Dates that are about to matter, folded into the alerting.
+ *
+ * The reason the priority flag exists. A domain expiring on Friday and a VPS
+ * renewing on Monday are not conditions any threshold can detect, and a
+ * calendar page nobody opened is not a warning - so they ride the same email as
+ * everything else.
+ *
+ * Deliberately narrow: only things marked important, only inside the window,
+ * and only while unresolved. An email listing every dated thing would be a
+ * newsletter.
+ *
+ * @return list<array{severity: string, subject: string, detail: string, rule: string}>
+ */
+function dateAlerts(array $config, PDO $pdo): array
+{
+    $out = [];
+
+    try {
+        $pressing = pressingEvents($config, $pdo);
+    } catch (Throwable) {
+        return $out;
+    }
+
+    foreach ($pressing as $item) {
+        $days = (int)floor(($item['at'] - time()) / 86400);
+
+        $out[] = [
+            'rule' => $item['kind'] === 'domain' ? 'domain_expiry' : 'event_due',
+            'severity' => $days <= 3 ? 'critical' : 'warning',
+            'subject' => $item['kind'] === 'domain'
+                ? $item['title']
+                : sprintf('%s %s', $item['title'], $days < 0
+                    ? 'was due ' . abs($days) . ' days ago'
+                    : ($days === 0 ? 'is due today' : 'is due in ' . $days . ' days')),
+            'detail' => trim(sprintf(
+                "%s\n%s",
+                $item['note'] ?? '',
+                $item['kind'] === 'domain'
+                    ? 'Nothing else on this dashboard can see this coming: every server '
+                        . 'measure stays green until the name stops resolving.'
+                    : 'Marked as important on the calendar. Mark it dealt with there to stop '
+                        . 'it appearing here.'
+            )),
+        ];
+    }
+
+    return $out;
+}
+
 function statusReport(PDO $pdo): array
 {
     $lines = [];

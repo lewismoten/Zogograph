@@ -29,6 +29,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/hostdb.php';
 require_once __DIR__ . '/alerts.php';
+// Domains and dated events, which are findings no measurement can produce.
+require_once __DIR__ . '/events.php';
 
 /** How bad a thing is, and therefore where it sorts. */
 const DIAGNOSIS_RANK = ['critical' => 0, 'warning' => 1, 'watch' => 2, 'unknown' => 3, 'ok' => 4];
@@ -70,6 +72,7 @@ function diagnose(array $config, PDO $pdo): array
         diagnosePorts($hostPdo),
         diagnoseUnits($hostPdo),
         diagnoseAlerts($pdo, $now),
+        diagnoseDates($config, $pdo, $now),
     ] as $group) {
         foreach ($group as $finding) {
             $findings[] = $finding;
@@ -614,6 +617,60 @@ function diagnoseUnits(?PDO $host): array
     } catch (Throwable) {
         return [];
     }
+}
+
+/**
+ * Dates that are about to matter.
+ *
+ * The only findings here that come from a calendar rather than a measurement,
+ * and the only ones that can be certain: a domain expires on the day it expires
+ * whatever the machine is doing. Included because this page is meant to be the
+ * one place that answers "what should I be worried about", and "the domain
+ * lapses on Friday" belongs in that answer.
+ */
+function diagnoseDates(array $config, PDO $pdo, int $now): array
+{
+    try {
+        $pressing = pressingEvents($config, $pdo, 21);
+    } catch (Throwable) {
+        return [];
+    }
+
+    $out = [];
+    foreach ($pressing as $item) {
+        $days = (int)floor(($item['at'] - $now) / 86400);
+
+        $out[] = finding(
+            $days <= 3 ? 'critical' : 'warning',
+            $item['kind'] === 'domain' ? 'A domain is about to expire' : 'Something is due',
+            /*
+             * A domain's title already carries its timing.
+             *
+             * pressingEvents writes "example.com expires in 3 days" for a
+             * domain and a bare title for an event, so appending the timing to
+             * both produced "expires in 3 days - in 3 days".
+             */
+            $item['kind'] === 'domain'
+                ? $item['title'] . '.'
+                : sprintf(
+                    '%s %s.',
+                    $item['title'],
+                    $days < 0
+                        ? 'was due ' . humanDuration(abs($days) * 86400) . ' ago'
+                        : ($days === 0 ? 'is due today' : 'is due in ' . $days . ' days')
+                ),
+            $item['kind'] === 'domain'
+                ? 'Nothing else on this site can see this coming. Every server measure stays '
+                    . 'green until the name stops resolving, and then everything fails at once '
+                    . 'for a reason that is in no log.'
+                : 'Marked important on the calendar. Mark it dealt with there to stop it '
+                    . 'appearing here.',
+            $item['kind'] === 'domain' ? 'See the domains' : 'See the calendar',
+            $item['kind'] === 'domain' ? 'domains' : 'calendar'
+        );
+    }
+
+    return $out;
 }
 
 function diagnoseAlerts(PDO $pdo, int $now): array
