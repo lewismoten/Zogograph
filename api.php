@@ -170,6 +170,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-settings' => aiSettingsView($config, $pdo, $signedIn),
         'ai-settings-save' => doAiSettingsSave($config, $pdo, $post),
         'ai-test' => doAiTest($config, $pdo, $post),
+        'ai-reaction' => doAiReaction($config, $pdo, $post),
         'ai-sessions' => aiSessionsView($config, $signedIn),
         'charts' => chartCatalogueView($signedIn),
         'scan-schedule' => scansView($config, $pdo, $signedIn),
@@ -290,6 +291,18 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
          * "I know about the disk" before they start investigating it again.
          */
         'broadcasts' => $signedIn ? noteBroadcasts($pdo) : [],
+        /*
+         * Two strings, carried on the call every page already makes.
+         *
+         * The name and emoji appear in the navigation, which is drawn before
+         * anybody opens the chat - so fetching them only when the panel opens
+         * meant the menu said one thing and the panel said another until you
+         * clicked.
+         */
+        'who' => $signedIn ? (function () use ($config): array {
+            $persona = aiPersona($config);
+            return ['name' => $persona['name'], 'emoji' => $persona['emoji']];
+        })() : null,
         /*
          * Recorded here because every page makes this call.
          *
@@ -5816,20 +5829,24 @@ function aiView(array $config, PDO $pdo, bool $signedIn): array
     $ready = aiReady($config);
     $settings = aiSettings($config);
 
+    $persona = aiPersona($config);
+    $ai = aiDb($config, false);
+
     $out = [
         'ready' => $ready['ok'],
         'why' => $ready['why'],
         'model' => $settings['model'],
         'provider' => $settings['provider'],
         'session' => null,
+        'who' => [
+            'name' => $persona['name'],
+            'emoji' => $persona['emoji'],
+            // Null until it has drawn one, which most installs never will.
+            'portrait' => $ai === null ? null : aiPortrait($ai),
+        ],
     ];
 
-    if (!$ready['ok']) {
-        return $out;
-    }
-
-    $ai = aiDb($config, false);
-    if ($ai === null) {
+    if (!$ready['ok'] || $ai === null) {
         return $out;
     }
 
@@ -6008,11 +6025,31 @@ function doAiPermit(array $config, PDO $pdo, bool $post): array
         return ['ok' => true, 'session' => aiSessionView($config, $ai, $session, aiViews())];
     }
 
-    aiRunAndRecord(
-        $config, $ai, $pdo, $session, $runId, (string)$run['tool'],
-        json_decode((string)$run['arguments'], true) ?: [],
-        (string)$run['tool_id']
-    );
+    /*
+     * A picture tool goes to its own runner, not the read-only one.
+     *
+     * The permission path had its own copy of this dispatch and only knew
+     * about the diagnostic tools, so allowing a picture ran it through
+     * aiRunTool and got back "that tool does not run on the server" - a
+     * refusal produced by saying yes.
+     */
+    $tools = aiTools(aiViews());
+    $group = $tools[(string)$run['tool']]['group'] ?? '';
+
+    if ($group === 'pictures') {
+        aiRunPicture(
+            $config, $ai, $session, $runId, (string)$run['tool'],
+            json_decode((string)$run['arguments'], true) ?: [],
+            (string)$run['tool_id']
+        );
+    } else {
+        aiRunAndRecord(
+            $config, $ai, $pdo, $session, $runId, (string)$run['tool'],
+            json_decode((string)$run['arguments'], true) ?: [],
+            (string)$run['tool_id']
+        );
+    }
+
     aiSetState($ai, $session, 'thinking');
 
     return ['ok' => true, 'session' => aiSessionView($config, $ai, $session, aiViews())];
@@ -6094,6 +6131,41 @@ function aiBrowserResult(PDO $ai, int $session, array $run): array
         ]);
 
         return ['opened' => (string)($arguments['page'] ?? '')];
+    }
+
+    if ($tool === 'show_progress' || $tool === 'show_reaction') {
+        $arguments = json_decode((string)$run['arguments'], true) ?: [];
+
+        /*
+         * A reaction becomes a message row, like a picture does.
+         *
+         * The browser found the image; the URL comes back here and is stored
+         * as its own row, which renderChat draws. Holding it in a map on the
+         * client keyed by the tool run meant it vanished on the next poll -
+         * the card was looking it up by message id and the map was keyed by
+         * run id, so it was never found at all.
+         */
+        $found = (string)($_POST['image_url'] ?? '');
+        if ($tool === 'show_reaction' && filter_var($found, FILTER_VALIDATE_URL)) {
+            aiAddMessage($ai, $session, 'reaction', $found, [
+                'tool_name' => $tool,
+                'tool_args' => $arguments,
+            ]);
+        }
+
+        aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+            'shown' => $tool === 'show_progress' || $found !== '',
+            'note' => $tool === 'show_reaction'
+                ? ($found !== ''
+                    ? 'The image is now visible to the user. You did not choose it and '
+                        . 'have not been shown it, so do not refer to what is in it.'
+                    : 'Nothing matched that mood, so no image appeared. Carry on without '
+                        . 'mentioning it.')
+                : 'The progress bar is now visible. It does not animate; call this again '
+                    . 'to move it.',
+        ]);
+
+        return ['shown' => true];
     }
 
     if ($tool === 'show_chart') {
@@ -6253,8 +6325,32 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
     }
 
     $ready = aiReady($config);
+    $persona = aiPersona($config);
+    $pictures = aiImageSettings($config);
+    $ai = aiDb($config, false);
 
     return [
+        'who' => [
+            'name' => $persona['name'],
+            'emoji' => $persona['emoji'],
+            'personality' => $persona['personality'],
+            'edited' => $persona['edited'],
+            'default_name' => $persona['default_name'],
+            'default_emoji' => $persona['default_emoji'],
+            'default_personality' => $persona['default_personality'],
+            'portrait' => $ai === null ? null : aiPortrait($ai),
+        ],
+        'pictures' => $pictures + [
+            // The key is never sent back; only whether one is set.
+            'api_key' => null,
+            'has_key' => $pictures['api_key'] !== '',
+            'giphy_key' => null,
+            'has_giphy_key' => $pictures['giphy_key'] !== '',
+            'all_styles' => aiImageStyles(),
+            'shapes' => aiImageShapes(),
+            'qualities' => aiImageQualities(),
+            'budget' => $ai === null ? null : aiImageBudget($ai, $pictures),
+        ],
         'enabled' => $settings['enabled'],
         'provider' => $settings['provider'],
         'providers' => aiProviders(),
@@ -6311,6 +6407,68 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
         throw new ActionRefused('that is not one of the reasoning settings');
     }
     $current['ai']['reasoning_effort'] = $effort;
+
+    /*
+     * Who it is, which is the operator's to decide.
+     *
+     * Stored only where it differs from the default, so that a later change to
+     * the default personality reaches an install that never edited it.
+     */
+    $persona = aiPersonaFrom($_POST);
+    $defaults = aiPersona([]);
+
+    $current['ai']['name'] = $persona['name'] === $defaults['name'] ? '' : $persona['name'];
+    $current['ai']['emoji'] = $persona['emoji'] === $defaults['emoji']
+        ? '' : $persona['emoji'];
+    $current['ai']['personality'] =
+        trim($persona['personality']) === trim($defaults['personality'])
+            ? '' : $persona['personality'];
+
+    /* ---- pictures ---- */
+
+    $wantedStyles = array_values(array_filter(
+        array_filter(explode(',', (string)($_POST['styles'] ?? ''))),
+        fn(string $key): bool => isset(aiImageStyles()[$key])
+    ));
+
+    /*
+     * Merged over what is there, not replacing it.
+     *
+     * A settings page should never silently drop a key it does not have a box
+     * for - anything set by hand in the config file would disappear the first
+     * time somebody saved an unrelated checkbox, which is a very confusing way
+     * to lose a setting.
+     */
+    $current['ai']['images'] = ($current['ai']['images'] ?? []) + [];
+    $current['ai']['images'] = array_merge($current['ai']['images'], [
+        'enabled' => ($_POST['pictures_on'] ?? '0') === '1',
+        'styles' => $wantedStyles,
+        'quality' => isset(aiImageQualities()[$_POST['quality'] ?? ''])
+            ? (string)$_POST['quality'] : 'standard',
+        'shape' => isset(aiImageShapes()[$_POST['shape'] ?? ''])
+            ? (string)$_POST['shape'] : 'square',
+        'per_hour' => clampInt($_POST['per_hour'] ?? 10, 0, 200),
+        'self_portrait' => ($_POST['self_portrait'] ?? '0') === '1',
+        'reactions' => ($_POST['reactions_on'] ?? '0') === '1',
+        'rating' => in_array($_POST['rating'] ?? 'g', ['g', 'pg', 'pg-13'], true)
+            ? (string)$_POST['rating'] : 'g',
+    ]);
+
+    /*
+     * Both keys follow the same rule as the model key: blank means unchanged.
+     *
+     * The page cannot show them, so treating an empty field as "clear it"
+     * would disconnect the service every time an unrelated setting was saved.
+     */
+    foreach ([['picture_key', 'api_key'], ['giphy_key', 'giphy_key']] as [$field, $store]) {
+        $existing = (string)($config['ai']['images'][$store] ?? '');
+        $given = trim((string)($_POST[$field] ?? ''));
+        $current['ai']['images'][$store] = $given !== '' ? $given : $existing;
+
+        if (($_POST['forget_' . $field] ?? '0') === '1') {
+            $current['ai']['images'][$store] = '';
+        }
+    }
 
     /*
      * The key is only written when a new one is given.
@@ -6865,4 +7023,42 @@ function aiTestHint(string $error, array $settings): string
     }
 
     return '';
+}
+
+/**
+ * Finds a reaction image, on the browser's behalf.
+ *
+ * Fetched here rather than from the page because the search needs a key that
+ * has no business being in a browser, and because the request is recorded -
+ * these appear unannounced in somebody's browser and it should be possible to
+ * see afterwards what was asked for.
+ */
+function doAiReaction(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $settings = aiImageSettings($config);
+    if (!$settings['reactions']) {
+        throw new ActionRefused('reactions are switched off');
+    }
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('Lookout is not available');
+    }
+
+    $mood = trim((string)($_POST['mood'] ?? ''));
+    $session = clampInt($_POST['session'] ?? 0, 0, PHP_INT_MAX);
+
+    $found = aiFindReaction($settings, $mood);
+
+    aiRecordImage($ai, $session, 'reaction', $mood, 'giphy',
+        $found['ok'] ? (string)$found['url'] : null,
+        $found['ok'] ? null : (string)($found['error'] ?? 'not found'));
+
+    if (!$found['ok']) {
+        return ['ok' => false, 'error' => $found['error']];
+    }
+
+    return ['ok' => true, 'url' => $found['url'], 'source' => $found['source']];
 }

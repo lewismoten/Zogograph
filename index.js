@@ -2591,6 +2591,19 @@ async function refreshShared() {
   state.lastReadingAt = overview.vitals ? Number(overview.vitals.taken_at) : null;
   renderLastSeen();
   renderBroadcasts(overview.broadcasts || []);
+
+  /*
+   * The name in the menu, before anybody opens the chat.
+   *
+   * The portrait is deliberately not carried here - it is a URL nobody needs
+   * until the panel is open, and this call is made by every page on every
+   * poll.
+   */
+  if (overview.who) {
+    chatState.who.name = overview.who.name;
+    chatState.who.emoji = overview.who.emoji;
+    renderChatIdentity();
+  }
   // Once per session; the definitions come from the server so the names the
   // user sees and the names the model is given cannot drift.
   loadChartNames().catch(() => {});
@@ -4367,6 +4380,7 @@ function renderAiSettings(data) {
     form.appendChild(fieldRow("", forget, ""));
   }
 
+  parts.push(section("Who it is", personaFields(data)));
   parts.push(section("Which model", form));
 
   /*
@@ -4478,6 +4492,7 @@ function renderAiSettings(data) {
     + "problem rather than a long investigation."));
 
   parts.push(section("Limits on one conversation", limits));
+  parts.push(section("Pictures", pictureFields(data)));
 
   /* ---- database ---- */
 
@@ -4615,6 +4630,242 @@ function renderAiTools(data) {
   body.replaceChildren(...parts);
 }
 
+/**
+ * Name, emoji and character.
+ *
+ * All three are the operator's, and all three are resettable - a personality
+ * somebody has rewritten into a corner is worse than no personality, and the
+ * way out has to be one button rather than "delete this text and remember what
+ * was there before".
+ */
+function personaFields(data) {
+  const wrap = document.createDocumentFragment();
+  const who = data.who;
+
+  const form = document.createElement("div");
+  form.className = "settings";
+
+  const emoji = document.createElement("input");
+  emoji.type = "text";
+  emoji.id = "aiEmoji";
+  emoji.value = who.emoji;
+  emoji.size = 4;
+  emoji.maxLength = 8;
+  form.appendChild(fieldRow("Emoji", emoji,
+    "Shown beside the name everywhere it appears, including in the menu."));
+
+  const name = document.createElement("input");
+  name.type = "text";
+  name.id = "aiName";
+  name.value = who.name;
+  name.size = 24;
+  name.maxLength = 40;
+  form.appendChild(fieldRow("Name", name,
+    "What it calls itself, and what this page and the menu call it."));
+
+  if (who.portrait) {
+    const face = document.createElement("div");
+    const image = document.createElement("img");
+    image.className = "portrait";
+    image.src = who.portrait.url;
+    image.alt = "";
+    face.appendChild(image);
+
+    const said = document.createElement("div");
+    said.className = "muted small";
+    said.textContent = `Drawn ${ago(who.portrait.at)}, from: "${who.portrait.as}"`;
+    face.appendChild(said);
+
+    form.appendChild(fieldRow("Portrait", face,
+      "It drew this itself. Turning off self-portraits below stops it drawing another; "
+      + "this one stays until it does."));
+  }
+
+  const personality = document.createElement("textarea");
+  personality.id = "aiPersonality";
+  personality.rows = 12;
+  personality.className = "wide-field";
+  personality.spellcheck = false;
+  personality.value = who.personality;
+  form.appendChild(fieldRow("Character", personality,
+    "Sent with every single request, so length here is a cost on every turn. It cannot "
+    + "override the rules that keep the answers honest — never state a cause you have "
+    + "not measured, say when a tool returned nothing — which are added after it and "
+    + "say so."));
+
+  wrap.appendChild(form);
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "link";
+  reset.textContent = "Put the character back";
+  reset.title = "Restores the default name, emoji and personality in the boxes";
+  reset.addEventListener("click", () => {
+    name.value = who.default_name;
+    emoji.value = who.default_emoji;
+    personality.value = who.default_personality;
+    notice("Filled in with the defaults. Press Save to apply them.", true);
+  });
+  actions.appendChild(reset);
+
+  if (who.edited) {
+    const said = document.createElement("span");
+    said.className = "muted small";
+    said.textContent = "This has been edited.";
+    actions.appendChild(said);
+  }
+
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+/**
+ * Whether it may make pictures, and which kinds.
+ *
+ * Off by default and inert without a key. Every option here costs money per
+ * call except the reactions, which cost a search - so the hourly limit covers
+ * all of it and the page says what has been used.
+ */
+function pictureFields(data) {
+  const wrap = document.createDocumentFragment();
+  const pictures = data.pictures;
+
+  const form = document.createElement("div");
+  form.className = "settings";
+
+  const on = document.createElement("input");
+  on.type = "checkbox";
+  on.id = "aiPicturesOn";
+  on.checked = pictures.enabled;
+  form.appendChild(fieldRow("Let it make pictures", on,
+    "Off means the picture tools are not offered at all. Each one costs money per call "
+    + "and asks your permission every time."));
+
+  const key = document.createElement("input");
+  key.type = "password";
+  key.id = "aiPictureKey";
+  key.className = "wide-field";
+  key.autocomplete = "off";
+  key.placeholder = pictures.has_key ? "•".repeat(20) + " (unchanged)" : "your DeepAI key";
+  form.appendChild(fieldRow("DeepAI key", key,
+    pictures.has_key
+      ? "A key is set. Leaving this blank keeps it."
+      : "From deepai.org. Without one the picture tools stay hidden."));
+
+  const styleBox = document.createElement("div");
+  for (const [key_, meta] of Object.entries(pictures.all_styles)) {
+    const line = document.createElement("label");
+    line.className = "scan-toggle";
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "picture-style";
+    box.dataset.style = key_;
+    box.checked = pictures.styles.includes(key_);
+    line.appendChild(box);
+
+    const label = document.createElement("span");
+    label.textContent = ` ${meta.label} — `;
+    line.appendChild(label);
+
+    const what = document.createElement("span");
+    what.className = "muted small";
+    what.textContent = meta.what;
+    line.appendChild(what);
+
+    styleBox.appendChild(line);
+  }
+  form.appendChild(fieldRow("Styles it may use", styleBox,
+    "Tick the ones it may choose from. A model offered twelve will use twelve, and most "
+    + "of them are wrong for a monitoring dashboard — two or three is plenty."));
+
+  const quality = document.createElement("select");
+  quality.id = "aiQuality";
+  for (const [key_, meta] of Object.entries(pictures.qualities)) {
+    const option = document.createElement("option");
+    option.value = key_;
+    option.textContent = `${meta.label} — ${meta.what}`;
+    option.selected = pictures.quality === key_;
+    quality.appendChild(option);
+  }
+  form.appendChild(fieldRow("Quality", quality, ""));
+
+  const shape = document.createElement("select");
+  shape.id = "aiShape";
+  for (const [key_, meta] of Object.entries(pictures.shapes)) {
+    const option = document.createElement("option");
+    option.value = key_;
+    option.textContent = `${meta.label} (${meta.width}×${meta.height})`;
+    option.selected = pictures.shape === key_;
+    shape.appendChild(option);
+  }
+  form.appendChild(fieldRow("Shape", shape, ""));
+
+  const perHour = document.createElement("input");
+  perHour.type = "number";
+  perHour.id = "aiPerHour";
+  perHour.min = "0";
+  perHour.max = "200";
+  perHour.className = "days";
+  perHour.value = String(pictures.per_hour);
+  form.appendChild(fieldRow("At most, per hour", perHour,
+    "Across everything on this panel. A model that finds something amusing will keep "
+    + "doing it, and each one is billed — this is what stops a loop running up a bill "
+    + "before anybody notices. Zero switches picture-making off without losing the rest "
+    + "of these settings."
+    + (pictures.budget
+      ? ` ${pictures.budget.used} made in the last hour.`
+      : "")));
+
+  const self = document.createElement("input");
+  self.type = "checkbox";
+  self.id = "aiSelfPortrait";
+  self.checked = pictures.self_portrait;
+  form.appendChild(fieldRow("Let it redraw itself", self,
+    "A novelty: it can generate its own portrait, squared off and shrunk to a thumbnail. "
+    + "Shares the hourly limit and asks permission each time."));
+
+  const reactions = document.createElement("input");
+  reactions.type = "checkbox";
+  reactions.id = "aiReactions";
+  reactions.checked = pictures.reactions;
+  form.appendChild(fieldRow("Let it react", reactions,
+    "Short animated images, searched rather than generated, for the occasional aside. It "
+    + "chooses a mood, not an image — what comes back is whatever the catalogue "
+    + "returns."));
+
+  const giphy = document.createElement("input");
+  giphy.type = "password";
+  giphy.id = "aiGiphyKey";
+  giphy.className = "wide-field";
+  giphy.autocomplete = "off";
+  giphy.placeholder = pictures.has_giphy_key
+    ? "•".repeat(20) + " (unchanged)" : "your GIPHY key";
+  form.appendChild(fieldRow("GIPHY key", giphy,
+    pictures.has_giphy_key ? "A key is set." : "From developers.giphy.com."));
+
+  const rating = document.createElement("select");
+  rating.id = "aiRating";
+  for (const [value, label] of [["g", "G only"], ["pg", "PG and under"],
+                                ["pg-13", "PG-13 and under"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = pictures.rating === value;
+    rating.appendChild(option);
+  }
+  form.appendChild(fieldRow("Rating", rating,
+    "This appears unannounced in a browser, possibly at work, chosen by a language model "
+    + "from a search term it invented. G is the sensible default and there is no good "
+    + "argument against it."));
+
+  wrap.appendChild(form);
+  return wrap;
+}
+
 async function saveAiSettings(extra = {}) {
   const on = [...document.querySelectorAll("input.tool-on")]
     .filter(box => box.checked).map(box => box.dataset.tool).join(",");
@@ -4635,12 +4886,34 @@ async function saveAiSettings(extra = {}) {
       max_cents: $("aiMaxCents").value,
       max_turns: $("aiMaxTurns").value,
       reasoning_effort: $("aiEffort").value,
+      name: $("aiName").value.trim(),
+      emoji: $("aiEmoji").value.trim(),
+      personality: $("aiPersonality").value,
+      pictures_on: $("aiPicturesOn").checked ? "1" : "0",
+      picture_key: $("aiPictureKey").value,
+      styles: [...document.querySelectorAll("input.picture-style:checked")]
+        .map(box => box.dataset.style).join(","),
+      quality: $("aiQuality").value,
+      shape: $("aiShape").value,
+      per_hour: $("aiPerHour").value,
+      self_portrait: $("aiSelfPortrait").checked ? "1" : "0",
+      reactions_on: $("aiReactions").checked ? "1" : "0",
+      giphy_key: $("aiGiphyKey").value,
+      rating: $("aiRating").value,
       tools_on: on,
       tools_ask: ask,
       ...extra,
     });
 
     notice("Saved.", true);
+    if (result.who) {
+      chatState.who = {
+        name: result.who.name,
+        emoji: result.who.emoji,
+        portrait: result.who.portrait,
+      };
+      renderChatIdentity();
+    }
     renderAiSettings(result);
   } catch (error) {
     notice(String(error.message || error));
@@ -4695,6 +4968,110 @@ async function refreshAiSessions() {
   } catch (error) {
     body.replaceChildren(note(String(error.message || error)));
   }
+}
+
+/* --------------------------------------------------- things it can show -- */
+
+/**
+ * A progress bar with a clock on it.
+ *
+ * The clock is the point. "Seventy per cent" is not an answer to "how long will
+ * this take" and never has been, and a bar without one invites somebody to
+ * stand and watch it. Drawn from the tool call, so it survives re-renders and
+ * so the number shown is always the number the model actually said.
+ */
+function chatProgressCard(message) {
+  const args = message.arguments || {};
+  const percent = Math.max(0, Math.min(100, Number(args.percent) || 0));
+
+  const card = document.createElement("div");
+  card.className = "chat-progress";
+
+  const head = document.createElement("div");
+  head.className = "chat-progress-head";
+  head.textContent = String(args.what || "Working");
+  card.appendChild(head);
+
+  const track = document.createElement("div");
+  track.className = "chat-progress-track";
+  const fill = document.createElement("div");
+  fill.className = "chat-progress-fill";
+  fill.style.setProperty("--fill", `${percent}%`);
+  track.appendChild(fill);
+  card.appendChild(track);
+
+  const said = document.createElement("div");
+  said.className = "muted small";
+  const left = Number(args.seconds_left);
+  said.textContent = `${percent}%`
+    + (Number.isFinite(left) && left > 0
+      ? ` · about ${humanSpan(left, true)} left`
+      : "");
+  /*
+   * A drawn bar is a moment, not a live thing.
+   *
+   * It does not animate and the model has to call the tool again to move it,
+   * so the time it was drawn is worth saying - otherwise a bar from four
+   * minutes ago reads as current.
+   */
+  said.title = `Drawn ${humanTime(message.at)}. It does not move on its own.`;
+  card.appendChild(said);
+
+  return card;
+}
+
+/**
+ * A reaction image, if one was found.
+ *
+ * Returns null when the search came back empty, because an empty box with a
+ * caption under it is worse than the aside simply not happening.
+ */
+function chatReactionCard(message) {
+  const card = document.createElement("div");
+  card.className = "chat-reaction";
+
+  const image = document.createElement("img");
+  image.src = message.url;
+  image.alt = String(message.arguments?.mood || "a reaction");
+  image.loading = "lazy";
+  card.appendChild(image);
+
+  if (message.arguments?.why) {
+    const caption = document.createElement("div");
+    caption.className = "muted small";
+    caption.textContent = message.arguments.why;
+    card.appendChild(caption);
+  }
+
+  return card;
+}
+
+/** A generated picture, with what was asked for underneath it. */
+function chatPictureCard(message) {
+  const card = document.createElement("div");
+  card.className = "chat-picture";
+
+  const image = document.createElement("img");
+  image.src = message.url;
+  image.alt = String(message.arguments?.description || "a generated picture");
+  image.loading = "lazy";
+  card.appendChild(image);
+
+  const caption = document.createElement("div");
+  caption.className = "muted small";
+  /*
+   * The prompt is shown, always.
+   *
+   * A generated image is not evidence of anything, and somebody who cannot see
+   * what was asked for has no way to tell an illustration from a hallucination
+   * with a frame around it.
+   */
+  caption.textContent = message.arguments?.portrait
+    ? `${chatState.who.name}, as it describes itself: "${message.arguments.description}"`
+    : `Drawn from: "${message.arguments?.description ?? ""}"`;
+  card.appendChild(caption);
+
+  return card;
 }
 
 /* ------------------------------------------------- pictures for the model -- */
@@ -5046,8 +5423,8 @@ function editScreenshot(source, why) {
     };
 
     $("shotWhy").textContent = why
-      ? `Lookout asked for this: “${why}”`
-      : "Lookout asked for a screenshot.";
+      ? `${chatState.who.name} asked for this: \u201c${why}\u201d`
+      : `${chatState.who.name} asked for a screenshot.`;
 
     draw();
     syncTools();
@@ -5613,6 +5990,8 @@ const chatState = {
   // Chart cards by the message that asked for them, so a poll does not redraw
   // every chart in the conversation several times a second.
   charts: new Map(),
+  // Name, emoji and portrait, refreshed with the session.
+  who: { name: "Lookout", emoji: "\u{1F4E1}", portrait: null },
 };
 
 /** How often to ask, by what the session is doing. */
@@ -5628,7 +6007,7 @@ function chatPollDelay(state) {
 
 function openChat() {
   if (!state.signedIn) {
-    notice("Sign in to ask Lookout.");
+    notice(`Sign in to ask ${chatState.who.name}.`);
     return;
   }
 
@@ -5667,6 +6046,8 @@ async function refreshChat() {
   }
 
   chatState.session = data.session;
+  if (data.who) chatState.who = data.who;
+  renderChatIdentity();
   renderChat();
   scheduleChatPoll();
 }
@@ -5674,7 +6055,7 @@ async function refreshChat() {
 function renderChatUnavailable(why) {
   const log = $("chatLog");
   log.replaceChildren(note(
-    why + " Lookout is set up under System → Lookout."
+    why + ` It is set up under System \u2192 ${chatState.who.name}.`
   ));
 
   const go = document.createElement("button");
@@ -5781,7 +6162,26 @@ async function runBrowserTool(run) {
   let result = {};
 
   try {
-    if (run.tool === "show_chart") {
+    if (run.tool === "show_progress") {
+      // Drawn by renderChat from the tool call itself, like the chart cards -
+      // so it survives every poll rather than being wiped by the next one.
+      result = {};
+    } else if (run.tool === "show_reaction") {
+      /*
+       * Found by the server, because the search needs a key.
+       *
+       * A failure here is not a failure of the turn: the image was decoration.
+       * The tool result says it did not appear and the conversation carries on.
+       */
+      const found = await post("ai-reaction", {
+        mood: run.arguments.mood,
+        session: chatState.session?.id ?? 0,
+      });
+      // Sent on, so the server stores it as a message the chat draws - a map
+      // on this side keyed by the tool run could not be found again from a
+      // message id, which is how the first version lost every one of them.
+      result = found.ok ? { image_url: found.url } : {};
+    } else if (run.tool === "show_chart") {
       /*
        * Drawn for the user, and recorded as what they were shown.
        *
@@ -5843,13 +6243,59 @@ async function runBrowserTool(run) {
   renderChat();
 }
 
+/**
+ * The name, the emoji and the portrait, wherever they appear.
+ *
+ * All three are the operator's to change, so nothing anywhere hard-codes them -
+ * including the navigation entry, which is the one people forget and then have
+ * a settings page that renames everything except the menu.
+ */
+function renderChatIdentity() {
+  const who = chatState.who;
+
+  const title = $("chatTitle");
+  if (title) {
+    title.replaceChildren();
+
+    if (who.portrait) {
+      const face = document.createElement("img");
+      face.className = "chat-face";
+      face.src = who.portrait.url;
+      face.alt = "";
+      face.title = `${who.name}, as it describes itself: "${who.portrait.as}"`;
+      title.appendChild(face);
+    } else {
+      const mark = document.createElement("span");
+      mark.className = "chat-emoji";
+      mark.textContent = who.emoji;
+      title.appendChild(mark);
+    }
+
+    const name = document.createElement("span");
+    name.textContent = ` ${who.name}`;
+    title.appendChild(name);
+  }
+
+  const nav = document.querySelector('[data-nav="sys-ai"] .nav-label');
+  if (nav) nav.textContent = `${who.emoji} ${who.name}`;
+
+  const ask = $("cornerChat");
+  if (ask) ask.textContent = `${who.emoji} Ask ${who.name}`;
+
+  const box = $("chatText");
+  if (box && box.value === "") {
+    box.placeholder = `What is going wrong?`;
+  }
+}
+
 function renderChat() {
   const session = chatState.session;
   const log = $("chatLog");
 
   if (!session?.exists) {
     log.replaceChildren(note(
-      "Describe what is going wrong and Lookout will look into it. It can read "
+      `Describe what is going wrong and ${chatState.who.name} will look into it. `
+      + "It can read "
       + "this machine's measurements and logs, and can take you to the page that shows "
       + "what it found."
     ));
@@ -5863,12 +6309,28 @@ function renderChat() {
   const parts = [];
 
   for (const message of session.messages) {
+    if (message.role === "picture") {
+      parts.push(chatPictureCard(message));
+      continue;
+    }
+
+    if (message.role === "reaction") {
+      parts.push(chatReactionCard(message));
+      continue;
+    }
+
     if (message.role === "tool_call") {
-      // A chart the model asked to show is the chart, not a line about it.
+      // A thing the model asked to show is the thing, not a line about it.
       if (message.tool === "show_chart") {
         parts.push(chatChartCard(message));
         continue;
       }
+      if (message.tool === "show_progress") {
+        parts.push(chatProgressCard(message));
+        continue;
+      }
+      // The image arrives as its own message; the call itself says nothing.
+      if (message.tool === "show_reaction") continue;
 
       const line = document.createElement("div");
       line.className = "chat-tool";
@@ -6018,6 +6480,10 @@ function chatToolPhrase(tool, args) {
     get_chart_image: `Looked at ${chartNames.known?.[args.chart]?.name ?? args.chart}`,
     open_page: `Opened ${VIEWS[args.page]?.label ?? args.page}`,
     take_screenshot: "Took a screenshot",
+    show_progress: `Showed progress on ${args.what ?? "something"}`,
+    show_reaction: "Reacted",
+    make_picture: "Had a picture drawn",
+    redraw_yourself: "Redrew itself",
   }[tool];
 
   return said ?? tool;
@@ -20536,7 +21002,7 @@ $("noteButton").addEventListener("click", event => {
   event.stopPropagation();
 
   if (!state.signedIn) {
-    notice("Sign in to write a note or ask Lookout.");
+    notice(`Sign in to write a note or ask ${chatState.who.name}.`);
     return;
   }
 

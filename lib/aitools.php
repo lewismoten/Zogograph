@@ -34,6 +34,7 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/spans.php';
 require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/aicharts.php';
+require_once __DIR__ . '/aiimages.php';
 
 /**
  * Every tool, with its schema and how it runs.
@@ -551,6 +552,143 @@ function aiToolCatalogue(): array
             ],
         ],
 
+        /* --------------------------------------------------- saying things -- */
+
+        'show_progress' => [
+            'group' => 'navigation',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'show a progress bar with a time on it.',
+            'description' =>
+                "Draws a labelled progress bar in the conversation, with a finishing time.\n\n"
+                . "USE THIS when something is running that the user is waiting on and you "
+                . "know roughly how long it has left - a disk scan, a capture, a queue "
+                . "draining. A bar with a real time attached answers the question people "
+                . "actually ask; a percentage on its own does not.\n\n"
+                . "DO NOT use it decoratively, and DO NOT invent a duration. If you do not "
+                . "know how long something will take, say so in words - a made-up clock is "
+                . "worse than no clock, because people plan around it.\n\n"
+                . "It draws once and does not animate itself. Call it again to move it.",
+            'parameters' => [
+                'what' => [
+                    'type' => 'string', 'maxLength' => 80, 'required' => true,
+                    'description' => 'What is running, in a few words. "Walking the disk", '
+                        . '"Resolving addresses".',
+                ],
+                'percent' => [
+                    'type' => 'integer', 'minimum' => 0, 'maximum' => 100,
+                    'required' => true,
+                    'description' => 'How far through it is. Use your best estimate from '
+                        . 'what the tools told you, not a guess.',
+                ],
+                'seconds_left' => [
+                    'type' => 'integer', 'minimum' => 0, 'maximum' => 604800,
+                    'required' => false,
+                    'description' => 'Roughly how many seconds remain. Leave it out rather '
+                        . 'than inventing one.',
+                ],
+            ],
+        ],
+
+        'show_reaction' => [
+            'group' => 'navigation',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'show a small reaction image.',
+            'description' =>
+                "Finds and shows a short animated image matching a mood.\n\n"
+                . "USE THIS EXTREMELY SPARINGLY - at most once in a conversation, and only "
+                . "when something genuinely warrants it: a problem solved after a long "
+                . "hunt, or an absurd finding. It is an aside, not a punctuation mark.\n\n"
+                . "DO NOT use it when somebody is having a bad day, when the news is bad, "
+                . "or when a real problem is still unresolved. A cheerful animation over an "
+                . "unfixed outage is the single fastest way to make this whole tool feel "
+                . "like it is not taking the situation seriously.\n\n"
+                . "You do not choose the image, only the mood. What comes back may not be "
+                . "what you pictured, so never refer to its contents in your reply.",
+            'parameters' => [
+                'mood' => [
+                    'type' => 'string', 'maxLength' => 40, 'required' => true,
+                    'description' => 'Two or three words describing the feeling. '
+                        . '"mission accomplished", "slow clap", "everything is fine".',
+                ],
+                'why' => [
+                    'type' => 'string', 'maxLength' => 120, 'required' => true,
+                    'description' => 'A caption shown under it, in your own voice.',
+                ],
+            ],
+        ],
+
+        'make_picture' => [
+            'group' => 'pictures',
+            'where' => 'server',
+            'permission' => true,
+            'summary' => 'have a picture drawn and show it.',
+            'description' =>
+                "Describes a picture to an image generator and shows the result in the "
+                . "conversation.\n\n"
+                . "This costs real money per call and takes several seconds. There is an "
+                . "hourly limit, and every call needs the user's permission.\n\n"
+                . "USE THIS RARELY, and only when a picture does something words cannot: "
+                . "illustrating a shape, a layout, or an idea the user is struggling to "
+                . "describe.\n\n"
+                . "DO NOT use it to illustrate data - that is what the charts are for, and "
+                . "a drawing of a chart is a drawing, not a measurement. DO NOT use it as "
+                . "decoration. DO NOT use it to be funny more than once in a very long "
+                . "while; the joke does not survive repetition and the user is paying for "
+                . "each one.\n\n"
+                . "Describe the picture in full: the generator sees only your words and "
+                . "nothing of this conversation.",
+            'parameters' => [
+                'description' => [
+                    'type' => 'string', 'maxLength' => 600, 'required' => true,
+                    'description' => 'What the picture should show, described completely. '
+                        . 'The generator has no other context.',
+                ],
+                'style' => [
+                    'type' => 'string', 'enum' => [], 'required' => true,
+                    'description' => 'Which generator to use. The list is what this '
+                        . 'install allows.',
+                ],
+                'why' => [
+                    'type' => 'string', 'maxLength' => 160, 'required' => true,
+                    'description' => 'Why a picture rather than a sentence. Shown to the '
+                        . 'user when asking permission, so it has to be a reason they can '
+                        . 'judge.',
+                ],
+            ],
+        ],
+
+        'redraw_yourself' => [
+            'group' => 'pictures',
+            'where' => 'server',
+            'permission' => true,
+            'summary' => 'redraw your own portrait.',
+            'description' =>
+                "Generates a new portrait for yourself, which becomes the picture shown "
+                . "beside your name.\n\n"
+                . "This is a novelty. It costs money, it shares the hourly picture limit, "
+                . "and it needs permission every time.\n\n"
+                . "USE IT ALMOST NEVER - when the mood of a long session genuinely calls "
+                . "for it, and not otherwise. Describe yourself however you see fit; the "
+                . "result is squared off and shrunk to a thumbnail, so anything intricate "
+                . "is wasted.\n\n"
+                . "DO NOT do this in place of answering a question, and DO NOT ask twice "
+                . "in a session.",
+            'parameters' => [
+                'description' => [
+                    'type' => 'string', 'maxLength' => 400, 'required' => true,
+                    'description' => 'How you wish to be depicted. This is stored and '
+                        . 'shown as the portrait\'s caption, so write it as something a '
+                        . 'person will read.',
+                ],
+                'why' => [
+                    'type' => 'string', 'maxLength' => 160, 'required' => true,
+                    'description' => 'What prompted it. Shown when asking permission.',
+                ],
+            ],
+        ],
+
         /* ---------------------------------------------------- the browser -- */
 
         'open_page' => [
@@ -685,9 +823,41 @@ function aiTools(array $views): array
 function aiEnabledTools(array $config, array $views): array
 {
     $settings = $config['ai']['tools'] ?? [];
+    $pictures = aiImageSettings($config);
     $out = [];
 
     foreach (aiTools($views) as $name => $tool) {
+        /*
+         * The picture tools describe themselves from this install's settings.
+         *
+         * A model offered a style the operator did not enable will use it,
+         * have the call refused, and explain the refusal to the user as a
+         * fault - so the enum is exactly what is allowed, and the whole tool
+         * disappears when nothing is.
+         */
+        if ($tool['group'] === 'pictures') {
+            if (!$pictures['enabled'] || $pictures['api_key'] === '') {
+                continue;
+            }
+            if ($name === 'redraw_yourself' && !$pictures['self_portrait']) {
+                continue;
+            }
+            if (isset($tool['parameters']['style'])) {
+                $styles = aiImageStyles();
+                $tool['parameters']['style']['enum'] = $pictures['styles'];
+                $tool['parameters']['style']['description'] .= "\n\n"
+                    . implode("\n", array_map(
+                        fn(string $key): string => sprintf('  %s - %s %s',
+                            $key, $styles[$key]['label'], $styles[$key]['what']),
+                        $pictures['styles']
+                    ));
+            }
+        }
+
+        if ($name === 'show_reaction' && !$pictures['reactions']) {
+            continue;
+        }
+
         $mine = $settings[$name] ?? [];
 
         // Enabled unless explicitly turned off, except for anything that acts
@@ -724,9 +894,33 @@ function aiToolSchemas(array $tools): array
         $required = [];
 
         foreach ($tool['parameters'] as $key => $spec) {
+            $optional = empty($spec['required']);
+
+            /*
+             * Every parameter is listed as required, optional ones as nullable.
+             *
+             * Strict function schemas insist on it: "'required' is required to
+             * be supplied and to be an array including every key in
+             * properties". Leaving a genuinely optional parameter out of the
+             * list is rejected outright, so the option is expressed the way the
+             * format wants it - the key is always present and its value may be
+             * null, which aiCheckArguments already treats as "not given" and
+             * fills from the default.
+             *
+             * Valid on the older endpoint too, where it means the same thing
+             * and costs a handful of tokens.
+             */
             $property = [
-                'type' => $spec['type'],
-                'description' => $spec['description'],
+                'type' => $optional ? [$spec['type'], 'null'] : $spec['type'],
+                'description' => $spec['description']
+                    . ($optional
+                        ? sprintf(
+                            ' Pass null to leave this at its default (%s).',
+                            array_key_exists('default', $spec)
+                                ? var_export($spec['default'], true)
+                                : 'unset'
+                        )
+                        : ''),
             ];
 
             foreach (['enum', 'minimum', 'maximum', 'maxLength'] as $extra) {
@@ -735,10 +929,19 @@ function aiToolSchemas(array $tools): array
                 }
             }
 
-            $properties[$key] = $property;
-            if (!empty($spec['required'])) {
-                $required[] = $key;
+            /*
+             * A nullable enum has to allow null in the enum as well.
+             *
+             * Otherwise the two constraints contradict each other - the type
+             * permits null and the enum forbids it - and a strict validator
+             * refuses the schema rather than the value.
+             */
+            if ($optional && isset($property['enum'])) {
+                $property['enum'] = array_merge($property['enum'], [null]);
             }
+
+            $properties[$key] = $property;
+            $required[] = $key;
         }
 
         $out[] = [

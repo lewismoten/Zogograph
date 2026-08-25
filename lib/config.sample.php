@@ -564,6 +564,39 @@ return [
          * the model at all - one told about a tool it cannot use keeps trying
          * it and explains its absence to the user as a fault.
          */
+        /*
+         * Who it is. All three are optional; blank means the default.
+         *
+         * The default is called Mr. Radar and has a character - sharp,
+         * efficiently professional, with a narrow and situational streak of
+         * wit. Rewrite `personality` to change it entirely, or blank it to
+         * put the default back. Whatever you write cannot override the rules
+         * that keep the answers honest: those are added afterwards and say so.
+         */
+        'name' => '',
+        'emoji' => '',
+        'personality' => '',
+
+        /*
+         * Pictures, which are entirely optional and off until keyed.
+         *
+         *   enabled        the picture tools are not offered at all when off
+         *   api_key        DeepAI
+         *   styles         which generators it may choose from. Two or three;
+         *                  a model offered twelve will use twelve
+         *   quality        standard or hd (hd costs more per image)
+         *   shape          square, classic, wide or tall
+         *   per_hour       across everything here, including reactions. This
+         *                  is what stops a loop running up a bill
+         *   self_portrait  let it regenerate its own avatar. A novelty
+         *   reactions      short animated images for the occasional aside
+         *   giphy_key      needed for those
+         *   rating         g, pg or pg-13. These appear unannounced in a
+         *                  browser, chosen by a language model from a search
+         *                  term it invented; g is the sensible default
+         */
+        'images' => [],
+
         'tools' => [],
 
         // Defaults to ai.db beside the other two databases.

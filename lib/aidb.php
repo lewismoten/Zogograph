@@ -226,6 +226,34 @@ function aiMigrations(): array
             'CREATE INDEX ai_tool_runs_session ON ai_tool_runs (session_id, id)',
             'CREATE INDEX ai_tool_runs_state ON ai_tool_runs (state, session_id)',
         ],
+
+        2 => [
+            /*
+             * Pictures made, and what they cost in budget.
+             *
+             * The hourly limit is counted from this table rather than held in
+             * memory, so restarting PHP does not reset it - which on a shared
+             * host happens constantly.
+             *
+             * The URL rather than the bytes: the image lives on the provider's
+             * CDN and the browser fetches it directly, so this never holds a
+             * megabyte of JPEG to pass along. The consequence is that these
+             * expire when the provider expires them, which is fine for a
+             * throwaway aside and is why the prompt is kept alongside.
+             */
+            "CREATE TABLE ai_images (
+                id         INTEGER PRIMARY KEY,
+                session_id INTEGER,
+                at         INTEGER NOT NULL,
+                kind       TEXT NOT NULL,
+                prompt     TEXT NOT NULL,
+                style      TEXT,
+                url        TEXT,
+                error      TEXT
+            )",
+            'CREATE INDEX ai_images_at ON ai_images (at)',
+            'CREATE INDEX ai_images_kind ON ai_images (kind, id)',
+        ],
     ];
 }
 

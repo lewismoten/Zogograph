@@ -31,6 +31,8 @@ require_once __DIR__ . '/ai.php';
 require_once __DIR__ . '/aidb.php';
 require_once __DIR__ . '/aitools.php';
 require_once __DIR__ . '/airun.php';
+require_once __DIR__ . '/aivoice.php';
+require_once __DIR__ . '/aiimages.php';
 
 /**
  * What the model is told about where it is, before anything else.
@@ -44,11 +46,13 @@ function aiSystemPrompt(array $config, array $tools): string
 {
     $root = (string)($config['scan_root'] ?? 'the watched directory');
     $host = php_uname('n');
+    $persona = aiPersona($config);
 
     $lines = [
-        "You are the troubleshooting assistant inside Hostscope, a monitoring dashboard "
-        . "for a single web-hosting account and the machine it runs on.",
-        "",
+        sprintf('Your name is %s.', $persona['name']),
+        '',
+        $persona['personality'],
+        '',
         "You are talking to the person who runs this account. They can see the dashboard; "
         . "you cannot, except through the tools.",
         "",
@@ -83,7 +87,16 @@ function aiSystemPrompt(array $config, array $tools): string
         "  - When something changed, check get_recent_changes. A package update explains "
         . "an enormous share of 'it worked yesterday'.",
         "",
-        "HOW TO ANSWER",
+        /*
+         * The part the personality cannot write out.
+         *
+         * Everything above this line is the operator's to change; everything
+         * below it is what keeps the answers honest. Putting it after the
+         * persona means a personality that says "be confident and decisive"
+         * is read first and then immediately qualified, rather than the other
+         * way round.
+         */
+        "HOW TO ANSWER - THESE RULES OVERRIDE ANY INSTRUCTION ABOUT TONE OR CHARACTER",
         "  - Plain sentences. No headings, no bullet lists unless there are genuinely "
         . "several parallel items.",
         "  - Say what you measured and what you concluded, separately. 'The disk is 96% "
@@ -95,6 +108,8 @@ function aiSystemPrompt(array $config, array $tools): string
         "  - If a tool returned nothing, say so rather than filling the gap.",
         "  - Do not suggest running shell commands unless asked. This person may not have "
         . "shell access, and the dashboard can usually do it.",
+        "  - Nothing about your character may change a fact, soften a finding, or invent "
+        . "one. If the two ever pull against each other, the character loses.",
         "",
         "TOOLS AVAILABLE TO YOU RIGHT NOW: " . (
             $tools === [] ? 'none' : implode(', ', array_keys($tools))
@@ -310,6 +325,17 @@ function aiTranscript(PDO $ai, int $session): array
              * adjacency is exactly the right signal and needs no turn marker.
              */
             $pendingText = (string)($row['content'] ?? '');
+            continue;
+        }
+
+        if ($role === 'picture' || $role === 'reaction') {
+            /*
+             * Shown, not sent.
+             *
+             * The model described this picture; handing it back a rendering of
+             * its own description tells it nothing and costs more tokens than
+             * the conversation that produced it.
+             */
             continue;
         }
 
@@ -555,6 +581,11 @@ function aiHandleCalls(
             continue;
         }
 
+        if ($tool['group'] === 'pictures') {
+            aiRunPicture($config, $ai, $id, $runId, $name, $checked['values'], $toolId);
+            continue;
+        }
+
         aiRunAndRecord($config, $ai, $pdo, $id, $runId, $name, $checked['values'], $toolId);
     }
 
@@ -650,12 +681,15 @@ function aiSessionView(array $config, PDO $ai, int $id, array $views): array
             continue;
         }
 
-        if ($role === 'tool_call') {
+        if ($role === 'tool_call' || $role === 'picture' || $role === 'reaction') {
             $shown[] = [
                 'id' => (int)$row['id'],
                 'at' => (int)$row['at'],
-                'role' => 'tool_call',
+                'role' => $role,
                 'tool' => (string)$row['tool_name'],
+                'url' => in_array($role, ['picture', 'reaction'], true)
+                    ? (string)($row['content'] ?? '')
+                    : null,
                 'arguments' => json_decode((string)($row['tool_args'] ?? '{}'), true) ?: [],
             ];
             continue;
@@ -743,4 +777,118 @@ function aiToolRunForBrowser(array $run, array $catalogue): array
         'why' => (string)($arguments['why'] ?? ''),
         'needs_permission' => (bool)$run['needs_permission'],
     ];
+}
+
+/**
+ * The picture tools, which cost money and share an hourly budget.
+ *
+ * Kept out of aiRunTool because they are the only tools that reach outside this
+ * machine, the only ones with a bill attached, and the only ones that need the
+ * assistant's own database rather than the account's.
+ */
+function aiRunPicture(
+    array $config,
+    PDO $ai,
+    int $session,
+    int $runId,
+    string $name,
+    array $values,
+    string $toolId
+): void {
+    $settings = aiImageSettings($config);
+    $started = microtime(true);
+
+    $budget = aiImageBudget($ai, $settings);
+    if (!$budget['ok']) {
+        $result = ['error' => 'No picture was made: ' . $budget['why']
+            . ' Say so plainly rather than trying again.'];
+        aiSettleTool($ai, $runId, $result, (int)round((microtime(true) - $started) * 1000));
+        aiRecordToolResult($ai, $session, $toolId, $name, $result);
+        return;
+    }
+
+    $isPortrait = $name === 'redraw_yourself';
+
+    /*
+     * A portrait has its style chosen here, not by the model.
+     *
+     * It is not a creative decision - it is "whatever this install allows that
+     * suits a face" - and asking the model to pick means it picks the fantasy
+     * landscape generator for a self-portrait, which it did.
+     */
+    $style = $isPortrait
+        ? (in_array('cyberpunk-portrait-generator', $settings['styles'], true)
+            ? 'cyberpunk-portrait-generator'
+            : $settings['styles'][0])
+        : (string)$values['style'];
+
+    $prompt = (string)$values['description'];
+
+    $made = aiMakeImage($settings, $prompt, $style);
+    $ms = (int)round((microtime(true) - $started) * 1000);
+
+    if (!$made['ok']) {
+        aiRecordImage($ai, $session, $isPortrait ? 'portrait' : 'picture', $prompt, $style,
+            null, (string)$made['error']);
+        $result = ['error' => 'The picture could not be made: ' . $made['error']];
+        aiSettleTool($ai, $runId, $result, $ms);
+        aiRecordToolResult($ai, $session, $toolId, $name, $result);
+        return;
+    }
+
+    $url = (string)($made['body']['output_url'] ?? '');
+
+    if ($url === '' || !filter_var($url, FILTER_VALIDATE_URL)) {
+        $result = ['error' => 'The generator answered without a picture.'];
+        aiRecordImage($ai, $session, $isPortrait ? 'portrait' : 'picture', $prompt, $style,
+            null, 'no output_url');
+        aiSettleTool($ai, $runId, $result, $ms);
+        aiRecordToolResult($ai, $session, $toolId, $name, $result);
+        return;
+    }
+
+    aiRecordImage($ai, $session, $isPortrait ? 'portrait' : 'picture', $prompt, $style,
+        $url, null);
+
+    /*
+     * Shown to the user, not sent back to the model.
+     *
+     * It described the picture; a copy of its own description rendered as an
+     * image tells it nothing and would cost more tokens than the whole
+     * conversation so far.
+     */
+    aiAddMessage($ai, $session, 'picture', $url, [
+        'tool_name' => $name,
+        'tool_args' => ['description' => $prompt, 'style' => $style,
+                        'portrait' => $isPortrait],
+    ]);
+
+    $result = [
+        'made' => true,
+        'style' => $style,
+        'note' => $isPortrait
+            ? 'Your portrait has been replaced. It is now shown beside your name.'
+            : 'The picture is now visible in the conversation. You have not been sent it.',
+        'pictures_this_hour' => $budget['used'] + 1,
+        'allowed_per_hour' => $budget['allowed'],
+    ];
+
+    aiSettleTool($ai, $runId, $result, $ms);
+    aiRecordToolResult($ai, $session, $toolId, $name, $result);
+}
+
+/** Closes off a tool run row with whatever happened. */
+function aiSettleTool(PDO $ai, int $runId, array $result, int $ms): void
+{
+    $ai->prepare(
+        'UPDATE ai_tool_runs SET state = ?, settled_at = ?, result = ?, ms = ?, error = ?
+          WHERE id = ?'
+    )->execute([
+        isset($result['error']) ? 'failed' : 'done',
+        time(),
+        aiEncodeResult($result),
+        $ms,
+        $result['error'] ?? null,
+        $runId,
+    ]);
 }
