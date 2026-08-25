@@ -748,6 +748,22 @@ function drawLegend(canvas, series) {
     span.style.setProperty("--dot", seriesColor(i));
     return span;
   }));
+
+  /*
+   * The marker key, only when there are markers.
+   *
+   * An amber square on a chart is unexplained until somebody hovers something,
+   * and canvas has nothing to hover. Naming it in the legend costs one word and
+   * removes the question - but only on the charts that have one, or every chart
+   * carries a key to marks it does not show.
+   */
+  if (typeof noteState !== "undefined" && canvas.id && marksForChart(canvas.id).length) {
+    const span = document.createElement("span");
+    span.className = "legend-note";
+    span.textContent = "Your notes";
+    span.title = marksForChart(canvas.id).map(mark => mark.label).join("\n\n");
+    el.appendChild(span);
+  }
 }
 
 /**
@@ -1172,6 +1188,22 @@ function drawLineChart(canvas, rows, series, options = {}) {
    */
   const restartsAt = options.marks ?? state.restarts ?? [];
 
+  /*
+   * Three kinds of mark, kept apart because they mean three different things.
+   *
+   *   restarts  the machine went away and came back
+   *   found     the tool noticed something change - a watched value moved
+   *   written   a person wrote down what they knew at the time
+   *
+   * The last two were briefly the same layer, which meant a chart passing its
+   * own found-marks silently lost every human note on it. They are separate
+   * arrays and drawn differently, so a chart can have both and a reader can
+   * tell which is which.
+   */
+  const written = typeof noteState !== "undefined" && canvas.id
+    ? marksForChart(canvas.id)
+    : [];
+
   for (const at of restartsAt) {
     if (at < t0 || at > t1) continue;
     const mx = x(at);
@@ -1195,7 +1227,7 @@ function drawLineChart(canvas, rows, series, options = {}) {
   }
 
   /*
-   * A second kind of marker, in a second colour, for something noticed.
+   * Something the tool noticed: a watched value moving, most often.
    *
    * Deliberately not the restart colour. A restart is the machine going away
    * and coming back; a noticed change is somebody else's software becoming a
@@ -1225,6 +1257,33 @@ function drawLineChart(canvas, rows, series, options = {}) {
     ctx.lineTo(mx + 4, pad.top + 6);
     ctx.closePath();
     ctx.fill();
+    ctx.restore();
+  }
+
+  /*
+   * Something a person wrote down, in a third colour with a square cap.
+   *
+   * Drawn last so it sits on top: on a chart where somebody has explained the
+   * bend, their explanation is the most important thing on it.
+   */
+  for (const mark of written) {
+    const at = Number(mark.at);
+    if (at < t0 || at > t1) continue;
+    const mx = x(at);
+
+    ctx.save();
+    ctx.strokeStyle = "rgba(240, 190, 110, 0.75)";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([1, 3]);
+    ctx.beginPath();
+    ctx.moveTo(mx, pad.top);
+    ctx.lineTo(mx, pad.top + h);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    ctx.fillStyle = "rgba(240, 190, 110, 0.95)";
+    ctx.fillRect(mx - 3, pad.top, 6, 6);
     ctx.restore();
   }
 
@@ -2060,6 +2119,7 @@ async function refreshShared() {
   state.overview = overview;
   state.lastReadingAt = overview.vitals ? Number(overview.vitals.taken_at) : null;
   renderLastSeen();
+  renderBroadcasts(overview.broadcasts || []);
 
   /*
    * The host collector's clock, and whether anything it owes has arrived.
@@ -3689,6 +3749,604 @@ function collectorDial(collector) {
   return svg;
 }
 
+/* ---------------------------------------------------------------- notes -- */
+
+/*
+ * Notes are the only thing on this page that answers "why".
+ *
+ * Every chart answers "what happened". The why is that somebody upgraded PHP on
+ * the Tuesday, and it is not in any of the data - so it has to be written down,
+ * attached to the moment, and drawn back on the charts it belongs to.
+ */
+const noteState = { data: null, marks: [], forView: null };
+
+/**
+ * The notes that belong on the charts of the view being shown.
+ *
+ * Fetched alongside the view rather than with it, because every page draws
+ * charts and threading a marks array through forty render functions would mean
+ * thirty-nine of them eventually being forgotten. drawLineChart reads this the
+ * same way it reads state.restarts.
+ */
+async function loadNoteMarks(view) {
+  if (!state.signedIn) {
+    noteState.marks = [];
+    return;
+  }
+
+  try {
+    /*
+     * The window the charts are showing, not a fixed day.
+     *
+     * state.range is the span and state.frozenAt is where "now" is when the
+     * page is pinned to a moment, which is exactly what the charts use.
+     */
+    const to = state.frozenAt || Math.floor(Date.now() / 1000);
+    const data = await api("note-marks", {
+      view,
+      from: to - state.range,
+      to,
+    });
+    noteState.marks = data.marks || [];
+    noteState.forView = view;
+  } catch {
+    // A page that draws without its notes is a page missing annotations; a
+    // page that fails to draw because the notes could not be fetched is worse.
+    noteState.marks = [];
+  }
+}
+
+/** The marks for one chart: the page-wide ones plus any pinned to it. */
+function marksForChart(chartId) {
+  return noteState.marks
+    .filter(mark => mark.scope !== "chart" || mark.chart === chartId)
+    .map(mark => ({ at: mark.at, label: mark.body }));
+}
+
+/**
+ * The dialog for writing one.
+ *
+ * Opened from the button that follows you around, so the page and the moment
+ * are already known - which is the whole point. Somebody who has to go
+ * somewhere else and re-describe what they were looking at does not write the
+ * note.
+ */
+async function showNoteDialog(preset = {}) {
+  /*
+   * The scopes and capture kinds come from the server, and until now they only
+   * arrived when somebody opened the Notes page.
+   *
+   * Which meant the dialog opened from anywhere else offering one scope and no
+   * captures at all - and then refusing the capture it had just let somebody
+   * choose. Fetched once, here, rather than left to whichever page happened to
+   * have been visited first.
+   */
+  if (!noteState.data) {
+    try {
+      noteState.data = await api("notes");
+    } catch (error) {
+      notice(String(error.message || error));
+      return;
+    }
+  }
+
+  const parts = [];
+  const view = preset.view ?? state.view;
+
+  const body = document.createElement("textarea");
+  body.rows = 5;
+  body.className = "wide";
+  body.placeholder = "Upgraded PHP to 8.4 on the host. The memory step at 14:20 is that.";
+  parts.push(fieldRow("What happened", body, ""));
+
+  /*
+   * When it is about, which is not always now.
+   *
+   * Somebody writing up an incident the next morning wants the mark where the
+   * incident was. Defaulting to now and letting it be moved is the right way
+   * round: the common case needs no thought.
+   */
+  const when = document.createElement("input");
+  when.type = "datetime-local";
+  when.value = localDateTimeValue(preset.at ?? Math.floor(Date.now() / 1000));
+  parts.push(fieldRow("When", when,
+    "Defaults to now. Move it back if you are writing up something that already happened "
+    + "— the mark belongs where the event was, not where the typing was."));
+
+  const scope = document.createElement("select");
+  const scopeNote = document.createElement("div");
+  scopeNote.className = "muted small";
+
+  const scopes = noteState.data.scopes;
+
+  for (const [key, meta] of Object.entries(scopes)) {
+    // Pinning to one chart needs a chart to pin to, and that is only knowable
+    // from a page that has some.
+    if (key === "chart" && !chartsOnPage().length) continue;
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = meta.label;
+    option.selected = (preset.scope ?? "page") === key;
+    scope.appendChild(option);
+  }
+  parts.push(fieldRow("Where it shows", scope, ""));
+  parts.push(scopeNote);
+
+  const chart = document.createElement("select");
+  for (const [id, label] of chartsOnPage()) {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = label;
+    chart.appendChild(option);
+  }
+  const chartRow = fieldRow("Which chart", chart, "");
+  parts.push(chartRow);
+
+  const snapshot = document.createElement("select");
+  const snapshotNote = document.createElement("div");
+  snapshotNote.className = "muted small";
+
+  const kinds = noteState.data.kinds;
+  for (const [key, meta] of Object.entries(kinds)) {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = meta.label;
+    snapshot.appendChild(option);
+  }
+  parts.push(fieldRow("Also capture", snapshot, ""));
+  parts.push(snapshotNote);
+
+  const broadcast = document.createElement("input");
+  broadcast.type = "checkbox";
+  parts.push(fieldRow("Tell everyone", broadcast,
+    "Shows this at the top of every page for anyone who opens the dashboard, until "
+    + "somebody clears it. This is the difference between one person knowing about the "
+    + "disk and three people finding out separately at two in the morning."));
+
+  const link = document.createElement("input");
+  link.type = "text";
+  link.className = "wide";
+  link.placeholder = "https://your-tracker/issue/412";
+  parts.push(fieldRow("Link", link, "Optional. A ticket, a changelog, a pull request."));
+
+  const where = document.createElement("p");
+  where.className = "muted small";
+  where.textContent = `This page is ${VIEWS[view]?.label ?? view}.`;
+  parts.push(where);
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.textContent = "Save it";
+  actions.appendChild(save);
+  parts.push(actions);
+
+  const sync = () => {
+    scopeNote.textContent = scopes[scope.value]?.note ?? "";
+    snapshotNote.textContent = kinds[snapshot.value]?.note ?? "";
+    chartRow.hidden = scope.value !== "chart";
+    where.hidden = scope.value === "plain" || scope.value === "site";
+  };
+  scope.addEventListener("change", sync);
+  snapshot.addEventListener("change", sync);
+  sync();
+
+  $("noteFormBody").replaceChildren(...parts);
+  $("noteDialogTitle").textContent = "Write a note";
+
+  const form = $("noteForm");
+  form.onsubmit = async event => {
+    event.preventDefault();
+    save.disabled = true;
+    save.textContent = snapshot.value === "none" ? "Saving…" : "Saving and capturing…";
+
+    try {
+      const fields = {
+        body: body.value,
+        scope: scope.value,
+        view,
+        chart: scope.value === "chart" ? chart.value : "",
+        link: link.value.trim(),
+        at: String(Math.floor(new Date(when.value).getTime() / 1000)),
+        broadcast: broadcast.checked ? "1" : "0",
+        snapshot: snapshot.value,
+      };
+
+      /*
+       * The page's own data goes up with the note.
+       *
+       * Which sounds backwards - the server could fetch it again - but during
+       * the incident this is for, a second later is a different answer. What
+       * is wanted is what was on the screen.
+       */
+      if (snapshot.value === "page") fields.payload = pageSnapshot();
+
+      const result = await post("note-save", fields);
+      $("noteDialog").close();
+
+      let said = "Note saved.";
+      if (result.captured?.length) said += ` Captured ${result.captured.join(", ")}.`;
+      if (result.problems?.length) said += ` Not captured: ${result.problems.join("; ")}.`;
+      notice(said, !result.problems?.length);
+
+      renderNotes(result);
+      await loadNoteMarks(state.view);
+      redrawCharts();
+    } catch (error) {
+      notice(String(error.message || error));
+    } finally {
+      save.disabled = false;
+      save.textContent = "Save it";
+    }
+  };
+
+  $("noteDialog").showModal();
+  body.focus();
+}
+
+/**
+ * A datetime-local value for a moment, in the browser's own timezone.
+ *
+ * toISOString would be UTC, and an input that showed 14:20 as 18:20 would have
+ * people writing notes an hour out and never noticing which way.
+ */
+function localDateTimeValue(seconds) {
+  const at = new Date(seconds * 1000);
+  const pad = n => String(n).padStart(2, "0");
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`
+    + `T${pad(at.getHours())}:${pad(at.getMinutes())}`;
+}
+
+/** Every chart on the page being shown, by id and by the heading above it. */
+function chartsOnPage() {
+  const view = document.querySelector(".view:not([hidden])");
+  if (!view) return [];
+
+  const found = [...view.querySelectorAll("canvas[id]")]
+    .filter(canvas => canvas.offsetParent !== null)
+    .map(canvas => {
+      const panel = canvas.closest(".panel");
+      const heading = panel?.querySelector("h2, h3")?.textContent?.trim();
+      /*
+       * The legend names what a chart plots, which is what tells two charts in
+       * the same panel apart.
+       *
+       * Taking the panel heading alone gave both of them the same name, and a
+       * list offering "Broken" twice is a list nobody can choose from.
+       */
+      const beside = canvas.nextElementSibling;
+      const legend = beside?.classList.contains("legend")
+        ? [...beside.querySelectorAll("span")]
+            .map(node => node.textContent.trim())
+            .filter(Boolean)
+            .join(", ")
+        : "";
+      return [canvas.id, heading || canvas.id, legend];
+    });
+
+  const seen = new Map();
+  for (const [, heading] of found) seen.set(heading, (seen.get(heading) ?? 0) + 1);
+
+  return found.map(([id, heading, legend]) => [
+    id,
+    // Only disambiguated when it needs to be: "Response time (Broken)" on a
+    // page with one chart would be noise.
+    seen.get(heading) > 1 && legend ? `${heading} \u2014 ${legend}` : heading,
+  ]);
+}
+
+/**
+ * What this page currently holds, as one JSON document.
+ *
+ * Taken from the caches the page drew itself from rather than re-fetched, so
+ * it is exactly what was on screen.
+ */
+function pageSnapshot() {
+  const document_ = {
+    at: Math.floor(Date.now() / 1000),
+    view: state.view,
+    range: { seconds: state.range, at: state.frozenAt || Math.floor(Date.now() / 1000) },
+    data: {},
+  };
+
+  /*
+   * Every page keeps its data in its own state object, and there is no
+   * register of them. Rather than build one that would go stale, the ones
+   * that exist are collected by name - and anything not listed simply is not
+   * captured, which the "every page" snapshot covers properly.
+   */
+  for (const [name, holder] of Object.entries({
+    url: typeof urlState !== "undefined" ? urlState : null,
+    network: typeof networkState !== "undefined" ? networkState : null,
+    store: typeof storeState !== "undefined" ? storeState : null,
+    link: typeof linkState !== "undefined" ? linkState : null,
+    fetch: typeof fetchState !== "undefined" ? fetchState : null,
+    dns: typeof dnsState !== "undefined" ? dnsState : null,
+  })) {
+    if (holder && holder.data) document_.data[name] = holder.data;
+  }
+
+  document_.data.shared = {
+    vitals: state.vitals ?? null,
+    overview: state.overview ?? null,
+    restarts: state.restarts ?? null,
+  };
+
+  try {
+    return JSON.stringify(document_);
+  } catch {
+    // Circular references in a state object would otherwise lose the note.
+    return JSON.stringify({ at: document_.at, view: state.view, error: "could not be encoded" });
+  }
+}
+
+async function refreshNotes() {
+  const body = $("notesBody");
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see the notes."));
+    $("snapshotBody").replaceChildren();
+    return;
+  }
+
+  try {
+    renderNotes(await api("notes"));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderNotes(data) {
+  noteState.data = data;
+
+  const body = $("notesBody");
+
+  if (!data.rows.length) {
+    body.replaceChildren(note(
+      "Nothing written down yet. The button in the bottom corner writes one about whatever "
+      + "page you are on."
+    ));
+  } else {
+    const holder = document.createElement("div");
+    holder.id = "notesTable";
+    body.replaceChildren(holder);
+
+    renderTable("notesTable", data.rows, [
+      { label: "About", render: row => humanTime(row.at) },
+      {
+        label: "",
+        render: row => {
+          const span = document.createElement("span");
+          span.textContent = row.broadcast
+            ? (row.cleared_at ? "📣" : "📣")
+            : ({ site: "🌐", page: "📄", chart: "📈", plain: "📝" }[row.scope] || "");
+          span.title = row.broadcast
+            ? (row.cleared_at
+              ? `Was shown to everyone; cleared by ${row.cleared_by || "somebody"}.`
+              : "Shown to everyone until it is cleared.")
+            : (data.scopes[row.scope]?.label ?? row.scope);
+          return span;
+        },
+      },
+      { label: "Note", className: "cmd", render: row => noteBody(row) },
+      {
+        label: "Page",
+        render: row => (row.view ? (VIEWS[row.view]?.label ?? row.view) : "—"),
+      },
+      { label: "Written", render: row => `${ago(row.written_at)}${row.who ? ` by ${row.who}` : ""}` },
+      {
+        label: "Holding",
+        className: "size",
+        render: row => (row.snapshots
+          ? `${count(row.snapshots, "capture")} · ${humanBytes(row.snapshot_bytes)}`
+          : "—"),
+      },
+      { label: "", className: "row-actions", render: row => noteActions(row) },
+    ], null, row => (row.broadcast && !row.cleared_at ? "row-bad" : ""), row => String(row.id));
+  }
+
+  renderSnapshotFiles(data);
+}
+
+function noteBody(row) {
+  const wrap = document.createDocumentFragment();
+
+  const text = document.createElement("div");
+  text.textContent = row.body;
+  wrap.appendChild(text);
+
+  if (row.link) {
+    const link = externalLink(row.link);
+    link.className = "small";
+    wrap.appendChild(link);
+  }
+
+  return wrap;
+}
+
+function noteActions(row) {
+  const wrap = document.createDocumentFragment();
+
+  if (row.view && VIEWS[row.view]) {
+    const go = document.createElement("button");
+    go.className = "link";
+    go.textContent = "Go there";
+    go.title = `Open ${VIEWS[row.view].label}`;
+    go.addEventListener("click", () => { location.hash = `#/${row.view}?range=${state.range}`; });
+    wrap.appendChild(go);
+  }
+
+  if (row.snapshots) {
+    const get = document.createElement("button");
+    get.className = "link";
+    get.textContent = "What it captured";
+    get.addEventListener("click", () => showNoteSnapshots(row));
+    wrap.appendChild(get);
+  }
+
+  if (row.broadcast && !row.cleared_at) {
+    const clear = document.createElement("button");
+    clear.className = "link";
+    clear.textContent = "Clear it";
+    clear.title = "Stop showing this to everyone";
+    clear.addEventListener("click", async () => {
+      try {
+        await post("note-clear", { id: row.id });
+        notice("Cleared. It will stop appearing at the top of every page.", true);
+        await refreshNotes();
+        await refreshShared();
+      } catch (error) {
+        notice(String(error.message || error));
+      }
+    });
+    wrap.appendChild(clear);
+  }
+
+  const remove = document.createElement("button");
+  remove.className = "link danger";
+  remove.textContent = "Delete";
+  remove.addEventListener("click", async () => {
+    if (!confirm(
+      "Delete this note?"
+      + (row.snapshots ? "\n\nWhatever it captured goes with it." : "")
+    )) return;
+    try {
+      await post("note-delete", { id: row.id });
+      await refreshNotes();
+      await loadNoteMarks(state.view);
+      redrawCharts();
+    } catch (error) {
+      notice(String(error.message || error));
+    }
+  });
+  wrap.appendChild(remove);
+
+  return wrap;
+}
+
+/** What one note captured, and a way to take it away. */
+async function showNoteSnapshots(row) {
+  showListDialog("What it captured", [spinner("Looking\u2026")], "");
+
+  let data;
+  try {
+    data = await api("note-snapshots", { id: row.id });
+  } catch (error) {
+    showListDialog("What it captured", [note(String(error.message || error))], "");
+    return;
+  }
+
+  const nodes = [note(row.body)];
+
+  if (!data.rows.length) {
+    nodes.push(note("Nothing was captured with this one."));
+    showListDialog("What it captured", nodes, "");
+    return;
+  }
+
+  for (const snapshot of data.rows) {
+    const item = document.createElement("div");
+    item.className = "day-entry";
+
+    const title = document.createElement("strong");
+    title.textContent = {
+      page: "The data behind one page",
+      site: "The data behind every page",
+      databases: "A copy of both databases",
+    }[snapshot.kind] || snapshot.kind;
+    item.appendChild(title);
+
+    const said = document.createElement("div");
+    said.className = "muted small";
+    said.textContent = `${snapshot.label} \u00b7 ${humanBytes(snapshot.bytes)} \u00b7 `
+      + `${ago(snapshot.at)}`;
+    item.appendChild(said);
+
+    const actions = document.createElement("div");
+    actions.className = "inspect-actions";
+
+    if (snapshot.kind === "databases") {
+      /*
+       * A database copy is on disk, not in this row.
+       *
+       * The row is only a marker saying one was made - putting a copy of the
+       * database inside the database would double it, and then the next copy
+       * would double that.
+       */
+      const where = document.createElement("span");
+      where.className = "muted small";
+      where.textContent = "Written beside the databases. Listed under Database copies below.";
+      actions.appendChild(where);
+    } else {
+      const open = document.createElement("a");
+      open.className = "link";
+      open.href = `api.php?action=note-snapshot&id=${encodeURIComponent(snapshot.id)}`;
+      open.target = "_blank";
+      open.rel = "noopener";
+      open.textContent = "Open it";
+      open.title = "The captured data, exactly as it arrived";
+      actions.appendChild(open);
+    }
+
+    item.appendChild(actions);
+    nodes.push(item);
+  }
+
+  showListDialog(
+    "What it captured",
+    nodes,
+    "Captures are held outside every retention rule, which is the point of one \u2014 and "
+    + "also means nothing expires them."
+  );
+}
+
+/** The database copies on disk. */
+function renderSnapshotFiles(data) {
+  const body = $("snapshotBody");
+  const files = data.files || [];
+
+  if (!files.length) {
+    body.replaceChildren(note(
+      "No copies have been made. One is written when a note asks for it — a consistent copy "
+      + "of both databases, for looking at after the readings it is about have been rolled up."
+    ));
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.id = "snapshotTable";
+  body.replaceChildren(holder);
+
+  renderTable("snapshotTable", files, [
+    { label: "File", className: "name", render: row => row.name },
+    { label: "Made", render: row => `${humanTime(row.at)} (${humanSpan(Date.now() / 1000 - row.at)} ago)` },
+    { label: "Size", className: "size", render: row => humanBytes(row.bytes) },
+    {
+      label: "",
+      className: "row-actions",
+      render: row => {
+        const remove = document.createElement("button");
+        remove.className = "link danger";
+        remove.textContent = "Delete";
+        remove.addEventListener("click", async () => {
+          if (!confirm(
+            `Delete ${row.name}?\n\nIt is ${humanBytes(row.bytes)} and nothing else has a copy.`
+          )) return;
+          try {
+            renderNotes(await post("snapshot-delete", { name: row.name }));
+            notice("Removed.", true);
+          } catch (error) {
+            notice(String(error.message || error));
+          }
+        });
+        return remove;
+      },
+    },
+  ], null, null, row => row.name);
+}
+
 /* ------------------------------------------------------------ keeping it -- */
 
 const storeState = { data: null };
@@ -4146,6 +4804,17 @@ function renderSymlinks() {
   const table = document.createElement("div");
   table.id = "symlinkTable";
   parts.push(table);
+
+  /*
+   * The library cache, which only root can rebuild.
+   *
+   * Offered here because this is where somebody arrives having just repaired a
+   * link under /usr/lib and found that programs still cannot start. The cache
+   * is derived from what is on disk, so it is stale until something rebuilds
+   * it, and nothing this account can run will.
+   */
+  if (data.host_enabled) parts.push(ldconfigOffer());
+
   holder.replaceChildren(...parts);
 
   const fresh = new Set((data.new || []).map(problem => `${problem.path} ${problem.kind}`));
@@ -4194,6 +4863,86 @@ function renderSymlinks() {
  * never what it pointed at, which is the whole reason deleting one is safe in
  * a way that deleting a file is not.
  */
+/**
+ * A way to ask root's collector to rebuild the shared library cache.
+ *
+ * The one host request in this tool that changes something rather than asking
+ * a question, so it says so plainly and confirms. Safe and idempotent -
+ * ldconfig derives the cache from the directories in /etc/ld.so.conf, so
+ * running it twice is running it once - but it is still root writing to /etc,
+ * and pretending otherwise would be the wrong habit to build.
+ */
+function ldconfigOffer() {
+  const wrap = document.createElement("div");
+  wrap.className = "sub-note muted small";
+
+  const said = document.createElement("p");
+  said.textContent =
+    "Repaired a link under a library directory and programs still cannot start? "
+    + "The dynamic linker reads a cache, not the directories, so it stays stale until "
+    + "something rebuilds it — and only root can. This asks the host collector to run "
+    + "ldconfig on its next pass.";
+  wrap.appendChild(said);
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const ask = document.createElement("button");
+  ask.className = "link";
+  ask.textContent = "Ask the host to rebuild the library cache";
+  ask.addEventListener("click", async () => {
+    if (!confirm(
+      "Ask root's collector to run ldconfig?\n\n"
+      + "Unlike everything else here, this changes something: it rewrites "
+      + "/etc/ld.so.cache from what is on disk. It is safe to repeat and cannot make "
+      + "the cache worse than the directories it is built from.\n\n"
+      + "It runs on the collector's next pass, not now."
+    )) return;
+
+    ask.disabled = true;
+    try {
+      const result = await post("ldconfig");
+      notice("Queued. It runs on the host collector's next pass.", true);
+      wrap.appendChild(ldconfigPrevious(result.previous, true));
+      await refreshShared();
+    } catch (error) {
+      notice(String(error.message || error));
+    } finally {
+      ask.disabled = false;
+    }
+  });
+  actions.appendChild(ask);
+  wrap.appendChild(actions);
+
+  return wrap;
+}
+
+/** What the last rebuild said, if there has been one. */
+function ldconfigPrevious(previous, justAsked = false) {
+  if (!previous || !previous.at) {
+    return note(justAsked
+      ? "Nothing has run yet, so there is nothing to compare against."
+      : "");
+  }
+
+  const wrap = document.createDocumentFragment();
+  wrap.appendChild(note(
+    `The last rebuild was ${ago(previous.at)} and `
+    + (previous.ok ? "finished." : `failed: ${previous.error || "no reason given"}.`)
+  ));
+
+  if (previous.text) {
+    const pre = document.createElement("pre");
+    pre.className = "paste";
+    // The tail only: ldconfig -v names every directory it walks, and none of
+    // them are interesting unless one failed.
+    pre.textContent = previous.text;
+    wrap.appendChild(pre);
+  }
+
+  return wrap;
+}
+
 function linkActions(row) {
   const wrap = document.createDocumentFragment();
 
@@ -7556,6 +8305,72 @@ function writeDismissed(id) {
  * are standing. A monitor whose warnings are only visible on the page about
  * warnings has arranged for them to be missed.
  */
+/**
+ * Messages one person left for whoever else opens this.
+ *
+ * On every page, unlike the alert banner, and that difference is deliberate: an
+ * alert is something the machine noticed and the nav badge carries it
+ * everywhere, whereas a broadcast exists so that the next person to open this
+ * at two in the morning does not spend an hour rediscovering something already
+ * known about. It stays until somebody clears it.
+ */
+function renderBroadcasts(rows) {
+  const banner = $("broadcastBanner");
+  if (!banner) return;
+
+  if (!rows.length) {
+    banner.hidden = true;
+    banner.replaceChildren();
+    return;
+  }
+
+  banner.hidden = false;
+
+  const frag = document.createDocumentFragment();
+
+  const head = document.createElement("strong");
+  head.textContent = rows.length === 1
+    ? "A message from whoever was here last"
+    : `${count(rows.length, "message")} from whoever was here last`;
+  frag.appendChild(head);
+
+  for (const row of rows) {
+    const item = document.createElement("div");
+    item.className = "broadcast";
+
+    const text = document.createElement("div");
+    text.textContent = row.body;
+    item.appendChild(text);
+
+    const who = document.createElement("div");
+    who.className = "who";
+    who.textContent = `${row.who || "somebody"}, ${ago(row.at)}`;
+    item.appendChild(who);
+
+    if (row.link) item.appendChild(externalLink(row.link));
+
+    const clear = document.createElement("button");
+    clear.className = "link";
+    clear.textContent = "Clear it";
+    clear.title = "Stop showing this to everyone";
+    clear.addEventListener("click", async () => {
+      clear.disabled = true;
+      try {
+        await post("note-clear", { id: row.id });
+        await refreshShared();
+      } catch (error) {
+        notice(String(error.message || error));
+        clear.disabled = false;
+      }
+    });
+    item.appendChild(clear);
+
+    frag.appendChild(item);
+  }
+
+  banner.replaceChildren(frag);
+}
+
 function renderAlertBanner(unread) {
   const banner = $("alertBanner");
   if (!banner) return;
@@ -15543,6 +16358,11 @@ const VIEWS = {
     parent: "system",
     refresh: () => refreshProblems(),
   },
+  "sys-notes": {
+    label: "Notes",
+    parent: "system",
+    refresh: () => refreshNotes(),
+  },
   "storage-links": {
     label: "Symlinks",
     parent: "storage",
@@ -15836,6 +16656,14 @@ async function refreshCurrent(fromPoll = false) {
      * loads it; only the timer is declined.
      */
     if (!(fromPoll && view.manual)) {
+      /*
+       * The notes for this view arrive before it draws.
+       *
+       * Before, because a chart drawn without them has no marks and would need
+       * a second pass. Failing to fetch them is not allowed to stop the page
+       * drawing - see loadNoteMarks - so this is safe to await.
+       */
+      await loadNoteMarks(state.view);
       await view.refresh();
       state.rendered.add(state.view);
     }
@@ -16143,6 +16971,17 @@ $("patternForm").addEventListener("submit", event => {
 $("symlinkCheck").addEventListener("click", () => {
   checkSymlinks().catch(error => notice(String(error.message || error)));
 });
+
+$("noteButton").addEventListener("click", () => {
+  if (!state.signedIn) {
+    notice("Sign in to write a note.");
+    return;
+  }
+  showNoteDialog();
+});
+
+$("noteAdd").addEventListener("click", () => showNoteDialog());
+$("noteDialogClose").addEventListener("click", () => $("noteDialog").close());
 
 $("linkSweepForm").addEventListener("submit", event => {
   event.preventDefault();

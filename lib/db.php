@@ -595,6 +595,55 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        26 => [
+            /*
+             * What somebody was thinking at the time.
+             *
+             * Every chart here answers "what happened" and none of them answer
+             * "why" - the why is that somebody upgraded PHP on the Tuesday, and
+             * six months later the chart still shows the step with nobody left
+             * who remembers.
+             *
+             * `at` is when the note is *about*, which is not always when it was
+             * written: an incident written up the next morning belongs on the
+             * chart where the incident was, not where the writing was.
+             */
+            "CREATE TABLE notes (
+                id         INTEGER PRIMARY KEY,
+                at         INTEGER NOT NULL,
+                written_at INTEGER NOT NULL,
+                body       TEXT NOT NULL,
+                scope      TEXT NOT NULL CHECK (scope IN ('plain','page','chart','site')),
+                view       TEXT,
+                chart      TEXT,
+                link       TEXT,
+                broadcast  INTEGER NOT NULL DEFAULT 0,
+                who        TEXT,
+                cleared_at INTEGER,
+                cleared_by TEXT
+            )",
+            'CREATE INDEX notes_at ON notes (at)',
+            'CREATE INDEX notes_view ON notes (view, at)',
+
+            /*
+             * What a note captured, kept with it.
+             *
+             * A monitor that rolls up its own evidence is not much use during
+             * an incident, so a note can hold the data behind a page - or every
+             * page - exactly as it arrived, outside every retention rule.
+             */
+            "CREATE TABLE note_snapshots (
+                id      INTEGER PRIMARY KEY,
+                note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+                kind    TEXT NOT NULL,
+                label   TEXT NOT NULL,
+                bytes   INTEGER NOT NULL,
+                body    BLOB NOT NULL,
+                at      INTEGER NOT NULL
+            )",
+            'CREATE INDEX note_snapshots_note ON note_snapshots (note_id)',
+        ],
+
         25 => [
             /*
              * Watching a value that is not a number.

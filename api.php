@@ -69,6 +69,7 @@ require_once __DIR__ . '/lib/labels.php';
 require_once __DIR__ . '/lib/urlwatch.php';
 require_once __DIR__ . '/lib/spans.php';
 require_once __DIR__ . '/lib/storekeep.php';
+require_once __DIR__ . '/lib/notes.php';
 require_once __DIR__ . '/lib/headers.php';
 require_once __DIR__ . '/lib/pagebits.php';
 require_once __DIR__ . '/lib/domains.php';
@@ -150,6 +151,15 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'symlinks' => symlinkCheck($config, $pdo, $signedIn),
         'link-fix' => doLinkFix($config, $pdo, $post),
         'link-sweep' => doLinkSweep($config, $pdo, $post),
+        'ldconfig' => doLdconfig($config, $pdo, $post),
+        'notes' => notesView($config, $pdo, $signedIn),
+        'note-marks' => noteMarksView($pdo, $signedIn),
+        'note-snapshots' => noteSnapshotsView($pdo, $signedIn),
+        'note-save' => doNoteSave($config, $pdo, $post),
+        'note-clear' => doNoteClear($pdo, $post),
+        'note-delete' => doNoteDelete($pdo, $post),
+        'note-snapshot' => doNoteSnapshot($pdo, $signedIn),
+        'snapshot-delete' => doSnapshotDelete($config, $pdo, $post),
         'host' => hostView($config, $signedIn, $pdo),
         'host-series' => hostSeries($config, $signedIn),
         'host-io' => hostIoSeries($config, $signedIn),
@@ -247,6 +257,14 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
     return [
         'signed_in' => $signedIn,
         'csrf' => $signedIn ? csrfToken() : null,
+        /*
+         * Messages one person left for whoever else opens this.
+         *
+         * Carried on the shared call because they belong on every page - the
+         * whole point is that somebody arriving at two in the morning sees
+         * "I know about the disk" before they start investigating it again.
+         */
+        'broadcasts' => $signedIn ? noteBroadcasts($pdo) : [],
         'vitals' => $vitals,
         'scan' => $scan,
         'scan_running' => scanRunning($pdo),
@@ -2851,6 +2869,8 @@ function symlinkCheck(array $config, PDO $pdo, bool $signedIn): array
         'first_walk' => $change['first'],
         'root' => (string)$config['scan_root'],
         'bulk_max' => SYMLINK_BULK_MAX,
+        // Whether there is a root collector to ask for an ldconfig at all.
+        'host_enabled' => (bool)($config['host']['enabled'] ?? false),
     ];
 }
 
@@ -4853,4 +4873,404 @@ function doRegexTry(bool $post): array
     }
 
     return urlWatchTryRegex($pattern, $text);
+}
+
+/**
+ * Asks root's collector to rebuild the shared library cache.
+ *
+ * The fix when a library symlink has been repaired, or a package installed
+ * half-way, and programs start failing with "cannot open shared object file".
+ * Nothing this account can do itself - /etc/ld.so.cache is root's - so it goes
+ * on the queue like any other host request and comes back on the collector's
+ * own schedule.
+ *
+ * The one verb here that writes rather than asks, which is why it is a separate
+ * action with its own confirmation rather than another entry in a list of
+ * lookups.
+ */
+function doLdconfig(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    if (!($config['host']['enabled'] ?? false)) {
+        throw new ActionRefused(
+            'the host collector is not set up here, so there is nobody to ask'
+        );
+    }
+
+    // hostAnswer() directly: domainHostAnswer() is hard-wired to whois.
+    $answer = null;
+    try {
+        $host = hostDb($config, false);
+        if ($host !== null) {
+            $answer = hostAnswer($host, 'ldconfig', '');
+        }
+    } catch (Throwable) {
+        $answer = null;
+    }
+
+    /*
+     * A previous answer is not a reason to skip.
+     *
+     * Unlike a whois lookup, the point of this is the effect rather than the
+     * text - "we ran it an hour ago" is not an answer to "run it now". So it
+     * is always queued, and the previous run is shown for context.
+     */
+    $at = requestHostTask($pdo, hostAskTask('ldconfig', ''), currentAccountName());
+
+    logAction($pdo, 'ldconfig', null, 'ok', 0, 0, 'queued for the host collector');
+
+    return [
+        'ok' => true,
+        'asked_at' => $at,
+        'previous' => $answer === null ? null : [
+            'at' => $answer['answered_at'] ?? null,
+            'ok' => $answer['ok'] ?? false,
+            'error' => $answer['error'] ?? null,
+            // Only the tail: ldconfig -v names every directory it walks, which
+            // is hundreds of lines nobody reads and all of them uninteresting
+            // unless one of them failed.
+            'text' => $answer['text'] === null
+                ? null
+                : implode("\n", array_slice(explode("\n", (string)$answer['text']), -25)),
+        ],
+    ];
+}
+
+/* ---------------------------------------------------------------- notes -- */
+
+/** Every note, and every database copy on disk. */
+function notesView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the notes');
+    }
+
+    return noteList($pdo, $config) + [
+        'views' => array_keys(noteViewLabels()),
+        'me' => currentAccountName(),
+    ];
+}
+
+/**
+ * Which actions a whole-site snapshot will call.
+ *
+ * An allow-list rather than "everything in the switch". Half those actions
+ * take a request through to somebody else's server or leave work for root's
+ * collector, and a snapshot that quietly fired off forty outbound lookups
+ * would be a surprising thing for a button called "capture this".
+ *
+ * @return array<string, string>
+ */
+function snapshotActions(): array
+{
+    return [
+        'overview' => 'Overview',
+        'vitals' => 'Readings',
+        'scans' => 'Disk scans',
+        'offenders' => 'Largest and fastest growing',
+        'processes' => 'Processes',
+        'host' => 'The host',
+        'host-disk' => 'Filesystems',
+        'host-io' => 'Disk I/O',
+        'alerts' => 'Alerts',
+        'uptime' => 'Uptime',
+        'network' => 'Network',
+        'urls' => 'URL checks',
+        'domains' => 'Domains',
+        'dns-records' => 'DNS records',
+        'self' => 'The monitor itself',
+        'store' => 'What it is keeping',
+        'capabilities' => 'Capabilities',
+        'diagnose' => 'What is wrong',
+        'units' => 'Services',
+        'backups' => 'Backups',
+        'mounts' => 'Filesystem layout',
+        'calendar' => 'Calendar',
+        'schedule' => 'Schedule',
+        'actions' => 'The action log',
+    ];
+}
+
+/** Human names for the views a note can be pinned to. */
+function noteViewLabels(): array
+{
+    return snapshotActions();
+}
+
+/**
+ * Saves a note, and captures whatever it was asked to capture.
+ *
+ * The note is written first and the snapshot attached afterwards, so a capture
+ * that fails leaves the note rather than losing both. What failed is reported
+ * beside what was saved - a snapshot silently not happening is the worst
+ * outcome here, because nobody finds out until they need it.
+ */
+function doNoteSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $saved = noteSave($pdo, [
+        'body' => $_POST['body'] ?? '',
+        'scope' => $_POST['scope'] ?? 'page',
+        'view' => $_POST['view'] ?? '',
+        'chart' => $_POST['chart'] ?? '',
+        'link' => $_POST['link'] ?? '',
+        'at' => $_POST['at'] ?? time(),
+        'broadcast' => ($_POST['broadcast'] ?? '0') === '1',
+    ], currentAccountName());
+
+    $kind = (string)($_POST['snapshot'] ?? 'none');
+    $problems = [];
+    $captured = [];
+
+    if ($kind !== 'none' && !isset(snapshotKinds()[$kind])) {
+        $problems[] = 'that is not a kind of snapshot this makes';
+    } elseif ($kind === 'page') {
+        /*
+         * The page's own data, sent up by the browser.
+         *
+         * Which sounds backwards - the server could fetch it again - but it is
+         * not: what is wanted is what was on screen, and re-fetching a second
+         * later gives a different answer during exactly the incident this is
+         * for.
+         */
+        $payload = (string)($_POST['payload'] ?? '');
+        if (trim($payload) === '') {
+            $problems[] = 'the page sent nothing to capture';
+        } else {
+            try {
+                noteSnapshotSave($pdo, $saved['id'], 'page',
+                    (string)($_POST['view'] ?? 'page'), $payload);
+                $captured[] = 'the data behind this page';
+            } catch (ActionRefused $e) {
+                $problems[] = $e->getMessage();
+            }
+        }
+    } elseif ($kind === 'site') {
+        [$captured, $problems] = captureWholeSite($config, $pdo, $saved['id']);
+    } elseif ($kind === 'databases') {
+        [$captured, $problems] = captureDatabases($config, $pdo, $saved['id']);
+    }
+
+    logAction($pdo, 'note_save', null, 'ok', 0, 0,
+        ($_POST['scope'] ?? 'page') . ', snapshot: ' . $kind);
+
+    return [
+        'ok' => true,
+        'id' => $saved['id'],
+        'captured' => $captured,
+        // Reported rather than thrown: the note is saved either way, and losing
+        // the note because the snapshot failed would be the wrong trade.
+        'problems' => $problems,
+    ] + notesView($config, $pdo, true);
+}
+
+/**
+ * Calls every read-only view and keeps the answers as one document.
+ *
+ * A view that throws is recorded as having thrown rather than omitted. "This
+ * page could not be read at the time" is itself evidence, and a snapshot that
+ * silently skipped it would read as though the page had nothing to say.
+ *
+ * @return array{0: list<string>, 1: list<string>}
+ */
+function captureWholeSite(array $config, PDO $pdo, int $noteId): array
+{
+    $document = ['at' => time(), 'views' => []];
+    $problems = [];
+
+    foreach (snapshotActions() as $action => $label) {
+        try {
+            /*
+             * Through route(), so a snapshot holds exactly what a page holds.
+             *
+             * Calling each view function directly would mean this drifting from
+             * what the dashboard actually fetches the first time a signature
+             * changes, and a snapshot that differs from the page is worse than
+             * no snapshot.
+             */
+            $document['views'][$action] = route($config, $pdo, $action, false);
+        } catch (Throwable $e) {
+            $document['views'][$action] = ['error' => $e->getMessage()];
+            $problems[] = $label . ': ' . $e->getMessage();
+        }
+    }
+
+    $json = json_encode($document, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
+        | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+
+    try {
+        noteSnapshotSave($pdo, $noteId, 'site', 'every page', (string)$json);
+        return [['the data behind ' . count($document['views']) . ' pages'], $problems];
+    } catch (ActionRefused $e) {
+        $problems[] = $e->getMessage();
+        return [[], $problems];
+    }
+}
+
+/**
+ * Writes a consistent copy of both databases to disk.
+ *
+ * To disk rather than into the database, because a copy of a database inside
+ * that database doubles it and then the next copy doubles that. They are listed
+ * on the Notes page and deleted from there.
+ *
+ * @return array{0: list<string>, 1: list<string>}
+ */
+function captureDatabases(array $config, PDO $pdo, int $noteId): array
+{
+    $stamp = date('Ymd-His');
+    $directory = snapshotDirectory($config);
+    $captured = [];
+    $problems = [];
+
+    try {
+        $made = snapshotDatabase($pdo, $directory . '/account-' . $stamp . '.db');
+        $captured[] = 'the account database (' . humanBytes($made['bytes']) . ')';
+    } catch (Throwable $e) {
+        $problems[] = 'the account database: ' . $e->getMessage();
+    }
+
+    /*
+     * The host database is copied by reading it, not by VACUUM INTO.
+     *
+     * This account can usually open root's database read-only and cannot write
+     * to it at all - and VACUUM INTO is issued *on* the source connection, so
+     * it needs no write there. Where it is not readable, that is said rather
+     * than passed over.
+     */
+    if ($config['host']['enabled'] ?? false) {
+        $path = hostDatabasePath($config);
+        if (!is_file($path)) {
+            $problems[] = 'the host database: there is not one here';
+        } else {
+            try {
+                $host = new PDO('sqlite:' . $path, null, null, [
+                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                ]);
+                $made = snapshotDatabase($host, $directory . '/host-' . $stamp . '.db');
+                $captured[] = 'the host database (' . humanBytes($made['bytes']) . ')';
+            } catch (Throwable $e) {
+                $problems[] = 'the host database: ' . $e->getMessage();
+            }
+        }
+    }
+
+    if ($captured !== []) {
+        // A marker row, so the note shows it captured something even though the
+        // payload is on disk rather than in the table.
+        noteSnapshotSave($pdo, $noteId, 'databases', $stamp,
+            json_encode(['written' => $captured, 'where' => $directory]) ?: '{}');
+    }
+
+    return [$captured, $problems];
+}
+
+/** Marks a broadcast as read for everybody. */
+function doNoteClear(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    if (!noteClear($pdo, $id, currentAccountName())) {
+        throw new ActionRefused('that one is already cleared, or is not there');
+    }
+
+    logAction($pdo, 'note_clear', (string)$id, 'ok', 0, 0, null);
+    return ['ok' => true];
+}
+
+/** Deletes a note and everything it captured. */
+function doNoteDelete(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    if (!noteDelete($pdo, $id)) {
+        throw new ActionRefused('no such note');
+    }
+
+    logAction($pdo, 'note_delete', (string)$id, 'ok', 0, 0, null);
+    return ['ok' => true];
+}
+
+/**
+ * Hands back one captured payload.
+ *
+ * Sent as a download rather than into the page: these are megabytes of JSON,
+ * and the thing somebody wants to do with one is open it in something that
+ * reads JSON.
+ */
+function doNoteSnapshot(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to read a snapshot');
+    }
+
+    $id = clampInt($_GET['id'] ?? 0, 1, PHP_INT_MAX);
+    $stmt = $pdo->prepare('SELECT kind, label, body, at FROM note_snapshots WHERE id = ?');
+    $stmt->execute([$id]);
+    $row = $stmt->fetch();
+
+    if ($row === false) {
+        throw new ActionRefused('no such snapshot');
+    }
+
+    return [
+        'kind' => (string)$row['kind'],
+        'label' => (string)$row['label'],
+        'at' => (int)$row['at'],
+        'body' => (string)$row['body'],
+    ];
+}
+
+/** Removes one database copy from disk. */
+function doSnapshotDelete(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $name = (string)($_POST['name'] ?? '');
+    if (!snapshotDelete($config, $name)) {
+        throw new ActionRefused('no such copy');
+    }
+
+    logAction($pdo, 'snapshot_delete', $name, 'ok', 0, 0, null);
+    return ['ok' => true] + notesView($config, $pdo, true);
+}
+
+/**
+ * The notes to draw on one view's charts.
+ *
+ * Its own action rather than folded into every view, because every page draws
+ * charts and threading a marks array through forty view functions would mean
+ * thirty-nine of them eventually being forgotten.
+ */
+function noteMarksView(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        return ['marks' => []];
+    }
+
+    $view = trim((string)($_GET['view'] ?? ''));
+    $from = clampInt($_GET['from'] ?? 0, 0, PHP_INT_MAX);
+    $to = clampInt($_GET['to'] ?? time(), 0, PHP_INT_MAX);
+
+    if ($from >= $to) {
+        $to = time();
+        $from = $to - SPAN_DAY;
+    }
+
+    return ['marks' => noteMarks($pdo, $view, $from, $to)];
+}
+
+/** What one note captured, listed without the payloads. */
+function noteSnapshotsView(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see this');
+    }
+
+    $id = clampInt($_GET['id'] ?? 0, 1, PHP_INT_MAX);
+    return ['rows' => noteSnapshotList($pdo, $id)];
 }

@@ -42,7 +42,7 @@ $required = [
     'lib/urlwatch.php', 'lib/domains.php', 'lib/events.php', 'lib/whoami.php', 'lib/dnsrecords.php', 'lib/external.php',
     'lib/hostdb.php', 'host-cron.php', 'lib/config.sample.php',
     'lib/headers.php', 'lib/pagebits.php', 'preview.php',
-    'lib/spans.php', 'lib/storekeep.php',
+    'lib/spans.php', 'lib/storekeep.php', 'lib/notes.php',
 ];
 
 $files = [];

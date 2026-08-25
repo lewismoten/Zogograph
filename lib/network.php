@@ -1603,6 +1603,27 @@ function hostVerbs(): array
                 . escapeshellarg($argument) . ' NS',
             'about' => 'which nameservers are authoritative',
         ],
+        /*
+         * The one verb here that changes something.
+         *
+         * Everything else asks a question. ldconfig rebuilds the dynamic
+         * linker's cache from the directories in /etc/ld.so.conf, which is the
+         * fix when a library symlink has been repaired or a package half
+         * installed and programs are failing to start with "cannot open shared
+         * object file".
+         *
+         * Safe and idempotent - it derives the cache from what is on disk, so
+         * running it twice is running it once - but it is still root writing to
+         * /etc, so it is marked as a change and the page says so before asking.
+         */
+        'ldconfig' => [
+            'binary' => 'ldconfig',
+            'build' => fn(string $binary, string $argument): string =>
+                escapeshellarg($binary) . ' -v',
+            'about' => 'rebuilding the shared library cache',
+            'takes_argument' => false,
+            'changes_things' => true,
+        ],
     ];
 }
 
@@ -1623,6 +1644,23 @@ function parseAskTask(string $task): ?array
     if (count($parts) !== 3 || !isset(hostVerbs()[$parts[1]])) {
         return null;
     }
+
+    $verb = hostVerbs()[$parts[1]];
+
+    /*
+     * A verb that takes no argument must be given none.
+     *
+     * Not merely "the argument is ignored": the argument is the only part of
+     * this string that did not come from a fixed list, so a verb that has no
+     * use for one should refuse to carry one rather than have it sit unread in
+     * a task the collector will run as root.
+     */
+    if (($verb['takes_argument'] ?? true) === false) {
+        return $parts[2] === ''
+            ? ['verb' => $parts[1], 'argument' => '']
+            : null;
+    }
+
     if (!preg_match('/^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$/', $parts[2])) {
         return null;
     }
