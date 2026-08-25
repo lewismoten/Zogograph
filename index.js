@@ -4223,6 +4223,906 @@ function collectorDial(collector) {
   return svg;
 }
 
+/* --------------------------------------------------- setting the assistant -- */
+
+const aiSetState = { data: null };
+
+async function refreshAiSettings() {
+  const body = $("aiSettingsBody");
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see these settings."));
+    return;
+  }
+
+  try {
+    renderAiSettings(await api("ai-settings"));
+    await refreshAiSessions();
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderAiSettings(data) {
+  aiSetState.data = data;
+
+  const body = $("aiSettingsBody");
+  const parts = [];
+
+  if (!data.writable) {
+    parts.push(note(
+      "lib/config.php is not writable by the web server, so this page can show the "
+      + "settings but not change them."
+    ));
+  }
+
+  if (data.enabled && !data.ready) {
+    parts.push(note(`Not ready: ${data.why}`));
+  }
+
+  const form = document.createElement("div");
+  form.className = "settings";
+
+  form.appendChild(fieldRow("Use an assistant", (() => {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = "aiEnabled";
+    box.checked = data.enabled;
+    return box;
+  })(),
+    "Off means the chat is unavailable and nothing is ever sent anywhere. Turning it on "
+    + "does not send anything by itself — only asking it something does."));
+
+  const provider = document.createElement("select");
+  provider.id = "aiProvider";
+  const providerNote = document.createElement("div");
+  providerNote.className = "muted small";
+
+  for (const [key, meta] of Object.entries(data.providers)) {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = meta.label;
+    option.selected = data.provider === key;
+    provider.appendChild(option);
+  }
+  form.appendChild(fieldRow("Provider", provider, ""));
+  form.appendChild(providerNote);
+
+  const base = document.createElement("input");
+  base.type = "text";
+  base.id = "aiBase";
+  base.className = "wide-field";
+  base.value = data.base_url || "";
+  form.appendChild(fieldRow("Address", base,
+    "Leave blank for the provider's own. Point it elsewhere for a gateway, a proxy, or "
+    + "a model running on this machine."));
+
+  const model = document.createElement("input");
+  model.type = "text";
+  model.id = "aiModel";
+  model.className = "wide-field";
+  model.value = data.model || "";
+  model.setAttribute("list", "aiModelList");
+  const models = document.createElement("datalist");
+  models.id = "aiModelList";
+  form.appendChild(fieldRow("Model", model,
+    "The exact name the provider expects. Suggestions appear as you type, but anything "
+    + "the provider accepts will work — this is not a fixed list."));
+  form.appendChild(models);
+
+  const key = document.createElement("input");
+  key.type = "password";
+  key.id = "aiKey";
+  key.className = "wide-field";
+  key.autocomplete = "off";
+  key.placeholder = data.has_key ? "•".repeat(24) + " (unchanged)" : "";
+  form.appendChild(fieldRow("API key", key,
+    data.has_key
+      ? "A key is set. It is never sent back to this page, so leaving this blank keeps "
+        + "the existing one — type a new one to replace it."
+      : "Stored in lib/config.php, which is outside the web root. A local model needs "
+        + "none."));
+
+  if (data.has_key) {
+    const forget = document.createElement("button");
+    forget.type = "button";
+    forget.className = "link danger";
+    forget.textContent = "Forget the key";
+    forget.addEventListener("click", async () => {
+      if (!confirm("Remove the stored API key? The assistant will stop working until "
+        + "another is set.")) return;
+      await saveAiSettings({ forget_key: "1" });
+    });
+    form.appendChild(fieldRow("", forget, ""));
+  }
+
+  parts.push(section("Which model", form));
+
+  /* ---- money ---- */
+
+  const money = document.createElement("div");
+  money.className = "settings";
+
+  for (const [id, label, value, hint] of [
+    ["aiPriceIn", "Input, per million", data.price_in,
+      "In cents. From the provider's pricing page."],
+    ["aiPriceOut", "Output, per million", data.price_out,
+      "In cents. Usually several times the input price."],
+    ["aiPriceCached", "Cached input, per million", data.price_cached,
+      "In cents. Usually about a tenth of the input price. On a conversation that "
+      + "re-sends a long prompt every turn this is most of the bill, so leaving it at "
+      + "the input price overstates the cost considerably."],
+  ]) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.id = id;
+    input.min = "0";
+    input.step = "0.01";
+    input.className = "days";
+    input.value = String(value || 0);
+    money.appendChild(fieldRow(label, input, hint));
+  }
+
+  parts.push(section("Prices, if you want a cost", money));
+  parts.push(note(
+    "Leave these at zero and sessions report token counts and no money. That is the "
+    + "honest default — a wrong price is worse than no price, so nothing is guessed "
+    + "from the model name."
+  ));
+
+  /* ---- limits ---- */
+
+  const limits = document.createElement("div");
+  limits.className = "settings";
+
+  const seconds = document.createElement("select");
+  seconds.id = "aiMaxSeconds";
+  for (const [value, label] of [
+    [0, "no limit"], [900, "15 minutes"], [3600, "an hour"],
+    [14400, "four hours"], [86400, "a day"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = label;
+    option.selected = Number(data.max_seconds) === value;
+    seconds.appendChild(option);
+  }
+  limits.appendChild(fieldRow("Stop a conversation after", seconds,
+    "Measured from when it started, not from the last message. A conversation left open "
+    + "overnight cannot quietly resume in the morning and carry on spending."));
+
+  const cents = document.createElement("input");
+  cents.type = "number";
+  cents.id = "aiMaxCents";
+  cents.min = "0";
+  cents.step = "1";
+  cents.className = "days";
+  cents.value = String(data.max_cents || 0);
+  limits.appendChild(fieldRow("Or after spending (cents)", cents,
+    "Checked before each request rather than after, so the limit stops the next call "
+    + "rather than being noticed once the money is gone. Zero means no limit — "
+    + "which, with prices set, means no limit on the bill either."));
+
+  const turns = document.createElement("input");
+  turns.type = "number";
+  turns.id = "aiMaxTurns";
+  turns.min = "0";
+  turns.max = "500";
+  turns.className = "days";
+  turns.value = String(data.max_turns || 0);
+  limits.appendChild(fieldRow("Or after this many turns", turns,
+    "One turn is one request to the model. A conversation that needs forty is usually "
+    + "one that has gone in a circle, so this is the limit most likely to catch a "
+    + "problem rather than a long investigation."));
+
+  parts.push(section("Limits on one conversation", limits));
+
+  /* ---- database ---- */
+
+  if (data.database.exists) {
+    parts.push(section("Where the transcripts are", factGrid([
+      ["File", humanBytes(data.database.bytes)
+        + (data.database.wal_bytes ? ` + ${humanBytes(data.database.wal_bytes)} log` : "")],
+      ["Path", data.database.path],
+    ])));
+    parts.push(note(
+      "Conversations are kept in their own database, separate from the monitoring data. "
+      + "It holds everything that was sent to the provider, including any screenshots — "
+      + "delete the file to be rid of all of it."
+    ));
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.textContent = "Save these settings";
+  save.disabled = !data.writable;
+  actions.appendChild(save);
+  parts.push(actions);
+
+  body.replaceChildren(...parts);
+
+  const syncProvider = () => {
+    const meta = data.providers[provider.value];
+    providerNote.textContent = meta?.note ?? "";
+    models.replaceChildren(...(meta?.models ?? []).map(name => {
+      const option = document.createElement("option");
+      option.value = name;
+      return option;
+    }));
+    if (base.value === "") base.placeholder = meta?.base ?? "";
+  };
+  provider.addEventListener("change", syncProvider);
+  syncProvider();
+
+  renderAiTools(data);
+}
+
+/** Every tool, what it does, and whether it may. */
+function renderAiTools(data) {
+  const body = $("aiToolsBody");
+  const parts = [];
+
+  const table = document.createElement("table");
+  table.className = "retention";
+
+  const head = table.createTHead().insertRow();
+  for (const label of ["Tool", "Runs", "May use it", "Ask me first", ""]) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    head.appendChild(th);
+  }
+
+  const tbody = table.createTBody();
+
+  for (const tool of data.tools) {
+    const row = tbody.insertRow();
+
+    const what = row.insertCell();
+    what.className = "name";
+    what.appendChild(document.createTextNode(tool.summary.replace(/\.$/, "")));
+
+    const name = document.createElement("div");
+    name.className = "muted small";
+    name.textContent = tool.name;
+    what.appendChild(name);
+
+    const where = row.insertCell();
+    where.className = "muted small";
+    where.textContent = {
+      server: "here",
+      browser: "in your browser",
+      ask: "changes something",
+    }[tool.where] ?? tool.where;
+    where.title = {
+      server: "Answered from the databases on this server. Read-only.",
+      browser: "Only your browser can do it — moving you to a page, or capturing "
+        + "what you can see.",
+      ask: "This one acts rather than reads.",
+    }[tool.where] ?? "";
+
+    const on = row.insertCell();
+    const enabled = document.createElement("input");
+    enabled.type = "checkbox";
+    enabled.className = "tool-on";
+    enabled.dataset.tool = tool.name;
+    enabled.checked = tool.enabled;
+    enabled.disabled = !data.writable;
+    on.appendChild(enabled);
+
+    const gate = row.insertCell();
+    const ask = document.createElement("input");
+    ask.type = "checkbox";
+    ask.className = "tool-ask";
+    ask.dataset.tool = tool.name;
+    ask.checked = tool.permission;
+    ask.disabled = !data.writable;
+    gate.appendChild(ask);
+
+    if (tool.recommends_permission) {
+      const said = document.createElement("span");
+      said.className = "muted small";
+      said.textContent = " recommended";
+      gate.appendChild(said);
+    }
+
+    const detail = row.insertCell();
+    const show = document.createElement("button");
+    show.type = "button";
+    show.className = "link";
+    show.textContent = "What it is told";
+    show.title = "The exact description the model is given for this tool";
+    show.addEventListener("click", () => {
+      const pre = document.createElement("pre");
+      pre.className = "paste";
+      pre.textContent = tool.description;
+      showListDialog(tool.name, [pre],
+        "This is what the model reads before deciding whether to use it. The “do not "
+        + "use this when…” half is what stops a confident wrong call.");
+    });
+    detail.appendChild(show);
+  }
+
+  parts.push(table);
+  body.replaceChildren(...parts);
+}
+
+async function saveAiSettings(extra = {}) {
+  const on = [...document.querySelectorAll("input.tool-on")]
+    .filter(box => box.checked).map(box => box.dataset.tool).join(",");
+  const ask = [...document.querySelectorAll("input.tool-ask")]
+    .filter(box => box.checked).map(box => box.dataset.tool).join(",");
+
+  try {
+    const result = await post("ai-settings-save", {
+      enabled: $("aiEnabled").checked ? "1" : "0",
+      provider: $("aiProvider").value,
+      base_url: $("aiBase").value.trim(),
+      model: $("aiModel").value.trim(),
+      api_key: $("aiKey").value,
+      price_in: $("aiPriceIn").value,
+      price_out: $("aiPriceOut").value,
+      price_cached: $("aiPriceCached").value,
+      max_seconds: $("aiMaxSeconds").value,
+      max_cents: $("aiMaxCents").value,
+      max_turns: $("aiMaxTurns").value,
+      tools_on: on,
+      tools_ask: ask,
+      ...extra,
+    });
+
+    notice("Saved.", true);
+    renderAiSettings(result);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+}
+
+async function refreshAiSessions() {
+  const body = $("aiSessionsBody");
+
+  try {
+    const data = await api("ai-sessions");
+
+    if (!data.sessions.length) {
+      body.replaceChildren(note("No conversations yet."));
+      return;
+    }
+
+    const parts = [];
+    const totals = data.totals;
+
+    parts.push(factGrid([
+      ["Conversations", humanCount(totals.sessions)],
+      ["Turns", humanCount(totals.turns)],
+      ["Tokens", `${humanCount(totals.tokens_in)} in, ${humanCount(totals.tokens_out)} out`
+        + (totals.tokens_cached ? `, ${humanCount(totals.tokens_cached)} cached` : "")],
+      ["Spent", totals.spent],
+    ]));
+
+    const holder = document.createElement("div");
+    holder.id = "aiSessionTable";
+    parts.push(holder);
+    body.replaceChildren(...parts);
+
+    renderTable("aiSessionTable", data.sessions, [
+      { label: "Started", render: row => humanTime(row.started_at) },
+      { label: "Ran for", render: row => row.ran_for },
+      {
+        label: "How it ended",
+        render: row => {
+          const span = document.createElement("span");
+          span.textContent = row.state;
+          if (row.why_stopped) span.title = row.why_stopped;
+          if (row.state === "failed") span.className = "band-crit";
+          return span;
+        },
+      },
+      { label: "Model", className: "cmd", render: row => row.model },
+      { label: "Turns", className: "size", render: row => String(row.turns) },
+      { label: "Tokens", className: "size", render: row => humanCount(row.tokens) },
+      { label: "Cost", className: "size", render: row => row.spent },
+    ], null, null, row => String(row.id));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+/* ------------------------------------------------------------ the assistant -- */
+
+/*
+ * The chat, and the loop that drives it.
+ *
+ * There is no worker on the server, so the conversation advances one step per
+ * request and this is what asks for the next one. Which sounds like a
+ * compromise and is not: it means every intermediate state - thinking, running
+ * a tool, waiting for permission - is a thing the panel can show, rather than a
+ * minute of silence followed by an answer.
+ *
+ * The panel deliberately outlives the page it was opened from. The assistant's
+ * most useful move is to take somebody to another view and keep talking about
+ * what they are now looking at, and a chat that reset on navigation could not.
+ */
+const chatState = {
+  session: null,
+  polling: null,
+  busy: false,
+  open: false,
+  /*
+   * Tool runs already handled, so a poll arriving mid-flight cannot start the
+   * same screenshot twice. The server would reject the second, but the camera
+   * would already have flashed.
+   */
+  handled: new Set(),
+};
+
+/** How often to ask, by what the session is doing. */
+function chatPollDelay(state) {
+  // Nothing is happening: slow, just enough to notice a session ended.
+  if (state === "idle" || state === undefined) return 4000;
+  // Waiting on a person: they are looking at the prompt, not at a clock.
+  if (state === "waiting_permission") return 2000;
+  // A step is due or in flight: fast enough to feel live, slow enough not to
+  // hammer a database the collectors are also using.
+  return 700;
+}
+
+function openChat() {
+  if (!state.signedIn) {
+    notice("Sign in to use the assistant.");
+    return;
+  }
+
+  chatState.open = true;
+  $("chatPanel").hidden = false;
+  $("chatText").focus();
+
+  refreshChat().catch(error => notice(String(error.message || error)));
+}
+
+/** Hides the panel. The conversation carries on. */
+function hideChat() {
+  chatState.open = false;
+  $("chatPanel").hidden = true;
+  /*
+   * Polling continues, slowly.
+   *
+   * A conversation left running while the panel is closed will still finish,
+   * and the badge on the button should say so - the alternative is coming back
+   * to a session frozen mid-thought because nobody was asking.
+   */
+}
+
+async function refreshChat() {
+  let data;
+  try {
+    data = await api("ai");
+  } catch (error) {
+    renderChatUnavailable(String(error.message || error));
+    return;
+  }
+
+  if (!data.ready) {
+    renderChatUnavailable(data.why);
+    return;
+  }
+
+  chatState.session = data.session;
+  renderChat();
+  scheduleChatPoll();
+}
+
+function renderChatUnavailable(why) {
+  const log = $("chatLog");
+  log.replaceChildren(note(
+    why + " The assistant is set up under System → The assistant."
+  ));
+
+  const go = document.createElement("button");
+  go.className = "link";
+  go.textContent = "Set it up";
+  go.addEventListener("click", () => { location.hash = "#/sys-ai?range=" + state.range; });
+  log.appendChild(go);
+
+  $("chatStatus").textContent = "";
+  $("chatSend").disabled = true;
+  $("chatText").disabled = true;
+}
+
+/**
+ * Asks the server what is happening, and drives whatever is due.
+ *
+ * One timer, rescheduled after each poll rather than an interval, so a slow
+ * step cannot cause overlapping requests to pile up behind each other.
+ */
+function scheduleChatPoll() {
+  if (chatState.polling) clearTimeout(chatState.polling);
+
+  const session = chatState.session;
+  if (!session || !session.exists) return;
+
+  const finished = ["stopped", "ended", "failed"].includes(session.state);
+  if (finished) return;
+
+  chatState.polling = setTimeout(
+    () => pollChat().catch(() => scheduleChatPoll()),
+    chatPollDelay(session.state)
+  );
+}
+
+async function pollChat() {
+  const session = chatState.session;
+  if (!session || !session.exists) return;
+
+  if (chatState.busy) {
+    scheduleChatPoll();
+    return;
+  }
+
+  try {
+    chatState.session = await api("ai-poll", { session: session.id });
+  } catch {
+    // A failed poll is not worth a message: the next one usually works, and an
+    // error toast every second would be worse than the silence.
+    scheduleChatPoll();
+    return;
+  }
+
+  renderChat();
+  await driveChat();
+  scheduleChatPoll();
+}
+
+/**
+ * Does whatever the session is waiting on this browser to do.
+ *
+ * Stepping, navigating and screenshotting all live here so that there is one
+ * place where the conversation moves forward, rather than three that can
+ * disagree about whose turn it is.
+ */
+async function driveChat() {
+  const session = chatState.session;
+  if (!session?.exists || chatState.busy) return;
+
+  if (session.state === "thinking") {
+    chatState.busy = true;
+    try {
+      chatState.session = (await post("ai-step", { session: session.id })).session;
+      renderChat();
+    } catch (error) {
+      $("chatStatus").textContent = String(error.message || error);
+    } finally {
+      chatState.busy = false;
+    }
+    return;
+  }
+
+  if (session.state === "waiting_browser" && session.browser_tool) {
+    const run = session.browser_tool;
+    if (chatState.handled.has(run.id)) return;
+    chatState.handled.add(run.id);
+
+    chatState.busy = true;
+    try {
+      await runBrowserTool(run);
+    } finally {
+      chatState.busy = false;
+    }
+  }
+}
+
+/**
+ * The two things only the page can do.
+ *
+ * Navigation goes through the router rather than reloading, so the chat panel
+ * and everything in it survives - which is the whole reason the assistant can
+ * usefully move somebody around.
+ */
+async function runBrowserTool(run) {
+  let result = {};
+
+  try {
+    if (run.tool === "open_page") {
+      const page = String(run.arguments.page || "");
+      if (!VIEWS[page]) throw new Error(`there is no page called ${page}`);
+
+      const hours = Number(run.arguments.hours);
+      const range = Number.isFinite(hours) && hours > 0
+        ? Math.min(31536000, Math.round(hours * 3600))
+        : state.range;
+
+      /*
+       * The hash, not a reload.
+       *
+       * applyRoute picks this up and swaps the view in place; the chat panel is
+       * outside the view container and is not touched. A location.assign here
+       * would throw away the conversation to show somebody a page about it.
+       */
+      location.hash = `#/${page}?range=${range}`;
+      result = {};
+    } else if (run.tool === "take_screenshot") {
+      result = { image: await captureScreen() };
+    } else {
+      throw new Error(`this browser does not know how to ${run.tool}`);
+    }
+
+    chatState.session = (await post("ai-tool-result", {
+      run: run.id,
+      ...result,
+    })).session;
+  } catch (error) {
+    chatState.session = (await post("ai-tool-result", {
+      run: run.id,
+      error: String(error.message || error),
+    })).session;
+  }
+
+  renderChat();
+}
+
+/**
+ * A picture of the page, without a browser extension.
+ *
+ * There is no API that hands a page an image of itself - getDisplayMedia is the
+ * only route, and it asks the user which surface to share, which is the
+ * permission prompt doing its job rather than an obstacle. The frame is grabbed
+ * and the track stopped immediately, so nothing keeps capturing afterwards.
+ *
+ * Scaled down hard on the way out. A screenshot of a large display is several
+ * megabytes, and megabytes of base64 is a very expensive way to say very
+ * little - a model reads a 1200-pixel-wide image about as well as a 3000-pixel
+ * one and at a fraction of the tokens.
+ */
+async function captureScreen() {
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    throw new Error("this browser cannot take a screenshot from a page");
+  }
+
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: { displaySurface: "browser" },
+    audio: false,
+    // A hint, not a guarantee: the user still chooses what to share.
+    preferCurrentTab: true,
+  });
+
+  try {
+    const video = document.createElement("video");
+    video.srcObject = stream;
+    video.muted = true;
+    await video.play();
+
+    // One frame, once there is one. A capture started before the first frame
+    // arrives produces a blank image.
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+    const width = Math.min(1280, video.videoWidth || 1280);
+    const scale = width / (video.videoWidth || width);
+    const height = Math.round((video.videoHeight || 720) * scale);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d").drawImage(video, 0, 0, width, height);
+
+    video.pause();
+    video.srcObject = null;
+
+    // JPEG rather than PNG: a screenshot of a dashboard compresses to a
+    // quarter of the size with no loss anybody reading it would notice.
+    return canvas.toDataURL("image/jpeg", 0.72);
+  } finally {
+    // Always, including on failure - a capture left running shows the browser's
+    // sharing indicator for ever and is alarming.
+    for (const track of stream.getTracks()) track.stop();
+  }
+}
+
+function renderChat() {
+  const session = chatState.session;
+  const log = $("chatLog");
+
+  if (!session?.exists) {
+    log.replaceChildren(note(
+      "Describe what is going wrong and the assistant will look into it. It can read "
+      + "this machine's measurements and logs, and can take you to the page that shows "
+      + "what it found."
+    ));
+    $("chatStatus").textContent = "";
+    $("chatCost").textContent = "";
+    $("chatSend").disabled = false;
+    $("chatText").disabled = false;
+    return;
+  }
+
+  const parts = [];
+
+  for (const message of session.messages) {
+    if (message.role === "tool_call") {
+      const line = document.createElement("div");
+      line.className = "chat-tool";
+      line.textContent = `⚙ ${chatToolPhrase(message.tool, message.arguments)}`;
+      line.title = JSON.stringify(message.arguments, null, 2);
+      parts.push(line);
+      continue;
+    }
+
+    const bubble = document.createElement("div");
+    bubble.className = `chat-line chat-${message.role}`;
+
+    /*
+     * textContent, never markup.
+     *
+     * This is text from a model, and a model can be talked into producing
+     * anything. It is displayed as characters, full stop.
+     */
+    bubble.textContent = message.content;
+    parts.push(bubble);
+  }
+
+  log.replaceChildren(...parts);
+  log.scrollTop = log.scrollHeight;
+
+  renderChatStatus(session);
+
+  $("chatCost").textContent = session.spent.known
+    ? `${session.spent.said} · ${humanCount(session.tokens.in + session.tokens.out)} tokens`
+    : `${humanCount(session.tokens.in + session.tokens.out)} tokens`;
+  $("chatCost").title = `In ${humanCount(session.tokens.in)}, out `
+    + `${humanCount(session.tokens.out)}, of which ${humanCount(session.tokens.cached)} `
+    + "was cached input."
+    + (session.spent.known ? "" : " No prices are set, so the cost is not known.");
+
+  const finished = ["stopped", "ended", "failed"].includes(session.state);
+  $("chatSend").disabled = finished || session.state !== "idle";
+  $("chatText").disabled = finished;
+  $("chatStop").hidden = finished;
+}
+
+/** What the model is doing, in words, plus anything it is waiting on. */
+function renderChatStatus(session) {
+  const status = $("chatStatus");
+  status.replaceChildren();
+
+  if (session.permission) {
+    status.appendChild(chatPermissionPrompt(session.permission));
+    return;
+  }
+
+  const said = {
+    idle: "",
+    thinking: "Thinking…",
+    waiting_browser: "Doing something in this window…",
+    stopped: `Stopped — ${session.stop_reason || "by you"}.`,
+    ended: `Finished — ${session.stop_reason || "a limit was reached"}.`,
+    failed: `Gave up — ${session.stop_reason || "the model could not be reached"}.`,
+  }[session.state] ?? "";
+
+  if (said) {
+    const line = document.createElement("span");
+    line.className = ["stopped", "ended", "failed"].includes(session.state)
+      ? "muted"
+      : "chat-thinking";
+    line.textContent = said;
+    status.appendChild(line);
+  }
+
+  if (["stopped", "ended", "failed"].includes(session.state)) {
+    const again = document.createElement("button");
+    again.className = "link";
+    again.textContent = "Start a new one";
+    again.addEventListener("click", () => startChat());
+    status.appendChild(again);
+  }
+}
+
+/**
+ * The prompt shown when the model wants to do something that asks first.
+ *
+ * The model's own reason is shown verbatim, because it is the only thing that
+ * lets somebody judge the request - "it wants to take a screenshot" is not a
+ * decision anybody can make, and "the chart shape will tell me more than the
+ * numbers" is.
+ */
+function chatPermissionPrompt(run) {
+  const wrap = document.createElement("div");
+  wrap.className = "chat-permission";
+
+  const what = document.createElement("div");
+  what.textContent = `It wants to ${run.summary.replace(/\.$/, "")}.`;
+  wrap.appendChild(what);
+
+  if (run.why) {
+    const why = document.createElement("div");
+    why.className = "muted small";
+    why.textContent = `“${run.why}”`;
+    wrap.appendChild(why);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  for (const [text, allow, className] of [
+    ["Allow", "1", ""],
+    ["Not this time", "0", "danger"],
+  ]) {
+    const button = document.createElement("button");
+    button.className = `link ${className}`;
+    button.textContent = text;
+    button.addEventListener("click", async () => {
+      for (const other of actions.querySelectorAll("button")) other.disabled = true;
+      try {
+        chatState.session = (await post("ai-permit", { run: run.id, allow })).session;
+        renderChat();
+        await driveChat();
+        scheduleChatPoll();
+      } catch (error) {
+        notice(String(error.message || error));
+      }
+    });
+    actions.appendChild(button);
+  }
+
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+/** A tool call as a sentence rather than a function signature. */
+function chatToolPhrase(tool, args) {
+  const said = {
+    get_current_status: "Checked how the machine is doing",
+    get_collector_health: "Checked whether the monitoring is still running",
+    get_measurement_history: `Looked at ${args.measurement} over ${args.hours} hours`,
+    get_recent_alerts: "Read the recent alerts",
+    get_recent_log_lines: "Read the recent log lines",
+    get_repeated_log_lines: "Looked for repeated log messages",
+    find_largest_paths: `Looked for the ${args.sort_by === "growth" ? "fastest-growing" : "largest"} files`,
+    find_crowded_directories: "Looked for directories with the most files",
+    get_busiest_processes: `Looked at what is running, by ${args.sort_by}`,
+    get_site_check_results: "Checked whether the site is answering",
+    get_network_summary: "Looked at ports and connections",
+    get_recent_changes: "Checked what software has changed",
+    get_action_history: "Read the action log",
+    open_page: `Opened ${VIEWS[args.page]?.label ?? args.page}`,
+    take_screenshot: "Took a screenshot",
+  }[tool];
+
+  return said ?? tool;
+}
+
+async function startChat() {
+  try {
+    chatState.handled.clear();
+    chatState.session = (await post("ai-start", { from: state.view })).session;
+    renderChat();
+    scheduleChatPoll();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+}
+
+async function sayToChat(text) {
+  if (!chatState.session?.exists) {
+    await startChat();
+  }
+  if (!chatState.session?.exists) return;
+
+  $("chatText").value = "";
+
+  try {
+    chatState.session = (await post("ai-say", {
+      session: chatState.session.id,
+      text,
+    })).session;
+    renderChat();
+    await driveChat();
+    scheduleChatPoll();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+}
+
 /* ---------------------------------------------------------- address names -- */
 
 const rdnsState = { data: null };
@@ -18004,6 +18904,11 @@ const VIEWS = {
     parent: "system",
     refresh: () => refreshChanged(),
   },
+  "sys-ai": {
+    label: "The assistant",
+    parent: "system",
+    refresh: () => refreshAiSettings(),
+  },
   "net-rdns": {
     label: "Address names",
     parent: "network",
@@ -18618,12 +19523,93 @@ $("symlinkCheck").addEventListener("click", () => {
   checkSymlinks().catch(error => notice(String(error.message || error)));
 });
 
-$("noteButton").addEventListener("click", () => {
+/*
+ * The corner button opens a small menu rather than doing one thing.
+ *
+ * Both of the things somebody wants from the corner of a page are "I have
+ * noticed something" - one written down for later, one asked about now - and
+ * making one of them the button and the other a page somewhere would mean
+ * nobody used the second.
+ */
+$("noteButton").addEventListener("click", event => {
+  event.stopPropagation();
+
   if (!state.signedIn) {
-    notice("Sign in to write a note.");
+    notice("Sign in to write a note or use the assistant.");
     return;
   }
+
+  const choices = $("cornerChoices");
+  const showing = !choices.hidden;
+  choices.hidden = showing;
+  $("noteButton").setAttribute("aria-expanded", String(!showing));
+});
+
+// Anywhere else closes it, which is what everybody expects of a small menu.
+document.addEventListener("click", event => {
+  const choices = $("cornerChoices");
+  if (choices.hidden || $("cornerMenu").contains(event.target)) return;
+  choices.hidden = true;
+  $("noteButton").setAttribute("aria-expanded", "false");
+});
+
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  if (!$("cornerChoices").hidden) {
+    $("cornerChoices").hidden = true;
+    $("noteButton").setAttribute("aria-expanded", "false");
+  }
+});
+
+$("cornerNote").addEventListener("click", () => {
+  $("cornerChoices").hidden = true;
   showNoteDialog();
+});
+
+$("cornerChat").addEventListener("click", () => {
+  $("cornerChoices").hidden = true;
+  openChat();
+});
+
+$("aiSettingsForm").addEventListener("submit", event => {
+  event.preventDefault();
+  saveAiSettings();
+});
+
+$("aiSessionsRefresh").addEventListener("click", () => {
+  refreshAiSessions().catch(error => notice(String(error.message || error)));
+});
+
+$("chatClose").addEventListener("click", () => hideChat());
+$("chatNew").addEventListener("click", () => startChat());
+
+$("chatStop").addEventListener("click", async () => {
+  if (!chatState.session?.exists) return;
+  try {
+    chatState.session = (await post("ai-stop", { session: chatState.session.id })).session;
+    renderChat();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
+$("chatForm").addEventListener("submit", event => {
+  event.preventDefault();
+  const text = $("chatText").value.trim();
+  if (text === "") return;
+  sayToChat(text).catch(error => notice(String(error.message || error)));
+});
+
+/*
+ * Enter sends, shift-Enter makes a new line.
+ *
+ * The other way round in a box this size means every message needs a trip to
+ * the mouse, and almost every message here is one sentence.
+ */
+$("chatText").addEventListener("keydown", event => {
+  if (event.key !== "Enter" || event.shiftKey) return;
+  event.preventDefault();
+  $("chatForm").requestSubmit();
 });
 
 $("noteAdd").addEventListener("click", () => showNoteDialog());

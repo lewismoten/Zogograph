@@ -244,6 +244,15 @@ function aiTranscript(PDO $ai, int $session): array
 
     $out = [];
     $pendingCalls = [];
+    $pendingText = '';
+
+    // Assistant text that turned out to have no tool calls after it.
+    $flushText = function () use (&$out, &$pendingText): void {
+        if ($pendingText !== '') {
+            $out[] = ['role' => 'assistant', 'content' => $pendingText];
+            $pendingText = '';
+        }
+    };
 
     foreach ($stmt->fetchAll() as $row) {
         $role = (string)$row['role'];
@@ -270,13 +279,15 @@ function aiTranscript(PDO $ai, int $session): array
         if ($pendingCalls !== []) {
             $out[] = [
                 'role' => 'assistant',
-                'content' => '',
+                'content' => $pendingText,
                 'tool_calls' => $pendingCalls,
             ];
             $pendingCalls = [];
+            $pendingText = '';
         }
 
         if ($role === 'tool') {
+            $flushText();
             $out[] = [
                 'role' => 'tool',
                 'tool_call_id' => (string)$row['tool_id'],
@@ -285,14 +296,34 @@ function aiTranscript(PDO $ai, int $session): array
             continue;
         }
 
-        if ($role === 'user' || $role === 'assistant') {
-            $out[] = ['role' => $role, 'content' => (string)($row['content'] ?? '')];
+        if ($role === 'assistant') {
+            /*
+             * Held back, in case tool calls follow immediately.
+             *
+             * A model that answers with text AND asks for a tool made one turn,
+             * and every provider expects that as one assistant message carrying
+             * both. Emitting the text on its own would make the model read its
+             * own history as two turns where there was one - and a provider
+             * that validates the shape would reject it outright.
+             *
+             * aiStep always writes the text immediately before the calls, so
+             * adjacency is exactly the right signal and needs no turn marker.
+             */
+            $pendingText = (string)($row['content'] ?? '');
+            continue;
+        }
+
+        if ($role === 'user') {
+            $flushText();
+            $out[] = ['role' => 'user', 'content' => (string)($row['content'] ?? '')];
         }
     }
 
     if ($pendingCalls !== []) {
-        $out[] = ['role' => 'assistant', 'content' => '', 'tool_calls' => $pendingCalls];
+        $out[] = ['role' => 'assistant', 'content' => $pendingText, 'tool_calls' => $pendingCalls];
+        $pendingText = '';
     }
+    $flushText();
 
     return $out;
 }

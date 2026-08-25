@@ -166,6 +166,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-permit' => doAiPermit($config, $pdo, $post),
         'ai-tool-result' => doAiToolResult($config, $pdo, $post),
         'ai-stop' => doAiStop($config, $pdo, $post),
+        'ai-settings' => aiSettingsView($config, $pdo, $signedIn),
+        'ai-settings-save' => doAiSettingsSave($config, $pdo, $post),
+        'ai-sessions' => aiSessionsView($config, $signedIn),
         'rdns-ask' => doRdnsAsk($config, $pdo, $post),
         'rdns-cancel' => doRdnsCancel($config, $pdo, $post),
         'rdns-now' => doRdnsNow($config, $pdo, $post),
@@ -6131,4 +6134,232 @@ function doAiStop(array $config, PDO $pdo, bool $post): array
     aiSetState($ai, $id, 'stopped', 'stopped by ' . (currentAccountName() ?: 'the account'));
 
     return ['ok' => true, 'session' => aiSessionView($config, $ai, $id, aiViews())];
+}
+
+/**
+ * The assistant's settings, without the key.
+ *
+ * The key is never sent back to the browser, not even masked in a way that
+ * could be reversed. A settings page that round-trips a secret is a settings
+ * page that leaks it into every browser cache and history entry that ever
+ * renders it.
+ */
+function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see these settings');
+    }
+
+    $settings = aiSettings($config);
+    $views = aiViews();
+    $catalogue = aiTools($views);
+    $chosen = $config['ai']['tools'] ?? [];
+
+    $tools = [];
+    foreach ($catalogue as $name => $tool) {
+        $mine = $chosen[$name] ?? [];
+
+        $tools[] = [
+            'name' => $name,
+            'group' => $tool['group'],
+            'where' => $tool['where'],
+            'summary' => $tool['summary'],
+            'description' => $tool['description'],
+            'enabled' => array_key_exists('enabled', $mine)
+                ? (bool)$mine['enabled']
+                : $tool['where'] !== 'ask',
+            'permission' => array_key_exists('permission', $mine)
+                ? (bool)$mine['permission']
+                : (bool)$tool['permission'],
+            'recommends_permission' => (bool)$tool['permission'],
+        ];
+    }
+
+    $ready = aiReady($config);
+
+    return [
+        'enabled' => $settings['enabled'],
+        'provider' => $settings['provider'],
+        'providers' => aiProviders(),
+        'base_url' => $settings['base_url'],
+        'model' => $settings['model'],
+        // Whether one is set, never what it is.
+        'has_key' => $settings['api_key'] !== '',
+        'price_in' => $settings['price_in'],
+        'price_out' => $settings['price_out'],
+        'price_cached' => $settings['price_cached'],
+        'max_seconds' => $settings['max_seconds'],
+        'max_cents' => $settings['max_cents'],
+        'max_turns' => $settings['max_turns'],
+        'tools' => $tools,
+        'ready' => $ready['ok'],
+        'why' => $ready['why'],
+        'writable' => is_writable(__DIR__ . '/lib/config.php'),
+        'database' => aiDatabaseFacts($config),
+        'views' => $views,
+    ];
+}
+
+function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    if (!is_writable(__DIR__ . '/lib/config.php')) {
+        throw new ActionRefused(
+            'lib/config.php is not writable by the web server, so this cannot save.'
+        );
+    }
+
+    $current = require __DIR__ . '/lib/config.php';
+    $providers = aiProviders();
+
+    $provider = (string)($_POST['provider'] ?? 'openai');
+    if (!isset($providers[$provider])) {
+        throw new ActionRefused('that is not a provider this knows about');
+    }
+
+    $base = trim((string)($_POST['base_url'] ?? ''));
+    if ($base !== '' && !filter_var($base, FILTER_VALIDATE_URL)) {
+        throw new ActionRefused('that is not a web address');
+    }
+
+    $current['ai']['enabled'] = ($_POST['enabled'] ?? '0') === '1';
+    $current['ai']['provider'] = $provider;
+    $current['ai']['base_url'] = $base;
+    $current['ai']['model'] = trim((string)($_POST['model'] ?? ''));
+
+    /*
+     * The key is only written when a new one is given.
+     *
+     * The page cannot show the existing one, so an empty field means "leave it
+     * alone" rather than "clear it" - otherwise every save of an unrelated
+     * setting would silently disconnect the assistant. Clearing is a separate,
+     * deliberate button.
+     */
+    $key = trim((string)($_POST['api_key'] ?? ''));
+    if ($key !== '') {
+        $current['ai']['api_key'] = $key;
+    }
+    if (($_POST['forget_key'] ?? '0') === '1') {
+        $current['ai']['api_key'] = '';
+    }
+
+    foreach (['price_in', 'price_out', 'price_cached'] as $field) {
+        $value = $_POST[$field] ?? null;
+        if ($value === null || $value === '') {
+            $current['ai'][$field] = 0;
+            continue;
+        }
+        if (!is_numeric($value) || (float)$value < 0 || (float)$value > 100000) {
+            throw new ActionRefused('prices are cents per million tokens, and that is not one');
+        }
+        $current['ai'][$field] = round((float)$value, 4);
+    }
+
+    $current['ai']['max_seconds'] = clampInt($_POST['max_seconds'] ?? 3600, 0, 86400);
+    $current['ai']['max_turns'] = clampInt($_POST['max_turns'] ?? 40, 0, 500);
+
+    $cents = $_POST['max_cents'] ?? 50;
+    if (!is_numeric($cents) || (float)$cents < 0 || (float)$cents > 1000000) {
+        throw new ActionRefused('that is not an amount');
+    }
+    $current['ai']['max_cents'] = round((float)$cents, 2);
+
+    /*
+     * Tool settings stored only where they differ from the default.
+     *
+     * Writing all fifteen out with today's defaults would freeze them into the
+     * config file, so a later change to what is recommended would never reach
+     * an install that had once pressed Save.
+     */
+    $wanted = array_filter(explode(',', (string)($_POST['tools_on'] ?? '')));
+    $needPermission = array_filter(explode(',', (string)($_POST['tools_ask'] ?? '')));
+
+    $perTool = [];
+    foreach (aiTools(aiViews()) as $name => $tool) {
+        $on = in_array($name, $wanted, true);
+        $ask = in_array($name, $needPermission, true);
+        $mine = [];
+
+        if ($on !== ($tool['where'] !== 'ask')) {
+            $mine['enabled'] = $on;
+        }
+        if ($ask !== (bool)$tool['permission']) {
+            $mine['permission'] = $ask;
+        }
+        if ($mine !== []) {
+            $perTool[$name] = $mine;
+        }
+    }
+    $current['ai']['tools'] = $perTool;
+
+    writeConfigFile($current);
+
+    logAction($pdo, 'ai_settings', null, 'ok', 0, 0, sprintf(
+        '%s, %s, %d tool(s) on',
+        $current['ai']['enabled'] ? 'on' : 'off',
+        $current['ai']['model'] ?: 'no model',
+        count($wanted)
+    ));
+
+    return ['ok' => true] + aiSettingsView($current, $pdo, true);
+}
+
+/**
+ * Past conversations, with what each cost.
+ *
+ * Shown on the settings page rather than in the chat panel: this is the
+ * accounting view, and the question it answers - "what has this been spending"
+ * - is not one somebody asks mid-conversation.
+ */
+function aiSessionsView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see this');
+    }
+
+    $ai = aiDb($config, false);
+    if ($ai === null) {
+        return ['sessions' => [], 'totals' => null];
+    }
+
+    $rows = $ai->query(
+        'SELECT id, started_at, ended_at, state, model, turns, tokens_in, tokens_out,
+                tokens_cached, spent_millicents, stop_reason, started_by
+           FROM ai_sessions ORDER BY id DESC LIMIT 40'
+    )->fetchAll();
+
+    $totals = $ai->query(
+        'SELECT COUNT(*) AS sessions, SUM(turns) AS turns, SUM(tokens_in) AS tokens_in,
+                SUM(tokens_out) AS tokens_out, SUM(tokens_cached) AS tokens_cached,
+                SUM(spent_millicents) AS millicents
+           FROM ai_sessions'
+    )->fetch() ?: [];
+
+    return [
+        'sessions' => array_map(fn(array $row): array => [
+            'id' => (int)$row['id'],
+            'started_at' => (int)$row['started_at'],
+            'ran_for' => plainSpan(
+                (($row['ended_at'] ?? time()) - (int)$row['started_at']),
+                true
+            ),
+            'state' => (string)$row['state'],
+            'why_stopped' => $row['stop_reason'],
+            'model' => (string)$row['model'],
+            'turns' => (int)$row['turns'],
+            'tokens' => (int)$row['tokens_in'] + (int)$row['tokens_out'],
+            'spent' => aiMoney((int)$row['spent_millicents']),
+            'by' => $row['started_by'],
+        ], $rows),
+        'totals' => [
+            'sessions' => (int)($totals['sessions'] ?? 0),
+            'turns' => (int)($totals['turns'] ?? 0),
+            'tokens_in' => (int)($totals['tokens_in'] ?? 0),
+            'tokens_out' => (int)($totals['tokens_out'] ?? 0),
+            'tokens_cached' => (int)($totals['tokens_cached'] ?? 0),
+            'spent' => aiMoney((int)($totals['millicents'] ?? 0)),
+        ],
+        'database' => aiDatabaseFacts($config),
+    ];
 }

@@ -443,7 +443,7 @@ function aiToolCatalogue(): array
             'group' => 'navigation',
             'where' => 'browser',
             'permission' => false,
-            'summary' => 'Move the user to a page of this dashboard.',
+            'summary' => 'move you to a page of this dashboard.',
             'description' =>
                 "Opens one of this dashboard's pages in the user's browser. The chat stays "
                 . "open and the conversation continues - this does not interrupt anything, "
@@ -487,7 +487,7 @@ function aiToolCatalogue(): array
             'group' => 'navigation',
             'where' => 'browser',
             'permission' => true,
-            'summary' => 'A picture of what the user is looking at.',
+            'summary' => 'take a picture of what you can see.',
             'description' =>
                 "Captures an image of the page the user currently has open and returns it "
                 . "to you.\n\n"

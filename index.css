@@ -1758,3 +1758,140 @@ canvas.gauge-spark {
 .rdns-name { opacity: .8; }
 button.link.tiny { font-size: .8em; padding: 0; opacity: .55; }
 button.link.tiny:hover { opacity: 1; }
+
+/* -------------------------------------------------------- the assistant -- */
+
+/*
+ * The corner offers two things, not one.
+ *
+ * Both are "I have noticed something" — one written down for later, one asked
+ * about now — and making one the button and the other a page somewhere means
+ * nobody uses the second.
+ */
+.corner-menu { position: fixed; right: 22px; bottom: 22px; z-index: 40; }
+.corner-menu .note-button { position: static; right: auto; bottom: auto; }
+.corner-choices {
+  position: absolute;
+  right: 0;
+  bottom: 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .5);
+}
+.corner-choices button {
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.corner-choices button:hover { background: var(--panel-hover); }
+
+/*
+ * The chat is a panel, not a page.
+ *
+ * It follows you between views on purpose: the assistant's most useful move is
+ * to take you somewhere and keep talking about what you are now looking at.
+ */
+.chat-panel {
+  position: fixed;
+  right: 22px;
+  bottom: 84px;
+  width: min(420px, calc(100vw - 44px));
+  max-height: min(640px, calc(100vh - 140px));
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
+  z-index: 41;
+}
+.chat-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.chat-head strong { flex: 0 0 auto; }
+.chat-head .muted { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+
+.chat-log {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 120px;
+}
+.chat-line {
+  padding: 8px 10px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+.chat-user { background: var(--accent-soft); align-self: flex-end; max-width: 88%; }
+.chat-assistant { background: var(--panel-hover); align-self: flex-start; max-width: 96%; }
+
+/* A tool call is scaffolding, not conversation, and is styled as such. */
+.chat-tool {
+  font-size: .82em;
+  color: var(--muted);
+  padding: 0 4px;
+  cursor: help;
+}
+
+.chat-status { padding: 0 12px 8px; font-size: .85em; min-height: 1em; }
+.chat-thinking { color: var(--accent); }
+.chat-thinking::after {
+  content: "";
+  animation: chatDots 1.4s steps(4, end) infinite;
+}
+@keyframes chatDots {
+  0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-thinking::after { animation: none; content: ""; }
+}
+
+.chat-permission {
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(240, 163, 94, .08);
+}
+
+.chat-say { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.chat-say textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: none;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+}
+.chat-say button { flex: 0 0 auto; align-self: flex-end; }
+
+input.wide-field { width: 100%; max-width: 34em; }
+
+@media (max-width: 620px) {
+  .chat-panel { right: 10px; left: 10px; width: auto; bottom: 74px; }
+  .corner-menu { right: 14px; bottom: 14px; }
+}

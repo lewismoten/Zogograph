@@ -336,6 +336,11 @@
       <span class="nav-label">Data retention</span>
       <span class="nav-badge" data-badge="sys-retention" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/sys-ai" data-nav="sys-ai" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">The assistant</span>
+      <span class="nav-badge" data-badge="sys-ai" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-changed" data-nav="sys-changed" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">What changed</span>
@@ -1880,6 +1885,57 @@
 
 </section>
 
+<section class="view" data-view="sys-ai" hidden>
+<section class="panel" id="aiSettingsPanel">
+  <div class="panel-head">
+    <h2>The assistant</h2>
+  </div>
+  <p class="muted small sub-note">
+    A model you configure, given a fixed set of read-only tools for looking at
+    this machine. It is off until you set it up, and when it is on this tool
+    sends parts of your logs, your disk figures and your process list to
+    whichever service you point it at — which is worth deciding deliberately
+    rather than discovering. A local model needs no key and nothing leaves the
+    machine.
+  </p>
+  <p class="muted small sub-note">
+    The model can never write a query. Every tool is a fixed statement with
+    typed, enumerated parameters bound to it, and anything outside those bounds
+    is refused before it reaches a database.
+  </p>
+  <form id="aiSettingsForm">
+    <div id="aiSettingsBody"></div>
+  </form>
+</section>
+
+<section class="panel" id="aiToolsPanel">
+  <div class="panel-head">
+    <h2>What it may do</h2>
+  </div>
+  <p class="muted small sub-note">
+    A tool switched off is not described to the model at all, rather than being
+    described and then refused — one told about a tool it cannot use keeps
+    trying it and explains its absence to you as a fault. Anything that asks
+    permission asks every time, and a refusal is reported back to the model so
+    that it works around it rather than retrying.
+  </p>
+  <div id="aiToolsBody"></div>
+</section>
+
+<section class="panel" id="aiSessionsPanel">
+  <div class="panel-head">
+    <h2>What it has cost</h2>
+    <button id="aiSessionsRefresh" class="link">Refresh</button>
+  </div>
+  <p class="muted small sub-note">
+    Every conversation, with the tokens it used and what that came to. Costs are
+    shown only when prices are set above — without them this reports token
+    counts and no money, because a wrong price is worse than no price.
+  </p>
+  <div id="aiSessionsBody"></div>
+</section>
+</section>
+
 <section class="view" data-view="sys-changed" hidden>
 <section class="panel" id="changedPanel">
   <div class="panel-head">
@@ -2075,8 +2131,39 @@
     not later from the Notes page - so it follows you rather than being
     somewhere to go.
   -->
-  <button id="noteButton" class="note-button" title="Write a note about this page"
-          aria-label="Write a note about this page">✎</button>
+  <div class="corner-menu" id="cornerMenu">
+    <div class="corner-choices" id="cornerChoices" hidden>
+      <button type="button" id="cornerNote">✎ Write a note</button>
+      <button type="button" id="cornerChat">💬 Ask the assistant</button>
+    </div>
+    <button id="noteButton" class="note-button" title="Write a note, or ask the assistant"
+            aria-haspopup="true" aria-expanded="false"
+            aria-label="Write a note, or ask the assistant">✎</button>
+  </div>
+
+  <!--
+    The chat, as a panel rather than a page.
+
+    It follows you between pages on purpose: the assistant's most useful move is
+    to take you somewhere and keep talking about what you are now looking at,
+    and a chat that lived on its own page could not do that.
+  -->
+  <aside id="chatPanel" class="chat-panel" hidden aria-label="The assistant">
+    <div class="chat-head">
+      <strong id="chatTitle">The assistant</strong>
+      <span class="muted small" id="chatCost"></span>
+      <button id="chatNew" class="link" title="Start a fresh conversation">New</button>
+      <button id="chatStop" class="link danger" title="Stop this conversation">Stop</button>
+      <button id="chatClose" class="link" title="Hide this — the conversation carries on">Hide</button>
+    </div>
+    <div class="chat-log" id="chatLog"></div>
+    <div class="chat-status" id="chatStatus"></div>
+    <form class="chat-say" id="chatForm">
+      <textarea id="chatText" rows="2" placeholder="What is going wrong?"
+                spellcheck="false"></textarea>
+      <button type="submit" id="chatSend">Ask</button>
+    </form>
+  </aside>
 </div>
 
 <dialog id="noteDialog">
