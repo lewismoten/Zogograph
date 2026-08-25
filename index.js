@@ -293,10 +293,12 @@ function buildGauge(dial) {
   label.textContent = dial.label;
   box.appendChild(label);
 
-  const band = bandOf(dial.value, dial.warn, dial.crit);
+  const band = dial.plain != null ? null : bandOf(dial.value, dial.warn, dial.crit);
   const state = document.createElement("div");
   state.className = "gauge-band " + (band ? `band-${band}` : "muted");
-  state.textContent = band ? BAND_WORD[band] : "not measured";
+  state.textContent = band
+    ? BAND_WORD[band]
+    : (dial.plain != null ? "no ceiling to measure against" : "not measured");
   box.appendChild(state);
 
   const sub = document.createElement("div");
@@ -359,14 +361,26 @@ function drawGauge(canvas, dial, band) {
     }
   }
 
-  ctx.fillStyle = dial.value == null ? "#66717f" : "#e6edf3";
+  /*
+   * A count in the middle where there is no percentage to draw.
+   *
+   * Some of these quantities have no ceiling - open connections, listening
+   * ports - so an arc would need an invented denominator. The ring stays empty
+   * and the number is the whole reading, which is honest about there being no
+   * scale rather than implying one.
+   */
+  const middle = dial.plain != null
+    ? dial.plain
+    : (dial.value == null ? "—" : `${Math.round(dial.value)}%`);
+
+  ctx.fillStyle = dial.value == null && dial.plain == null ? "#66717f" : "#e6edf3";
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-  ctx.font = `600 ${Math.round(radius * 0.52)}px system-ui, sans-serif`;
-  ctx.fillText(
-    dial.value == null ? "—" : `${Math.round(dial.value)}%`,
-    cx, cy + radius * 0.12
-  );
+
+  // Long counts have to shrink to fit inside the ring.
+  const size = Math.round(radius * (middle.length > 4 ? 0.34 : 0.52));
+  ctx.font = `600 ${size}px system-ui, sans-serif`;
+  ctx.fillText(middle, cx, cy + radius * 0.12);
 }
 
 /*
@@ -8435,6 +8449,875 @@ async function deleteFromInspect(data) {
 }
 
 /*
+ * The findings, worst first, each with somewhere to go.
+ *
+ * "Memory is at 94%" without "and here is what is holding it" leaves somebody
+ * exactly where they started, so every finding carries a link. Silence is
+ * reported as silence rather than as health: a machine with no collector is not
+ * a machine with no problems.
+ */
+async function refreshDiagnosis() {
+  const body = $("diagnoseBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see the diagnosis."));
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner("Reading everything\u2026"));
+
+  let data;
+  try {
+    data = await api("diagnose");
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  if (!data.findings.length) {
+    body.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "band-ok",
+      textContent: "Nothing to report. Every check ran and none of them found anything \u2014 "
+        + "which is a different statement from nothing having been measured.",
+    }));
+    return;
+  }
+
+  const wrap = document.createDocumentFragment();
+
+  const worst = data.findings[0].level;
+  const headline = document.createElement("p");
+  headline.className = "diagnose-headline band-" + (
+    worst === "critical" ? "crit" : worst === "warning" ? "warn" : "ok"
+  );
+  headline.textContent = worst === "critical"
+    ? `${count(data.findings.filter(f => f.level === "critical").length, "thing")} needs attention now.`
+    : worst === "warning"
+      ? `${count(data.findings.filter(f => f.level === "warning").length, "thing")} worth looking at.`
+      : "Nothing urgent.";
+  wrap.appendChild(headline);
+
+  for (const f of data.findings) {
+    const row = document.createElement("div");
+    row.className = "finding finding-" + f.level;
+
+    const head = document.createElement("div");
+    head.className = "finding-head";
+
+    const level = document.createElement("span");
+    level.className = "finding-level band-" + (
+      f.level === "critical" ? "crit" : f.level === "warning" ? "warn" : "ok"
+    );
+    level.textContent = f.level === "unknown" ? "not measured" : f.level;
+    head.appendChild(level);
+
+    const title = document.createElement("strong");
+    title.textContent = f.title;
+    head.appendChild(title);
+    row.appendChild(head);
+
+    // The measurement, always. A finding without one is an opinion.
+    const measured = document.createElement("div");
+    measured.className = "finding-measured";
+    measured.textContent = f.measured;
+    row.appendChild(measured);
+
+    const means = document.createElement("div");
+    means.className = "muted small";
+    means.textContent = f.means;
+    row.appendChild(means);
+
+    if (f.next && f.view) {
+      const go = document.createElement("button");
+      go.className = "link";
+      go.textContent = f.next + " \u2192";
+      go.addEventListener("click", () => showView(f.view));
+      row.appendChild(go);
+    }
+
+    wrap.appendChild(row);
+  }
+
+  body.replaceChildren(wrap);
+}
+
+/* ---------------------------------------------------------------- network -- */
+
+const networkState = { data: null, publicOnly: false };
+
+/*
+ * One request behind five pages, like the host reading.
+ *
+ * Ports, peers, interfaces and the last capture all come out of the same host
+ * sample, and asking for them once is the difference between a page that opens
+ * and a page that fetches four times to draw four corners of one answer.
+ */
+async function refreshNetwork() {
+  const bodies = ["networkBody", "portsBody", "peersBody", "captureBody"];
+  for (const id of bodies) {
+    const el = $(id);
+    if (el && !el.childElementCount) el.replaceChildren(spinner("Reading the host collector\u2026"));
+  }
+
+  if (!state.signedIn) {
+    for (const id of bodies) {
+      const el = $(id);
+      if (el) el.replaceChildren(note("Sign in to see the network."));
+    }
+    return;
+  }
+
+  let data;
+  try {
+    data = await api("network");
+  } catch (error) {
+    for (const id of bodies) {
+      const el = $(id);
+      if (el) el.replaceChildren(note(String(error.message || error)));
+    }
+    return;
+  }
+
+  networkState.data = data;
+
+  if (!data.available) {
+    for (const id of bodies) {
+      const el = $(id);
+      if (el) el.replaceChildren(note(data.reason || "Nothing recorded."));
+    }
+    $("networkContent").hidden = true;
+    renderCaptureRequest(data);
+    return;
+  }
+
+  $("networkBody").replaceChildren();
+  $("networkContent").hidden = false;
+
+  renderNetworkGauges(data);
+  renderInterfaces(data.interfaces || []);
+  renderPorts(data);
+  renderPeers(data);
+  renderCaptureRequest(data);
+  renderCapture(data.capture);
+}
+
+/*
+ * The dials that make sense for a network, which is fewer than it looks.
+ *
+ * Throughput has no ceiling unless the driver reports a link speed, and most
+ * virtual interfaces report none - so a "percent of capacity" dial would be an
+ * invented denominator on exactly the machines this runs on. Where the speed is
+ * known it is used and said; where it is not, the rate is a card and not a dial.
+ */
+function renderNetworkGauges(data) {
+  const holder = $("networkGauges");
+  if (!holder) return;
+
+  const real = (data.interfaces || []).filter(i => !i.loopback);
+  const busiest = real.slice().sort(
+    (a, b) => ((b.rx_rate || 0) + (b.tx_rate || 0)) - ((a.rx_rate || 0) + (a.tx_rate || 0))
+  )[0];
+
+  const dials = [];
+
+  if (busiest && busiest.speed_mbit) {
+    const capacity = busiest.speed_mbit * 125000;  // megabit to bytes per second
+    for (const [label, rate] of [["In", busiest.rx_rate], ["Out", busiest.tx_rate]]) {
+      dials.push({
+        label: `${label} on ${busiest.name}`,
+        value: rate == null ? null : (rate / capacity) * 100,
+        warn: 60, crit: 85,
+        sub: rate == null
+          ? "needs two readings"
+          : `${humanBytes(rate)}/s of a ${busiest.speed_mbit} Mbit link`,
+      });
+    }
+  }
+
+  const peers = (data.peers || []).reduce((sum, p) => sum + Number(p.connections || 0), 0);
+  const top = (data.peers || [])[0];
+  dials.push({
+    label: "Connections",
+    value: null,
+    warn: 0, crit: 0,
+    sub: peers
+      ? `${humanCount(peers)} open, busiest peer holds ${humanCount(top.connections)}`
+      : "none recorded",
+    plain: peers ? humanCount(peers) : "\u2014",
+  });
+
+  const open = (data.ports || []).length;
+  const exposed = (data.ports || []).filter(p => p.public).length;
+  dials.push({
+    label: "Listening ports",
+    value: null,
+    warn: 0, crit: 0,
+    sub: `${exposed} of ${open} reachable from outside`,
+    plain: String(open),
+  });
+
+  holder.replaceChildren(...dials.map(buildGauge));
+}
+
+function renderInterfaces(rows) {
+  if (!rows.length) {
+    $("networkInterfaces").replaceChildren(note("No interfaces recorded."));
+    return;
+  }
+
+  renderTable("networkInterfaces", rows, [
+    {
+      label: "Interface",
+      className: "name",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.name;
+        if (row.loopback) {
+          const tag = document.createElement("span");
+          tag.className = "muted small";
+          // Reported rather than dropped: a machine doing a gigabyte a second
+          // over lo says something real about a local database, and it is also
+          // why a naive total looks impossible.
+          tag.textContent = " \u00b7 loopback, never leaves the machine";
+          span.appendChild(tag);
+        }
+        return span;
+      },
+    },
+    {
+      label: "State",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.up === null ? "unknown" : (row.up ? "up" : "down");
+        if (row.up === false) span.className = "band-crit";
+        return span;
+      },
+    },
+    { label: "In", className: "size", render: row => row.rx_rate == null ? "\u2014" : `${humanBytes(row.rx_rate)}/s` },
+    { label: "Out", className: "size", render: row => row.tx_rate == null ? "\u2014" : `${humanBytes(row.tx_rate)}/s` },
+    {
+      label: "Packets/s",
+      className: "size",
+      render: row => row.rx_packet_rate == null
+        ? "\u2014"
+        : `${humanCount(Math.round(row.rx_packet_rate))} in, ${humanCount(Math.round(row.tx_packet_rate))} out`,
+    },
+    { label: "Link", className: "size", render: row => row.speed_mbit ? `${row.speed_mbit} Mbit` : "not reported" },
+    {
+      label: "Errors / drops",
+      className: "size",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = `${humanCount(row.errors)} / ${humanCount(row.dropped)}`;
+        // Usually zero, and the non-zero case is the whole reason to show it.
+        if (row.errors > 0 || row.dropped > 0) span.className = "grew";
+        return span;
+      },
+    },
+    { label: "Since boot", className: "size", render: row => `${humanBytes(row.rx_bytes)} in, ${humanBytes(row.tx_bytes)} out` },
+  ], null, null, row => row.name);
+}
+
+function renderPorts(data) {
+  const rows = (data.ports || []).filter(p => !networkState.publicOnly || p.public);
+
+  if (!rows.length) {
+    $("portsBody").replaceChildren(note(networkState.publicOnly
+      ? "Nothing is listening on an address reachable from outside."
+      : "No listening sockets recorded."));
+    return;
+  }
+
+  renderTable("portsBody", rows, [
+    { label: "Port", className: "size", render: row => `${row.port}/${row.protocol}` },
+    {
+      label: "Usually",
+      className: "name",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.service.name;
+        if (!row.service.known) span.className = "muted";
+        if (row.service.note) span.title = row.service.note;
+        return span;
+      },
+    },
+    { label: "Held by", render: row => row.process || "not attributed" },
+    {
+      label: "Reachable",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.public ? "from anywhere" : "this machine only";
+        /*
+         * The exposed database is the finding this column exists for.
+         *
+         * A service on 127.0.0.1 is internal plumbing; the same service on
+         * 0.0.0.0 is open to whoever can route here. Redis, Memcached, MySQL
+         * and MongoDB have no authentication worth the name by default, so a
+         * public one of those is not a warning, it is a finding.
+         */
+        const risky = [3306, 5432, 6379, 11211, 27017, 9200];
+        if (row.public && risky.includes(Number(row.port))) {
+          span.className = "band-crit";
+          span.title = "This normally has no authentication by default. Reachable from off "
+            + "the machine, that is a serious exposure rather than a configuration choice.";
+        } else if (row.public) {
+          span.className = "muted";
+        }
+        return span;
+      },
+    },
+    { label: "Addresses", className: "cmd", render: row => (row.addresses || []).join(", ") },
+    { label: "Stack", render: row => (row.families || []).join(" + ") },
+  ], null, null, row => `${row.protocol}:${row.port}`);
+}
+
+function renderPeers(data) {
+  const rows = data.peers || [];
+  if (!rows.length) {
+    $("peersBody").replaceChildren(note(
+      "No established connections were recorded. Either the machine is idle, or ss "
+      + "could not be run by the collector."
+    ));
+    return;
+  }
+
+  const total = rows.reduce((sum, r) => sum + Number(r.connections || 0), 0);
+
+  const wrap = document.createDocumentFragment();
+  wrap.appendChild(note(`${humanCount(total)} connections across ${count(rows.length, "peer")}, `
+    + `recorded ${humanTime(data.taken_at)}.`));
+  $("peersBody").replaceChildren(wrap);
+
+  const holder = document.createElement("div");
+  holder.id = "peersTable";
+  $("peersBody").appendChild(holder);
+
+  renderTable("peersTable", rows, [
+    { label: "Address", className: "name", render: row => row.address },
+    { label: "Connections", className: "size", render: row => humanCount(row.connections) },
+    {
+      label: "Share",
+      className: "size",
+      render: row => total ? `${((row.connections / total) * 100).toFixed(1)}%` : "\u2014",
+    },
+    {
+      label: "",
+      render: row => {
+        if (!row.private) return "";
+        const span = document.createElement("span");
+        span.className = "muted small";
+        span.textContent = "a private address \u2014 another machine on this network";
+        return span;
+      },
+    },
+  ], null, null, row => row.address);
+}
+
+/*
+ * The controls for asking root to take a sample.
+ *
+ * The dashboard cannot open a raw socket and should not be able to. What it can
+ * do is leave a request naming an interface and one of a fixed set of filters,
+ * which the collector picks up on its next run - the same protocol as the disk
+ * walk, and honest about who is doing the work: a spinner implying it is
+ * happening now would be a lie about that.
+ */
+function renderCaptureRequest(data) {
+  const holder = $("captureRequest");
+  if (!holder) return;
+
+  if (!state.signedIn) {
+    holder.replaceChildren();
+    return;
+  }
+
+  const wrap = document.createDocumentFragment();
+  const form = document.createElement("div");
+  form.className = "pattern-row";
+
+  const interfaces = (data.interfaces || []).filter(i => !i.loopback);
+  const picker = document.createElement("select");
+  picker.id = "captureInterface";
+  for (const row of interfaces.length ? interfaces : [{ name: "eth0" }]) {
+    const option = document.createElement("option");
+    option.value = row.name;
+    option.textContent = row.name;
+    picker.appendChild(option);
+  }
+  form.appendChild(picker);
+
+  const filter = document.createElement("select");
+  filter.id = "captureFilter";
+  for (const f of data.filters || []) {
+    const option = document.createElement("option");
+    option.value = f.key;
+    option.textContent = f.label;
+    option.title = f.about;
+    filter.appendChild(option);
+  }
+  form.appendChild(filter);
+
+  const go = document.createElement("button");
+  go.textContent = "Ask for a capture";
+  go.addEventListener("click", async () => {
+    go.disabled = true;
+    try {
+      await post("request-capture", {
+        interface: picker.value,
+        filter: filter.value,
+      });
+      notice("Asked for. The host collector takes it on its next run — every five "
+        + "minutes with the suggested crontab line.", true);
+      await refreshNetwork();
+    } catch (error) {
+      notice(String(error.message || error));
+      go.disabled = false;
+    }
+  });
+  form.appendChild(go);
+  wrap.appendChild(form);
+
+  // What the chosen filter is actually for, which is the useful half.
+  const about = document.createElement("p");
+  about.className = "muted small";
+  const describe = () => {
+    const chosen = (data.filters || []).find(f => f.key === filter.value);
+    about.textContent = chosen ? chosen.about : "";
+  };
+  filter.addEventListener("change", describe);
+  describe();
+  wrap.appendChild(about);
+
+  for (const pending of data.pending || []) {
+    wrap.appendChild(note(`A ${pending.filter} capture on ${pending.interface} was asked for `
+      + `${ago(pending.requested_at)} and is waiting for the next host collection.`));
+  }
+
+  holder.replaceChildren(wrap);
+}
+
+function renderCapture(capture) {
+  const body = $("captureBody");
+  if (!body) return;
+
+  if (!capture) {
+    body.replaceChildren(note("No capture has been taken yet."));
+    return;
+  }
+
+  if (!capture.ok) {
+    body.replaceChildren(
+      note(`The last capture, ${ago(capture.taken_at)}, did not run: ${capture.reason}`)
+    );
+    return;
+  }
+
+  const parts = [];
+
+  const facts = [
+    ["Interface", capture.interface],
+    ["Filter", capture.label || capture.filter],
+    ["Taken", `${humanTime(capture.taken_at)} (${ago(capture.taken_at)})`],
+    ["Ran for", `${capture.seconds}s`],
+    ["Packets", `${humanCount(capture.packets)}`
+      + (Number(capture.seconds) > 0
+        ? ` \u2014 ${humanCount(Math.round(capture.packets / Number(capture.seconds)))} a second`
+        : "")],
+    ["Distinct addresses", humanCount(capture.distinct_peers)],
+  ];
+
+  if (Number(capture.distinct_names) > 0) {
+    facts.push(["Distinct names asked for", humanCount(capture.distinct_names)]);
+  }
+  if (capture.unparsed > 0) {
+    /*
+     * Said out loud rather than quietly dropped.
+     *
+     * ARP, ICMP and anything tcpdump wrote in a shape this does not parse are
+     * counted as packets and not attributed to an address. Reporting the
+     * remainder is what lets somebody check that the columns add up.
+     */
+    facts.push(["Counted but not attributed", `${humanCount(capture.unparsed)} \u2014 `
+      + "ARP, ICMP and anything not in a shape this parses"]);
+  }
+  if (capture.hit_limit) {
+    facts.push(["Stopped early", "The packet ceiling was reached before the time ran out, "
+      + "so this is the first part of the period rather than all of it. The proportions "
+      + "still hold; the totals are a floor."]);
+  }
+
+  parts.push(section("The sample", factGrid(facts)));
+
+  if ((capture.peers || []).length) {
+    parts.push(section("Busiest addresses", simpleTable(
+      ["Address", "Packets", "Share", ""],
+      capture.peers.slice(0, 20).map(p => [
+        p.label,
+        humanCount(p.packets),
+        capture.packets ? `${((p.packets / capture.packets) * 100).toFixed(1)}%` : "\u2014",
+        p.private ? "private address" : "",
+      ]),
+      ["name", "size", "size", null]
+    )));
+  }
+
+  if ((capture.ports || []).length) {
+    parts.push(section("Busiest ports", simpleTable(
+      ["Port", "Packets", "Usually"],
+      capture.ports.slice(0, 20).map(p => [
+        p.label, humanCount(p.packets), p.service?.name ?? "",
+      ]),
+      ["size", "size", "name"]
+    )));
+  }
+
+  if ((capture.names || []).length) {
+    /*
+     * The one field kept beyond a count, and worth it.
+     *
+     * "Four thousand queries" is a symptom. "Four thousand queries for one zone
+     * that is not ours" is a diagnosis - and the classic reflection attack is
+     * exactly that shape: many sources, one name, ANY records.
+     */
+    parts.push(section("Names asked for", simpleTable(
+      ["Name", "Queries", "Share"],
+      capture.names.slice(0, 25).map(n => [
+        n.label,
+        humanCount(n.packets),
+        capture.packets ? `${((n.packets / capture.packets) * 100).toFixed(1)}%` : "\u2014",
+      ]),
+      ["name", "size", "size"]
+    )));
+  }
+
+  body.replaceChildren(...parts);
+}
+
+/* ------------------------------------------------------------------- DNS -- */
+
+async function refreshDns(params = {}) {
+  const body = $("dnsBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to run name lookups."));
+    return;
+  }
+
+  body.replaceChildren(spinner("Asking\u2026"));
+
+  let data;
+  try {
+    data = await api("dns", params);
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  if (!data.available) {
+    body.replaceChildren(note(data.reason));
+    return;
+  }
+
+  if (!data.rows.length) {
+    body.replaceChildren(note("Nothing to look up."));
+    return;
+  }
+
+  const wrap = document.createDocumentFragment();
+
+  if (data.serves_dns) {
+    wrap.appendChild(note("This machine is listening on port 53, so it is a nameserver. "
+      + "Its own traffic will dwarf everything else here — see What is on the wire."));
+  }
+
+  for (const row of data.rows) {
+    const block = document.createElement("div");
+    block.className = "dns-row";
+
+    const head = document.createElement("div");
+    head.className = "dns-head";
+
+    const verdict = document.createElement("span");
+    verdict.className = "dns-verdict " + (row.ok ? "band-ok" : (row.status === "no reply" ? "band-crit" : "band-warn"));
+    verdict.textContent = row.ok ? "answered" : row.status;
+    head.appendChild(verdict);
+
+    const asked = document.createElement("strong");
+    asked.textContent = `${row.name} ${row.type}`;
+    head.appendChild(asked);
+
+    if (row.server) {
+      const at = document.createElement("span");
+      at.className = "muted small";
+      at.textContent = `asked ${row.server}`;
+      head.appendChild(at);
+    }
+
+    const took = document.createElement("span");
+    took.className = "muted small";
+    took.textContent = `${row.ms} ms`;
+    head.appendChild(took);
+
+    block.appendChild(head);
+
+    if (row.why) {
+      const why = document.createElement("div");
+      why.className = "muted small";
+      why.textContent = row.why;
+      block.appendChild(why);
+    }
+
+    if (row.answers.length) {
+      const list = document.createElement("ul");
+      list.className = "evidence-list";
+      for (const answer of row.answers) {
+        const li = document.createElement("li");
+        li.textContent = `${answer.type} ${answer.value} (ttl ${humanDuration(answer.ttl)})`;
+        list.appendChild(li);
+      }
+      block.appendChild(list);
+    }
+
+    if (row.note) {
+      const said = document.createElement("div");
+      said.className = "muted small";
+      said.textContent = row.note;
+      block.appendChild(said);
+    }
+
+    wrap.appendChild(block);
+  }
+
+  body.replaceChildren(wrap);
+}
+
+/* -------------------------------------------------------------- services -- */
+
+const unitState = { problemsOnly: false, data: null };
+
+async function refreshUnits() {
+  const body = $("unitsBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see the service list."));
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner());
+
+  let data;
+  try {
+    data = await api("units");
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  unitState.data = data;
+  renderUnits();
+}
+
+function renderUnits() {
+  const data = unitState.data;
+  const body = $("unitsBody");
+  if (!data) return;
+
+  if (!data.available) {
+    body.replaceChildren(note(data.reason));
+    return;
+  }
+
+  const problems = ["failed", "masked", "running-not-enabled", "enabled-not-running"];
+  const rows = unitState.problemsOnly
+    ? data.rows.filter(r => problems.includes(r.state))
+    : data.rows;
+
+  const wrap = document.createDocumentFragment();
+
+  const cards = document.createElement("div");
+  cards.className = "cards small-cards";
+  for (const stateName of ["failed", "masked", "running-not-enabled", "enabled-not-running", "running", "stopped"]) {
+    const n = data.summary[stateName] || 0;
+    if (!n && !problems.includes(stateName)) continue;
+
+    const card = document.createElement("div");
+    card.className = "card " + (n && stateName === "failed" ? "crit" : (n && problems.includes(stateName) ? "warn" : ""));
+    for (const [cls, text] of [
+      ["label", stateName.replace(/-/g, " ")],
+      ["value", String(n)],
+      ["sub muted", data.notes[stateName] || ""],
+    ]) {
+      const div = document.createElement("div");
+      div.className = cls;
+      div.textContent = text;
+      card.appendChild(div);
+    }
+    cards.appendChild(card);
+  }
+  wrap.appendChild(cards);
+  wrap.appendChild(note(`From the host reading of ${humanTime(data.taken_at)}.`));
+
+  const holder = document.createElement("div");
+  holder.id = "unitsTable";
+  wrap.appendChild(holder);
+  body.replaceChildren(wrap);
+
+  if (!rows.length) {
+    $("unitsTable").replaceChildren(note("Nothing in a state worth looking at."));
+    return;
+  }
+
+  renderTable("unitsTable", rows, [
+    { label: "Service", className: "name", render: row => row.name },
+    {
+      label: "State",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.state.replace(/-/g, " ");
+        if (row.state === "failed") span.className = "band-crit";
+        else if (problems.includes(row.state)) span.className = "band-warn";
+        else if (row.state === "running") span.className = "band-ok";
+        else span.className = "muted";
+        span.title = data.notes[row.state] || "";
+        return span;
+      },
+    },
+    { label: "At boot", render: row => row.enabled || "\u2014" },
+    { label: "systemd says", render: row => `${row.active}/${row.sub}` },
+    { label: "What it is", className: "cmd", render: row => row.description || "" },
+  ], null, null, row => row.name);
+}
+
+/* ------------------------------------------------------------ log stream -- */
+
+async function refreshLogStream() {
+  const body = $("streamBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to read log files."));
+    $("repeatBody").replaceChildren();
+    return;
+  }
+
+  if (!body.childElementCount) body.replaceChildren(spinner("Reading the end of every log\u2026"));
+
+  let data;
+  try {
+    data = await api("log-stream", { lines: $("streamLines").value });
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+    return;
+  }
+
+  renderLogStream(data);
+  renderRepeats(data);
+}
+
+function renderLogStream(data) {
+  const body = $("streamBody");
+  const wrap = document.createDocumentFragment();
+
+  const readable = (data.files || []).filter(f => f.ok);
+  const skipped = (data.files || []).filter(f => !f.ok);
+
+  wrap.appendChild(note(
+    `${count(readable.length, "log")} read`
+    + (skipped.length ? `, ${skipped.length} skipped (compressed, unreadable or not text)` : "")
+    + `. Ordered by ${data.ordering}.`
+  ));
+
+  if (data.note) wrap.appendChild(note(data.note));
+
+  if (!data.rows.length) {
+    wrap.appendChild(note("Nothing in any of them."));
+    body.replaceChildren(wrap);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "stream";
+  for (const row of data.rows) {
+    const line = document.createElement("div");
+    line.className = "stream-line";
+
+    const when = document.createElement("span");
+    when.className = "stream-when muted";
+    when.textContent = row.at ? humanTime(row.at) : "\u2014";
+    /*
+     * A line with no timestamp says so rather than borrowing one.
+     *
+     * It is placed by its file's modification time, which bunches every
+     * untimed line from one file at a single moment - close enough to sort by,
+     * not close enough to present as when it happened.
+     */
+    if (!row.at) when.title = "This line carries no timestamp this recognises. It is placed "
+      + "by when its file was last written.";
+    line.appendChild(when);
+
+    const from = document.createElement("span");
+    from.className = "stream-from";
+    from.textContent = row.label;
+    from.title = row.path;
+    line.appendChild(from);
+
+    const text = document.createElement("span");
+    text.className = "stream-text";
+    text.textContent = row.text;
+    line.appendChild(text);
+
+    list.appendChild(line);
+  }
+  wrap.appendChild(list);
+  body.replaceChildren(wrap);
+}
+
+function renderRepeats(data) {
+  const body = $("repeatBody");
+  const repeats = data.repeats;
+
+  if (!repeats || !repeats.groups.length) {
+    body.replaceChildren(note("Nothing to group yet."));
+    return;
+  }
+
+  const wrap = document.createDocumentFragment();
+  wrap.appendChild(note(
+    `${humanCount(repeats.lines)} recent lines across every log fall into `
+    + `${count(repeats.distinct, "distinct shape")}.`
+  ));
+
+  const holder = document.createElement("div");
+  holder.id = "repeatTable";
+  wrap.appendChild(holder);
+  body.replaceChildren(wrap);
+
+  renderTable("repeatTable", repeats.groups, [
+    { label: "Times", className: "size", render: row => humanCount(row.count) },
+    {
+      label: "Rate",
+      className: "size",
+      render: row => {
+        if (row.per_minute == null) return "\u2014";
+        const span = document.createElement("span");
+        span.textContent = `${row.per_minute}/min`;
+        // A count is a finding; a rate is an emergency, and the difference is
+        // not visible in the count.
+        if (row.per_minute >= 60) span.className = "grew";
+        return span;
+      },
+    },
+    { label: "In", render: row => (row.files || []).join(", ") },
+    {
+      label: "The line",
+      className: "cmd",
+      render: row => {
+        const span = document.createElement("span");
+        span.className = "lastline";
+        span.textContent = row.example;
+        span.title = `Grouped as: ${row.shape}`;
+        return span;
+      },
+    },
+  ], null, null, row => row.shape);
+}
+
+/*
  * What the monitor costs and whether it is still running.
  *
  * The collectors come first. A stale one makes every other number on this site
@@ -10185,7 +11068,13 @@ function showProviderMessage(message) {
  * both correct - it is still true, it is just older - and free.
  */
 const VIEWS = {
-  overview: { label: "Overview", refresh: () => refreshVitals() },
+  overview: {
+    label: "Overview",
+    refresh: async () => {
+      await refreshVitals();
+      await refreshDiagnosis();
+    },
+  },
 
   storage: { label: "Storage", parent: null, refresh: () => refreshScans() },
   "storage-io": { label: "How hard the disks are working", parent: "storage", refresh: () => refreshHost() },
@@ -10229,6 +11118,14 @@ const VIEWS = {
   processes: { label: "Processes", refresh: () => refreshProcesses() },
   services: { label: "Services", parent: "processes", refresh: () => refreshHost() },
   busy: { label: "Last busy", parent: "processes", refresh: () => refreshBusy() },
+
+  network: { label: "Network", refresh: () => refreshNetwork() },
+  "net-ports": { label: "Open ports", parent: "network", refresh: () => refreshNetwork() },
+  "net-peers": { label: "Who is connected", parent: "network", refresh: () => refreshNetwork() },
+  "net-capture": { label: "What is on the wire", parent: "network", refresh: () => refreshNetwork() },
+  "net-dns": { label: "Name lookups", parent: "network", refresh: () => refreshDns() },
+  units: { label: "Every service", parent: "processes", refresh: () => refreshUnits() },
+  "log-stream": { label: "Every log at once", parent: "storage", refresh: () => refreshLogStream() },
 
   capabilities: {
     label: "Capabilities",
@@ -10857,6 +11754,37 @@ for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh",
 
 $("offenderDelete").addEventListener("click",
   () => deletePicked().catch(error => notice(String(error.message || error))));
+
+$("diagnoseRefresh").addEventListener("click",
+  () => refreshDiagnosis().catch(error => notice(String(error.message || error))));
+
+$("networkRefresh").addEventListener("click",
+  () => refreshNetwork().catch(error => notice(String(error.message || error))));
+
+$("portsPublicOnly").addEventListener("change", event => {
+  networkState.publicOnly = event.target.checked;
+  if (networkState.data) renderPorts(networkState.data);
+});
+
+$("unitsProblemsOnly").addEventListener("change", event => {
+  unitState.problemsOnly = event.target.checked;
+  renderUnits();
+});
+
+$("streamLines").addEventListener("change",
+  () => refreshLogStream().catch(error => notice(String(error.message || error))));
+
+$("dnsRun").addEventListener("click",
+  () => refreshDns().catch(error => notice(String(error.message || error))));
+
+$("dnsForm").addEventListener("submit", event => {
+  event.preventDefault();
+  const name = $("dnsName").value.trim();
+  const params = name === "" ? {} : { name, type: $("dnsType").value };
+  const server = $("dnsServer").value.trim();
+  if (server !== "") params.server = server;
+  refreshDns(params).catch(error => notice(String(error.message || error)));
+});
 
 $("selfRefresh").addEventListener("click",
   () => refreshSelf().catch(error => notice(String(error.message || error))));

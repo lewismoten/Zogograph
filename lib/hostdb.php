@@ -762,6 +762,100 @@ function hostMigrations(): array
             'ALTER TABLE host_samples ADD COLUMN cpu_idle_ticks INTEGER',
             'ALTER TABLE host_samples ADD COLUMN cpu_percent REAL',
         ],
+
+        /*
+         * The network: what is open, who is connected, and what crossed the wire.
+         *
+         * Kept on three different clocks, which is why they are three tables.
+         * Ports change when somebody installs something and are worth a row per
+         * collection. Interfaces carry counters that only make sense as
+         * differences, so they ride the sample. A packet capture happens only
+         * when asked for and is the only one that costs anything to take.
+         */
+        19 => [
+            "CREATE TABLE host_ports (
+                sample_id INTEGER NOT NULL REFERENCES host_samples(id) ON DELETE CASCADE,
+                protocol  TEXT NOT NULL,
+                port      INTEGER NOT NULL,
+                addresses TEXT,
+                families  TEXT,
+                public    INTEGER NOT NULL DEFAULT 0,
+                process   TEXT,
+                pid       INTEGER,
+                PRIMARY KEY (sample_id, protocol, port)
+            )",
+
+            "CREATE TABLE host_interfaces (
+                sample_id  INTEGER NOT NULL REFERENCES host_samples(id) ON DELETE CASCADE,
+                name       TEXT NOT NULL,
+                rx_bytes   INTEGER, tx_bytes   INTEGER,
+                rx_packets INTEGER, tx_packets INTEGER,
+                rx_errors  INTEGER, tx_errors  INTEGER,
+                rx_dropped INTEGER, tx_dropped INTEGER,
+                up         INTEGER,
+                speed_mbit INTEGER,
+                PRIMARY KEY (sample_id, name)
+            )",
+
+            /*
+             * Connection counts per peer, which is the shape a flood makes.
+             *
+             * Only the busiest are kept. A machine under attack has tens of
+             * thousands of peers and the answer is in the top few; storing the
+             * tail every five minutes would cost more than the finding is worth.
+             */
+            "CREATE TABLE host_peers (
+                sample_id   INTEGER NOT NULL REFERENCES host_samples(id) ON DELETE CASCADE,
+                address     TEXT NOT NULL,
+                connections INTEGER NOT NULL,
+                private     INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (sample_id, address)
+            )",
+
+            /*
+             * One row per capture, and its summary rows beside it.
+             *
+             * Counts and endpoints only - see captureTraffic(). Nothing from a
+             * packet body is stored, ever.
+             */
+            "CREATE TABLE host_captures (
+                id          INTEGER PRIMARY KEY,
+                taken_at    INTEGER NOT NULL,
+                interface   TEXT NOT NULL,
+                filter      TEXT NOT NULL,
+                seconds     REAL,
+                packets     INTEGER NOT NULL DEFAULT 0,
+                bytes       INTEGER NOT NULL DEFAULT 0,
+                unparsed    INTEGER NOT NULL DEFAULT 0,
+                distinct_peers INTEGER,
+                distinct_names INTEGER,
+                hit_limit   INTEGER NOT NULL DEFAULT 0,
+                ok          INTEGER NOT NULL DEFAULT 0,
+                reason      TEXT
+            )",
+            'CREATE INDEX host_captures_taken_at ON host_captures (taken_at)',
+
+            "CREATE TABLE host_capture_rows (
+                capture_id INTEGER NOT NULL REFERENCES host_captures(id) ON DELETE CASCADE,
+                kind       TEXT NOT NULL,
+                label      TEXT NOT NULL,
+                packets    INTEGER NOT NULL,
+                private    INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (capture_id, kind, label)
+            )",
+
+            // Every service unit, not only the watched ones.
+            "CREATE TABLE host_units (
+                sample_id   INTEGER NOT NULL REFERENCES host_samples(id) ON DELETE CASCADE,
+                name        TEXT NOT NULL,
+                state       TEXT NOT NULL,
+                active      TEXT,
+                sub         TEXT,
+                enabled     TEXT,
+                description TEXT,
+                PRIMARY KEY (sample_id, name)
+            )",
+        ],
     ];
 }
 

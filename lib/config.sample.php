@@ -236,6 +236,20 @@ return [
      * Exact paths only, and no globs. A pattern here would be a way to read an
      * arbitrary file by naming one that happens to match.
      */
+    /*
+     * The network, which is the one resource nothing else here can see.
+     *
+     * capture_seconds bounds a requested packet sample. It is capped in code as
+     * well - see CAPTURE_MAX_SECONDS - because this opens a live interface as
+     * root and a config typo should not be able to leave tcpdump running.
+     */
+    'network' => [
+        'capture_seconds' => 20,
+
+        // Extra names to check on the DNS page, beyond this machine's own.
+        'dns_names' => [],
+    ],
+
     'host_log_paths' => [
         '/usr/local/apache/logs/error_log',
         '/usr/local/apache/logs/access_log',

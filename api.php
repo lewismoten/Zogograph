@@ -62,6 +62,9 @@ require_once __DIR__ . '/lib/host.php';
 require_once __DIR__ . '/lib/uptime.php';
 require_once __DIR__ . '/lib/limits.php';
 require_once __DIR__ . '/lib/inspect.php';
+require_once __DIR__ . '/lib/network.php';
+require_once __DIR__ . '/lib/logstream.php';
+require_once __DIR__ . '/lib/diagnose.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
@@ -107,9 +110,13 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'backups' => backupsView($config, $signedIn),
         'capabilities' => capabilitiesView($config, $pdo, $signedIn),
         'mounts' => mountsView($config, $signedIn),
+        'network' => networkView($config, $pdo, $signedIn),
+        'units' => unitsView($config, $signedIn),
+        'dns' => dnsView($config, $signedIn),
         'capability-changes' => capabilityChangesView($config, $pdo, $signedIn),
         'tail' => tailLog($config, $pdo, $signedIn),
         'last-lines' => lastLines($config, $pdo, $signedIn),
+        'log-stream' => logStreamView($config, $pdo, $signedIn),
         'schedule' => scheduleRead($signedIn),
         'host-setup' => hostSetup($config, $signedIn),
         'email' => emailSettings($config, $pdo, $signedIn),
@@ -121,6 +128,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'host-io' => hostIoSeries($config, $signedIn),
         'uptime' => uptimeView($config, $pdo, $signedIn),
         'health' => healthCheck($config, $pdo, $signedIn),
+        'diagnose' => diagnoseView($config, $pdo, $signedIn),
         'self' => selfReport($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
@@ -137,6 +145,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'alert-action' => doAlertAction($config, $pdo, $post),
         'daemon-watch' => doDaemonWatch($config, $pdo, $post),
         'request-host-walk' => doRequestHostWalk($config, $pdo, $post),
+        'request-capture' => doRequestCapture($config, $pdo, $post),
         'check-capabilities' => doCheckCapabilities($config, $pdo, $post),
         'request-host-task' => doRequestHostTask($config, $pdo, $post),
         'match-processes' => doMatchProcesses($config, $post),
@@ -868,6 +877,380 @@ function capabilityChangesView(array $config, PDO $pdo, bool $signedIn): array
     return capabilityChanges($config, $pdo, $host, $from, $to);
 }
 
+/**
+ * What is open, who is connected, and what the last capture found.
+ *
+ * All of it from the host collector, because none of it is answerable from
+ * inside a cage: the account's /proc/net shows its own sockets, `ss` shows what
+ * the account may see, and neither is the machine.
+ */
+function networkView(array $config, PDO $account, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the network');
+    }
+
+    $host = null;
+    try {
+        $host = hostDb($config, false);
+    } catch (Throwable) {
+        $host = null;
+    }
+
+    if ($host === null) {
+        return [
+            'available' => false,
+            'reason' => 'This needs the host collector. From inside a cage the account sees '
+                . 'only its own sockets, which is not the machine.',
+            'filters' => captureFilters(),
+        ];
+    }
+
+    $latest = (int)$host->query('SELECT MAX(id) FROM host_samples')->fetchColumn();
+    if ($latest <= 0) {
+        return [
+            'available' => false,
+            'reason' => 'No host readings yet.',
+            'filters' => captureFilters(),
+        ];
+    }
+
+    $ports = $host->prepare('SELECT * FROM host_ports WHERE sample_id = ? ORDER BY port');
+    $ports->execute([$latest]);
+    $portRows = array_map(function (array $row): array {
+        $row['addresses'] = array_values(array_filter(explode(' ', (string)$row['addresses'])));
+        $row['families'] = array_values(array_filter(explode(' ', (string)$row['families'])));
+        $row['public'] = (bool)$row['public'];
+        $row['service'] = portService((int)$row['port'], (string)$row['protocol']);
+        return $row;
+    }, $ports->fetchAll());
+
+    /*
+     * Interface rates need two readings, like every other counter here.
+     *
+     * A counter since boot says nothing on its own: a machine up for a year
+     * with a terabyte through it and one up for an hour with a terabyte through
+     * it are the same number and completely different situations.
+     */
+    $interfaces = interfaceRates($host, $latest);
+
+    $peers = $host->prepare(
+        'SELECT * FROM host_peers WHERE sample_id = ? ORDER BY connections DESC LIMIT 40'
+    );
+    $peers->execute([$latest]);
+
+    $capture = latestCapture($host);
+
+    return [
+        'available' => true,
+        'reason' => '',
+        'taken_at' => (int)$host->query('SELECT taken_at FROM host_samples WHERE id = ' . $latest)->fetchColumn(),
+        'ports' => $portRows,
+        'interfaces' => $interfaces,
+        'peers' => array_map(function (array $row): array {
+            $row['private'] = (bool)$row['private'];
+            return $row;
+        }, $peers->fetchAll()),
+        'capture' => $capture,
+        'filters' => captureFilters(),
+        'pending' => pendingCaptures($account, $host),
+        'max_seconds' => CAPTURE_MAX_SECONDS,
+    ];
+}
+
+/**
+ * Bytes and packets per second per interface, between the last two readings.
+ *
+ * Errors and drops are reported as totals rather than rates, because they are
+ * usually zero and a rate of zero says less than a count of zero. A non-zero
+ * drop count is the thing worth seeing, whatever its rate.
+ *
+ * @return list<array>
+ */
+function interfaceRates(PDO $host, int $latest): array
+{
+    // The table is keyed on (sample_id, name) and has no id of its own.
+    $previous = (int)$host->query(
+        'SELECT MAX(sample_id) FROM host_interfaces WHERE sample_id < ' . $latest
+    )->fetchColumn();
+
+    $rows = $host->prepare('SELECT * FROM host_interfaces WHERE sample_id = ?');
+    $rows->execute([$latest]);
+    $now = $rows->fetchAll();
+
+    $before = [];
+    $seconds = 0;
+    if ($previous > 0) {
+        $rows->execute([$previous]);
+        foreach ($rows->fetchAll() as $row) {
+            $before[$row['name']] = $row;
+        }
+
+        $times = $host->prepare('SELECT taken_at FROM host_samples WHERE id IN (?, ?)');
+        $times->execute([$previous, $latest]);
+        $at = array_map('intval', $times->fetchAll(PDO::FETCH_COLUMN));
+        $seconds = count($at) === 2 ? abs($at[1] - $at[0]) : 0;
+    }
+
+    $out = [];
+    foreach ($now as $row) {
+        $was = $before[$row['name']] ?? null;
+        $rate = function (string $key) use ($row, $was, $seconds): ?float {
+            if ($was === null || $seconds <= 0) {
+                return null;
+            }
+            $delta = (int)$row[$key] - (int)$was[$key];
+            // A counter that went backwards is a reboot or a 32-bit wrap, and a
+            // negative rate is never a real reading.
+            return $delta < 0 ? null : round($delta / $seconds, 1);
+        };
+
+        $out[] = [
+            'name' => $row['name'],
+            'loopback' => $row['name'] === 'lo',
+            'up' => $row['up'] === null ? null : (bool)$row['up'],
+            'speed_mbit' => $row['speed_mbit'] === null ? null : (int)$row['speed_mbit'],
+            'rx_rate' => $rate('rx_bytes'),
+            'tx_rate' => $rate('tx_bytes'),
+            'rx_packet_rate' => $rate('rx_packets'),
+            'tx_packet_rate' => $rate('tx_packets'),
+            'rx_bytes' => (int)$row['rx_bytes'],
+            'tx_bytes' => (int)$row['tx_bytes'],
+            'errors' => (int)$row['rx_errors'] + (int)$row['tx_errors'],
+            'dropped' => (int)$row['rx_dropped'] + (int)$row['tx_dropped'],
+            'seconds' => $seconds,
+        ];
+    }
+
+    usort($out, fn(array $a, array $b): int =>
+        ($a['loopback'] <=> $b['loopback'])
+        ?: (($b['rx_rate'] ?? 0) + ($b['tx_rate'] ?? 0) <=> ($a['rx_rate'] ?? 0) + ($a['tx_rate'] ?? 0)));
+
+    return $out;
+}
+
+/** The most recent capture, with its summary rows. */
+function latestCapture(PDO $host): ?array
+{
+    try {
+        $capture = $host->query('SELECT * FROM host_captures ORDER BY id DESC LIMIT 1')->fetch();
+    } catch (Throwable) {
+        return null;
+    }
+    if (!$capture) {
+        return null;
+    }
+
+    $rows = $host->prepare(
+        'SELECT kind, label, packets, private FROM host_capture_rows
+          WHERE capture_id = ? ORDER BY packets DESC'
+    );
+    $rows->execute([(int)$capture['id']]);
+
+    $grouped = ['peers' => [], 'ports' => [], 'names' => []];
+    foreach ($rows->fetchAll() as $row) {
+        $kind = (string)$row['kind'];
+        if (!isset($grouped[$kind])) {
+            continue;
+        }
+        $entry = ['label' => $row['label'], 'packets' => (int)$row['packets']];
+        if ($kind === 'peers') {
+            $entry['private'] = (bool)$row['private'];
+        }
+        if ($kind === 'ports') {
+            $entry['service'] = portService((int)$row['label']);
+        }
+        $grouped[$kind][] = $entry;
+    }
+
+    $capture['ok'] = (bool)$capture['ok'];
+    $capture['hit_limit'] = (bool)$capture['hit_limit'];
+    return $capture + $grouped + ['label' => captureFilter((string)$capture['filter'])['label'] ?? ''];
+}
+
+/** Captures asked for and not yet taken. */
+function pendingCaptures(PDO $account, PDO $host): array
+{
+    $out = [];
+    try {
+        $rows = $account->query('SELECT task, requested_at FROM host_tasks')->fetchAll();
+    } catch (Throwable) {
+        return $out;
+    }
+
+    $done = $host->prepare(
+        'SELECT MAX(taken_at) FROM host_captures WHERE interface = ? AND filter = ?'
+    );
+
+    foreach ($rows as $row) {
+        $parsed = parseCaptureTask((string)$row['task']);
+        if ($parsed === null) {
+            continue;
+        }
+        $done->execute([$parsed['interface'], $parsed['filter']]);
+        if ((int)$done->fetchColumn() >= (int)$row['requested_at']) {
+            continue;
+        }
+        $out[] = $parsed + ['requested_at' => (int)$row['requested_at']];
+    }
+
+    return $out;
+}
+
+/**
+ * Every service unit, from the newest reading that recorded any.
+ *
+ * "The newest that has some" rather than "the newest", because systemctl can
+ * fail on one collection - a container restarting, a transient dbus problem -
+ * and an empty list would read as a machine with no services rather than as one
+ * reading that did not manage to ask.
+ */
+function unitsView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the service list');
+    }
+
+    try {
+        $host = hostDb($config, false);
+    } catch (Throwable) {
+        $host = null;
+    }
+
+    if ($host === null) {
+        return ['available' => false, 'reason' => 'This needs the host collector.', 'rows' => []];
+    }
+
+    try {
+        $sample = (int)$host->query(
+            'SELECT MAX(sample_id) FROM host_units'
+        )->fetchColumn();
+    } catch (Throwable) {
+        return [
+            'available' => false, 'rows' => [],
+            'reason' => 'The host database predates service listing. Upload host-cron.php '
+                . 'and lib/, then let the collector run once.',
+        ];
+    }
+
+    if ($sample <= 0) {
+        return [
+            'available' => false, 'rows' => [],
+            'reason' => 'No service units recorded. The collector runs systemctl; on a '
+                . 'machine without systemd there is nothing to list.',
+        ];
+    }
+
+    $rows = $host->prepare('SELECT * FROM host_units WHERE sample_id = ?');
+    $rows->execute([$sample]);
+    $all = $rows->fetchAll();
+
+    $rank = ['failed' => 0, 'masked' => 1, 'running-not-enabled' => 2,
+             'enabled-not-running' => 3, 'running' => 4, 'stopped' => 5];
+    usort($all, fn(array $a, array $b): int =>
+        (($rank[$a['state']] ?? 9) <=> ($rank[$b['state']] ?? 9)) ?: strcmp($a['name'], $b['name']));
+
+    $summary = [];
+    foreach ($all as $row) {
+        $summary[$row['state']] = ($summary[$row['state']] ?? 0) + 1;
+    }
+
+    $notes = [];
+    foreach (array_keys($rank) as $state) {
+        $notes[$state] = serviceStateNote($state);
+    }
+
+    $takenAt = (int)$host->query(
+        'SELECT taken_at FROM host_samples WHERE id = ' . $sample
+    )->fetchColumn();
+
+    return [
+        'available' => true, 'reason' => '', 'rows' => $all,
+        'summary' => $summary, 'notes' => $notes, 'taken_at' => $takenAt,
+    ];
+}
+
+/**
+ * Name lookups, run now rather than read from a record.
+ *
+ * A stored DNS result answers "was it working five minutes ago", which is never
+ * the question - somebody opening this page is asking whether it works *now*.
+ * So this one endpoint does its own work, and it is bounded to a handful of
+ * one-shot queries with a three second timeout each.
+ */
+function dnsView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to run name lookups');
+    }
+
+    $listening = [];
+    try {
+        $host = hostDb($config, false);
+        if ($host !== null) {
+            $sample = (int)$host->query('SELECT MAX(sample_id) FROM host_ports')->fetchColumn();
+            if ($sample > 0) {
+                $rows = $host->prepare('SELECT port FROM host_ports WHERE sample_id = ?');
+                $rows->execute([$sample]);
+                foreach ($rows->fetchAll() as $row) {
+                    $listening[] = ['port' => (int)$row['port']];
+                }
+            }
+        }
+    } catch (Throwable) {
+        $listening = [];
+    }
+
+    $wanted = (string)($_GET['name'] ?? '');
+    $server = (string)($_GET['server'] ?? '');
+
+    if ($wanted !== '') {
+        $queries = [[
+            'name' => $wanted,
+            'type' => strtoupper((string)($_GET['type'] ?? 'A')),
+            'server' => $server === '' ? null : $server,
+            'why' => 'Asked for from the dashboard.',
+        ]];
+    } else {
+        $queries = defaultDnsQueries($config, $listening);
+    }
+
+    return dnsChecks($queries) + ['serves_dns' => $listening !== [] && in_array(
+        53,
+        array_column($listening, 'port'),
+        true
+    )];
+}
+
+/**
+ * Asks the host collector for a packet capture on its next run.
+ *
+ * The dashboard cannot open a raw socket and should not be able to. What it can
+ * do is leave a request naming an interface and one of a fixed set of filters,
+ * which root's collector picks up - the same protocol as the disk walk, and for
+ * the same reason.
+ */
+function doRequestCapture(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $interface = (string)($_POST['interface'] ?? '');
+    $filter = (string)($_POST['filter'] ?? 'all');
+
+    if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $interface)) {
+        throw new ActionRefused('that is not an interface name');
+    }
+    if (captureFilter($filter) === null) {
+        throw new ActionRefused('that is not one of the capture filters on offer');
+    }
+
+    $at = requestHostTask($pdo, captureTaskName($interface, $filter), currentAccountName());
+    logAction($pdo, 'request_capture', $interface . ' ' . $filter, 'ok', 0, 0,
+        'waiting for the host collector');
+
+    return ['ok' => true, 'requested_at' => $at];
+}
+
 function mountsView(array $config, bool $signedIn): array
 {
     if (!$signedIn) {
@@ -1138,6 +1521,100 @@ function actionLog(array $config, PDO $pdo, bool $signedIn): array
  * does not, and a refusal is reported per file rather than failing the batch -
  * one unreadable log should not blank the other nine.
  */
+/**
+ * The newest lines from every readable log, and what keeps repeating.
+ *
+ * The file list is assembled rather than configured: everything the scanner has
+ * recorded that resolveViewable will open, plus the host logs named in the
+ * config that this account can actually read. Assembled because the useful set
+ * changes as domains are added, and a list somebody has to maintain is a list
+ * that is wrong within a month.
+ */
+function logStreamView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to read log files');
+    }
+
+    $want = clampInt($_GET['lines'] ?? 20, 1, 200);
+
+    $files = [];
+    $seen = [];
+
+    /*
+     * The account's own logs, newest-written first.
+     *
+     * Ordered by mtime rather than by size: a merged stream wants the files
+     * that are being written to now, and the biggest log on the disk is very
+     * often one nothing has touched since a rotation months ago.
+     */
+    $rows = $pdo->query(
+        "SELECT p.path FROM paths p
+          WHERE p.kind = 'file' AND p.category IN ('logs', 'errors')
+          ORDER BY p.last_seen DESC LIMIT 120"
+    )->fetchAll(PDO::FETCH_COLUMN);
+
+    foreach ($rows as $path) {
+        try {
+            $real = resolveViewable($config, (string)$path);
+        } catch (ActionRefused) {
+            // Rotated, compressed, deleted or binary. Not an error - just not
+            // something that can be read as lines.
+            continue;
+        }
+        if (isset($seen[$real])) {
+            continue;
+        }
+        $seen[$real] = true;
+        $files[] = ['path' => $real, 'label' => basename($real), 'where' => 'account'];
+    }
+
+    foreach ((array)($config['host_log_paths'] ?? []) as $path) {
+        $real = realpath((string)$path);
+        if ($real === false || isset($seen[$real]) || !is_readable($real)) {
+            continue;
+        }
+        try {
+            resolveViewable($config, $real);
+        } catch (ActionRefused) {
+            continue;
+        }
+        $seen[$real] = true;
+        $files[] = ['path' => $real, 'label' => basename($real), 'where' => 'host'];
+    }
+
+    if ($files === []) {
+        return [
+            'rows' => [], 'files' => [], 'repeats' => ['groups' => [], 'lines' => 0, 'distinct' => 0],
+            'ordering' => 'timestamps',
+            'note' => 'No readable log files. The scanner records them under the logs and '
+                . 'errors categories; a rotated .gz cannot be read as lines, and the host\'s '
+                . 'own logs need permission this account may not have.',
+        ];
+    }
+
+    // Sorted by how recently each was written, so the merge starts with the
+    // files that are actually active.
+    usort($files, fn(array $a, array $b): int =>
+        (int)(@filemtime($b['path']) ?: 0) <=> (int)(@filemtime($a['path']) ?: 0));
+
+    $stream = logStream($files, $want);
+
+    /*
+     * Repetition is counted over a wider window than is displayed.
+     *
+     * Twenty lines cannot show that something is repeating - it either fills
+     * all twenty or it does not appear. The counting reads deeper into each
+     * file so "41,000 times a minute" is available while the display stays
+     * short enough to read.
+     */
+    $deep = logStream($files, 800);
+    $stream['repeats'] = repeatedLines($deep['rows']);
+    $stream['repeat_window'] = count($deep['rows']);
+
+    return $stream;
+}
+
 function lastLines(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
@@ -2249,6 +2726,20 @@ function doTestEmail(array $config, PDO $pdo, bool $post): array
  * the account one is a user crontab, the host one is root's - and merging them
  * would let a working half hide a broken one.
  */
+/**
+ * What is wrong with this machine, in one list.
+ *
+ * Signed in only: the findings quote paths, process names and open ports, and
+ * "which database is exposed" is not something to hand to a passer-by.
+ */
+function diagnoseView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see the diagnosis');
+    }
+    return diagnose($config, $pdo);
+}
+
 function selfReport(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {

@@ -1232,3 +1232,54 @@ ol.steps .step.done strong { color: var(--ok); }
 }
 .threshold-unit { white-space: nowrap; }
 @media (max-width: 620px) { .threshold { grid-template-columns: 1fr 80px auto; } }
+
+/* Network ------------------------------------------------------------ */
+
+.dns-row { border-top: 1px solid var(--line-soft); padding: 12px 0; }
+.dns-row:first-child { border-top: 0; }
+.dns-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.dns-verdict {
+  font-size: .78rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .04em; min-width: 8ch;
+}
+.band-ok { color: var(--ok); }
+
+/* Merged log stream -------------------------------------------------- */
+
+.stream {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .78rem; line-height: 1.6;
+  overflow-x: auto;
+}
+.stream-line {
+  display: grid; grid-template-columns: 15ch 16ch 1fr; gap: 12px;
+  padding: 3px 0; border-top: 1px solid var(--line-soft);
+  white-space: nowrap;
+}
+.stream-line:first-child { border-top: 0; }
+.stream-when { font-variant-numeric: tabular-nums; }
+.stream-from { color: var(--accent); overflow: hidden; text-overflow: ellipsis; }
+.stream-text { overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 760px) {
+  .stream-line { grid-template-columns: 1fr; gap: 0; white-space: normal; }
+  .stream-from { font-size: .72rem; }
+}
+
+/* What is wrong ------------------------------------------------------ */
+
+.diagnose-headline { font-size: 1.05rem; font-weight: 600; margin: 0 0 14px; }
+
+.finding { border-top: 1px solid var(--line-soft); padding: 14px 0; }
+.finding:first-of-type { border-top: 0; }
+.finding-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.finding-level {
+  font-size: .72rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; min-width: 11ch;
+}
+.finding-measured { margin: 4px 0 4px 0; font-variant-numeric: tabular-nums; }
+.finding .muted { margin: 0 0 6px; max-width: 90ch; }
+/* A left edge in the finding's own colour, so the shape of the list is
+   readable before any of the words are. */
+.finding-critical { box-shadow: inset 3px 0 var(--crit); padding-left: 12px; }
+.finding-warning { box-shadow: inset 3px 0 var(--warn); padding-left: 12px; }
+.finding-watch, .finding-unknown { box-shadow: inset 3px 0 var(--line); padding-left: 12px; }

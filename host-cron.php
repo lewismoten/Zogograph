@@ -168,6 +168,50 @@ try {
     }
 
     /*
+     * A packet capture, if one was asked for.
+     *
+     * Never on a schedule. It opens a live interface, runs for as long as it was
+     * asked to, and is the only thing this collector does that could itself be
+     * felt on a busy machine - so it happens once per request and the request is
+     * satisfied by a capture recorded after it was made.
+     */
+    foreach ($requestedTasks as $task => $requested) {
+        $capture = parseCaptureTask((string)$task);
+        if ($capture === null) {
+            continue;
+        }
+
+        $done = 0;
+        try {
+            $stmt = $pdo->prepare(
+                'SELECT MAX(taken_at) FROM host_captures WHERE interface = ? AND filter = ?'
+            );
+            $stmt->execute([$capture['interface'], $capture['filter']]);
+            $done = (int)$stmt->fetchColumn();
+        } catch (Throwable) {
+            $done = 0;
+        }
+
+        if ($done >= (int)$requested) {
+            continue;
+        }
+
+        $seconds = (int)($config['network']['capture_seconds'] ?? 20);
+        $say(sprintf('Capturing %ds of %s on %s (requested %s ago)...',
+            $seconds, $capture['filter'], $capture['interface'],
+            humanDuration(time() - (int)$requested)));
+
+        $result = captureTraffic($capture['interface'], $seconds, $capture['filter']);
+        storeCapture($pdo, $result);
+        hostHandOver($config, hostDatabasePath($config));
+
+        $say($result['ok']
+            ? sprintf('  %d packets from %d peers in %ss.',
+                $result['packets'], $result['distinct_peers'], $result['seconds'])
+            : '  ' . $result['reason']);
+    }
+
+    /*
      * A capability sweep, if one was asked for.
      *
      * Requests to expose a program count as well: whether it worked is only

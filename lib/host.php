@@ -36,6 +36,8 @@ require_once __DIR__ . '/processes.php';
 require_once __DIR__ . '/alerts.php';
 // bootHistory, for the shutdown reasons only root can read.
 require_once __DIR__ . '/uptime.php';
+// Ports, interfaces, peers and service units, all read as part of a reading.
+require_once __DIR__ . '/network.php';
 
 /** Top slab caches, processes and files kept per reading. */
 const HOST_KEEP_SLAB = 20;
@@ -1211,8 +1213,28 @@ function hostTakeReading(
         throw $e;
     }
 
+    /*
+     * The network state, recorded beside the memory state.
+     *
+     * Part of the ordinary reading because it is the same kind of thing: a few
+     * files in /proc and one `ss` call, costing milliseconds. What is *not* here
+     * is the packet capture, which costs a real measurement on a live interface
+     * and only ever runs when somebody asks for it.
+     *
+     * Failure is contained. A machine without iproute2 should still get its
+     * memory reading rather than losing the whole collection to a missing
+     * binary, so this cannot take the run down with it.
+     */
+    $network = ['ports' => 0, 'interfaces' => 0, 'peers' => 0, 'units' => 0];
+    try {
+        $network = storeNetwork($pdo, $sampleId);
+    } catch (Throwable $e) {
+        $network['error'] = $e->getMessage();
+    }
+
     return [
         'sample_id' => $sampleId,
+        'network' => $network,
         'processes' => count($processes['procs']),
         'users' => count(hostByUser($processes['procs'])),
         'slab' => min(count($slab), HOST_KEEP_SLAB),
