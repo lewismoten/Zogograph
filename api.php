@@ -70,6 +70,7 @@ require_once __DIR__ . '/lib/urlwatch.php';
 require_once __DIR__ . '/lib/spans.php';
 require_once __DIR__ . '/lib/storekeep.php';
 require_once __DIR__ . '/lib/notes.php';
+require_once __DIR__ . '/lib/software.php';
 require_once __DIR__ . '/lib/headers.php';
 require_once __DIR__ . '/lib/pagebits.php';
 require_once __DIR__ . '/lib/domains.php';
@@ -153,6 +154,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'link-sweep' => doLinkSweep($config, $pdo, $post),
         'ldconfig' => doLdconfig($config, $pdo, $post),
         'notes' => notesView($config, $pdo, $signedIn),
+        'changed' => changedView($config, $pdo, $signedIn),
         'note-marks' => noteMarksView($pdo, $signedIn),
         'note-snapshots' => noteSnapshotsView($pdo, $signedIn),
         'note-save' => doNoteSave($config, $pdo, $post),
@@ -5391,4 +5393,162 @@ function hostWorkMarks(PDO $host, int $from, int $to, int $limit = 200): array
 
     usort($out, fn(array $a, array $b): int => $a['at'] <=> $b['at']);
     return $out;
+}
+
+/* -------------------------------------------------------------- changes -- */
+
+/**
+ * What is installed, and everything that has moved in the window.
+ *
+ * Capability changes and software changes in one list, because the reader's
+ * question is "did anything change around then" and it does not care which of
+ * this tool's two tables noticed.
+ */
+function changedView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see this');
+    }
+
+    [$from, $to] = window();
+    $only = trim((string)($_GET['only'] ?? ''));
+
+    $software = softwareHistory($pdo, $from, $to, $only);
+    $events = [];
+
+    foreach ($software['changes'] as $row) {
+        $events[] = [
+            'at' => (int)$row['at'],
+            'kind' => 'software',
+            'name' => (string)$row['name'],
+            'label' => (string)$row['label'],
+            'from' => $row['old_value'],
+            'to' => (string)$row['new_value'],
+            'side' => (string)$row['side'],
+        ];
+    }
+
+    foreach (capabilityChangeRows($pdo, $from, $to, $only) as $row) {
+        $events[] = $row;
+    }
+
+    usort($events, fn(array $a, array $b): int => $b['at'] <=> $a['at']);
+
+    /*
+     * The filter offers only things that have actually changed.
+     *
+     * A list of every program in the catalogue is a hundred ways to select an
+     * empty chart. What has moved is a short list and every entry on it leads
+     * somewhere.
+     */
+    $names = [];
+    foreach ($events as $event) {
+        $key = $event['name'];
+        if (!isset($names[$key])) {
+            $names[$key] = ['name' => $key, 'label' => $event['label'],
+                            'kind' => $event['kind'], 'times' => 0, 'last' => 0];
+        }
+        $names[$key]['times']++;
+        $names[$key]['last'] = max($names[$key]['last'], $event['at']);
+    }
+    usort($names, fn(array $a, array $b): int => [$b['last']] <=> [$a['last']]);
+
+    return [
+        'from' => $from,
+        'to' => $to,
+        'only' => $only,
+        'events' => array_slice($events, 0, 500),
+        'names' => array_values($names),
+        'now' => $software['now'],
+        'capabilities' => capabilityNow($pdo),
+        /*
+         * When this last ran at all.
+         *
+         * Every timestamp on this page is when a change was *noticed*, and a
+         * page that checked once in March would otherwise imply nothing has
+         * happened since.
+         */
+        'last_checked' => lastCapabilityCheck($pdo),
+    ];
+}
+
+/**
+ * Capability changes in a window, in the same shape as software changes.
+ *
+ * @return list<array<string, mixed>>
+ */
+function capabilityChangeRows(PDO $pdo, int $from, int $to, string $only): array
+{
+    $sql = 'SELECT * FROM capability_changes WHERE at BETWEEN ? AND ?';
+    $bind = [$from, $to];
+
+    if ($only !== '') {
+        $sql .= ' AND name = ?';
+        $bind[] = $only;
+    }
+    $sql .= ' ORDER BY at DESC LIMIT 500';
+
+    try {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($bind);
+        $rows = $stmt->fetchAll();
+    } catch (Throwable) {
+        return [];
+    }
+
+    $out = [];
+    foreach ($rows as $row) {
+        $oldVersion = (string)($row['old_version'] ?? '');
+        $newVersion = (string)($row['new_version'] ?? '');
+        $oldMark = (string)($row['old_fingerprint'] ?? '');
+        $newMark = (string)($row['new_fingerprint'] ?? '');
+
+        /*
+         * A fingerprint change is described as one.
+         *
+         * "the file changed" is a weaker claim than "3.0.11 became 3.0.13" and
+         * has to read like one, or somebody will quote a hash at a colleague
+         * as though it were a version number.
+         */
+        $movedMark = $oldVersion === '' && $newVersion === '' && $oldMark !== $newMark;
+
+        $out[] = [
+            'at' => (int)$row['at'],
+            'kind' => 'capability',
+            'name' => (string)$row['name'],
+            'label' => (string)$row['name'],
+            'group' => (string)$row['group_name'],
+            'side' => (string)$row['side'],
+            'state_from' => (string)($row['old_state'] ?? ''),
+            'state_to' => (string)($row['new_state'] ?? ''),
+            'from' => $movedMark ? ($oldMark === '' ? null : 'file ' . $oldMark) : ($oldVersion ?: null),
+            'to' => $movedMark ? 'file ' . $newMark : ($newVersion ?: ''),
+            'by_fingerprint' => $movedMark,
+        ];
+    }
+
+    return $out;
+}
+
+/** What each watched program is at right now. */
+function capabilityNow(PDO $pdo): array
+{
+    try {
+        return $pdo->query(
+            'SELECT name, group_name, version, fingerprint, path, checked_at
+               FROM capabilities WHERE path <> \'\' ORDER BY group_name, name'
+        )->fetchAll();
+    } catch (Throwable) {
+        return [];
+    }
+}
+
+function lastCapabilityCheck(PDO $pdo): ?int
+{
+    try {
+        $at = $pdo->query('SELECT MAX(checked_at) FROM capabilities')->fetchColumn();
+        return $at === false || $at === null ? null : (int)$at;
+    } catch (Throwable) {
+        return null;
+    }
 }

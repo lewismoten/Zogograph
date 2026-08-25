@@ -33,6 +33,7 @@ declare(strict_types=1);
  * it needs a CageFS entry instead wastes the same afternoon differently.
  */
 
+require_once __DIR__ . '/software.php';
 require_once __DIR__ . '/collect.php';
 
 /** Anything run through a shell must match this. Nothing else is ever passed. */
@@ -910,6 +911,18 @@ function probeCapabilities(
             'executable' => $path !== '' && @is_executable($path),
             'alternate_path' => $alternates[$name] ?? '',
             'version' => $versions[$name] ?? '',
+            /*
+             * A fingerprint, but only where there is no version to compare.
+             *
+             * Hashing every binary on every probe would be pointless work for
+             * the ones that answer --version properly - a version string is a
+             * better comparison than a hash in every way. This is for the rest,
+             * where "the file is different from Tuesday's" is the only change
+             * detection available.
+             */
+            'fingerprint' => ($versions[$name] ?? '') === '' && $path !== ''
+                ? (fileFingerprint($path) ?? '')
+                : '',
             'source' => $sources[$name] ?? '',
         ];
     }
@@ -1062,23 +1075,34 @@ function storeCapabilities(PDO $pdo, array $probe): int
         $changes = detectCapabilityChanges($before, $probe['rows'], 'account', $before !== []);
         $log = $pdo->prepare(
             'INSERT INTO capability_changes (at, name, group_name, side,
-                old_state, new_state, old_version, new_version)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                old_state, new_state, old_version, new_version,
+                old_fingerprint, new_fingerprint)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         foreach ($changes as $change) {
             $log->execute([
                 $at, $change['name'], $change['group_name'], $change['side'],
                 $change['old_state'], $change['new_state'],
                 $change['old_version'], $change['new_version'],
+                $change['old_fingerprint'] ?? '', $change['new_fingerprint'] ?? '',
             ]);
         }
+
+        /*
+         * The kernel and friends are recorded on the same pass.
+         *
+         * Same question - what is installed here - and putting it on its own
+         * schedule would mean two things that must agree being measured at
+         * different moments.
+         */
+        recordSoftware($pdo, criticalSoftware(), 'account');
 
         $pdo->exec('DELETE FROM capabilities');
 
         $insert = $pdo->prepare(
             'INSERT INTO capabilities (name, group_name, checked_at, path, executable,
-                alternate_path, version, source)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                alternate_path, version, source, fingerprint)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $found = 0;
         foreach ($probe['rows'] as $row) {
@@ -1096,7 +1120,7 @@ function storeCapabilities(PDO $pdo, array $probe): int
             $insert->execute([
                 $row['name'], $row['group_name'], $at, $row['path'] ?? '',
                 ($row['executable'] ?? false) ? 1 : 0, $row['alternate_path'] ?? '',
-                $row['version'] ?? '', $row['source'] ?? '',
+                $row['version'] ?? '', $row['source'] ?? '', $row['fingerprint'] ?? '',
             ]);
         }
 
@@ -1178,8 +1202,21 @@ function detectCapabilityChanges(array $before, array $after, string $side, bool
             'executable' => (bool)($old['executable'] ?? false),
         ], $side);
         $oldVersion = (string)($old['version'] ?? '');
+        $oldMark = (string)($old['fingerprint'] ?? '');
+        $newMark = (string)($row['fingerprint'] ?? '');
 
-        if ($oldState === $newState && $oldVersion === $newVersion) {
+        /*
+         * The fingerprint counts as a change, but only where there is no
+         * version on either side.
+         *
+         * A program that gains a readable version between probes has not
+         * changed - the probe got luckier - and reporting that as an upgrade
+         * would fill the history with events nobody caused.
+         */
+        $markMoved = $oldVersion === '' && $newVersion === ''
+            && $oldMark !== '' && $newMark !== '' && $oldMark !== $newMark;
+
+        if ($oldState === $newState && $oldVersion === $newVersion && !$markMoved) {
             continue;
         }
 
@@ -1198,6 +1235,7 @@ function detectCapabilityChanges(array $before, array $after, string $side, bool
             'name' => $name, 'group_name' => (string)$row['group_name'], 'side' => $side,
             'old_state' => $oldState, 'new_state' => $newState,
             'old_version' => $oldVersion, 'new_version' => $newVersion,
+            'old_fingerprint' => $oldMark, 'new_fingerprint' => $newMark,
         ];
     }
 

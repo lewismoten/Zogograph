@@ -595,6 +595,64 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        27 => [
+            /*
+             * What is installed, and when each thing last moved.
+             *
+             * Almost every "it was working yesterday" turns out to be something
+             * changing underneath - a kernel that came with a package update,
+             * an OpenSSL bump that moved a default. None of that is in any
+             * chart here, and the machine does not keep a usable note of it
+             * either: the package log is root's and says what was installed
+             * rather than what is now answering.
+             *
+             * `first_seen` is when the *current* value first appeared, not when
+             * the row was created - which is what makes "this kernel has been
+             * running since March" answerable.
+             */
+            "CREATE TABLE software (
+                side       TEXT NOT NULL,
+                name       TEXT NOT NULL,
+                label      TEXT NOT NULL,
+                value      TEXT NOT NULL,
+                note       TEXT,
+                first_seen INTEGER NOT NULL,
+                last_seen  INTEGER NOT NULL,
+                PRIMARY KEY (side, name)
+            )",
+
+            /*
+             * `at` is when a change was *noticed*, not when it happened.
+             *
+             * This is written on a probe rather than on a schedule, so a weekly
+             * check turns a Tuesday upgrade into a Sunday event. The page says
+             * so; recording it as the moment of the change would be a quiet lie.
+             */
+            "CREATE TABLE software_changes (
+                id        INTEGER PRIMARY KEY,
+                at        INTEGER NOT NULL,
+                side      TEXT NOT NULL,
+                name      TEXT NOT NULL,
+                label     TEXT NOT NULL,
+                old_value TEXT,
+                new_value TEXT NOT NULL
+            )",
+            'CREATE INDEX software_changes_at ON software_changes (at)',
+            'CREATE INDEX software_changes_name ON software_changes (name, at)',
+
+            /*
+             * A fingerprint for the binaries that have no version to read.
+             *
+             * Plenty have no --version and plenty more print something
+             * unparseable, and a change still matters: "this file is different
+             * from the one that was here on Tuesday" is a smaller fact than a
+             * version bump but it is the same kind of fact.
+             */
+            'ALTER TABLE capabilities ADD COLUMN fingerprint TEXT',
+            'ALTER TABLE capability_changes ADD COLUMN old_fingerprint TEXT',
+            'ALTER TABLE capability_changes ADD COLUMN new_fingerprint TEXT',
+        ],
+
         26 => [
             /*
              * What somebody was thinking at the time.

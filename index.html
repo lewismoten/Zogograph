@@ -331,6 +331,11 @@
       <span class="nav-label">Data retention</span>
       <span class="nav-badge" data-badge="sys-retention" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/sys-changed" data-nav="sys-changed" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">What changed</span>
+      <span class="nav-badge" data-badge="sys-changed" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-notes" data-nav="sys-notes" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Notes</span>
@@ -1831,6 +1836,47 @@
 </section>
 
 
+</section>
+
+<section class="view" data-view="sys-changed" hidden>
+<section class="panel" id="changedPanel">
+  <div class="panel-head">
+    <h2>What changed underneath</h2>
+    <div class="panel-controls">
+      <label class="pill">Showing
+        <select id="changedOnly"></select>
+      </label>
+      <button id="changedCheck" class="link">Check now</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    Almost every <em>it was working yesterday</em> turns out to be something
+    changing underneath — a kernel that came with a package update, an OpenSSL
+    bump that moved a default, a PHP point release that deprecated a function.
+    None of it shows in any other chart here, and the machine does not keep a
+    usable note of it either: the package log belongs to root, is not always
+    present, and records what was <em>installed</em> rather than what is now
+    answering. Every time on this page is when a change was <strong>noticed</strong>,
+    not when it happened — this runs when capabilities are checked, so a weekly
+    check turns a Tuesday upgrade into a Sunday event.
+  </p>
+  <canvas id="changedChart"></canvas>
+  <p class="muted small chart-note" id="changedChartNote"></p>
+  <div id="changedBody"></div>
+</section>
+
+<section class="panel" id="installedPanel">
+  <div class="panel-head">
+    <h2>What is installed now</h2>
+  </div>
+  <p class="muted small sub-note">
+    What each thing is at this moment, and how long it has been that way. Where
+    a program offers no readable version — and plenty do not — a fingerprint of
+    the file stands in: a weaker fact than <code>3.0.11 → 3.0.13</code>, but the
+    same kind of fact, and the only one available.
+  </p>
+  <div id="installedBody"></div>
+</section>
 </section>
 
 <section class="view" data-view="sys-notes" hidden>

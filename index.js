@@ -4223,6 +4223,275 @@ function collectorDial(collector) {
   return svg;
 }
 
+/* -------------------------------------------------------------- changes -- */
+
+const changedState = { data: null, only: "" };
+
+async function refreshChanged() {
+  const body = $("changedBody");
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see this."));
+    $("installedBody").replaceChildren();
+    return;
+  }
+
+  const to = state.frozenAt || Math.floor(Date.now() / 1000);
+
+  try {
+    renderChanged(await api("changed", {
+      from: to - state.range,
+      to,
+      only: changedState.only,
+    }));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderChanged(data) {
+  changedState.data = data;
+
+  syncChangedFilter(data);
+  drawChangedChart(data);
+  renderChangedList(data);
+  renderInstalled(data);
+}
+
+/** The filter offers only what has actually moved. */
+function syncChangedFilter(data) {
+  const select = $("changedOnly");
+  const wanted = [["", "Everything"], ...data.names.map(row => [
+    row.name,
+    `${row.label} (${count(row.times, "change")})`,
+  ])];
+
+  const have = [...select.options].map(option => option.value);
+  const same = have.length === wanted.length && have.every((v, i) => v === wanted[i][0]);
+  if (same) return;
+
+  const chosen = select.value;
+  select.replaceChildren(...wanted.map(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    return option;
+  }));
+  if (wanted.some(([value]) => value === chosen)) select.value = chosen;
+}
+
+/**
+ * When things changed, over the range.
+ *
+ * Not a line: a change is an event, not a quantity, and joining them with a
+ * line would draw a slope between two upgrades that means nothing at all. So
+ * a mark per event on a lane per thing, which also makes the shape people
+ * actually look for visible - several things moving on the same afternoon,
+ * which is a package update rather than a coincidence.
+ */
+function drawChangedChart(data) {
+  const canvas = $("changedChart");
+  if (!canvas) return;
+
+  rememberDraw(canvas, () => drawChangedChart(changedState.data || data));
+
+  const width = canvas.clientWidth;
+  if (!width) return;
+
+  const events = data.events || [];
+  const lanes = [...new Set(events.map(event => event.name))].slice(0, 14);
+
+  const pad = { left: 150, right: 14, top: 14, bottom: 34 };
+  const laneH = 18;
+  const height = Math.max(120, pad.top + pad.bottom + Math.max(1, lanes.length) * laneH);
+
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  canvas.style.height = height + "px";
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.font = "11px system-ui, sans-serif";
+
+  const plotW = Math.max(1, width - pad.left - pad.right);
+  const from = data.from;
+  const to = data.to;
+  const span = Math.max(1, to - from);
+  const x = at => pad.left + ((Math.max(from, Math.min(to, at)) - from) / span) * plotW;
+
+  const axis = timeTicks(from, to, plotW, text => ctx.measureText(text).width);
+  for (const tick of axis.ticks) {
+    const at = pad.left + tick.x;
+    ctx.strokeStyle = tick.ends ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.06)";
+    ctx.beginPath();
+    ctx.moveTo(at, pad.top);
+    ctx.lineTo(at, height - pad.bottom + 4);
+    ctx.stroke();
+
+    if (!tick.label) continue;
+    ctx.fillStyle = tick.ends ? "#8b98a8" : "#66717f";
+    ctx.textAlign = "center";
+    ctx.fillText(tick.label, at, height - 12);
+  }
+
+  if (!events.length) {
+    ctx.fillStyle = "#66717f";
+    ctx.textAlign = "left";
+    ctx.fillText("Nothing changed in this range.", pad.left + 8, pad.top + 20);
+    $("changedChartNote").textContent = "";
+    return;
+  }
+
+  lanes.forEach((name, i) => {
+    const y = pad.top + i * laneH + laneH / 2;
+    const label = events.find(event => event.name === name)?.label ?? name;
+
+    ctx.fillStyle = "#8b98a8";
+    ctx.textAlign = "right";
+    ctx.fillText(label.length > 22 ? label.slice(0, 21) + "…" : label, pad.left - 10, y + 4);
+
+    ctx.strokeStyle = "rgba(255,255,255,0.05)";
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(pad.left + plotW, y);
+    ctx.stroke();
+
+    for (const event of events.filter(event => event.name === name)) {
+      const at = x(event.at);
+      /*
+       * Hollow where the evidence is a fingerprint rather than a version.
+       *
+       * Both are changes and both belong on the chart, but one is "3.0.11
+       * became 3.0.13" and the other is "the file is not the one that was
+       * here", and drawing them identically would let somebody quote a hash
+       * as a version number.
+       */
+      ctx.beginPath();
+      ctx.arc(at, y, 4, 0, Math.PI * 2);
+      if (event.by_fingerprint) {
+        ctx.strokeStyle = "#d8b25e";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = event.kind === "software" ? "#4c9aff" : "#56c98a";
+        ctx.fill();
+      }
+    }
+  });
+
+  ctx.textAlign = "left";
+
+  const hidden = new Set(events.map(event => event.name)).size - lanes.length;
+  $("changedChartNote").textContent =
+    `${count(events.length, "change")} across ${count(lanes.length, "thing")}.`
+    + (hidden > 0 ? ` ${count(hidden, "other")} not shown — use the filter.` : "")
+    + " Blue is the system software, green a program this tool watches, and a hollow"
+    + " ring means the change was noticed by fingerprint rather than by version.";
+}
+
+function renderChangedList(data) {
+  const body = $("changedBody");
+
+  if (!data.events.length) {
+    body.replaceChildren(note(
+      data.last_checked
+        ? `Nothing has changed in this range. Last checked ${ago(data.last_checked)}.`
+        : "Nothing has been checked yet. Press Check now, or open What the host allows."
+    ));
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.id = "changedTable";
+  body.replaceChildren(holder);
+
+  renderTable("changedTable", data.events, [
+    { label: "Noticed", render: row => humanTime(row.at) },
+    {
+      label: "What",
+      className: "name",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.label;
+        span.title = row.kind === "software"
+          ? "Part of the system software"
+          : `A program this tool watches${row.group ? ` (${row.group})` : ""}`;
+        return span;
+      },
+    },
+    { label: "Was", className: "cmd", render: row => row.from ?? "—" },
+    { label: "Became", className: "cmd", render: row => row.to },
+    {
+      label: "",
+      render: row => {
+        if (row.state_from && row.state_from !== row.state_to) {
+          const span = document.createElement("span");
+          span.className = row.state_to === "absent" ? "band-crit" : "band-ok";
+          span.textContent = `${row.state_from} → ${row.state_to}`;
+          return span;
+        }
+        if (row.by_fingerprint) {
+          const span = document.createElement("span");
+          span.className = "muted small";
+          span.textContent = "by fingerprint";
+          span.title = "This program offers no readable version, so the change was noticed "
+            + "by the file being different. It says something moved, not what.";
+          return span;
+        }
+        return "";
+      },
+    },
+  ], null, null, row => `${row.at}|${row.name}`);
+}
+
+/** What everything is at right now, and how long it has been that way. */
+function renderInstalled(data) {
+  const body = $("installedBody");
+  const parts = [];
+
+  if (data.last_checked) {
+    parts.push(note(`Last checked ${ago(data.last_checked)}.`));
+  }
+
+  if (data.now.length) {
+    parts.push(section("System software", simpleTable(
+      ["What", "Is", "Unchanged for", "Why it matters"],
+      data.now.map(row => [
+        row.label,
+        row.value,
+        humanSpan(row.age),
+        row.note || "",
+      ]),
+      ["name", "cmd", null, "muted"]
+    )));
+  } else {
+    parts.push(note(
+      "Nothing recorded yet. This is gathered when capabilities are checked."
+    ));
+  }
+
+  const watched = (data.capabilities || []).filter(row => row.version || row.fingerprint);
+  if (watched.length) {
+    parts.push(section("Programs this tool watches", simpleTable(
+      ["Program", "Version", "Where"],
+      watched.map(row => [
+        row.name,
+        row.version || (row.fingerprint ? `file ${row.fingerprint}` : "—"),
+        row.path,
+      ]),
+      ["name", "cmd", "cmd"]
+    )));
+    parts.push(note(
+      "A value beginning “file” is a fingerprint, not a version: that program "
+      + "offers no readable version, so a change can be detected but not described."
+    ));
+  }
+
+  body.replaceChildren(...parts);
+}
+
 /* ---------------------------------------------------------------- notes -- */
 
 /*
@@ -17099,6 +17368,11 @@ const VIEWS = {
     parent: "system",
     refresh: () => refreshNotes(),
   },
+  "sys-changed": {
+    label: "What changed",
+    parent: "system",
+    refresh: () => refreshChanged(),
+  },
   "storage-links": {
     label: "Symlinks",
     parent: "storage",
@@ -17717,6 +17991,35 @@ $("noteButton").addEventListener("click", () => {
 });
 
 $("noteAdd").addEventListener("click", () => showNoteDialog());
+
+$("changedOnly").addEventListener("change", event => {
+  changedState.only = event.target.value;
+  refreshChanged().catch(error => notice(String(error.message || error)));
+});
+
+$("changedCheck").addEventListener("click", async () => {
+  const button = $("changedCheck");
+  button.disabled = true;
+  button.textContent = "Checking\u2026";
+
+  try {
+    /*
+     * The capability probe is what records versions, so this is that.
+     *
+     * A separate "check the software" pass would be a second walk of the same
+     * binaries for the same answers, taken a moment apart - and the two could
+     * then disagree about what is installed.
+     */
+    await post("check-capabilities", { versions: "1" });
+    await refreshChanged();
+    notice("Checked. Anything that moved since last time is listed above.", true);
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    button.disabled = false;
+    button.textContent = "Check now";
+  }
+});
 $("noteDialogClose").addEventListener("click", () => $("noteDialog").close());
 
 $("linkSweepForm").addEventListener("submit", event => {
