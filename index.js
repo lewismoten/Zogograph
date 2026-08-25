@@ -1536,7 +1536,85 @@ const TABLE_SHOWN = new Map();
  */
 const TABLE_DREW = new Map();
 
-function renderTable(target, rows, columns, onRowClick, rowClass) {
+/*
+ * The rows each table last drew, so a changed one can be patched rather than
+ * rebuilt. Parallel to TABLE_DREW, which answers "did anything change at all".
+ */
+const TABLE_STATE = new Map();
+
+/*
+ * Rewrites the cells of an existing table, leaving the table itself alone.
+ *
+ * For the panels whose numbers move every poll - disk rates, process I/O - the
+ * data genuinely changes, so the "nothing changed" skip cannot help and the
+ * table was being torn down and rebuilt every couple of seconds. That is what
+ * the flicker and the jumping were: not the numbers moving, but the whole
+ * element being replaced under the reader.
+ *
+ * Only safe when these are the same rows in the same order, which is what `key`
+ * decides. When a process appears or disappears the identity changes and a real
+ * rebuild happens - at that point the table genuinely is different, and
+ * pretending otherwise would put one process's rate against another's pid.
+ *
+ * Returns false when it cannot be done, so the caller falls back.
+ */
+function patchTable(target, rows, columns, key, rowClass) {
+  const previous = TABLE_STATE.get(target);
+  if (!previous || !previous.keys || !key) return false;
+
+  const el = $(target);
+  const body = el.querySelector("tbody");
+  if (!body) return false;
+
+  const keys = rows.map(key);
+  if (keys.length !== previous.keys.length) return false;
+  if (previous.labels.join("\u0000") !== columns.map(c => c.label).join("\u0000")) return false;
+  if (keys.some((k, i) => k !== previous.keys[i])) return false;
+
+  // Only the rows actually on screen; the rest are drawn when unfolded.
+  const drawn = body.rows.length;
+  if (drawn > rows.length) return false;
+
+  for (let i = 0; i < drawn; i++) {
+    const tr = body.rows[i];
+    const row = rows[i];
+    if (tr.cells.length !== columns.length) return false;
+
+    if (rowClass) {
+      const wanted = rowClass(row);
+      if (tr.className !== wanted) tr.className = wanted;
+    }
+
+    for (let c = 0; c < columns.length; c++) {
+      const col = columns[c];
+      const td = tr.cells[c];
+      const content = col.render ? col.render(row) : row[col.key] ?? "";
+
+      if (content instanceof Node) {
+        /*
+         * A rendered node is compared by what it reads as.
+         *
+         * Replacing a cell whose text is identical is the same flicker one cell
+         * at a time, and it would throw away a checkbox the reader had just
+         * ticked. Text equality is not a perfect test, but a cell whose text is
+         * unchanged and whose meaning is not is a cell this table cannot draw
+         * usefully anyway.
+         */
+        if (td.childElementCount && td.textContent === content.textContent) continue;
+        td.replaceChildren(content);
+        continue;
+      }
+
+      const text = String(content);
+      if (td.textContent !== text) td.textContent = text;
+    }
+  }
+
+  TABLE_STATE.set(target, { keys, labels: columns.map(c => c.label) });
+  return true;
+}
+
+function renderTable(target, rows, columns, onRowClick, rowClass, key) {
   const el = $(target);
   if (!rows || !rows.length) {
     if (TABLE_DREW.get(target) !== "empty") {
@@ -1567,6 +1645,13 @@ function renderTable(target, rows, columns, onRowClick, rowClass) {
   if (TABLE_DREW.get(target) === signature && el.querySelector("table")) {
     return;
   }
+
+  // Same rows, different numbers: rewrite the cells rather than the table.
+  if (patchTable(target, rows, columns, key, rowClass)) {
+    TABLE_DREW.set(target, signature);
+    return;
+  }
+
   TABLE_DREW.set(target, signature);
 
   const tools = document.createElement("div");
@@ -1650,8 +1735,15 @@ function renderTable(target, rows, columns, onRowClick, rowClass) {
   const wanted = Math.min(TABLE_SHOWN.get(target) || 0, rows.length);
   do { draw(); } while (shown < wanted && shown < rows.length);
 
+  const remember = () => TABLE_STATE.set(target, {
+    keys: key ? rows.map(key) : null,
+    labels: columns.map(c => c.label),
+  });
+  remember();
+
   more.addEventListener("click", () => {
     draw();
+    remember();
     /*
      * Only a click invalidates the signature.
      *
@@ -2821,6 +2913,7 @@ async function deletePicked() {
       freed += Number(result.bytes ?? result.bytes_freed ?? 0);
       done++;
       offenderPicked.delete(row.path);
+      closeLogIfShowing(row.path, row.path_id);
     } catch (error) {
       failed.push(`${row.display}: ${error.message || error}`);
     }
@@ -2928,6 +3021,8 @@ function deleteButton(row) {
       const result = directory
         ? await post("delete-dir", { path: row.path })
         : await post("delete-file", { path: row.path });
+
+      closeLogIfShowing(row.path, row.path_id);
 
       if (directory) {
         notice(
@@ -3079,7 +3174,26 @@ async function showHistory(pathId, quiet = false) {
  * matches instead - which is the only way to page through the interesting lines
  * of a file too big to read.
  */
-/** Opens a log named by a raw path - the treemap and the host log list. */
+/*
+ * Shuts the log viewer if it is showing a file that has just gone.
+ *
+ * The viewer used to stay open on a deleted file, empty, reporting that the
+ * file was deleted - which is true and is not what anybody wants left on the
+ * screen. Matched on both the id and the path, because a log can be opened
+ * either way and only one of the two will be set.
+ */
+function closeLogIfShowing(path, pathId = null) {
+  const showing = (path && state.log.path === path)
+    || (pathId && state.log.pathId === pathId);
+  if (!showing) return;
+
+  state.log = { pathId: null, path: null, page: 0, needle: "" };
+  $("logPanel").hidden = true;
+  $("logBody").replaceChildren();
+  $("logStatus").textContent = "";
+}
+
+/** Opens a log named by a raw path - the treemap and the host list. */
 function showLogPath(path, quiet = false) {
   if (!path) return Promise.resolve();
   if (path !== state.log.path) {
@@ -3109,9 +3223,29 @@ async function showLog(pathId, quiet = false) {
       q: state.log.needle,
     });
   } catch (error) {
+    const said = String(error.message || error);
+
+    /*
+     * A file that is gone closes the viewer rather than reporting itself empty.
+     *
+     * The three delete buttons close it directly, but this also catches the
+     * cases they cannot: emptying a whole category, a deletion from another
+     * tab, or the file being removed by something else entirely while the
+     * panel sat open. An empty viewer explaining that its file no longer exists
+     * is a true statement nobody wants left on the screen.
+     */
+    if (/was deleted|no such file/i.test(said)) {
+      state.log = { pathId: null, path: null, page: 0, needle: "" };
+      panel.hidden = true;
+      body.replaceChildren();
+      $("logStatus").textContent = "";
+      if (!quiet) notice(said);
+      return;
+    }
+
     panel.hidden = false;
     $("logTitle").textContent = "Log";
-    $("logStatus").textContent = String(error.message || error);
+    $("logStatus").textContent = said;
     body.replaceChildren();
     return;
   }
@@ -4166,19 +4300,31 @@ function renderHostFiles(rows, totals) {
     },
     { label: "Owner", render: group => group[0].owner ?? "—" },
     { label: "Last written", className: "size", render: group => humanTime(group[0].mtime) },
-  ]);
+    // Keyed on the path, so a poll that only changes a size patches the cells
+    // rather than rebuilding the table under the reader.
+  ], null, null, group => group[0].path);
 
+  /*
+   * The summary goes in its own element, not appended to the table's.
+   *
+   * renderTable skips the rebuild when the data has not changed, so its
+   * replaceChildren no longer runs every poll - and anything appended after it
+   * survived into the next render and the one after that. This line was
+   * accumulating a fresh copy every couple of seconds, which is also what made
+   * the panel grow and the page jump.
+   */
   if (totals) {
-    const note = document.createElement("p");
-    note.className = "muted small";
-    note.textContent = totals.linked > 0
+    const line = totals.linked > 0
       ? `${humanBytes(totals.bytes)} across ${count(totals.files, "file")}, `
         + `reached by ${totals.paths} paths. The ${totals.linked} extra `
         + `${totals.linked === 1 ? "path is a hard link" : "paths are hard links"} `
         + `to a file already counted, so ${totals.linked === 1 ? "it costs" : "they cost"} `
         + `no additional disk.`
       : `${humanBytes(totals.bytes)} across ${count(totals.files, "file")}.`;
-    holder.appendChild(note);
+
+    const box = $("hostFilesTotal");
+    // Only touched when it actually changes, so it cannot flicker either.
+    if (box && box.textContent !== line) box.textContent = line;
   }
 }
 
@@ -4828,7 +4974,7 @@ function renderHostIoProcs(io) {
         return span;
       },
     },
-  ]);
+  ], null, null, row => String(row.pid));
 }
 
 function renderHostDisks(rows, sample, sampleCount) {
@@ -7521,12 +7667,28 @@ function showTip(box, px, py) {
   frag.appendChild(dl);
   tip.replaceChildren(frag);
 
-  // Kept inside the panel: a tooltip half off the right edge is unreadable.
+  /*
+   * Parked in the corner furthest from the pointer, not next to it.
+   *
+   * Following the cursor is fine over big rectangles and useless over small
+   * ones: the box covers the neighbours, so reading one means moving off it,
+   * and moving off it means the tooltip you were reading is replaced by the
+   * one for whatever you crossed. Pinning it to the far corner means it is
+   * never over the thing being pointed at, nor over anything the pointer is
+   * about to reach - and it stops moving, which is what makes it readable.
+   *
+   * It still sits inside the map rather than below it, so the eye does not have
+   * to leave the picture to read about the piece it is on.
+   */
   const holder = tip.parentElement;
-  const maxX = holder.clientWidth - tip.offsetWidth - 8;
-  const maxY = holder.clientHeight - tip.offsetHeight - 8;
-  tip.style.left = Math.max(4, Math.min(px + 14, maxX)) + "px";
-  tip.style.top = Math.max(4, Math.min(py + 14, maxY)) + "px";
+  const width = holder.clientWidth;
+  const height = holder.clientHeight;
+
+  const left = px > width / 2 ? 8 : width - tip.offsetWidth - 8;
+  const top = py > height / 2 ? 8 : height - tip.offsetHeight - 8;
+
+  tip.style.left = Math.max(4, Math.min(left, width - tip.offsetWidth - 4)) + "px";
+  tip.style.top = Math.max(4, Math.min(top, height - tip.offsetHeight - 4)) + "px";
 }
 
 $("treemap").addEventListener("mousemove", event => {
@@ -7969,6 +8131,7 @@ async function deleteFromInspect(data) {
       notice(`Removed ${humanBytes(result.bytes_freed ?? data.facts.size_bytes)}.`, true);
     }
 
+    closeLogIfShowing(data.path);
     $("inspectPanel").hidden = true;
     treeState.selected = null;
     // Back to the parent: the thing that was being looked at is gone, and
@@ -8586,7 +8749,20 @@ function renderCagefsExplainer(mounts, capabilities) {
   const installed = capabilities?.cagefs?.installed || cage?.present;
 
   if (!installed) {
-    holder.replaceChildren();
+    /*
+     * Its own page now, so an empty one has to say why it is empty.
+     *
+     * Inside the explainer this was a legitimate no-op - nothing to add to a
+     * page about mounts. On a page called "The CageFS skeleton" a blank panel
+     * reads as a fault, and the distinction it is drawing (absent, versus
+     * invisible from in here) is the whole point of the page.
+     */
+    holder.replaceChildren(note(
+      "Nothing here says CageFS is installed. From inside a cage that is expected: "
+      + "the skeleton's mounts live in the host's namespace and cannot be seen from "
+      + "an account. Run the host collector as root and this fills in — or it "
+      + "confirms the machine genuinely does not use CageFS."
+    ));
     return;
   }
 
@@ -9472,6 +9648,7 @@ const VIEWS = {
   "disk-procs": { label: "Processes on disk", parent: "storage", refresh: () => refreshHost() },
   "disk-rootfiles": { label: "Root-only files", parent: "storage", refresh: () => refreshHost() },
   "host-layout": { label: "Filesystem layout", parent: "storage", refresh: () => refreshMounts() },
+  cagefs: { label: "CageFS skeleton", parent: "storage", refresh: () => refreshMounts() },
 
   host: { label: "Memory", refresh: () => refreshHost() },
 
@@ -10103,6 +10280,9 @@ for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh"]) 
 
 $("offenderDelete").addEventListener("click",
   () => deletePicked().catch(error => notice(String(error.message || error))));
+
+$("cagefsRefresh").addEventListener("click",
+  () => refreshMounts().catch(error => notice(String(error.message || error))));
 
 $("hostLogRefresh").addEventListener("click",
   () => refreshHostLogs().catch(error => notice(String(error.message || error))));
