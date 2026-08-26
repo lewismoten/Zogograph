@@ -282,6 +282,143 @@ function cpuTicks(): ?array
 }
 
 /**
+ * Everything /proc/stat has to say, not just busy and idle.
+ *
+ * cpuTicks() above answers one question - what share of the last minute was not
+ * idle - and that number is where a CPU investigation stops being useful. "The
+ * machine is at 90%" is the same reading for a box compiling something, a box
+ * waiting on a failing disk, and a box whose hypervisor has taken the cores
+ * away, and those three have nothing in common except the number.
+ *
+ * The columns are cumulative jiffies since boot, so every one of them is a
+ * counter and none of them is a rate. Turning them into rates needs two
+ * readings, which is the reader's job and not this function's.
+ *
+ *   user      time in userland, at normal priority - the work you asked for
+ *   nice      the same, at lowered priority - backups, batch jobs, `nice`d cron
+ *   system    time in the kernel on behalf of a process: syscalls, page faults
+ *   idle      nothing to run
+ *   iowait    idle *and* something was blocked on I/O. Not CPU being consumed:
+ *             the core was free. High iowait means the disk is the problem and
+ *             the processor is the victim, which is the opposite of what the
+ *             number's placement in a CPU table suggests
+ *   irq       servicing hardware interrupts
+ *   softirq   servicing deferred interrupt work - on a busy server this is
+ *             mostly the network stack, and a whole core of it is a finding
+ *   steal     runnable, and the hypervisor gave the physical core to somebody
+ *             else. Time this machine wanted and did not get. On shared hosting
+ *             this is the one that explains "it is slow and nothing is running"
+ *   guest     running a guest VM, already counted inside user
+ *
+ * The per-core lines matter for a different reason: eight cores at 12% and one
+ * core at 100% with seven idle are the same aggregate figure and completely
+ * different problems. The second is a single-threaded bottleneck, and no amount
+ * of adding cores will move it.
+ *
+ * The counters underneath - context switches, interrupts, forks - are the ones
+ * that explain a machine which is busy without any process looking busy. A
+ * fork-per-request web server under load, or a pathological scheduler
+ * ping-pong, shows up here and nowhere else.
+ *
+ * @return array{fields: array<string, int>, cpus: array<int, array<string, int>>,
+ *               ctxt: ?int, intr: ?int, forks: ?int, running: ?int, blocked: ?int}|null
+ */
+function cpuBreakdown(string $procRoot = '/proc'): ?array
+{
+    $raw = @file_get_contents($procRoot . '/stat');
+    if ($raw === false) {
+        return null;
+    }
+
+    // In /proc/stat's order. Anything past these is a kernel newer than this
+    // list, and is summed into the total without being named.
+    $names = ['user', 'nice', 'system', 'idle', 'iowait', 'irq', 'softirq',
+              'steal', 'guest', 'guest_nice'];
+
+    $split = static function (string $values) use ($names): ?array {
+        $parts = array_map('intval', preg_split('/\s+/', trim($values)) ?: []);
+        if (count($parts) < 5) {
+            return null;
+        }
+        $out = ['total' => array_sum($parts)];
+        foreach ($names as $i => $name) {
+            $out[$name] = $parts[$i] ?? 0;
+        }
+        return $out;
+    };
+
+    $fields = null;
+    $cpus = [];
+    $ctxt = $intr = $forks = $running = $blocked = null;
+
+    foreach (preg_split('/\R/', $raw) ?: [] as $line) {
+        if (preg_match('/^cpu\s+(.*)$/', $line, $m)) {
+            $fields = $split($m[1]);
+            continue;
+        }
+        if (preg_match('/^cpu(\d+)\s+(.*)$/', $line, $m)) {
+            $one = $split($m[2]);
+            if ($one !== null) {
+                $cpus[(int)$m[1]] = $one;
+            }
+            continue;
+        }
+        if (preg_match('/^(ctxt|intr|processes|procs_running|procs_blocked)\s+(\d+)/', $line, $m)) {
+            $value = (int)$m[2];
+            match ($m[1]) {
+                'ctxt' => $ctxt = $value,
+                // The first number on the intr line is the total; the rest are
+                // per-vector and would make this row enormous for no gain.
+                'intr' => $intr = $value,
+                'processes' => $forks = $value,
+                'procs_running' => $running = $value,
+                'procs_blocked' => $blocked = $value,
+                default => null,
+            };
+        }
+    }
+
+    if ($fields === null) {
+        return null;
+    }
+
+    ksort($cpus);
+
+    return ['fields' => $fields, 'cpus' => $cpus, 'ctxt' => $ctxt, 'intr' => $intr,
+            'forks' => $forks, 'running' => $running, 'blocked' => $blocked];
+}
+
+/**
+ * How long tasks spent waiting for a core they were ready to use.
+ *
+ * The same measurement as pressureIo, pointed at the processor, and worth more
+ * than the utilisation figure for the same reason. A machine at 100% CPU with
+ * no pressure is a machine getting exactly as much work done as it can, which
+ * is what you want from it. A machine at 60% with real CPU pressure has
+ * something else wrong - throttling, an unbalanced cgroup, a hypervisor - and
+ * the utilisation number alone would say it had headroom.
+ *
+ * `full` is always zero on the CPU file by definition (if every task is stalled
+ * on CPU there is nothing to run and the time is idle, not stalled), so only
+ * `some` carries information here.
+ *
+ * @return array{some10: float, some60: float, some300: float}|null
+ */
+function pressureCpu(string $procRoot = '/proc'): ?array
+{
+    $raw = @file_get_contents($procRoot . '/pressure/cpu');
+    if ($raw === false) {
+        return null;
+    }
+
+    if (preg_match('/^some\s+avg10=([\d.]+)\s+avg60=([\d.]+)\s+avg300=([\d.]+)/m', $raw, $m)) {
+        return ['some10' => (float)$m[1], 'some60' => (float)$m[2], 'some300' => (float)$m[3]];
+    }
+
+    return null;
+}
+
+/**
  * Bytes in and out since boot, summed over the real interfaces.
  *
  * Loopback is excluded because it is not bandwidth - a busy local database can

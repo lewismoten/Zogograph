@@ -649,6 +649,620 @@ function renderCpuGauges(sample) {
   holder.replaceChildren(...dials.map(buildGauge));
 }
 
+/* -------------------------------------------------------------- processor -- */
+
+/*
+ * The five pages under CPU, from one reading.
+ *
+ * They exist because "the processor is at 90%" is where an investigation used
+ * to start and also where it stopped. That one number is the same for a machine
+ * compiling something, a machine waiting on a failing disk, a machine drowning
+ * in network interrupts, and a machine whose hypervisor has taken the cores
+ * away - four situations with nothing in common but the reading, and four
+ * different things to do about them.
+ *
+ * One request feeds all five, the same way one host reading feeds the memory
+ * pages: the differencing is the expensive part and doing it once is the
+ * difference between five polls a minute and one.
+ */
+const CPU_PANELS = ["cpuPanel", "cpuTimePanel", "cpuCoresPanel", "cpuProcsPanel",
+  "cpuQueuePanel", "cpuLimitsPanel"];
+const CPU_BODIES = ["cpuBody", "cpuTimeBody", "cpuCoresBody", "cpuProcsBody",
+  "cpuQueueBody", "cpuLimitsBody"];
+const CPU_CONTENTS = ["cpuContent", "cpuTimeContent", "cpuCoresContent", "cpuProcsContent",
+  "cpuQueueContent", "cpuLimitsContent"];
+
+async function refreshCpu() {
+  if (!WHAT_IS.loaded) await loadWhatIs();
+
+  for (const id of CPU_BODIES) {
+    const el = $(id);
+    if (el && !el.childElementCount) el.replaceChildren(spinner("Reading the host collector…"));
+  }
+
+  const show = hidden => CPU_CONTENTS.forEach(id => { const el = $(id); if (el) el.hidden = hidden; });
+  const sayAll = text => CPU_BODIES.forEach(id => {
+    const el = $(id);
+    if (el) el.replaceChildren(Object.assign(document.createElement("p"),
+      { className: "muted", textContent: text }));
+  });
+
+  if (!state.signedIn) {
+    for (const id of CPU_PANELS) {
+      const el = $(id);
+      if (el) el.hidden = true;
+    }
+    return;
+  }
+  for (const id of CPU_PANELS) {
+    const el = $(id);
+    if (el) el.hidden = false;
+  }
+
+  let data;
+  try {
+    const to = Math.floor(Date.now() / 1000);
+    data = await api("cpu", { from: to - state.range, to });
+  } catch (error) {
+    sayAll(String(error.message || error));
+    show(true);
+    return;
+  }
+
+  if (!data.available) {
+    sayAll(data.reason || "No host readings.");
+    // The instruction goes on the page somebody is most likely to have opened
+    // first, once, rather than five times down the sidebar.
+    collectorInstructions($("cpuBody"), data);
+    show(true);
+    return;
+  }
+
+  CPU_BODIES.forEach(id => { const el = $(id); if (el) el.textContent = ""; });
+  show(false);
+
+  renderCpuGauges(data.sample);
+  renderCpuFindings(data.findings ?? []);
+  drawLineChart($("cpuBusyChart"), data.series ?? [], [
+    { key: "busy", label: "Busy" },
+    { key: "user", label: "Userland" },
+    { key: "system", label: "Kernel" },
+    { key: "iowait", label: "Waiting for storage" },
+    { key: "steal", label: "Stolen by the host" },
+  ], {
+    axis: percentAxis, zeroBased: true, max: 100,
+    empty: cpuEmptyWhy(data),
+  });
+
+  renderCpuTime(data);
+  renderCpuCores(data);
+  renderCpuProcs(data);
+  renderCpuQueue(data);
+  renderCpuLimits(data);
+}
+
+/**
+ * Why a processor chart is empty, which is two different situations.
+ *
+ * A collector that has run once and a collector that has not run since the
+ * breakdown was added produce the same blank canvas, and only one of them is
+ * something to go and fix.
+ */
+function cpuEmptyWhy(data) {
+  if (!data.series?.length && Number(data.sample_count ?? 0) > 1) {
+    return "No processor breakdown in this range yet — the collector records it "
+      + "from the version that added these pages onward";
+  }
+  return "Only one reading so far — a percentage needs two";
+}
+
+/**
+ * The crontab line, on the one page most likely to be open.
+ *
+ * Shared with the memory pages, which cannot set themselves up either: this
+ * needs a cron entry for a user the dashboard is not running as, and "no
+ * readings yet" without the line to paste leaves somebody to go and find out
+ * how.
+ */
+function collectorInstructions(holder, data) {
+  if (!holder || !data.cron) return;
+
+  holder.appendChild(Object.assign(document.createElement("p"), {
+    className: "muted small",
+    textContent: "As root — ssh in or use WHM's Terminal — add this to root's "
+      + "crontab with crontab -e:",
+  }));
+  const pre = document.createElement("pre");
+  pre.className = "paste";
+  pre.textContent = data.cron;
+  holder.appendChild(pre);
+  holder.appendChild(Object.assign(document.createElement("p"), {
+    className: "muted small",
+    textContent: "Then run it once by hand to see what it finds: " + data.command,
+  }));
+}
+
+function renderCpuFindings(findings) {
+  const holder = $("cpuFindings");
+  if (!holder) return;
+
+  if (!findings.length) {
+    holder.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: "Nothing to report.",
+    }));
+    return;
+  }
+
+  holder.replaceChildren(...findings.map(findingRow));
+}
+
+/* ------------------------------------------------ where the time goes -- */
+
+/**
+ * The eight states, now and averaged over the range.
+ *
+ * Both, because they answer different questions and a page showing one of them
+ * gets asked for the other immediately. 40% steal right now is an emergency;
+ * 40% steal averaged over a day is a hosting decision.
+ */
+function renderCpuTime(data) {
+  const now = data.now;
+  const states = data.states ?? {};
+  const holder = $("cpuTimeCards");
+  if (!holder) return;
+  holder.replaceChildren();
+
+  if (!now) {
+    $("cpuTimeNote").textContent = cpuEmptyWhy(data) + ".";
+  } else {
+    /*
+     * Coloured only where the state is one that means something is wrong.
+     *
+     * 80% in userland is a machine doing its job and colouring it red teaches
+     * people to ignore the colour. Steal and iowait are different: any visible
+     * amount of either is a finding, because neither is work getting done.
+     */
+    const bands = {
+      steal: [5, 20],
+      iowait: [15, 35],
+      softirq: [10, 25],
+      irq: [5, 15],
+    };
+
+    const mean = key => {
+      const values = (data.series ?? []).map(r => Number(r[key])).filter(Number.isFinite);
+      return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
+    };
+
+    for (const [key, meta] of Object.entries(states)) {
+      const value = Number(now[key]);
+      const band = bands[key] ? bandOf(value, bands[key][0], bands[key][1]) : null;
+      const average = mean(key);
+      setHostCard(
+        meta.label,
+        Number.isFinite(value) ? `${value.toFixed(1)}%` : "—",
+        average == null ? "" : `${average.toFixed(1)}% on average over this range`,
+        band === "crit" ? "crit" : band === "warn" ? "warn" : "",
+        "",
+        "cpuTimeCards"
+      );
+    }
+
+    $("cpuTimeNote").textContent = cpuTimeVerdict(now, Number(data.sample?.cpu_cores) || 0);
+  }
+
+  drawLineChart($("cpuStateChart"), data.series ?? [],
+    Object.entries(states)
+      // Idle is left off deliberately: it is 100 minus everything else, so
+      // plotting it adds a line that carries no information and dominates the
+      // chart on any machine that is not in trouble.
+      .filter(([key]) => key !== "idle")
+      .map(([key, meta]) => ({ key, label: meta.label })),
+    { axis: percentAxis, zeroBased: true, empty: cpuEmptyWhy(data) });
+
+  renderTable("cpuStateTable", Object.entries(states).map(([key, meta]) => ({
+    key,
+    label: meta.label,
+    now: now ? Number(now[key]) : null,
+    what: meta.what,
+  })), [
+    { label: "State", render: r => r.label },
+    { label: "In /proc/stat", className: "cmd", render: r => r.key },
+    {
+      label: "Now",
+      className: "size",
+      render: r => (r.now == null || !Number.isFinite(r.now) ? "—" : `${r.now.toFixed(1)}%`),
+    },
+    { label: "What it means", render: r => r.what },
+  ]);
+}
+
+/** One sentence saying which state the busy time actually went to. */
+function cpuTimeVerdict(now, cores) {
+  const busy = Number(now.busy);
+  const spread = `Percentages are of all ${cores ? count(cores, "core") : "cores"} together, `
+    + `so 100% would be the whole machine occupied.`;
+
+  if (busy < 5) {
+    return `The machine is idle — ${busy.toFixed(1)}% busy over the last reading. ${spread}`;
+  }
+
+  const parts = [["user", "ordinary work in userland"], ["nice", "low-priority work"],
+    ["system", "kernel work on behalf of processes"], ["iowait", "waiting for storage"],
+    ["steal", "time the hypervisor took away"], ["softirq", "deferred interrupt work"],
+    ["irq", "hardware interrupts"]];
+
+  const ranked = parts
+    .map(([key, words]) => [Number(now[key]) || 0, words])
+    .sort((a, b) => b[0] - a[0]);
+
+  const [top, topWords] = ranked[0];
+  const [second, secondWords] = ranked[1];
+
+  return `${busy.toFixed(0)}% busy, and most of it is ${topWords} (${top.toFixed(1)}%)`
+    + (second >= top / 3 ? `, then ${secondWords} (${second.toFixed(1)}%)` : "")
+    + `. ${spread}`;
+}
+
+/* ---------------------------------------------------------- each core -- */
+
+function renderCpuCores(data) {
+  const grid = $("cpuCoreGrid");
+  const spread = data.spread ?? {};
+  if (!grid) return;
+
+  const cores = data.cores ?? [];
+  if (!cores.length) {
+    grid.replaceChildren(Object.assign(document.createElement("p"), {
+      className: "muted",
+      textContent: "No per-core lines in this reading. /proc/stat on this kernel did not "
+        + "break the counters down by core, so only the whole-machine figure exists.",
+    }));
+  } else {
+    grid.replaceChildren(...cores.map(core => {
+      const value = core.busy_percent == null ? null : Number(core.busy_percent);
+      const band = value == null ? null : bandOf(value, 75, 90);
+
+      const box = document.createElement("div");
+      box.className = "core" + (value == null ? " core-none" : "");
+
+      const head = document.createElement("div");
+      head.className = "core-head";
+      const name = document.createElement("span");
+      name.textContent = `core ${core.cpu}`;
+      const figure = document.createElement("span");
+      figure.className = "core-value";
+      figure.textContent = value == null ? "—" : `${value.toFixed(0)}%`;
+      head.append(name, figure);
+      box.appendChild(head);
+
+      const track = document.createElement("div");
+      track.className = "core-track";
+      const fill = document.createElement("div");
+      fill.className = "core-fill" + (band && band !== "ok" ? ` band-${band}` : "");
+      fill.style.width = `${Math.max(0, Math.min(100, value ?? 0))}%`;
+      track.appendChild(fill);
+      box.appendChild(track);
+
+      const sub = document.createElement("div");
+      sub.className = "core-sub";
+      // Said in words rather than drawn as an empty bar: a core with no
+      // measurement and an idle core look identical otherwise, and only one of
+      // those is a claim about the machine.
+      sub.textContent = value == null ? "not measured yet" : cpuCoreShare(core);
+      box.appendChild(sub);
+
+      return box;
+    }));
+  }
+
+  $("cpuSpreadNote").textContent = cpuSpreadVerdict(spread);
+
+  drawLineChart($("cpuSpreadChart"), data.spread_series ?? [], [
+    { key: "hottest", label: "Busiest core" },
+    { key: "mean", label: "Average core" },
+    { key: "coolest", label: "Quietest core" },
+    // On the other axis with its own scale: a count of cores forced onto a
+    // percentage scale would be a flat line along the bottom, and pinning the
+    // percentage axis to 100 would drag the core count up with it.
+    { key: "pinned", label: "Cores at 90%+", axis: "right" },
+  ], { axis: percentAxis, rightAxis: countAxis, zeroBased: true, empty: cpuEmptyWhy(data) });
+}
+
+/**
+ * What one core has spent its whole life on, as a hint under the bar.
+ *
+ * Lifetime shares rather than the last minute: the per-core counters are kept
+ * but only the busy percentage is differenced, and inventing a second
+ * difference here to fill a caption would cost a query per core. Labelled
+ * "since boot" so it cannot be read as the bar's own breakdown.
+ */
+function cpuCoreShare(core) {
+  const total = Number(core.total_ticks) || 0;
+  if (!total) return "";
+
+  const share = key => (Number(core[key]) || 0) / total * 100;
+  const steal = share("steal_ticks");
+  const iowait = share("iowait_ticks");
+
+  // Only the two that mean something is wrong, and only when they are visible.
+  if (steal >= 1) return `${steal.toFixed(1)}% stolen since boot`;
+  if (iowait >= 5) return `${iowait.toFixed(0)}% iowait since boot`;
+  return `${share("user_ticks").toFixed(0)}% user since boot`;
+}
+
+function cpuSpreadVerdict(spread) {
+  if (!spread || !spread.measured) {
+    return "No per-core percentages yet. Each one is a difference between two readings, "
+      + "so the first collection after this feature was added has nothing to compare "
+      + "against.";
+  }
+
+  if (spread.measured === 1) {
+    return "One core, so there is no distribution to look at — the whole-machine figure "
+      + "is the core's figure.";
+  }
+
+  const shape = `Busiest core ${spread.max.toFixed(0)}%, quietest ${spread.min.toFixed(0)}%, `
+    + `${spread.mean.toFixed(0)}% on average across ${count(spread.measured, "core")}.`;
+
+  if (spread.pinned === spread.measured) {
+    return `${shape} Every core is pinned: the machine has no processor headroom at all. `
+      + `Unlike a single busy core this does respond to more cores — but it is worth `
+      + `checking first that the work is work you wanted done.`;
+  }
+
+  if (spread.pinned > 0 && spread.mean < 50 && spread.idle >= spread.measured / 2) {
+    return `${shape} That is the shape of a single-threaded bottleneck: one piece of work `
+      + `that cannot be split, holding things up while the machine looks mostly free. `
+      + `The whole-machine percentage will never look alarming however stuck it gets, and `
+      + `more cores would not move it.`;
+  }
+
+  if (spread.spread < 25) {
+    return `${shape} The work is spreading evenly, so the only question left is how much `
+      + `of it there is.`;
+  }
+
+  return `${shape} Uneven, but not one core carrying everything — normal on a machine `
+    + `running a mixture of jobs, and worth a second look if the gap keeps widening.`;
+}
+
+/* ------------------------------------------------- what is burning it -- */
+
+/** Scheduler states, in words. A letter in a column is a lookup, not a reading. */
+const CPU_STATE_WORDS = {
+  R: "running",
+  S: "sleeping",
+  D: "waiting on I/O",
+  Z: "zombie",
+  T: "stopped",
+  I: "idle kernel thread",
+};
+
+function renderCpuProcs(data) {
+  const rows = data.processes ?? [];
+  const cores = Number(data.sample?.cpu_cores) || 0;
+
+  const accounted = rows.reduce((sum, r) => sum + (Number(r.cpu_percent) || 0), 0);
+  const busy = data.now ? Number(data.now.busy) : null;
+
+  $("cpuProcsNote").textContent = !rows.length
+    ? "No process has used measurable processor time between two readings."
+    : `${count(rows.length, "process")} using the processor, adding up to `
+      + `${accounted.toFixed(0)}% of one core`
+      + (cores ? ` — about ${(accounted / cores).toFixed(0)}% of the machine` : "")
+      + (busy == null ? "." : `, against ${busy.toFixed(0)}% measured across all cores.`);
+
+  renderTable("cpuProcs", rows, [
+    { label: "PID", className: "size", render: r => r.pid },
+    { label: "User", render: r => userCell(r.user) },
+    { label: "Process", render: r => namedThing("process", r.name) },
+    {
+      label: "CPU now (of one core)",
+      className: "size",
+      render: r => (r.cpu_percent == null ? "—" : `${Number(r.cpu_percent).toFixed(1)}%`),
+    },
+    {
+      // The `ps` figure beside the `top` figure, which is the whole reason the
+      // two tools appear to disagree about the same process.
+      label: "Average since it started",
+      className: "size",
+      render: r => (r.cpu_lifetime_percent == null
+        ? "—"
+        : `${Number(r.cpu_lifetime_percent).toFixed(1)}%`),
+    },
+    {
+      label: "State",
+      render: r => (r.state ? (CPU_STATE_WORDS[r.state] ?? r.state) : "—"),
+    },
+    { label: "Threads", className: "size", render: r => r.threads ?? "—" },
+    {
+      label: "Running for",
+      className: "size",
+      render: r => (r.elapsed_seconds == null ? "—" : humanDuration(r.elapsed_seconds)),
+    },
+    { label: "Resident", className: "size", render: r => humanBytes(r.rss_bytes) },
+    { label: "Command", className: "cmd", render: r => r.command },
+  ]);
+}
+
+/* --------------------------------------------------- waiting to run -- */
+
+function renderCpuQueue(data) {
+  const now = data.now;
+  const sample = data.sample ?? {};
+  const cores = Number(sample.cpu_cores) || 0;
+
+  const holder = $("cpuQueueCards");
+  if (holder) holder.replaceChildren();
+
+  const card = (label, value, sub, level = "") =>
+    setHostCard(label, value, sub, level, "", "cpuQueueCards");
+
+  const running = now?.procs_running ?? null;
+  const blocked = now?.procs_blocked ?? null;
+  const load = sample.load1 == null ? null : Number(sample.load1);
+
+  card("Wanting to run", running == null ? "—" : String(running),
+    cores ? `across ${count(cores, "core")}` : "cores unknown",
+    running != null && cores && running > cores * 2 ? "warn" : "");
+
+  card("Blocked in the kernel", blocked == null ? "—" : String(blocked),
+    "uninterruptible — waiting on storage",
+    blocked != null && blocked >= 4 ? "warn" : "");
+
+  card("Load, one minute", load == null ? "—" : load.toFixed(2),
+    // Said every time it is shown, because it is the most misread number on
+    // any Linux dashboard: it counts blocked tasks, which use no processor.
+    "a queue length, not a CPU reading");
+
+  const pressure = now?.cpu_pressure_some ?? null;
+  card("Waiting for a core", pressure == null ? "—" : `${Number(pressure).toFixed(0)}%`,
+    pressure == null
+      ? "no pressure stall info on this kernel"
+      : "share of the last ten seconds",
+    pressure != null && pressure >= 20 ? "warn" : "");
+
+  card("Context switches", now?.ctxt_rate == null ? "—" : `${humanCount(now.ctxt_rate)}/s`,
+    "the scheduler changing its mind");
+  card("Interrupts", now?.intr_rate == null ? "—" : `${humanCount(now.intr_rate)}/s`,
+    "devices asking for attention");
+  card("New processes", now?.fork_rate == null ? "—" : `${humanCount(now.fork_rate)}/s`,
+    "forks and execs per second");
+
+  $("cpuQueueNote").textContent = cpuQueueVerdict(now, load, cores);
+
+  drawLineChart($("cpuQueueChart"), data.series ?? [], [
+    { key: "procs_running", label: "Wanting to run" },
+    { key: "procs_blocked", label: "Blocked on I/O" },
+    { key: "load1", label: "Load, one minute" },
+    { key: "cpu_pressure_some", label: "Waiting for a core (%)", axis: "right" },
+  ], { axis: countAxis, rightAxis: percentAxis, zeroBased: true, empty: cpuEmptyWhy(data) });
+
+  drawLineChart($("cpuRateChart"), data.series ?? [], [
+    { key: "ctxt_rate", label: "Context switches/s" },
+    { key: "intr_rate", label: "Interrupts/s" },
+    // Two or three orders of magnitude below the other two, so it gets the
+    // other axis or it is a flat line along the bottom of its own chart.
+    { key: "fork_rate", label: "New processes/s", axis: "right" },
+  ], { axis: countAxis, rightAxis: countAxis, zeroBased: true, empty: cpuEmptyWhy(data) });
+}
+
+/**
+ * The sentence that stops somebody buying a faster processor for a disk fault.
+ *
+ * A high load average with an empty run queue and a pile of blocked tasks is
+ * storage, every time, and it is the single most common misreading of any of
+ * these numbers.
+ */
+function cpuQueueVerdict(now, load, cores) {
+  if (!now) {
+    return "Nothing to compare yet — the queue is read from two consecutive collections.";
+  }
+
+  const running = Number(now.procs_running);
+  const blocked = Number(now.procs_blocked);
+
+  if (load != null && cores > 0 && load > cores && Number.isFinite(blocked) && blocked >= 2
+    && Number.isFinite(running) && running <= cores) {
+    return `Load is ${load.toFixed(2)} on ${count(cores, "core")}, but only ${running} `
+      + `${running === 1 ? "task wants" : "tasks want"} a core and `
+      + `${count(blocked, "task")} ${blocked === 1 ? "is" : "are"} blocked in the kernel. `
+      + `That load is storage, not processor: blocked tasks count towards it and use no `
+      + `CPU at all. A faster processor would change nothing here.`;
+  }
+
+  if (Number.isFinite(running) && cores > 0 && running > cores * 2) {
+    return `${count(running, "task")} runnable across ${count(cores, "core")}. Nothing is `
+      + `stalled — everything gets a turn — but each turn is shorter, and every job takes `
+      + `longer than it would on an idle machine. This is what "slow but nothing is `
+      + `broken" looks like from underneath.`;
+  }
+
+  if (Number.isFinite(blocked) && blocked >= 4) {
+    return `${count(blocked, "task")} in uninterruptible sleep. They are waiting on I/O, `
+      + `cannot be killed while they wait, and are inflating the load average without `
+      + `touching the processor.`;
+  }
+
+  return `Nothing is queueing: ${Number.isFinite(running) ? running : "an unknown number of"} `
+    + `${running === 1 ? "task" : "tasks"} runnable`
+    + (cores ? ` across ${count(cores, "core")}` : "")
+    + `, ${Number.isFinite(blocked) ? blocked : "an unknown number"} blocked.`;
+}
+
+/* --------------------------------------------- ceilings and throttling -- */
+
+function renderCpuLimits(data) {
+  // The same comparison the limits panel draws, in its own frame here: the
+  // question "why is my CPU pinned while the server is idle" is a CPU question
+  // and sending somebody to another page to have it answered loses them.
+  renderLimits(data.limits, "cpuLimitsTable", "cpuLimitsWhen");
+
+  const mine = data.vitals?.cpu_percent == null ? null : Number(data.vitals.cpu_percent);
+  const host = data.sample?.cpu_percent == null ? null : Number(data.sample.cpu_percent);
+  const faults = (data.lve ?? []).reduce((sum, r) => sum + (Number(r.faults_cpu) || 0), 0);
+
+  $("cpuLimitsNote").textContent = cpuLimitVerdict(mine, host, faults, data.lve ?? []);
+
+  const wrap = $("cpuLveWrap");
+  if (wrap) wrap.hidden = !(data.lve ?? []).length;
+
+  if ((data.lve ?? []).length) {
+    renderTable("cpuLve", data.lve, [
+      { label: "Account", render: r => r.user },
+      {
+        label: "CPU faults",
+        className: "size",
+        render: r => humanCount(r.faults_cpu),
+      },
+      { label: "Memory faults", className: "size", render: r => humanCount(r.faults_mem) },
+      { label: "Process faults", className: "size", render: r => humanCount(r.faults_procs) },
+      {
+        label: "CPU in use",
+        className: "size",
+        render: r => (r.cpu_percent == null ? "—" : `${Number(r.cpu_percent).toFixed(0)}%`),
+      },
+    ]);
+
+    drawLineChart($("cpuLveChart"), data.lve_series ?? [], [
+      { key: "faults_cpu", label: "CPU faults" },
+      { key: "faults_mem", label: "Memory faults" },
+    ], { axis: countAxis, zeroBased: true, empty: "No LVE readings in this range" });
+  }
+}
+
+function cpuLimitVerdict(mine, host, faults, rows) {
+  const both = mine != null && host != null;
+
+  if (faults > 0) {
+    return `${count(faults, "CPU fault")} recorded at the last reading across `
+      + `${count(rows.length, "account")}. A fault is an account asking for more processor `
+      + `than its LVE allows and being held back — this is being throttled now, not being `
+      + `near a limit. A throttled account's own percentage sits calmly at its ceiling, `
+      + `which is why the fault count is the figure to watch and not the percentage.`;
+  }
+
+  if (both && mine >= 85 && host < 50) {
+    return `This account is at ${mine.toFixed(0)}% of its own allowance while the machine `
+      + `is ${host.toFixed(0)}% busy. That is not a contradiction: the two percentages have `
+      + `different denominators. It is the ordinary shape of hitting a limit, and it is `
+      + `felt as a slow site even though the server has plenty of processor left.`;
+  }
+
+  if (both) {
+    return `This account is using ${mine.toFixed(0)}% of what it is allowed; the machine as `
+      + `a whole is ${host.toFixed(0)}% busy. Neither number is a share of the other, and `
+      + `dividing them produces nothing meaningful.`;
+  }
+
+  return "Both halves of this comparison need a reading — one from this account and one "
+    + "from the host collector running as root.";
+}
+
+
 function buildGauge(dial) {
   const box = document.createElement("div");
   box.className = "gauge";
@@ -885,12 +1499,14 @@ function drawGauge(canvas, dial, band) {
  * pair is the finding: two cores out of thirty-two is not a fact about this
  * account's CPU use, it is the reason its CPU use looks the way it does.
  */
-function renderLimits(limits) {
-  const body = $("limitsBody");
-  const when = $("limitsWhen");
+function renderLimits(limits, bodyId = "limitsBody", whenId = "limitsWhen") {
+  const body = $(bodyId);
+  // The processor page shows the same comparison without a timestamp beside a
+  // heading of its own, so the element is optional rather than assumed.
+  const when = $(whenId);
 
   if (!limits || !limits.available) {
-    when.textContent = "";
+    if (when) when.textContent = "";
     body.replaceChildren(Object.assign(document.createElement("p"), {
       className: "muted",
       textContent: limits?.reason || "No comparison available.",
@@ -898,9 +1514,11 @@ function renderLimits(limits) {
     return;
   }
 
-  when.textContent = limits.host_at
-    ? `host reading ${humanTime(limits.host_at)}`
-    : "";
+  if (when) {
+    when.textContent = limits.host_at
+      ? `host reading ${humanTime(limits.host_at)}`
+      : "";
+  }
 
   const format = (value, unit) => {
     if (value == null) return "not measured";
@@ -15875,7 +16493,6 @@ function renderBusyMoments(moments) {
 const HOST_PANELS = [
   "hostPanel", "hostIoPanel", "hostDaemonPanel", "diskProcsPanel", "rootFilesPanel",
   "memUsersPanel", "memServicesPanel", "memGoesPanel", "memProcsPanel", "memSlabPanel",
-  "cpuPanel",
 ];
 
 async function refreshHost() {
@@ -15891,11 +16508,10 @@ async function refreshHost() {
    * one is open shows the state of the collector rather than an empty panel.
    */
   const bodies = ["hostBody", "hostIoBody", "hostDaemonBody", "diskProcsBody", "rootFilesBody",
-    "memUsersBody", "memServicesBody", "memGoesBody", "memProcsBody", "memSlabBody",
-    "cpuBody"];
+    "memUsersBody", "memServicesBody", "memGoesBody", "memProcsBody", "memSlabBody"];
   const contents = ["hostMemory", "hostIoContent", "hostDaemonContent",
     "memUsersContent", "memServicesContent", "memGoesContent", "memProcsContent",
-    "memSlabContent", "cpuContent"];
+    "memSlabContent"];
   const showAll = hidden => contents.forEach(id => { const el = $(id); if (el) el.hidden = hidden; });
   const sayAll = build => bodies.forEach(id => { const el = $(id); if (el) build(el); });
 
@@ -15989,7 +16605,6 @@ async function refreshHost() {
     : null;
 
   renderHostGauges(s, swapUsed, swap);
-  renderCpuGauges(s);
 
   setHostCard("Memory in use", humanBytes(s.used_bytes),
     `of ${humanBytes(s.mem_total)}`);
@@ -17428,7 +18043,7 @@ function renderHostGauges(sample, swapUsed, swap) {
   holder.replaceChildren(...dials.map(buildGauge));
 }
 
-function setHostCard(label, value, sub, level = "", valueClass = "") {
+function setHostCard(label, value, sub, level = "", valueClass = "", holder = "hostCards") {
   const card = document.createElement("div");
   card.className = `card ${level}`.trim();
   const l = document.createElement("div");
@@ -17441,7 +18056,7 @@ function setHostCard(label, value, sub, level = "", valueClass = "") {
   s.className = "sub muted";
   s.textContent = sub;
   card.append(l, v, s);
-  $("hostCards").appendChild(card);
+  $(holder).appendChild(card);
 }
 
 function num(value) {
@@ -20941,6 +21556,56 @@ function inspectHistory(data) {
   return wrap;
 }
 
+/**
+ * One finding, as a block.
+ *
+ * Shared by the diagnosis page and the processor pages, which raise findings of
+ * the same shape from different measurements. Kept as one function because the
+ * three rules that make a finding readable - the level said in words as well as
+ * in colour, the measurement always present, somewhere to go next - are easy to
+ * get right once and easy to let drift in a second copy.
+ */
+function findingRow(f) {
+  const row = document.createElement("div");
+  row.className = "finding finding-" + f.level;
+
+  const head = document.createElement("div");
+  head.className = "finding-head";
+
+  const level = document.createElement("span");
+  level.className = "finding-level band-" + (
+    f.level === "critical" ? "crit" : f.level === "warning" ? "warn" : "ok"
+  );
+  level.textContent = f.level === "unknown" ? "not measured" : f.level;
+  head.appendChild(level);
+
+  const title = document.createElement("strong");
+  title.textContent = f.title;
+  head.appendChild(title);
+  row.appendChild(head);
+
+  // The measurement, always. A finding without one is an opinion.
+  const measured = document.createElement("div");
+  measured.className = "finding-measured";
+  measured.textContent = f.measured;
+  row.appendChild(measured);
+
+  const means = document.createElement("div");
+  means.className = "muted small";
+  means.textContent = f.means;
+  row.appendChild(means);
+
+  if (f.next && f.view) {
+    const go = document.createElement("button");
+    go.className = "link";
+    go.textContent = f.next + " →";
+    go.addEventListener("click", () => showView(f.view));
+    row.appendChild(go);
+  }
+
+  return row;
+}
+
 /*
  * What can be done to it, and what cannot, and why.
  *
@@ -21071,46 +21736,7 @@ async function refreshDiagnosis() {
       : "Nothing urgent.";
   wrap.appendChild(headline);
 
-  for (const f of data.findings) {
-    const row = document.createElement("div");
-    row.className = "finding finding-" + f.level;
-
-    const head = document.createElement("div");
-    head.className = "finding-head";
-
-    const level = document.createElement("span");
-    level.className = "finding-level band-" + (
-      f.level === "critical" ? "crit" : f.level === "warning" ? "warn" : "ok"
-    );
-    level.textContent = f.level === "unknown" ? "not measured" : f.level;
-    head.appendChild(level);
-
-    const title = document.createElement("strong");
-    title.textContent = f.title;
-    head.appendChild(title);
-    row.appendChild(head);
-
-    // The measurement, always. A finding without one is an opinion.
-    const measured = document.createElement("div");
-    measured.className = "finding-measured";
-    measured.textContent = f.measured;
-    row.appendChild(measured);
-
-    const means = document.createElement("div");
-    means.className = "muted small";
-    means.textContent = f.means;
-    row.appendChild(means);
-
-    if (f.next && f.view) {
-      const go = document.createElement("button");
-      go.className = "link";
-      go.textContent = f.next + " \u2192";
-      go.addEventListener("click", () => showView(f.view));
-      row.appendChild(go);
-    }
-
-    wrap.appendChild(row);
-  }
+  for (const f of data.findings) wrap.appendChild(findingRow(f));
 
   body.replaceChildren(wrap);
 }
@@ -28530,7 +29156,19 @@ const VIEWS = {
   "host-layout": { label: "Filesystem layout", parent: "storage", refresh: () => refreshMounts() },
   cagefs: { label: "CageFS skeleton", parent: "storage", refresh: () => refreshMounts() },
 
-  cpu: { label: "CPU", refresh: () => refreshHost() },
+  cpu: { label: "CPU", refresh: () => refreshCpu() },
+  /*
+   * Five pages off one request, the same way the memory pages work.
+   *
+   * The differencing is the expensive part - a day of tick counters turned into
+   * rates - and doing it once per poll rather than once per open page is the
+   * difference between five requests a minute and one.
+   */
+  "cpu-time": { label: "Where the time goes", parent: "cpu", refresh: () => refreshCpu() },
+  "cpu-cores": { label: "Each core", parent: "cpu", refresh: () => refreshCpu() },
+  "cpu-procs": { label: "What is burning it", parent: "cpu", refresh: () => refreshCpu() },
+  "cpu-queue": { label: "Waiting to run", parent: "cpu", refresh: () => refreshCpu() },
+  "cpu-limits": { label: "Ceilings and throttling", parent: "cpu", refresh: () => refreshCpu() },
   host: { label: "Memory", refresh: () => refreshHost() },
   "mem-users": { label: "Memory by user", parent: "host", refresh: () => refreshHost() },
   "mem-goes": { label: "Where it goes", parent: "host", refresh: () => refreshHost() },
@@ -30278,12 +30916,17 @@ for (const [id, key] of [["actionKind", "kind"], ["actionWho", "who"], ["actionR
   });
 }
 
-for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh", "cpuRefresh",
+for (const id of ["hostDaemonRefresh", "diskProcsRefresh", "rootFilesRefresh",
   "memUsersRefresh", "memServicesRefresh", "memGoesRefresh", "memProcsRefresh",
   "memSlabRefresh"]) {
   $(id).addEventListener("click",
     () => refreshHost().catch(error => notice(String(error.message || error))));
 }
+
+// The processor pages have their own request now, so their Refresh asks for
+// that rather than re-reading the memory payload it no longer uses.
+$("cpuRefresh").addEventListener("click",
+  () => refreshCpu().catch(error => notice(String(error.message || error))));
 
 $("offenderDelete").addEventListener("click",
   () => deletePicked().catch(error => notice(String(error.message || error))));

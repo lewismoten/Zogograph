@@ -157,7 +157,20 @@ function hostMigrate(PDO $pdo): void
     $pdo->exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
     $at = (int)($pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_version')->fetchColumn());
 
-    foreach (hostMigrations() as $version => $statements) {
+    /*
+     * By version number, not by the order they happen to be written in.
+     *
+     * The list below is kept newest-first so that the interesting one is at the
+     * top, which is fine for reading and wrong for applying: foreach walks it in
+     * insertion order, so a fresh database ran 21 before 19 and hit an ALTER on
+     * a table that its own CREATE had not reached yet. Existing installs never
+     * saw it, because every step was already recorded by the time the order
+     * drifted - which is exactly why it sat there.
+     */
+    $steps = hostMigrations();
+    ksort($steps);
+
+    foreach ($steps as $version => $statements) {
         if ($version <= $at) {
             continue;
         }
@@ -794,6 +807,118 @@ function hostMigrations(): array
          * verbs exists, and the argument is validated as a domain name on both
          * sides, because this runs as root.
          */
+        /*
+         * What a single "CPU is at 90%" cannot say.
+         *
+         * The existing columns hold one busy percentage and three load figures,
+         * which between them cannot tell userland work from kernel work from a
+         * stalled disk from a hypervisor taking the core away - and those need
+         * four different responses. Every column here is a cumulative counter
+         * read straight out of /proc/stat, stored raw and differenced on read,
+         * for the same reason the disk counters are: a rate computed at write
+         * time is a rate against whatever the gap between readings happened to
+         * be, and cron missing a minute would silently halve it forever.
+         */
+        22 => [
+            'ALTER TABLE host_samples ADD COLUMN cpu_user_ticks INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN cpu_nice_ticks INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN cpu_system_ticks INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN cpu_iowait_ticks INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN cpu_irq_ticks INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN cpu_softirq_ticks INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN cpu_steal_ticks INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN cpu_guest_ticks INTEGER',
+
+            /*
+             * The three that explain a machine which is busy while nothing on
+             * it looks busy. Context switches and interrupts are counters;
+             * running and blocked are instantaneous depths, which is why they
+             * are noisy and why a chart of them wants a wide window.
+             */
+            'ALTER TABLE host_samples ADD COLUMN ctxt_switches INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN interrupts INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN forks INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN procs_running INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN procs_blocked INTEGER',
+
+            // Pressure stall info for the processor: the share of time tasks
+            // were runnable and waiting for a core. Absent on kernels built
+            // without PSI, which psi_available and psi_reason already explain.
+            'ALTER TABLE host_samples ADD COLUMN cpu_pressure_some REAL',
+
+            /*
+             * One row per core per reading.
+             *
+             * Eight cores at 12% and one core at 100% beside seven idle ones
+             * are the same aggregate number and completely different problems -
+             * the second is a single-threaded bottleneck that buying cores will
+             * not fix. Nothing in host_samples can express that, because the
+             * aggregate has already thrown the distribution away.
+             *
+             * busy_percent is stored beside the counters rather than only
+             * derived, because the difference is against the *previous
+             * reading's* row for the same core, and a query that has to join a
+             * table to itself on (cpu, previous sample) to draw a bar chart is
+             * a query nobody will write twice.
+             */
+            "CREATE TABLE host_cpus (
+                sample_id    INTEGER NOT NULL REFERENCES host_samples(id) ON DELETE CASCADE,
+                cpu          INTEGER NOT NULL,
+                total_ticks  INTEGER,
+                idle_ticks   INTEGER,
+                user_ticks   INTEGER,
+                system_ticks INTEGER,
+                iowait_ticks INTEGER,
+                steal_ticks  INTEGER,
+                busy_percent REAL
+            )",
+            'CREATE INDEX host_cpus_sample ON host_cpus (sample_id)',
+
+            /*
+             * What each kept process was doing with the processor.
+             *
+             * cpu_ticks is utime+stime since it started - a counter, like
+             * everything else here. cpu_percent is that counter differenced
+             * against the previous reading, which is the figure people mean by
+             * "CPU%", and cpu_lifetime_percent is the same total divided by how
+             * long the process has been alive.
+             *
+             * Both are kept because they answer different questions and are
+             * routinely confused. A process at 3% recent and 90% lifetime spent
+             * its first minutes pinning a core and has since settled; one at
+             * 90% recent and 3% lifetime has just started doing something. `ps`
+             * shows the lifetime figure and `top` shows the recent one, which
+             * is why the two appear to disagree about the same process.
+             */
+            'ALTER TABLE host_processes ADD COLUMN cpu_ticks INTEGER',
+            'ALTER TABLE host_processes ADD COLUMN cpu_percent REAL',
+            'ALTER TABLE host_processes ADD COLUMN cpu_lifetime_percent REAL',
+
+            /*
+             * The previous reading's tick count for every process, not just the
+             * kept ones.
+             *
+             * A recent-CPU figure is a difference between two readings, so a
+             * process can only be ranked by it if last minute's count for it
+             * was written down - and only the biggest few processes by memory
+             * are kept in host_processes. Ranking by CPU out of that set would
+             * find the busiest of the fattest, which is not the question.
+             *
+             * So this carries one row per live process and is replaced whole
+             * every reading. It is a scratchpad rather than history: no
+             * sample_id, no growth, nothing to prune. `started` is the process
+             * start time from /proc, kept because pids get reused - without it
+             * a recycled pid inherits the dead process's counter and reports a
+             * wildly wrong delta.
+             */
+            "CREATE TABLE host_proc_ticks (
+                pid     INTEGER PRIMARY KEY,
+                started INTEGER,
+                ticks   INTEGER NOT NULL,
+                at      INTEGER NOT NULL
+            )",
+        ],
+
         21 => [
             "CREATE TABLE host_answers (
                 id        INTEGER PRIMARY KEY,

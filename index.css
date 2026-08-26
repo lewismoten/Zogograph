@@ -1208,6 +1208,41 @@ tr.row-bad td:first-child { box-shadow: inset 2px 0 var(--warn); }
 .band-warn { color: var(--warn); }
 .band-crit { color: var(--crit); }
 
+/* Cores --------------------------------------------------------------- */
+
+/* One small bar per core, wrapped into a grid.
+
+   Bars rather than the dials above, because the question is comparative: not
+   "how busy is core 11" but "is one of these unlike the others", and a row of
+   dials is read one at a time while a row of bars is read at a glance. Sized so
+   that thirty-two of them still fit on a laptop screen without scrolling, which
+   is the case that matters - on a four-core box any layout works. */
+.cores {
+  display: grid; gap: 8px; margin: 12px 0 18px;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+}
+.core {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px 9px;
+  display: flex; flex-direction: column; gap: 5px;
+}
+.core-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+  font-size: .78rem; color: var(--muted);
+}
+.core-value { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
+.core-track {
+  height: 7px; border-radius: 4px; background: var(--line); overflow: hidden;
+}
+.core-fill { height: 100%; border-radius: 4px; background: var(--accent); }
+.core-fill.band-warn { background: var(--warn); }
+.core-fill.band-crit { background: var(--crit); }
+/* A core with no measurement is drawn as an empty track and said in words, not
+   left looking like a core that is doing nothing - those are different claims
+   and the second one is a lie in the shape of a chart. */
+.core-none .core-value { color: var(--dim); font-weight: 400; }
+.core-sub { font-size: .72rem; color: var(--dim); font-variant-numeric: tabular-nums; }
+
 /* What the host allows ----------------------------------------------- */
 
 .limit-row {

@@ -63,7 +63,20 @@ function migrate(PDO $pdo): void
     $pdo->exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
     $at = (int)($pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_version')->fetchColumn());
 
-    foreach (migrations() as $version => $statements) {
+    /*
+     * By version number, not by the order they happen to be written in.
+     *
+     * The list below is kept newest-first so that the interesting one is at the
+     * top, which is fine for reading and wrong for applying: foreach walks it in
+     * insertion order, so a fresh database ran 21 before 19 and hit an ALTER on
+     * a table that its own CREATE had not reached yet. Existing installs never
+     * saw it, because every step was already recorded by the time the order
+     * drifted - which is exactly why it sat there.
+     */
+    $steps = migrations();
+    ksort($steps);
+
+    foreach ($steps as $version => $statements) {
         if ($version <= $at) {
             continue;
         }

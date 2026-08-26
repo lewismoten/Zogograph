@@ -59,6 +59,8 @@ require_once __DIR__ . '/lib/signals.php';
 require_once __DIR__ . '/lib/hostdb.php';
 // swapPressure and the host collectors live here, not in hostdb.php.
 require_once __DIR__ . '/lib/host.php';
+// The processor pages: differencing the counters host.php records.
+require_once __DIR__ . '/lib/cpu.php';
 require_once __DIR__ . '/lib/uptime.php';
 require_once __DIR__ . '/lib/limits.php';
 require_once __DIR__ . '/lib/inspect.php';
@@ -229,6 +231,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'note-delete' => doNoteDelete($pdo, $post),
         'note-snapshot' => doNoteSnapshot($pdo, $signedIn),
         'snapshot-delete' => doSnapshotDelete($config, $pdo, $post),
+        'cpu' => cpuView($config, $signedIn, $pdo),
         'host' => hostView($config, $signedIn, $pdo),
         'host-series' => hostSeries($config, $signedIn),
         'host-io' => hostIoSeries($config, $signedIn),
@@ -3496,6 +3499,186 @@ function doLinkSweep(array $config, PDO $pdo, bool $post): array
  * expects to own is a mess with no clean way out.
  */
 /**
+ * Everything the five CPU pages draw, from one reading of the host database.
+ *
+ * Its own action rather than more fields on `host`, because the two answer to
+ * different things: the memory payload is a snapshot of the newest reading and
+ * this one is mostly differences across the selected range. Folding them
+ * together would make every memory poll re-read a day of tick counters, and
+ * every CPU poll re-read the slab table and the watched files.
+ *
+ * The shape mirrors hostView's when the collector is missing, deliberately: the
+ * "no host readings yet, here is the crontab line" case is the same case, and
+ * two different explanations of one situation is how somebody ends up
+ * following neither.
+ */
+function cpuView(array $config, bool $signedIn, PDO $account): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see processor readings');
+    }
+
+    if (!($config['host']['enabled'] ?? true)) {
+        return ['available' => false, 'off' => true, 'sample' => null,
+                'reason' => 'Host collection is turned off in the config.'];
+    }
+
+    $path = hostDatabasePath($config);
+    $pdo = hostDb($config, false);
+    if ($pdo === null) {
+        return [
+            'available' => false,
+            'sample' => null,
+            'reason' => is_file($path)
+                ? 'The host database exists but this account cannot read it. Set '
+                    . 'host.owner in the config to the account the dashboard runs as, '
+                    . 'then run host-cron.php once as root.'
+                : 'No host readings yet. This needs a second collector, run by root.',
+            'cron' => hostCronLine(__DIR__),
+            'command' => hostCronCommand(__DIR__),
+        ];
+    }
+
+    try {
+        $sample = $pdo->query('SELECT * FROM host_samples ORDER BY id DESC LIMIT 1')->fetch() ?: null;
+    } catch (Throwable) {
+        return ['available' => false, 'sample' => null,
+                'reason' => 'The host database is unreadable or not yet initialised.'];
+    }
+
+    if (!$sample) {
+        return [
+            'available' => false,
+            'sample' => null,
+            'reason' => 'The host database is set up, but no readings have been recorded yet.',
+            'cron' => hostCronLine(__DIR__),
+            'command' => hostCronCommand(__DIR__),
+        ];
+    }
+
+    $id = (int)$sample['id'];
+    [$from, $to] = window();
+
+    /*
+     * Only the columns the differencing needs.
+     *
+     * host_samples is eighty columns wide and a day of it is fifteen hundred
+     * rows; selecting * here to save typing would ship a megabyte of memory
+     * figures to draw a CPU chart.
+     */
+    $series = $pdo->prepare(
+        'SELECT taken_at, cpu_percent, cpu_user_ticks, cpu_nice_ticks, cpu_system_ticks,
+                cpu_idle_ticks, cpu_iowait_ticks, cpu_irq_ticks, cpu_softirq_ticks,
+                cpu_steal_ticks, ctxt_switches, interrupts, forks, procs_running,
+                procs_blocked, cpu_pressure_some, load1, cpu_cores
+         FROM host_samples WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
+    );
+    $series->execute([$from, $to]);
+    $rows = $series->fetchAll();
+
+    /*
+     * cpu_idle_ticks is stored as idle plus iowait, because that is what the
+     * busy percentage is worked out against. The state breakdown wants them
+     * apart, so idle on its own is put back here rather than in the collector -
+     * changing what the stored column means would silently rewrite the history
+     * every other page reads.
+     */
+    foreach ($rows as $i => $row) {
+        $rows[$i]['cpu_idle_ticks'] = $row['cpu_idle_ticks'] === null
+            || $row['cpu_iowait_ticks'] === null
+                ? $row['cpu_idle_ticks']
+                : (int)$row['cpu_idle_ticks'] - (int)$row['cpu_iowait_ticks'];
+    }
+
+    $points = cpuStateSeries($rows);
+    $now = $points ? $points[count($points) - 1] : null;
+
+    $of = function (string $sql) use ($pdo, $id): array {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([$id]);
+        return $stmt->fetchAll();
+    };
+
+    $cores = $of('SELECT * FROM host_cpus WHERE sample_id = ? ORDER BY cpu');
+
+    /*
+     * The per-core history summarised rather than returned whole.
+     *
+     * A day at one reading a minute on a 32-core machine is 46,000 rows, and
+     * the question the chart answers - "was it one core or all of them" - is
+     * four numbers per reading. The rest is detail nobody plots.
+     */
+    $spreadSeries = $pdo->prepare(
+        'SELECT s.taken_at,
+                MAX(c.busy_percent) AS hottest,
+                MIN(c.busy_percent) AS coolest,
+                AVG(c.busy_percent) AS mean,
+                SUM(CASE WHEN c.busy_percent >= 90 THEN 1 ELSE 0 END) AS pinned
+         FROM host_cpus c JOIN host_samples s ON s.id = c.sample_id
+         WHERE s.taken_at BETWEEN ? AND ? AND c.busy_percent IS NOT NULL
+         GROUP BY c.sample_id ORDER BY s.taken_at'
+    );
+    $spreadSeries->execute([$from, $to]);
+
+    /*
+     * Ranked on the recent figure, with the ones that only have a lifetime
+     * average after them rather than mixed in - a process on its first reading
+     * has no recent figure at all, and sorting the two columns together would
+     * put a long-dead average above a core being burned right now.
+     */
+    $processes = $of(
+        'SELECT * FROM host_processes
+         WHERE sample_id = ? AND (cpu_percent IS NOT NULL OR cpu_lifetime_percent IS NOT NULL)
+         ORDER BY cpu_percent IS NULL, cpu_percent DESC, cpu_lifetime_percent DESC'
+    );
+
+    $spread = cpuCoreSpread($cores);
+
+    /*
+     * The account's own side of the two percentages, for the limits page.
+     *
+     * Read from the account database rather than inferred from the host one,
+     * because that is the only place the cage's view of itself exists - and the
+     * whole point of that page is showing the two side by side without
+     * pretending either is the other.
+     */
+    $vitals = $account->query('SELECT * FROM vitals ORDER BY taken_at DESC, id DESC LIMIT 1')
+        ->fetch() ?: null;
+
+    $lveSeries = $pdo->prepare(
+        'SELECT s.taken_at, SUM(l.faults_cpu) AS faults_cpu, SUM(l.faults_mem) AS faults_mem
+         FROM host_lve l JOIN host_samples s ON s.id = l.sample_id
+         WHERE s.taken_at BETWEEN ? AND ? GROUP BY l.sample_id ORDER BY s.taken_at'
+    );
+    $lveSeries->execute([$from, $to]);
+
+    return [
+        'available' => true,
+        'reason' => null,
+        'sample' => $sample,
+        // What each state means, sent with the data so the legend, the table
+        // and the tooltips cannot drift apart from each other.
+        'states' => cpuStates(),
+        'series' => $points,
+        'now' => $now,
+        'cores' => $cores,
+        'spread' => $spread,
+        'spread_series' => $spreadSeries->fetchAll(),
+        'processes' => $processes,
+        'findings' => cpuFindings($sample, $now, $spread, $processes),
+        'limits' => accountLimits($vitals, $sample),
+        'vitals' => $vitals,
+        'lve' => $of('SELECT * FROM host_lve WHERE sample_id = ? ORDER BY faults_cpu DESC, user'),
+        'lve_series' => $lveSeries->fetchAll(),
+        // So an empty chart can say which kind of empty it is: a collector that
+        // has run twice and a collector that has never run look identical
+        // otherwise, and only one of them is a problem.
+        'sample_count' => (int)$pdo->query('SELECT COUNT(*) FROM host_samples')->fetchColumn(),
+        'clock_ticks' => 100,
+    ];
+}
+
+/**
  * @param PDO $account the account database, which holds the monitoring choices -
  *                     the host database is root's and cannot be written here.
  */
@@ -4570,6 +4753,10 @@ function selfReport(array $config, PDO $pdo, bool $signedIn): array
             'host_samples', 'host_users', 'host_processes', 'host_slab', 'host_files',
             'host_services', 'host_disks', 'host_boots', 'host_daemons', 'host_dirs',
             'host_deleted', 'host_mounts',
+            // One row per core per reading, which on a large machine is the
+            // fastest-growing table here - worth being visible on the page
+            // that says what the database is spending its size on.
+            'host_cpus',
         ]);
     }
 
@@ -5649,6 +5836,7 @@ function snapshotActions(): array
         'offenders' => 'Largest and fastest growing',
         'processes' => 'Processes',
         'host' => 'The host',
+        'cpu' => 'The processor',
         'host-disk' => 'Filesystems',
         'host-io' => 'Disk I/O',
         'alerts' => 'Alerts',

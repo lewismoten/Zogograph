@@ -196,6 +196,31 @@
       <span class="nav-label">CPU</span>
       <span class="nav-badge" data-badge="cpu" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/cpu-time" data-nav="cpu-time" data-parent="cpu">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Where the time goes</span>
+      <span class="nav-badge" data-badge="cpu-time" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/cpu-cores" data-nav="cpu-cores" data-parent="cpu">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Each core</span>
+      <span class="nav-badge" data-badge="cpu-cores" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/cpu-procs" data-nav="cpu-procs" data-parent="cpu">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">What is burning it</span>
+      <span class="nav-badge" data-badge="cpu-procs" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/cpu-queue" data-nav="cpu-queue" data-parent="cpu">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Waiting to run</span>
+      <span class="nav-badge" data-badge="cpu-queue" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/cpu-limits" data-nav="cpu-limits" data-parent="cpu">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Ceilings and throttling</span>
+      <span class="nav-badge" data-badge="cpu-limits" hidden></span>
+    </a>
     <a class="nav-item" href="#/host" data-nav="host">
       <span class="nav-icon" aria-hidden="true">▣</span>
       <span class="nav-label">Memory</span>
@@ -1782,6 +1807,183 @@
   <div id="cpuBody"></div>
   <div id="cpuContent" hidden>
     <div class="gauges" id="cpuGauges"></div>
+
+    <!-- The findings first, then the chart.
+
+         "The CPU is at 90%" is where an investigation starts and it is also
+         where it used to stop: the same reading covers a machine doing work,
+         a machine waiting on a disk, and a machine whose hypervisor has taken
+         the cores away, and those need three different responses. Each of the
+         pages under this one answers one of those questions; this list says
+         which of them to open. -->
+    <h3 class="sub-head">What is true right now</h3>
+    <p class="muted small sub-note">
+      Every line below is a measurement taken from this machine, with a link to
+      the page it came from. Nothing here infers a cause it cannot see, and
+      "nothing found" is said in those words rather than as a clean bill of
+      health.
+    </p>
+    <div id="cpuFindings"></div>
+
+    <h3 class="sub-head">Busy, and what it was busy with</h3>
+    <p class="muted small sub-note">
+      The line the rest of the dashboard calls "CPU", split into the states that
+      make it up. Percentages are of every core added together, so 100% is the
+      whole machine occupied rather than one core of it.
+    </p>
+    <canvas id="cpuBusyChart"></canvas>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="cpu-time" hidden>
+<section class="panel" id="cpuTimePanel">
+  <div class="panel-head">
+    <h2>Where the time goes</h2>
+  </div>
+  <p class="muted small sub-note">
+    A processor is never simply "busy". Every jiffy it spends is charged to one
+    of eight states, and which one decides what to do next — work in userland is
+    the machine earning its keep, time in the kernel is a syscall-heavy
+    workload, iowait is a disk problem wearing a CPU costume, and steal is the
+    hypervisor and not you at all. The single busy percentage everywhere else on
+    this dashboard is all of these added up and is the reason the question
+    usually gets asked twice.
+  </p>
+  <div id="cpuTimeBody"></div>
+  <div id="cpuTimeContent" hidden>
+    <div class="cards" id="cpuTimeCards"></div>
+    <p class="muted small" id="cpuTimeNote"></p>
+
+    <canvas id="cpuStateChart"></canvas>
+
+    <h3 class="sub-head">What each of them means</h3>
+    <div id="cpuStateTable"></div>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="cpu-cores" hidden>
+<section class="panel" id="cpuCoresPanel">
+  <div class="panel-head">
+    <h2>Each core</h2>
+  </div>
+  <p class="muted small sub-note">
+    The distribution the average has already thrown away. Eight cores at 12% and
+    one core at 100% beside seven idle ones are the same whole-machine reading
+    and completely different problems: the second is a single-threaded
+    bottleneck, it will never make the overall percentage look alarming however
+    stuck it gets, and buying more cores makes it exactly as slow as it was.
+  </p>
+  <div id="cpuCoresBody"></div>
+  <div id="cpuCoresContent" hidden>
+    <p class="muted small" id="cpuSpreadNote"></p>
+    <div class="cores" id="cpuCoreGrid"></div>
+
+    <h3 class="sub-head">Hottest, coolest and average, over time</h3>
+    <p class="muted small sub-note">
+      Three lines rather than one per core: on a machine with thirty-two of them
+      the individual lines are a legend rather than a chart. The gap between the
+      top line and the bottom one is the whole finding — when it is wide the
+      work is not spreading, and when the three sit together the machine is
+      loaded evenly and the only question left is how much.
+    </p>
+    <canvas id="cpuSpreadChart"></canvas>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="cpu-procs" hidden>
+<section class="panel" id="cpuProcsPanel">
+  <div class="panel-head">
+    <h2>What is burning it</h2>
+  </div>
+  <p class="muted small sub-note">
+    Processor use per process, read as root, so this is every account on the
+    machine and not only this one. Percentages here are of <em>one core</em>, the
+    way <code>top</code> reports them — a process with four busy threads shows
+    400%, which is a fact about it rather than an error. That is the opposite
+    convention to every other percentage on these pages, and the columns say so.
+  </p>
+  <div id="cpuProcsBody"></div>
+  <div id="cpuProcsContent" hidden>
+    <p class="muted small" id="cpuProcsNote"></p>
+    <div id="cpuProcs"></div>
+    <p class="muted small sub-note">
+      A process is only here if it was alive for two consecutive readings or has
+      burned real time since it started. Work that arrives and leaves inside one
+      minute — a fork-per-request server, a tight cron loop — can hold a core
+      permanently without a single one of its processes ever appearing in this
+      table. If the machine is busy and this list is not,
+      <a href="#/cpu-queue">the fork rate</a> is where that shows up.
+    </p>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="cpu-queue" hidden>
+<section class="panel" id="cpuQueuePanel">
+  <div class="panel-head">
+    <h2>Waiting to run</h2>
+  </div>
+  <p class="muted small sub-note">
+    Why a load average of 40 can sit on a machine that is 5% busy. Load is a
+    queue length, not a processor reading: it counts everything runnable
+    <em>and</em> everything stuck in uninterruptible sleep waiting on storage, so
+    a hung disk drives it into the dozens while the cores idle. These are the
+    figures that tell those two apart.
+  </p>
+  <div id="cpuQueueBody"></div>
+  <div id="cpuQueueContent" hidden>
+    <div class="cards" id="cpuQueueCards"></div>
+    <p class="muted small" id="cpuQueueNote"></p>
+
+    <h3 class="sub-head">The queue, and the load average beside it</h3>
+    <canvas id="cpuQueueChart"></canvas>
+
+    <h3 class="sub-head">Context switches, interrupts and new processes</h3>
+    <p class="muted small sub-note">
+      The counters that explain a machine which is busy while nothing on it
+      looks busy. A high fork rate with an empty process table means the work is
+      arriving and leaving between readings. Context switches climbing without
+      more work arriving means time is going into scheduling rather than into
+      the jobs being scheduled.
+    </p>
+    <canvas id="cpuRateChart"></canvas>
+  </div>
+</section>
+</section>
+
+<section class="view" data-view="cpu-limits" hidden>
+<section class="panel" id="cpuLimitsPanel">
+  <div class="panel-head">
+    <h2>Ceilings and throttling</h2>
+  </div>
+  <p class="muted small sub-note">
+    The page for "the CPU is pinned and the server is idle", which is not a
+    contradiction and not a broken reading. On shared hosting this account is
+    given a slice of the machine and told, through a percentage of its own
+    allowance, how much of that slice it is using. Both numbers are correct and
+    they measure different things; nothing useful comes of comparing them as a
+    ratio, so this page puts them side by side instead.
+  </p>
+  <div id="cpuLimitsBody"></div>
+  <div id="cpuLimitsContent" hidden>
+    <div id="cpuLimitsTable"></div>
+    <p class="muted small" id="cpuLimitsNote"></p>
+
+    <div id="cpuLveWrap" hidden>
+      <h3 class="sub-head">Where the ceiling was actually hit</h3>
+      <p class="muted small sub-note">
+        CloudLinux records a fault every time an account asks for more processor
+        than its LVE allows and is held back. This is the difference between "we
+        are near the limit" and "we are being throttled right now", and it is the
+        only figure here that says so directly — a throttled account's own CPU
+        percentage sits at its ceiling and looks calm.
+      </p>
+      <div id="cpuLve"></div>
+      <canvas id="cpuLveChart"></canvas>
+    </div>
   </div>
 </section>
 </section>

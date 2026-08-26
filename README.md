@@ -19,7 +19,8 @@ monitor you have to remember to look at is a monitor that tells you afterwards.
 - `api.php` — the only thing the dashboard talks to.
 - `index.html` / `index.css` / `index.js` — the dashboard.
 - `lib/` — config, database, collection, alerting, auth, masking, actions,
-  log tailing, scheduling, processes, symlinks, and signalling.
+  log tailing, scheduling, processes, processor analysis, symlinks, and
+  signalling.
 - `data/` — the SQLite databases: `stats.db` from the account collector and
   `host.db` from the root one. Created automatically, never served.
 
@@ -734,6 +735,140 @@ can report Pss. It also means every parser takes the root of the tree it reads
 as an argument, so they can be tested against captured fixtures rather than only
 on the machine they are aimed at.
 
+## Chasing high CPU
+
+"The processor is at 90%" is where an investigation starts and it used to be
+where it stopped. That one reading is identical for a machine compiling
+something, a machine waiting on a failing disk, a machine drowning in network
+interrupts, and a machine whose hypervisor has taken the cores away — four
+situations with nothing in common but the number, and four different things to
+do about them. The pages under **CPU** each answer one of those questions, and
+the parent page says which of them to open.
+
+Everything here is a difference between two readings, because every figure in
+`/proc/stat` is a counter since boot and none of them is a rate. That has one
+consequence worth stating plainly: **a single reading says nothing at all**, so
+the first minute after an install or a reboot is honestly blank rather than
+confidently zero.
+
+### Two percentages that are not the same measurement
+
+Whole-machine figures — the busy percentage, the state breakdown, each core's
+bar — are **of every core added together**, so 100% means the machine fully
+occupied. Per-process figures on *What is burning it* are **of one core**, the
+way `top` reports them, so a process with four busy threads shows 400%. Both
+conventions are standard, both are labelled on every column that uses them, and
+mixing them up is the easiest mistake there is to make with these numbers.
+
+### Where the time goes
+
+Every jiffy the processor spends is charged to one of eight states, and which
+one changes what to do next:
+
+| State | What it means |
+| --- | --- |
+| `steal` | Ready to run, and the hypervisor gave the physical core to another tenant. Not your workload, and nothing on this machine reduces it. |
+| `iowait` | The core had nothing to run *and* something was blocked on a disk. This is idle time — the processor is the victim, not the cause. |
+| `softirq` | Deferred interrupt work, on a server nearly always the network stack. A whole core of it is a finding. |
+| `irq` | Servicing devices. Ordinarily a fraction of a percent. |
+| `system` | Kernel work on a process's behalf: syscalls, page faults, mapping. More of this than userland means the work is syscall-heavy, not computational. |
+| `user` | Ordinary work at normal priority — the machine doing what you asked. |
+| `nice` | The same at lowered priority. It yields to everything, so a machine busy only here is not one anybody is waiting on. |
+| `idle` | Nothing to run. |
+
+`guest` is collected but left out of the shares, because the kernel counts guest
+time inside `user` as well and including both makes the percentages add to more
+than everything.
+
+### Each core
+
+The distribution the average has already thrown away. Eight cores at 12% and one
+core at 100% beside seven idle ones are the same whole-machine reading and
+completely different problems — the second is a **single-threaded bottleneck**,
+it will never make the overall percentage look alarming however stuck it gets,
+and buying more cores makes it exactly as slow as it was.
+
+The history is charted as busiest, average and quietest rather than one line per
+core: on a thirty-two core machine the individual lines are a legend, not a
+chart. The gap between the top and bottom lines is the whole finding.
+
+### What is burning it
+
+Per-process processor use, read as root, so it covers every account on the
+machine. Two columns, because two different things get called %CPU:
+
+- **CPU now** is the counter differenced against the previous reading — what
+  `top` shows.
+- **Average since it started** is the same total divided by the process's age —
+  what `ps` shows.
+
+A process at 3% now and 90% lifetime spent its first minutes pinning a core and
+has since settled. One at 90% now and 3% lifetime has just started doing
+something. This is why the two tools appear to disagree about the same process.
+
+Ranking by CPU needs last minute's count for every process, not just the ones
+kept in the history — otherwise the ranking finds the busiest of the *fattest*,
+since the kept set is chosen by memory. So `host_proc_ticks` carries one row per
+live process and is replaced whole every reading: a scratchpad, not history, with
+no sample id, no growth and nothing to prune. It records each process's start
+time as well, because pids get reused and a recycled pid differenced against a
+stranger's counter produces a spectacular figure for an innocent process.
+
+Work that arrives and leaves inside one minute — a fork-per-request server, a
+tight cron loop — can hold a core permanently without any of its processes ever
+appearing in this table. When the machine is busy and this list is not, the fork
+rate on *Waiting to run* is where that shows up, and the page says so rather than
+leaving the table looking broken.
+
+### Waiting to run
+
+Why a load average of 40 can sit on a machine that is 5% busy. **Load is a queue
+length, not a processor reading**: it counts everything runnable *and* everything
+stuck in uninterruptible sleep waiting on storage, so a hung disk drives it into
+the dozens while the cores idle. `procs_running` and `procs_blocked` tell those
+two apart, and the page says which it is looking at in a sentence rather than
+leaving it to be inferred from two charts.
+
+Beside them, the counters that explain a machine which is busy while nothing on
+it looks busy: context switches, interrupts and forks per second. CPU pressure
+from `/proc/pressure/cpu` is the one measurement utilisation cannot make — a
+machine at 100% with no pressure is getting exactly as much done as it can, which
+is what you want from it, while pressure without high utilisation means something
+is holding work back.
+
+### Ceilings and throttling
+
+The page for "the CPU is pinned and the server is idle", which is neither a
+contradiction nor a broken reading. The account's percentage is of its own
+allowance and the host's is of every core on the machine; both are correct,
+nothing meaningful comes of dividing one by the other, and so they are shown side
+by side rather than compared.
+
+Where CloudLinux is installed, the LVE **fault counts** are the figure that
+matters. A fault is an account asking for more processor than its LVE allows and
+being held back — that is being throttled *now*, as against being near a limit. A
+throttled account's own percentage sits calmly at its ceiling and looks fine,
+which is exactly why the percentage is the wrong thing to watch.
+
+### What it collects
+
+- **The whole of `/proc/stat`** rather than the two figures a busy percentage
+  needs: all eight state counters, the per-core lines, context switches,
+  interrupts, forks, and the runnable and blocked depths.
+- **Per-core counters**, one row per core per reading, with the busy percentage
+  differenced against the same core in the previous reading and stored beside
+  them. Stored rather than only derived, because the difference is against
+  *another sample's* row for the same core, and a query that joins a table to
+  itself to draw a bar chart is one nobody writes twice.
+- **CPU pressure** from `/proc/pressure/cpu`, where the kernel was built with PSI.
+- **Per-process processor time** — `utime + stime` from `/proc/PID/stat` — with
+  both the recent and the lifetime percentage worked out from it.
+
+Reading `/proc/PID/stat` once now gets state, parent, start time and processor
+time together. It used to be opened three times per process per reading for three
+of those, which was the same file parsed three times to answer questions that all
+live on the same line.
+
 ## Disk I/O
 
 Collected on both sides, because the two see genuinely different things and
@@ -1352,6 +1487,15 @@ New columns go in a new numbered step, *and* in the `CREATE TABLE` above it. The
 `ALTER TABLE … ADD COLUMN` guard makes the step a no-op where the column already
 exists, so both paths land in the same place — a fresh install builds it in one
 statement, an existing one alters into it.
+
+**Steps are applied in version order, not in the order they are written.** The
+lists are kept newest-first so the interesting one is at the top, which is fine
+for reading and was wrong for applying: `foreach` walks an array in insertion
+order, so a *fresh* database ran step 21 before step 19 and hit an `ALTER` on a
+table its own `CREATE` had not reached yet. No existing install ever saw it,
+because every step was already recorded by the time the order drifted — which is
+exactly why it sat there undetected. Both migration runners now sort by key
+first.
 
 
 

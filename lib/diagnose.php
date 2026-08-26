@@ -320,8 +320,10 @@ function diagnoseCpu(PDO $pdo, ?array $vitals, ?array $host): array
             sprintf('%.0f%% of every core on the host is in use.', (float)$host['cpu_percent']),
             'This is the server itself, not this account\'s allowance. Every account on it is '
                 . 'affected, and the cause may well not be yours.',
-            'See the biggest processes on the host',
-            'mem-procs'
+            // The CPU pages rather than the memory ones: "busy" is a processor
+            // finding, and the biggest process by memory is very often asleep.
+            'See what is burning the processor',
+            'cpu-procs'
         );
     }
 

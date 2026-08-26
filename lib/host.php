@@ -52,6 +52,17 @@ const HOST_KEEP_PROCS = 25;
  */
 const HOST_KEEP_IO_PROCS = 15;
 
+/*
+ * And how many are kept for their processor use, on the same argument.
+ *
+ * The top of the memory list and the top of the CPU list overlap far less than
+ * people expect: the process holding two gigabytes is usually asleep, and the
+ * one pinning a core is often a few megabytes of shell script in a loop. A CPU
+ * page fed from the memory ranking would show the busiest of the fattest, which
+ * is not a question anybody asks.
+ */
+const HOST_KEEP_CPU_PROCS = 15;
+
 /**
  * Services tracked in the long series, and the floor for being one.
  *
@@ -229,6 +240,8 @@ function hostProcesses(
         $swapSum += $swap;
         $threads += $thr;
 
+        $stat = hostProcStat($procRoot, (int)$entry);
+
         $procs[] = [
             'pid' => (int)$entry,
             'user' => $users[$uid] ?? (string)$uid,
@@ -239,15 +252,36 @@ function hostProcesses(
             'swap_bytes' => $swap,
             'vsz_bytes' => $kb('VmSize'),
             'threads' => $thr,
-            'elapsed_seconds' => hostElapsed($procRoot, (int)$entry, $boot, $ticks),
-            'state' => hostProcState($procRoot, (int)$entry),
-            'ppid' => hostParentPid($procRoot, (int)$entry),
+            'elapsed_seconds' => hostElapsed($stat['started'] ?? null, $boot, $ticks),
+            'state' => $stat['state'] ?? null,
+            'ppid' => $stat['ppid'] ?? null,
+            // Processor time since it started, in jiffies. A counter, so it
+            // says nothing until it is differenced - see hostCpuRates.
+            'cpu_ticks' => $stat === null ? null : $stat['utime'] + $stat['stime'],
+            'started_ticks' => $stat['started'] ?? null,
+            /*
+             * The share of its own lifetime this process has spent on a core.
+             *
+             * What `ps` calls %CPU, and not what `top` calls %CPU. A backup
+             * that pinned a core for its first two minutes and has been idle
+             * for six hours still reports a high figure here, because the
+             * average includes the two minutes forever. Useful precisely
+             * because of that - it is the column that says "this has always
+             * been expensive" rather than "this is expensive now".
+             */
+            'cpu_lifetime_percent' => null,
             // Block-layer bytes, so a service re-reading its own cache all day
             // does not look like a heavy reader. Readable for every process
             // when running as root, which is the point of this collector.
             'io' => hostProcessIo($procRoot, (int)$entry),
             'command' => hostCommandLine($procRoot, (int)$entry, (string)($fields['Name'] ?? '')),
         ];
+
+        $life = end($procs);
+        if ($life['cpu_ticks'] !== null && $ticks > 0 && (int)$life['elapsed_seconds'] > 0) {
+            $procs[count($procs) - 1]['cpu_lifetime_percent'] =
+                round(($life['cpu_ticks'] / $ticks) / $life['elapsed_seconds'] * 100, 2);
+        }
     }
 
     // Biggest first, then Pss for the head of the list.
@@ -329,11 +363,13 @@ function hostProcessIo(string $procRoot, int $pid): array
  * and JetBackup it is nowhere near the top of a list ordered by RSS, so its
  * I/O was never recorded and no amount of querying afterwards could recover it.
  *
- * So the kept set is the union of two rankings: the heaviest on memory, and
- * the heaviest on disk. A process qualifies by being remarkable in either
- * dimension rather than having to be remarkable in the one that happens to be
- * the sort key. The union is typically well under the sum, because on a busy
- * machine the same few processes tend to top both.
+ * So the kept set is the union of three rankings: the heaviest on memory, the
+ * heaviest on disk, and the heaviest on the processor. A process qualifies by
+ * being remarkable in any one dimension rather than having to be remarkable in
+ * the one that happens to be the sort key. The union is typically well under
+ * the sum, because on a busy machine the same few processes tend to top more
+ * than one - but not reliably: the process holding two gigabytes is usually
+ * asleep, and the one pinning a core is often a few megabytes of shell script.
  *
  * @param list<array> $procs sorted by rss_bytes, descending
  * @return list<array>
@@ -360,7 +396,165 @@ function hostKeepProcesses(array $procs): array
         $keep[(int)$row['pid']] = $row;
     }
 
+    /*
+     * And again by processor use, which overlaps the other two hardly at all.
+     *
+     * Ranked on the recent figure where there is one and on the lifetime figure
+     * where there is not, so a process taking a core on its first reading -
+     * which is exactly when somebody is looking - is not invisible until the
+     * minute after.
+     */
+    $byCpu = array_filter(
+        $procs,
+        fn(array $r): bool => ($r['cpu_percent'] ?? $r['cpu_lifetime_percent'] ?? null) !== null
+    );
+    usort($byCpu, function (array $a, array $b): int {
+        $of = fn(array $r): float => (float)($r['cpu_percent'] ?? $r['cpu_lifetime_percent'] ?? 0);
+        return $of($b) <=> $of($a);
+    });
+
+    foreach (array_slice($byCpu, 0, HOST_KEEP_CPU_PROCS) as $row) {
+        // An idle process is not a CPU finding, and a table padded with zeroes
+        // is how a CPU page stops being read.
+        if ((float)($row['cpu_percent'] ?? $row['cpu_lifetime_percent'] ?? 0) <= 0) {
+            break;
+        }
+        $keep[(int)$row['pid']] = $row;
+    }
+
     return array_values($keep);
+}
+
+/**
+ * What each process has done with the processor since the last reading.
+ *
+ * The figure `top` shows, and the one people mean by "CPU%": jiffies burned
+ * between two readings, divided by the wall-clock seconds between them. Not
+ * capped at 100 - a process with eight threads on eight cores genuinely used
+ * 800% of one core's worth of time, and clamping it would hide the single most
+ * useful fact about it.
+ *
+ * The previous counts come from host_proc_ticks, which carries every live
+ * process rather than the kept few, because ranking by CPU out of a table
+ * selected by memory finds the busiest of the fattest.
+ *
+ * Three things are refused rather than guessed:
+ *
+ *   - a pid with no previous row. Nothing to difference; a brand-new process
+ *     gets its lifetime figure and no recent one, which is honest.
+ *   - a pid whose start time has changed. The number was reused and the
+ *     counter belongs to a process that has since died; differencing across
+ *     that produces a spectacular figure for an innocent process.
+ *   - a negative delta, which means the same thing and is worth catching
+ *     separately in case a kernel ever reports start times this cannot see.
+ *
+ * @return array<int, float> pid to percent of one core
+ */
+function hostCpuRates(PDO $pdo, array $procs, int $ticks, int $now): array
+{
+    if ($ticks <= 0) {
+        return [];
+    }
+
+    $previous = [];
+    try {
+        foreach ($pdo->query('SELECT pid, started, ticks, at FROM host_proc_ticks') as $row) {
+            $previous[(int)$row['pid']] = $row;
+        }
+    } catch (Throwable) {
+        // The table arrives with a migration, and a collector running against a
+        // database from before it should still take its reading.
+        return [];
+    }
+
+    $rates = [];
+    foreach ($procs as $proc) {
+        $pid = (int)$proc['pid'];
+        $ours = $proc['cpu_ticks'] ?? null;
+        $was = $previous[$pid] ?? null;
+        if ($ours === null || $was === null) {
+            continue;
+        }
+
+        $started = $proc['started_ticks'] ?? null;
+        if ($started !== null && $was['started'] !== null && (int)$was['started'] !== (int)$started) {
+            continue;
+        }
+
+        $seconds = $now - (int)$was['at'];
+        $delta = $ours - (int)$was['ticks'];
+        if ($seconds <= 0 || $delta < 0) {
+            continue;
+        }
+
+        $rates[$pid] = round(($delta / $ticks) / $seconds * 100, 2);
+    }
+
+    return $rates;
+}
+
+/**
+ * Replaces the scratchpad of per-process tick counts.
+ *
+ * Whole, every reading, inside the caller's transaction. Deleting first rather
+ * than upserting is what keeps dead processes out: a pid that has exited leaves
+ * a row that would otherwise sit there until its number came round again, at
+ * which point it would be differenced against a stranger.
+ */
+function hostRememberCpuTicks(PDO $pdo, array $procs, int $now): void
+{
+    $pdo->exec('DELETE FROM host_proc_ticks');
+
+    $write = $pdo->prepare(
+        'INSERT OR REPLACE INTO host_proc_ticks (pid, started, ticks, at) VALUES (?, ?, ?, ?)'
+    );
+    foreach ($procs as $proc) {
+        if (($proc['cpu_ticks'] ?? null) === null) {
+            continue;
+        }
+        $write->execute([
+            (int)$proc['pid'], $proc['started_ticks'] ?? null, (int)$proc['cpu_ticks'], $now,
+        ]);
+    }
+}
+
+/**
+ * How busy each core was, against the same core in the previous reading.
+ *
+ * Per core rather than aggregate because the aggregate has already thrown away
+ * the only thing worth knowing: whether the work is spread. Idle counts as
+ * idle+iowait, exactly as the whole-machine figure does, so a core waiting on a
+ * disk does not read as a core doing work.
+ *
+ * Cores present in this reading and absent from the last - a machine that has
+ * been resized, or a first reading - come back with a null percentage rather
+ * than a zero, because "not measurable yet" and "idle" look identical in a bar
+ * chart and are not the same claim.
+ *
+ * @return array<int, ?float> cpu index to busy percent
+ */
+function hostCoreBusy(array $now, array $before): array
+{
+    $busy = [];
+    foreach ($now as $index => $core) {
+        $was = $before[$index] ?? null;
+        $busy[$index] = null;
+        if ($was === null) {
+            continue;
+        }
+
+        $totalDelta = $core['total'] - (int)$was['total_ticks'];
+        // A counter that went backwards is a reboot, not a measurement.
+        if ($totalDelta <= 0) {
+            continue;
+        }
+
+        $idleDelta = ($core['idle'] + $core['iowait'])
+            - ((int)$was['idle_ticks']);
+        $busy[$index] = round(max(0.0, min(100.0, (1 - $idleDelta / $totalDelta) * 100)), 2);
+    }
+
+    return $busy;
 }
 
 /** Proportional set size for one process, or null where the kernel will not say. */
@@ -392,16 +586,50 @@ function hostCommandLine(string $procRoot, int $pid, string $name): string
     return mb_substr(redactSecrets($line), 0, 400);
 }
 
-/** Seconds since a process started, from its start time and the boot clock. */
 /**
- * The parent process id.
+ * The fixed-width half of /proc/PID/stat, read once and parsed once.
  *
- * Eighteen processes sharing one parent are one job fanning out - or one job
- * that has stopped collecting its children. Eighteen with eighteen different
- * parents are eighteen unrelated arrivals, which for a Git server is simply
- * traffic. The distinction is invisible in a count.
+ * State, parent, start time and processor time all live on the same line, and
+ * this used to be three functions that opened the same file three times for
+ * three of them - once per process, on every reading. One read gets all four
+ * and the fourth is the one this file could not previously answer at all.
+ *
+ * Parsed from the last ')' rather than by splitting on spaces. Field two is the
+ * executable name in brackets and it can contain both spaces and brackets -
+ * "(Web Content)" is real - so counting fields from the left lands on the wrong
+ * one for exactly the processes most worth looking at. Everything after the
+ * final ')' is fixed-width and safe to index.
+ *
+ * The fields taken, and why each is here:
+ *
+ *   state     R running or runnable      doing work
+ *             S sleeping                 waiting for something, normally
+ *             D uninterruptible sleep    waiting on I/O and unkillable - a pile
+ *                                        of these is a stuck disk or a hung
+ *                                        network filesystem, not a busy one
+ *             Z zombie                   finished, nobody collected the result
+ *             T stopped
+ *             Without it "18 copies of git" is a count. With it, eighteen in S
+ *             with short ages is a busy Git server and eighteen in D is a
+ *             problem.
+ *
+ *   ppid      Eighteen processes sharing one parent are one job fanning out -
+ *             or one job that has stopped collecting its children. Eighteen
+ *             with eighteen different parents are eighteen unrelated arrivals,
+ *             which for a Git server is simply traffic. Invisible in a count.
+ *
+ *   utime     Jiffies spent in userland and in the kernel on this process's
+ *   stime     behalf. Summed, they are the total processor time it has ever
+ *             used - a counter since it started, not a rate, and useless until
+ *             differenced against another reading or against its own age.
+ *
+ *   started   Jiffies after boot at which it started, which is what turns the
+ *             counter above into either of the percentages anybody wants: over
+ *             the last minute, or over its whole life.
+ *
+ * @return array{state: ?string, ppid: ?int, utime: int, stime: int, started: ?int}|null
  */
-function hostParentPid(string $procRoot, int $pid): ?int
+function hostProcStat(string $procRoot, int $pid): ?array
 {
     $raw = @file_get_contents("$procRoot/$pid/stat");
     if ($raw === false) {
@@ -414,71 +642,27 @@ function hostParentPid(string $procRoot, int $pid): ?int
     }
 
     $rest = preg_split('/\s+/', trim(substr($raw, $close + 1))) ?: [];
+    $at = static fn(int $i): ?int =>
+        isset($rest[$i]) && ctype_digit($rest[$i]) ? (int)$rest[$i] : null;
 
-    // ppid is field 4 overall, so [1] after the bracketed name.
-    return isset($rest[1]) && ctype_digit($rest[1]) ? (int)$rest[1] : null;
+    // Counting from after the name: state is [0], so field N overall is [N-3].
+    return [
+        'state' => isset($rest[0]) && $rest[0] !== '' ? substr($rest[0], 0, 1) : null,
+        'ppid' => $at(1),
+        'utime' => $at(11) ?? 0,
+        'stime' => $at(12) ?? 0,
+        'started' => $at(19),
+    ];
 }
 
-function hostProcState(string $procRoot, int $pid): ?string
+/** Seconds since a process started, from its start time and the boot clock. */
+function hostElapsed(?int $started, int $boot, int $ticks): ?int
 {
-    $raw = @file_get_contents("$procRoot/$pid/stat");
-    if ($raw === false) {
+    if ($started === null || $boot <= 0 || $ticks <= 0) {
         return null;
     }
 
-    $close = strrpos($raw, ')');
-    if ($close === false) {
-        return null;
-    }
-
-    $rest = preg_split('/\s+/', trim(substr($raw, $close + 1))) ?: [];
-
-    /*
-     * The scheduler state, which is the difference between eighteen busy
-     * processes and eighteen stuck ones.
-     *
-     *   R running or runnable      doing work
-     *   S sleeping                 waiting for something, normally
-     *   D uninterruptible sleep    waiting on I/O and cannot be killed - a
-     *                              pile of these is a stuck disk or a hung
-     *                              network filesystem
-     *   Z zombie                   finished, and nobody collected the result
-     *   T stopped
-     *
-     * Without it "18 copies of git" is a count. With it, eighteen in S with
-     * short ages is a busy Git server and eighteen in D is a problem.
-     */
-    return isset($rest[0]) && $rest[0] !== '' ? substr($rest[0], 0, 1) : null;
-}
-
-function hostElapsed(string $procRoot, int $pid, int $boot, int $ticks): ?int
-{
-    $raw = @file_get_contents("$procRoot/$pid/stat");
-    if ($raw === false || $boot <= 0 || $ticks <= 0) {
-        return null;
-    }
-
-    /*
-     * Parsed from the last ')' rather than by splitting on spaces.
-     *
-     * Field two is the executable name in brackets and it can contain both
-     * spaces and brackets - "(Web Content)" is real - so counting spaces from
-     * the left lands on the wrong field for exactly the processes most worth
-     * looking at. Everything after the final ')' is fixed-width.
-     */
-    $close = strrpos($raw, ')');
-    if ($close === false) {
-        return null;
-    }
-
-    $rest = preg_split('/\s+/', trim(substr($raw, $close + 1))) ?: [];
-    // state is [0]; starttime is field 22 overall, so [19] after the name.
-    if (!isset($rest[19]) || !ctype_digit($rest[19])) {
-        return null;
-    }
-
-    $started = $boot + (int)$rest[19] / $ticks;
-    return max(0, (int)round(time() - $started));
+    return max(0, (int)round(time() - ($boot + $started / $ticks)));
 }
 
 /** Kernel clock ticks per second. Practically always 100, but not by standard. */
@@ -960,6 +1144,16 @@ function hostTakeReading(
     $load = hostLoad($procRoot);
     $disks = diskStats($procRoot);
     $pressure = pressureIo($procRoot);
+    /*
+     * The whole of /proc/stat rather than the two figures the busy percentage
+     * needs, and the processor's pressure file beside it.
+     *
+     * Both are a single small read, and between them they are the difference
+     * between "the CPU is at 90%" and knowing whether that is work being done,
+     * a disk being waited on, or a hypervisor taking the cores away.
+     */
+    $cpuStat = cpuBreakdown($procRoot);
+    $cpuPressure = pressureCpu($procRoot);
     $history = bootHistory();
 
     $get = fn(string $key): ?int => isset($mem[$key]) ? (int)$mem[$key] : null;
@@ -989,19 +1183,43 @@ function hostTakeReading(
          * where the counters restart and a difference would be negative. Both
          * are left null rather than guessed at.
          */
-        $cpu = cpuTicks();
+        $cpu = $cpuStat === null
+            ? cpuTicks()
+            : ['total' => $cpuStat['fields']['total'],
+               // Idle for this purpose is idle plus iowait: a core waiting on a
+               // disk is a core with nothing to run, and counting it as work
+               // makes a storage problem read as a processor one.
+               'idle' => $cpuStat['fields']['idle'] + $cpuStat['fields']['iowait']];
         $cpuPercent = null;
+        $previousId = null;
         if ($cpu !== null) {
             $previous = $pdo->query(
-                'SELECT cpu_total_ticks, cpu_idle_ticks FROM host_samples
+                'SELECT id, cpu_total_ticks, cpu_idle_ticks FROM host_samples
                  WHERE cpu_total_ticks IS NOT NULL ORDER BY taken_at DESC, id DESC LIMIT 1'
             )->fetch();
 
+            if ($previous) {
+                $previousId = (int)$previous['id'];
+            }
             if ($previous && $cpu['total'] > (int)$previous['cpu_total_ticks']) {
                 $totalDelta = $cpu['total'] - (int)$previous['cpu_total_ticks'];
                 $idleDelta = $cpu['idle'] - (int)$previous['cpu_idle_ticks'];
                 $cpuPercent = round(max(0.0, min(100.0, (1 - $idleDelta / $totalDelta) * 100)), 2);
             }
+        }
+
+        /*
+         * Per-process processor use, before the process rows are chosen.
+         *
+         * The ranking that decides what gets written down uses this, so it has
+         * to happen first - and it has to happen inside the transaction,
+         * because the scratchpad it reads is replaced further down and a reader
+         * between the two would see an empty table.
+         */
+        $clockTicks = hostClockTicks();
+        $cpuRates = hostCpuRates($pdo, $processes['procs'], $clockTicks, $takenAt);
+        foreach ($processes['procs'] as $i => $proc) {
+            $processes['procs'][$i]['cpu_percent'] = $cpuRates[(int)$proc['pid']] ?? null;
         }
 
         $sample = [
@@ -1043,6 +1261,32 @@ function hostTakeReading(
             'cpu_total_ticks' => $cpu['total'] ?? null,
             'cpu_idle_ticks' => $cpu['idle'] ?? null,
             'cpu_percent' => $cpuPercent,
+            /*
+             * The columns the single busy percentage above cannot stand in for.
+             *
+             * Stored as the raw counters they are read as. Differencing them is
+             * the reader's job, because a rate worked out here is a rate over
+             * whatever gap the cron happened to leave, and a missed minute
+             * would halve it permanently in the stored history.
+             */
+            'cpu_user_ticks' => $cpuStat['fields']['user'] ?? null,
+            'cpu_nice_ticks' => $cpuStat['fields']['nice'] ?? null,
+            'cpu_system_ticks' => $cpuStat['fields']['system'] ?? null,
+            'cpu_iowait_ticks' => $cpuStat['fields']['iowait'] ?? null,
+            'cpu_irq_ticks' => $cpuStat['fields']['irq'] ?? null,
+            'cpu_softirq_ticks' => $cpuStat['fields']['softirq'] ?? null,
+            'cpu_steal_ticks' => $cpuStat['fields']['steal'] ?? null,
+            'cpu_guest_ticks' => $cpuStat['fields']['guest'] ?? null,
+            'ctxt_switches' => $cpuStat['ctxt'] ?? null,
+            'interrupts' => $cpuStat['intr'] ?? null,
+            'forks' => $cpuStat['forks'] ?? null,
+            // Depths at the instant of the read, not counters: how many tasks
+            // were on a core or waiting for one, and how many were blocked in
+            // the kernel. The second is the number that says a load average of
+            // 40 is a stuck disk rather than a busy processor.
+            'procs_running' => $cpuStat['running'] ?? null,
+            'procs_blocked' => $cpuStat['blocked'] ?? null,
+            'cpu_pressure_some' => $cpuPressure['some10'] ?? null,
             'source' => $source,
             'io_pressure_some' => $pressure['some10'] ?? null,
             'io_pressure_full' => $pressure['full10'] ?? null,
@@ -1082,8 +1326,9 @@ function hostTakeReading(
         $procs = $pdo->prepare(
             'INSERT INTO host_processes
                 (sample_id, pid, user, name, rss_bytes, pss_bytes, swap_bytes, vsz_bytes,
-                 threads, elapsed_seconds, command, read_bytes, write_bytes, state, ppid)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                 threads, elapsed_seconds, command, read_bytes, write_bytes, state, ppid,
+                 cpu_ticks, cpu_percent, cpu_lifetime_percent)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         foreach (hostKeepProcesses($processes['procs']) as $row) {
             $procs->execute([
@@ -1093,6 +1338,51 @@ function hostTakeReading(
                 ($row['io']['readable'] ?? false) ? (int)$row['io']['read'] : null,
                 ($row['io']['readable'] ?? false) ? (int)$row['io']['write'] : null,
                 $row['state'] ?? null, $row['ppid'] ?? null,
+                $row['cpu_ticks'] ?? null, $row['cpu_percent'] ?? null,
+                $row['cpu_lifetime_percent'] ?? null,
+            ]);
+        }
+
+        /*
+         * Every live process's tick count, for the next reading to difference.
+         *
+         * Written after the process rows and before the commit, so the counts
+         * and the sample they will be compared against are the same instant.
+         */
+        hostRememberCpuTicks($pdo, $processes['procs'], $takenAt);
+
+        /*
+         * Each core, with how busy it was since the previous reading.
+         *
+         * The previous row per core is fetched by sample id rather than by
+         * "the newest before this one", because this sample has already been
+         * inserted by the time we get here and would otherwise be its own
+         * predecessor - every core would read as exactly 0% busy forever.
+         */
+        $before = [];
+        if ($previousId !== null) {
+            $was = $pdo->prepare('SELECT * FROM host_cpus WHERE sample_id = ?');
+            $was->execute([$previousId]);
+            foreach ($was->fetchAll() as $row) {
+                $before[(int)$row['cpu']] = $row;
+            }
+        }
+
+        $busy = hostCoreBusy($cpuStat['cpus'] ?? [], $before);
+        $cores = $pdo->prepare(
+            'INSERT INTO host_cpus
+                (sample_id, cpu, total_ticks, idle_ticks, user_ticks, system_ticks,
+                 iowait_ticks, steal_ticks, busy_percent)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        foreach ($cpuStat['cpus'] ?? [] as $index => $core) {
+            $cores->execute([
+                $sampleId, $index, $core['total'],
+                // Stored the way the percentage uses it, so a reader
+                // differencing this column gets the same answer this did.
+                $core['idle'] + $core['iowait'],
+                $core['user'], $core['system'], $core['iowait'], $core['steal'],
+                $busy[$index] ?? null,
             ]);
         }
 
@@ -1241,6 +1531,7 @@ function hostTakeReading(
         'files' => count($files),
         'services' => count(hostByService($processes['procs'])),
         'disks' => count($disks['devices'] ?? []),
+        'cores' => count($cpuStat['cpus'] ?? []),
         'boots' => $history['available'] ? count($history['boots']) : null,
         'psi' => $pressure !== null,
         'psi_reason' => $sample['psi_reason'],

@@ -2084,7 +2084,29 @@ function aiViews(): array
         'mem-goes' => 'where the machine\'s memory goes, broken down',
         'log-stream' => 'the newest lines from every log at once, and repeated messages',
         'host-disk' => 'every filesystem on the machine and how full each is',
-        'cpu' => 'processor use, for the account and for the machine',
+        'cpu' => 'processor use for the account and for the machine, with a ranked list '
+            . 'of what is actually true about it right now and a link to the page behind '
+            . 'each finding - the right place to send somebody who only knows the machine '
+            . 'is slow',
+        /*
+         * Five pages that exist because "the CPU is at 90%" is the same reading
+         * for four unrelated problems. An assistant that knows only the parent
+         * page can say the processor is busy and nothing more useful.
+         */
+        'cpu-time' => 'the eight states processor time is charged to - userland, kernel, '
+            . 'iowait, steal, interrupts - which is what tells work being done apart from '
+            . 'a disk being waited on apart from a hypervisor taking the cores away',
+        'cpu-cores' => 'how busy each core is separately, which is the only way to see a '
+            . 'single-threaded bottleneck: one core pinned beside seven idle ones is the '
+            . 'same average as an evenly busy machine and a completely different problem',
+        'cpu-procs' => 'which processes are using the processor, both over the last minute '
+            . 'and averaged over their whole lives - the two figures top and ps report, '
+            . 'side by side',
+        'cpu-queue' => 'run queue depth, blocked tasks, CPU pressure, context switches and '
+            . 'fork rate: why a load average of 40 can sit on a machine that is 5% busy',
+        'cpu-limits' => 'the account\'s allowance against the machine\'s size, and the '
+            . 'CloudLinux fault counts that say whether it is being throttled right now '
+            . 'rather than merely sitting near its ceiling',
         'host' => 'memory: what is using it and where it goes',
         /*
          * The stopping is the part worth saying.

@@ -130,7 +130,7 @@ try {
 
             $say(sprintf(
                 'Recorded sample %d: %d processes, %d users, %d services, %d slab caches, '
-                . '%d files, %d disks%s.',
+                . '%d files, %d disks, %d cores%s.',
                 $result['sample_id'],
                 $result['processes'],
                 $result['users'],
@@ -138,6 +138,7 @@ try {
                 $result['slab'],
                 $result['files'],
                 $result['disks'],
+                $result['cores'],
                 $result['lve'] === null ? '' : ", {$result['lve']} LVE rows"
             ));
 
@@ -148,6 +149,14 @@ try {
              */
             if ($result['disks'] === 0) {
                 $say('  No disk devices: /proc/diskstats could not be read, even as root.');
+            }
+            /*
+             * The per-core table is what tells one pinned core apart from an
+             * evenly busy machine, and a kernel without the cpuN lines leaves
+             * the whole "Each core" page blank with nothing to explain it.
+             */
+            if ($result['cores'] === 0) {
+                $say('  No per-core lines in /proc/stat: the "Each core" page will be empty.');
             }
             $say(sprintf(
                 '  Kernel %s. Device counters %s, pressure stall info %s.',
