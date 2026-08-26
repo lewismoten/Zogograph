@@ -163,6 +163,16 @@ function aiSettings(array $config): array
          */
         'explain_commands' => (bool)($set['explain_commands'] ?? true),
 
+        /*
+         * Whether it may see what the host has that this account cannot.
+         *
+         * Off by default, because it changes the kind of advice given: with it
+         * on, the assistant can say "ask your host to run this as root", which
+         * means the operator opening a support ticket. That is often exactly
+         * the right move and is nobody's decision but theirs to enable.
+         */
+        'host_commands' => (bool)($set['host_commands'] ?? false),
+
         'tools' => $set['tools'] ?? [],
     ];
 }

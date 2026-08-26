@@ -2362,3 +2362,67 @@ canvas.chart-empty {
   font-size: .76rem;
   overflow-wrap: anywhere;
 }
+
+/* ---------------------------------------------------------------- markdown -- */
+
+/*
+ * Assistant answers, which arrive as markdown whether or not anybody asked.
+ *
+ * Tight vertical rhythm: these sit in a 420-pixel panel and the default
+ * paragraph margins would turn a three-sentence answer into a scroll.
+ */
+.md-p { margin: 0 0 .6em; }
+.md-p:last-child { margin-bottom: 0; }
+
+.md-head {
+  margin: .8em 0 .3em;
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--text);
+}
+.md-head:first-child { margin-top: 0; }
+
+.md-list { margin: 0 0 .6em; padding-left: 1.4em; }
+.md-list li { margin: .15em 0; }
+
+.md-quote {
+  margin: 0 0 .6em;
+  padding-left: .8em;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+}
+
+.md-inline-code {
+  padding: .1em .35em;
+  border-radius: 4px;
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .88em;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * A code block scrolls itself rather than widening the panel.
+ *
+ * A command longer than the chat window is the normal case, and a panel that
+ * grows to fit one pushes everything else off the screen.
+ */
+.md-code {
+  margin: 0 0 .6em;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  overflow-x: auto;
+  font-size: .85em;
+}
+.md-code code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre;
+}
+
+.chat-line hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: .7em 0;
+}

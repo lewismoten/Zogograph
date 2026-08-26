@@ -95,6 +95,22 @@ function plainSpan(int|float $seconds, bool $long = false): string
  */
 function plainWhen(int|float $seconds, bool $long = false): string
 {
+    /*
+     * This takes a DURATION, not a moment, and the difference is easy to get
+     * wrong at the call site - both are an integer number of seconds.
+     *
+     * Four places passed an epoch, which came out as "in 56y 7m" because that
+     * is genuinely how far 1787700000 seconds is. Anything beyond a decade is
+     * either that mistake or a number nobody wanted phrased this way, so it
+     * says so rather than printing something confidently absurd.
+     */
+    if (abs($seconds) > 10 * SPAN_YEAR) {
+        return sprintf(
+            '(a span of %s - if this was meant to be a date, it needs time() subtracting)',
+            plainSpan($seconds, $long)
+        );
+    }
+
     if (abs($seconds) < 60) {
         return 'now';
     }

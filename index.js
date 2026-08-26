@@ -4807,6 +4807,18 @@ function renderAiSettings(data) {
     + "pasting a command they have not understood is the thing this is meant to prevent. "
     + "Turn it off if you read shell fluently and find the commentary noise."));
 
+  const hostCommands = document.createElement("input");
+  hostCommands.type = "checkbox";
+  hostCommands.id = "aiHostCommands";
+  hostCommands.checked = data.host_commands === true;
+  room.appendChild(fieldRow("Let it see what only root can run", hostCommands,
+    "The host collector already records which programs exist and which this account can "
+    + "reach. With this on, the assistant can see the difference and may suggest asking "
+    + "your host to run one and send back the output — which is an ordinary support "
+    + "request and often the fastest route to an answer. It is told to suggest reading "
+    + "only, never changes to a shared server. Off by default because it changes the kind "
+    + "of advice you get."));
+
   parts.push(section("How much it can hold", room));
   parts.push(section("Pictures", pictureFields(data)));
 
@@ -5320,6 +5332,7 @@ async function saveAiSettings(extra = {}) {
       compact_at: $("aiCompactAt").value,
       compact_automatically: $("aiCompactAuto").checked ? "1" : "0",
       explain_commands: $("aiExplain").checked ? "1" : "0",
+      host_commands: $("aiHostCommands").checked ? "1" : "0",
       tools_on: on,
       tools_ask: ask,
       ...extra,
@@ -5680,11 +5693,18 @@ async function captureScreen() {
  * This is the difference between a feature people can use and one they cannot.
  * A screenshot of this dashboard contains paths, addresses, domain names and
  * whatever a log line happened to say, and it is about to go to somebody else's
- * service. Two tools, both by dragging a box: keep only this part, or black out
- * this part. Undo until it looks right, then send - or do not.
+ * service.
  *
- * Redactions are painted, not overlaid. What is sent is a flattened image with
- * black rectangles in it; there is no layer anybody could peel back.
+ * Everything is a layer until Send is pressed, and that is the change from the
+ * first version. Redactions used to be painted into the image as soon as they
+ * were drawn, which made them impossible to move, resize or remove - a
+ * misplaced box meant starting again - and cropping had to flatten them first,
+ * which was its own source of trouble. Now the base image is never modified:
+ * there is a list of boxes and an optional crop rectangle, and the picture is
+ * assembled once, at the end, from those.
+ *
+ * What is finally sent is flat. There is no layer anybody could peel back; the
+ * black rectangles are pixels.
  *
  * Resolves to a data URL, or null if the user changed their mind.
  */
@@ -5706,103 +5726,244 @@ function editScreenshot(source, why) {
     const scale = width / source.width;
     const height = Math.round(source.height * scale);
 
-    canvas.width = width;
-    canvas.height = height;
-
     const base = document.createElement("canvas");
     base.width = width;
     base.height = height;
     base.getContext("2d").drawImage(source, 0, 0, width, height);
 
-    // Every step, so undo can walk back through them.
-    const steps = [];
-    let mode = "redact";
-    let dragging = null;
+    /*
+     * The whole editing state, in base-image coordinates.
+     *
+     * `crop` is a window onto the base rather than a new image. Keeping it that
+     * way is what lets a crop be undone and lets redactions drawn before it
+     * survive it - the previous version rewrote the base image on every crop
+     * and then had to leave `width` and `height` pointing at the old size,
+     * which is why the selection stopped following the pointer afterwards.
+     */
+    const shot = {
+      crop: { x: 0, y: 0, w: width, h: height },
+      boxes: [],
+      chosen: -1,
+      mode: "redact",
+    };
 
-    const draw = () => {
-      ctx.clearRect(0, 0, width, height);
-      ctx.drawImage(base, 0, 0);
+    let drag = null;
 
-      for (const step of steps) {
-        if (step.kind !== "redact") continue;
-        paintRedaction(ctx, step);
+    /* ------------------------------------------------- coordinates ------- */
+
+    /** Where a pointer event is, in base-image coordinates. */
+    const at = event => {
+      const box = canvas.getBoundingClientRect();
+      const inCanvas = {
+        x: ((event.clientX - box.left) / box.width) * canvas.width,
+        y: ((event.clientY - box.top) / box.height) * canvas.height,
+      };
+      return {
+        x: shot.crop.x + inCanvas.x,
+        y: shot.crop.y + inCanvas.y,
+      };
+    };
+
+    /** How many base pixels one screen pixel is, for hit tolerances. */
+    const perPixel = () => {
+      const box = canvas.getBoundingClientRect();
+      return box.width ? canvas.width / box.width : 1;
+    };
+
+    const inside = (box, point) =>
+      point.x >= box.x && point.x <= box.x + box.w
+      && point.y >= box.y && point.y <= box.y + box.h;
+
+    /** Which corner of a box a point is on, or null. */
+    const cornerAt = (box, point, tolerance) => {
+      const corners = [
+        ["nw", box.x, box.y],
+        ["ne", box.x + box.w, box.y],
+        ["sw", box.x, box.y + box.h],
+        ["se", box.x + box.w, box.y + box.h],
+      ];
+
+      for (const [name, x, y] of corners) {
+        if (Math.abs(point.x - x) <= tolerance && Math.abs(point.y - y) <= tolerance) {
+          return name;
+        }
       }
 
-      if (dragging) {
+      return null;
+    };
+
+    /* ------------------------------------------------- drawing ----------- */
+
+    const draw = () => {
+      canvas.width = Math.round(shot.crop.w);
+      canvas.height = Math.round(shot.crop.h);
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(
+        base,
+        shot.crop.x, shot.crop.y, shot.crop.w, shot.crop.h,
+        0, 0, canvas.width, canvas.height
+      );
+
+      const shift = box => ({
+        x: box.x - shot.crop.x,
+        y: box.y - shot.crop.y,
+        w: box.w,
+        h: box.h,
+      });
+
+      shot.boxes.forEach((box, index) => {
+        paintRedaction(ctx, shift(box));
+
+        // The one being edited gets handles, so it is obvious which will move.
+        if (index === shot.chosen) {
+          const here = shift(box);
+          ctx.save();
+          ctx.strokeStyle = "#4c9aff";
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 3]);
+          ctx.strokeRect(here.x, here.y, here.w, here.h);
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#4c9aff";
+          for (const [x, y] of [
+            [here.x, here.y],
+            [here.x + here.w, here.y],
+            [here.x, here.y + here.h],
+            [here.x + here.w, here.y + here.h],
+          ]) {
+            ctx.fillRect(x - 4, y - 4, 8, 8);
+          }
+          ctx.restore();
+        }
+      });
+
+      if (drag && drag.kind === "new") {
+        const here = shift(drag.box);
         ctx.save();
-        ctx.strokeStyle = mode === "redact" ? "#f2616b" : "#4c9aff";
+        ctx.strokeStyle = shot.mode === "redact" ? "#f2616b" : "#4c9aff";
         ctx.lineWidth = 2;
         ctx.setLineDash([6, 4]);
-        ctx.strokeRect(dragging.x, dragging.y, dragging.w, dragging.h);
+        ctx.strokeRect(here.x, here.y, here.w, here.h);
         ctx.restore();
       }
     };
 
-    const at = event => {
-      const box = canvas.getBoundingClientRect();
-      return {
-        x: ((event.clientX - box.left) / box.width) * width,
-        y: ((event.clientY - box.top) / box.height) * height,
-      };
-    };
+    /* ------------------------------------------------- pointer ----------- */
 
     const onDown = event => {
       event.preventDefault();
       const point = at(event);
-      dragging = { x: point.x, y: point.y, w: 0, h: 0, from: point };
+      const tolerance = 8 * perPixel();
+
+      /*
+       * An existing box takes the press before a new one is started.
+       *
+       * Topmost first, so a box drawn over another is the one that responds -
+       * which is the same order they are painted in, and therefore the one
+       * somebody expects from looking at it.
+       */
+      if (shot.mode === "redact") {
+        for (let i = shot.boxes.length - 1; i >= 0; i--) {
+          const box = shot.boxes[i];
+          const corner = cornerAt(box, point, tolerance);
+
+          if (corner) {
+            shot.chosen = i;
+            drag = { kind: "resize", index: i, corner, from: point, was: { ...box } };
+            canvas.setPointerCapture(event.pointerId);
+            draw();
+            syncTools();
+            return;
+          }
+
+          if (inside(box, point)) {
+            shot.chosen = i;
+            drag = { kind: "move", index: i, from: point, was: { ...box } };
+            canvas.setPointerCapture(event.pointerId);
+            draw();
+            syncTools();
+            return;
+          }
+        }
+      }
+
+      shot.chosen = -1;
+      drag = { kind: "new", from: point, box: { x: point.x, y: point.y, w: 0, h: 0 } };
       canvas.setPointerCapture(event.pointerId);
+      syncTools();
     };
 
     const onMove = event => {
-      if (!dragging) return;
+      if (!drag) return;
       const point = at(event);
-      dragging.x = Math.min(dragging.from.x, point.x);
-      dragging.y = Math.min(dragging.from.y, point.y);
-      dragging.w = Math.abs(point.x - dragging.from.x);
-      dragging.h = Math.abs(point.y - dragging.from.y);
+
+      if (drag.kind === "new") {
+        drag.box = {
+          x: Math.min(drag.from.x, point.x),
+          y: Math.min(drag.from.y, point.y),
+          w: Math.abs(point.x - drag.from.x),
+          h: Math.abs(point.y - drag.from.y),
+        };
+      } else if (drag.kind === "move") {
+        const box = shot.boxes[drag.index];
+        box.x = drag.was.x + (point.x - drag.from.x);
+        box.y = drag.was.y + (point.y - drag.from.y);
+      } else if (drag.kind === "resize") {
+        const box = shot.boxes[drag.index];
+        const was = drag.was;
+        const left = drag.corner.includes("w") ? point.x : was.x;
+        const top = drag.corner.includes("n") ? point.y : was.y;
+        const right = drag.corner.includes("e") ? point.x : was.x + was.w;
+        const bottom = drag.corner.includes("s") ? point.y : was.y + was.h;
+
+        box.x = Math.min(left, right);
+        box.y = Math.min(top, bottom);
+        box.w = Math.abs(right - left);
+        box.h = Math.abs(bottom - top);
+      }
+
       draw();
     };
 
     const onUp = () => {
-      if (!dragging) return;
-      const box = { x: dragging.x, y: dragging.y, w: dragging.w, h: dragging.h };
-      dragging = null;
+      if (!drag) return;
+
+      if (drag.kind !== "new") {
+        drag = null;
+        draw();
+        syncTools();
+        return;
+      }
+
+      const box = drag.box;
+      drag = null;
 
       // A stray click is not a selection. Anything smaller than this is one.
       if (box.w < 8 || box.h < 8) {
         draw();
+        syncTools();
         return;
       }
 
-      if (mode === "redact") {
-        steps.push({ kind: "redact", ...box });
+      if (shot.mode === "redact") {
+        shot.boxes.push(box);
+        shot.chosen = shot.boxes.length - 1;
       } else {
         /*
-         * Redactions are burned in BEFORE the crop.
+         * A crop narrows the window; it does not rewrite the image.
          *
-         * Without this, cropping cropped the untouched base image and every
-         * blacked-out area came back - silently, because the preview redraws
-         * from the same base and looked correct until the crop. That is the
-         * worst possible shape for a bug in this particular feature, so the
-         * flattening happens first and the steps are cleared afterwards
-         * because they are now part of the picture.
+         * So it can be undone, and so the boxes drawn before it keep meaning
+         * what they meant. The new window is clamped inside the old one -
+         * dragging past the edge should stop at the edge rather than reveal
+         * what was already cropped away.
          */
-        for (const step of steps) paintRedaction(base.getContext("2d"), step);
-
-        /*
-         * Cropping is destructive and immediate.
-         *
-         * It rewrites the base image rather than being another step, because
-         * everything after it is measured in the new coordinate space - and
-         * undo of a crop is not offered for the same reason: it would have to
-         * put the earlier redactions somewhere, and there is no right answer.
-         */
-        cropInto(base, box);
-        canvas.width = base.width;
-        canvas.height = base.height;
-        steps.length = 0;
-        mode = "redact";
-        syncTools();
+        shot.crop = {
+          x: Math.max(shot.crop.x, box.x),
+          y: Math.max(shot.crop.y, box.y),
+          w: Math.min(box.w, shot.crop.x + shot.crop.w - Math.max(shot.crop.x, box.x)),
+          h: Math.min(box.h, shot.crop.y + shot.crop.h - Math.max(shot.crop.y, box.y)),
+        };
+        shot.mode = "redact";
       }
 
       draw();
@@ -5813,50 +5974,119 @@ function editScreenshot(source, why) {
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerup", onUp);
 
-    const tools = $("shotTools");
+    /* ------------------------------------------------- tools ------------- */
 
     const syncTools = () => {
-      $("shotUndo").disabled = steps.length === 0;
-      $("shotRedactMode").classList.toggle("chosen", mode === "redact");
-      $("shotCropMode").classList.toggle("chosen", mode === "crop");
-      $("shotHint").textContent = mode === "redact"
-        ? "Drag a box over anything that should not be sent. It will be blacked out and "
-          + "labelled."
-        : "Drag a box around the part worth sending. Everything outside it is discarded.";
-      $("shotCount").textContent = steps.length
-        ? `${count(steps.length, "area")} blacked out`
-        : "";
+      const cropped = shot.crop.w < width || shot.crop.h < height;
+
+      $("shotUndo").disabled = shot.boxes.length === 0 && !cropped;
+      $("shotDrop").hidden = shot.chosen < 0;
+      $("shotUncrop").hidden = !cropped;
+      $("shotRedactMode").classList.toggle("chosen", shot.mode === "redact");
+      $("shotCropMode").classList.toggle("chosen", shot.mode === "crop");
+
+      $("shotHint").textContent = shot.mode === "redact"
+        ? (shot.chosen >= 0
+          ? "Drag it to move, drag a corner to resize, or press Delete to remove it."
+          : "Drag a box over anything that should not be sent. You can move, resize or "
+            + "remove it afterwards — nothing is fixed until you send.")
+        : "Drag a box around the part worth sending. Everything outside it is left out, "
+          + "and you can undo it.";
+
+      $("shotCount").textContent = [
+        shot.boxes.length ? `${count(shot.boxes.length, "area")} blacked out` : "",
+        cropped ? `cropped to ${Math.round(shot.crop.w)}×${Math.round(shot.crop.h)}` : "",
+      ].filter(Boolean).join(" · ");
     };
+
+    const dropChosen = () => {
+      if (shot.chosen < 0) return;
+      shot.boxes.splice(shot.chosen, 1);
+      shot.chosen = -1;
+      draw();
+      syncTools();
+    };
+
+    const onKey = event => {
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (shot.chosen >= 0) {
+          event.preventDefault();
+          dropChosen();
+        }
+      }
+    };
+
+    document.addEventListener("keydown", onKey);
 
     const finish = value => {
       canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerup", onUp);
+      document.removeEventListener("keydown", onKey);
       dialog.close();
       resolve(value);
     };
 
-    $("shotRedactMode").onclick = () => { mode = "redact"; syncTools(); };
-    $("shotCropMode").onclick = () => { mode = "crop"; syncTools(); };
-    $("shotUndo").onclick = () => { steps.pop(); draw(); syncTools(); };
+    $("shotRedactMode").onclick = () => {
+      shot.mode = "redact";
+      syncTools();
+    };
+    $("shotCropMode").onclick = () => {
+      shot.mode = "crop";
+      shot.chosen = -1;
+      draw();
+      syncTools();
+    };
+    $("shotDrop").onclick = () => dropChosen();
+    $("shotUncrop").onclick = () => {
+      shot.crop = { x: 0, y: 0, w: width, h: height };
+      draw();
+      syncTools();
+    };
+    $("shotUndo").onclick = () => {
+      if (shot.boxes.length) {
+        shot.boxes.pop();
+        shot.chosen = -1;
+      } else {
+        shot.crop = { x: 0, y: 0, w: width, h: height };
+      }
+      draw();
+      syncTools();
+    };
     $("shotCancel").onclick = () => finish(null);
 
     $("shotSend").onclick = () => {
       /*
-       * Flattened before it leaves.
+       * Assembled and flattened here, once, and only here.
        *
-       * The redactions are painted into the pixels rather than kept as a layer,
-       * so what is sent has no version of the hidden content in it at all.
+       * Everything up to this point has been a description of what to do to the
+       * image. This is where it happens: the cropped region is drawn, the
+       * redactions are painted into those pixels, and what comes out has no
+       * version of the hidden content in it at all.
+       *
        * WebP because a screenshot of a dashboard is flat colour and hard edges,
        * which it compresses far better than JPEG - typically a third the size
        * at a quality nobody reading it would question.
        */
       const out = document.createElement("canvas");
-      out.width = base.width;
-      out.height = base.height;
+      out.width = Math.round(shot.crop.w);
+      out.height = Math.round(shot.crop.h);
+
       const flat = out.getContext("2d");
-      flat.drawImage(base, 0, 0);
-      for (const step of steps) paintRedaction(flat, step);
+      flat.drawImage(
+        base,
+        shot.crop.x, shot.crop.y, shot.crop.w, shot.crop.h,
+        0, 0, out.width, out.height
+      );
+
+      for (const box of shot.boxes) {
+        paintRedaction(flat, {
+          x: box.x - shot.crop.x,
+          y: box.y - shot.crop.y,
+          w: box.w,
+          h: box.h,
+        });
+      }
 
       const webp = out.toDataURL("image/webp", 0.8);
       // A browser without WebP encoding silently returns a PNG; either is fine
@@ -5865,12 +6095,21 @@ function editScreenshot(source, why) {
     };
 
     $("shotWhy").textContent = why
-      ? `${chatState.who.name} asked for this: \u201c${why}\u201d`
+      ? `${chatState.who.name} asked for this: “${why}”`
       : `${chatState.who.name} asked for a screenshot.`;
 
-    draw();
     syncTools();
     dialog.showModal();
+
+    /*
+     * Painted after the dialog is on screen, not before.
+     *
+     * A canvas painted while its dialog is still display:none showed black
+     * until something else invalidated it - which in practice meant it looked
+     * broken until the first click. Two frames, because one is not always
+     * enough for a dialog that has just been promoted to the top layer.
+     */
+    requestAnimationFrame(() => requestAnimationFrame(draw));
   });
 }
 
@@ -5907,22 +6146,6 @@ function paintRedaction(ctx, box) {
   ctx.restore();
 }
 
-/** Replaces a canvas's contents with one rectangle of it. */
-function cropInto(canvas, box) {
-  const x = Math.max(0, Math.round(box.x));
-  const y = Math.max(0, Math.round(box.y));
-  const w = Math.min(canvas.width - x, Math.round(box.w));
-  const h = Math.min(canvas.height - y, Math.round(box.h));
-
-  const piece = document.createElement("canvas");
-  piece.width = w;
-  piece.height = h;
-  piece.getContext("2d").drawImage(canvas, x, y, w, h, 0, 0, w, h);
-
-  canvas.width = w;
-  canvas.height = h;
-  canvas.getContext("2d").drawImage(piece, 0, 0);
-}
 
 /* ----------------------------------------------------------- what is run -- */
 
@@ -6408,9 +6631,30 @@ async function renderNamedChart(canvas, chartId, hours) {
 
   const ordered = [...rows.values()].sort((a, b) => a.at - b.at);
 
+  /*
+   * The axis that matches what is being plotted.
+   *
+   * Everything except bytes was drawn on a plain number axis, so a CPU chart in
+   * the conversation had a y-axis reading 0, 25, 50, 75 with no indication that
+   * those were per cent - which on a dashboard where percentages are of the
+   * account's allowance rather than the machine is exactly the ambiguity worth
+   * avoiding.
+   */
+  const axis = {
+    bytes: undefined,
+    percent: percentAxis,
+    count: countAxis,
+    ms: msAxis,
+    rate: rateAxis,
+  }[data.units] ?? plainAxis;
+
   drawLineChart(canvas, ordered, series, {
     xKey: "at",
-    axis: data.units === "bytes" ? undefined : plainAxis,
+    axis,
+    // A percentage has a floor and a ceiling, and drawing it without them makes
+    // a wobble between 41 and 43 look like a crisis.
+    zeroBased: data.units === "percent",
+    max: data.units === "percent" ? 100 : undefined,
     empty: "Nothing recorded in this period",
     // No note marks on a chart drawn for a conversation: they belong to the
     // page, and here they would be unexplained.
@@ -6625,7 +6869,59 @@ async function runBrowserTool(run) {
   let result = {};
 
   try {
-    if (run.tool === "show_progress") {
+    if (run.tool === "set_time_range") {
+      /*
+       * The dashboard's own range picker, driven from the conversation.
+       *
+       * Through the same control the operator would use rather than by setting
+       * state directly, so the dropdown, the route and the Live button all end
+       * up agreeing - three of them have gone out of step in this file before
+       * by somebody setting state.range on its own.
+       */
+      const seconds = { "10m": 600, "1h": 3600, "6h": 21600,
+                        "24h": 86400, "7d": 604800, "30d": 2592000 }[run.arguments.range];
+
+      if (!seconds) {
+        result = { error: `There is no "${run.arguments.range}" range.` };
+      } else {
+        const picker = $("range");
+        const has = [...picker.options].some(o => Number(o.value) === seconds);
+
+        if (!has) {
+          result = {
+            error: `This dashboard does not offer a ${run.arguments.range} range. `
+              + `It offers: ${[...picker.options].map(o => o.textContent).join(", ")}.`,
+          };
+        } else {
+          picker.value = String(seconds);
+          picker.dispatchEvent(new Event("change", { bubbles: true }));
+
+          let live = false;
+          if (run.arguments.live && seconds === LIVE_RANGE) {
+            if (!state.live) $("live").click();
+            live = state.live;
+          }
+
+          notice(
+            `${chatState.who.name} switched the range to `
+            + `${[...picker.options].find(o => Number(o.value) === seconds).textContent}`
+            + (live ? ", live" : "")
+            + (run.arguments.why ? ` — ${run.arguments.why}` : ""),
+            true
+          );
+
+          result = {
+            range: run.arguments.range,
+            live,
+            note: live
+              ? "The dashboard is now taking a reading every few seconds. Say when they "
+                + "can turn it off."
+              : "The dashboard is showing that range now. The data tools are unaffected "
+                + "by this - they take their own period as a parameter.",
+          };
+        }
+      }
+    } else if (run.tool === "show_progress") {
       // Drawn by renderChat from the tool call itself, like the chart cards -
       // so it survives every poll rather than being wiped by the next one.
       result = {};
@@ -6827,12 +7123,23 @@ function renderChat() {
     bubble.className = `chat-line chat-${message.role}`;
 
     /*
-     * textContent, never markup.
+     * Rendered as markdown, and still never as markup.
      *
-     * This is text from a model, and a model can be talked into producing
-     * anything. It is displayed as characters, full stop.
+     * Models write markdown whether or not you ask them to, so a plain-text
+     * bubble showed literal asterisks and backticks around everything it meant
+     * to emphasise - and a command it wanted somebody to run came out
+     * indistinguishable from the prose around it.
+     *
+     * renderMarkdown builds nodes and never touches innerHTML, so the original
+     * reasoning here still holds exactly: this is text from a model, a model
+     * can be talked into producing anything, and nothing it produces becomes
+     * markup. Only elements this code decided to create exist.
      */
-    bubble.textContent = message.content;
+    if (message.role === "assistant" || message.role === "summary") {
+      bubble.appendChild(renderMarkdown(message.content));
+    } else {
+      bubble.textContent = message.content;
+    }
     parts.push(bubble);
   }
 
@@ -7119,6 +7426,12 @@ function chatToolPhrase(tool, args) {
     open_page: `Opened ${VIEWS[args.page]?.label ?? args.page}`,
     take_screenshot: "Took a screenshot",
     show_progress: `Showed progress on ${args.what ?? "something"}`,
+    set_time_range: `Switched the view to the last ${args.range ?? "?"}`
+      + (args.live ? ", live" : ""),
+    what_the_terminal_can_run: "Checked which commands exist here",
+    what_the_host_can_be_asked: "Checked what the host can be asked to do",
+    get_pending_host_requests: "Checked what the host already has queued",
+    get_collection_schedule: "Checked when the collectors run",
     recommend_command: "Put a command on the terminal page",
     remember: `Wrote down what it worked out about ${args.subject ?? "something"}`,
     recall: args.about
@@ -9756,6 +10069,240 @@ function aiForgetForm(who) {
 
   wrap.appendChild(row);
   return wrap;
+}
+
+/* --------------------------------------------------------------- markdown -- */
+
+/**
+ * A small markdown renderer that builds nodes, never markup.
+ *
+ * The distinction matters more here than anywhere else in this file. The text
+ * being rendered comes from a language model, and a model can be talked into
+ * producing anything at all - including a well-formed script tag, by somebody
+ * who has put the right words into a log file this dashboard then read aloud.
+ * So there is no innerHTML in this function and there must never be one: every
+ * piece of text arrives through textContent, and the only elements that exist
+ * are the ones this code decided to create.
+ *
+ * It is deliberately partial. Tables, images, footnotes and HTML passthrough
+ * are not supported, and their syntax is shown as the characters it is made of
+ * rather than half-rendered. What is supported is what a diagnostic answer
+ * actually uses: paragraphs, emphasis, code, lists, headings, quotes and links.
+ *
+ * @returns {DocumentFragment}
+ */
+function renderMarkdown(text) {
+  const out = document.createDocumentFragment();
+  const lines = String(text ?? "").split("\n");
+
+  let i = 0;
+  let list = null;
+
+  const endList = () => {
+    if (list) {
+      out.appendChild(list);
+      list = null;
+    }
+  };
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    /* ---- fenced code ---- */
+    if (/^\s*```/.test(line)) {
+      endList();
+      const language = line.replace(/^\s*```/, "").trim();
+      const body = [];
+      i++;
+
+      while (i < lines.length && !/^\s*```/.test(lines[i])) {
+        body.push(lines[i]);
+        i++;
+      }
+      i++;   // the closing fence
+
+      const pre = document.createElement("pre");
+      pre.className = "md-code";
+      const code = document.createElement("code");
+      code.textContent = body.join("\n");
+      if (language) {
+        // The language is a label, not a promise: nothing here highlights.
+        pre.dataset.language = language;
+      }
+      pre.appendChild(code);
+      out.appendChild(pre);
+      continue;
+    }
+
+    /* ---- blank ---- */
+    if (line.trim() === "") {
+      endList();
+      i++;
+      continue;
+    }
+
+    /* ---- heading ---- */
+    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    if (heading) {
+      endList();
+      /*
+       * Never above h4.
+       *
+       * The panel this sits in already has an h2, and a model that decides to
+       * open with "# Summary" should not be outranking the page it is inside.
+       */
+      const level = Math.min(6, heading[1].length + 3);
+      const node = document.createElement(`h${level}`);
+      node.className = "md-head";
+      node.appendChild(inlineMarkdown(heading[2]));
+      out.appendChild(node);
+      i++;
+      continue;
+    }
+
+    /* ---- horizontal rule ---- */
+    if (/^\s*([-*_])\s*\1\s*\1[\s\-*_]*$/.test(line)) {
+      endList();
+      out.appendChild(document.createElement("hr"));
+      i++;
+      continue;
+    }
+
+    /* ---- quote ---- */
+    if (/^\s*>\s?/.test(line)) {
+      endList();
+      const body = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        body.push(lines[i].replace(/^\s*>\s?/, ""));
+        i++;
+      }
+      const quote = document.createElement("blockquote");
+      quote.className = "md-quote";
+      quote.appendChild(renderMarkdown(body.join("\n")));
+      out.appendChild(quote);
+      continue;
+    }
+
+    /* ---- list ---- */
+    const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+    const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+
+    if (bullet || numbered) {
+      const wanted = bullet ? "ul" : "ol";
+      if (!list || list.tagName.toLowerCase() !== wanted) {
+        endList();
+        list = document.createElement(wanted);
+        list.className = "md-list";
+      }
+      const item = document.createElement("li");
+      item.appendChild(inlineMarkdown((bullet || numbered)[1]));
+      list.appendChild(item);
+      i++;
+      continue;
+    }
+
+    /* ---- paragraph ---- */
+    endList();
+    const body = [];
+    while (
+      i < lines.length
+      && lines[i].trim() !== ""
+      && !/^\s*```/.test(lines[i])
+      && !/^(#{1,4})\s+/.test(lines[i])
+      && !/^\s*>\s?/.test(lines[i])
+      && !/^\s*[-*+]\s+/.test(lines[i])
+      && !/^\s*\d+[.)]\s+/.test(lines[i])
+    ) {
+      body.push(lines[i]);
+      i++;
+    }
+
+    const paragraph = document.createElement("p");
+    paragraph.className = "md-p";
+    paragraph.appendChild(inlineMarkdown(body.join("\n")));
+    out.appendChild(paragraph);
+  }
+
+  endList();
+  return out;
+}
+
+/**
+ * The inline half: code, emphasis and links.
+ *
+ * Code is taken first and its contents are never looked at again, so a
+ * backtick-quoted `**not bold**` stays literal - which is the whole reason
+ * somebody wrote it in backticks.
+ */
+function inlineMarkdown(text) {
+  const out = document.createDocumentFragment();
+  const source = String(text ?? "");
+
+  /*
+   * One pass, one regular expression, alternatives in precedence order.
+   *
+   * Nested passes over the same string are how a renderer ends up applying
+   * emphasis inside a URL and producing a link nobody can click.
+   */
+  const pattern = /(`+)([^`]+?)\1|\[([^\]]+)\]\(([^)\s]+)\)|(\*\*|__)(.+?)\5|(\*|_)(.+?)\7/g;
+
+  let last = 0;
+  let match;
+
+  while ((match = pattern.exec(source)) !== null) {
+    if (match.index > last) {
+      out.appendChild(document.createTextNode(source.slice(last, match.index)));
+    }
+
+    if (match[2] !== undefined) {
+      const code = document.createElement("code");
+      code.className = "md-inline-code";
+      code.textContent = match[2];
+      out.appendChild(code);
+    } else if (match[3] !== undefined) {
+      /*
+       * Only addresses a browser should follow.
+       *
+       * A model writing `javascript:` or `data:` into a link is the one way
+       * markup could still get in through a renderer that never touches
+       * innerHTML, so the scheme is checked rather than trusted. Anything else
+       * is shown as the text it is, with the address beside it.
+       */
+      const href = match[4];
+      if (/^https?:\/\//i.test(href)) {
+        const link = document.createElement("a");
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = match[3];
+        out.appendChild(link);
+      } else if (href.startsWith("#/")) {
+        // A link into this dashboard, which is a useful thing for it to write.
+        const link = document.createElement("a");
+        link.href = href;
+        link.textContent = match[3];
+        out.appendChild(link);
+      } else {
+        out.appendChild(document.createTextNode(`${match[3]} (${href})`));
+      }
+    } else if (match[6] !== undefined) {
+      const strong = document.createElement("strong");
+      strong.appendChild(inlineMarkdown(match[6]));
+      out.appendChild(strong);
+    } else if (match[8] !== undefined) {
+      const em = document.createElement("em");
+      em.appendChild(inlineMarkdown(match[8]));
+      out.appendChild(em);
+    }
+
+    last = pattern.lastIndex;
+  }
+
+  if (last < source.length) {
+    out.appendChild(document.createTextNode(source.slice(last)));
+  }
+
+  return out;
 }
 
 /* ------------------------------------------------------------- long paths -- */

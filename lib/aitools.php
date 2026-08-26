@@ -554,6 +554,126 @@ function aiToolCatalogue(): array
 
         /* --------------------------------------------------- saying things -- */
 
+        'what_the_terminal_can_run' => [
+            'group' => 'terminal',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'list the commands the operator could actually run.',
+            'description' =>
+                "Lists which common diagnostic programs exist on this machine and are on "
+                . "the PATH the terminal uses, so a command you suggest can actually run.\n\n"
+                . "USE THIS BEFORE `recommend_command`, the first time in a conversation "
+                . "that you are about to suggest something. Shared hosts are missing "
+                . "things you would assume are always present - `ss`, `lsof`, `dig` and "
+                . "`strace` are all commonly absent, and CageFS hides most of /usr/sbin "
+                . "from the account entirely. Suggesting a command that is not there wastes "
+                . "somebody's time and makes the next suggestion less trusted.\n\n"
+                . "It also says whether the terminal is switched on at all. If it is not, "
+                . "do not suggest commands - say that the terminal is off and where to turn "
+                . "it on.\n\n"
+                . "This checks for the programs on a fixed list. A program not on the list "
+                . "is not thereby absent; it was simply not looked for.",
+            'parameters' => [],
+        ],
+
+        'what_the_host_can_be_asked' => [
+            'group' => 'host',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'list what root\'s collector can be asked to do.',
+            'description' =>
+                "Lists the jobs this dashboard can ask the host's root collector to run on "
+                . "the account's behalf, and what each one answers.\n\n"
+                . "This is the route to everything the account cannot see for itself: the "
+                . "whole machine's disk use, other accounts, /var and /backup, the process "
+                . "table as root sees it, what programs exist outside CageFS.\n\n"
+                . "IT IS NOT IMMEDIATE, and this is the part to get right when you talk "
+                . "about it. A request is left in a table; root's cron picks it up on its "
+                . "next run and does the work then. The answer comes back minutes later. "
+                . "The tool tells you how often that cron runs and when it last ran, so "
+                . "you can say how long it will be rather than guessing - and you can draw "
+                . "a progress bar with `show_progress` if the wait is worth showing.\n\n"
+                . "You cannot make the request. Each job names the page where the operator "
+                . "presses the button; send them there.",
+            'parameters' => [],
+        ],
+
+        'get_pending_host_requests' => [
+            'group' => 'host',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'see what the host has been asked for and when it will be done.',
+            'description' =>
+                "What is already queued for root's collector, when each was asked for, and "
+                . "when the next collector run is due.\n\n"
+                . "USE THIS when the operator has pressed one of those buttons and is "
+                . "waiting, or before suggesting they press one - a request that is already "
+                . "queued does not need pressing again, and saying so is more useful than "
+                . "sending them to press it a second time.\n\n"
+                . "The wait is an estimate from the collector's recent behaviour, not a "
+                . "promise. If the collector has stopped, the wait is not long - it is "
+                . "never, and this says which.",
+            'parameters' => [],
+        ],
+
+        'get_collection_schedule' => [
+            'group' => 'host',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'see how often each collector runs and when it last did.',
+            'description' =>
+                "How often the account's cron and the host's cron actually run, when each "
+                . "last ran, and when each is next due.\n\n"
+                . "USE THIS whenever a wait is involved: before telling somebody to check "
+                . "back, before asking them to wait for a request, and whenever a reading "
+                . "looks stale. It is the difference between \"in about four minutes\" and "
+                . "\"shortly\".\n\n"
+                . "ALSO USE IT when something looks impossibly fine. A collector that has "
+                . "stopped produces charts that go flat and quiet, which looks exactly like "
+                . "a healthy machine - and this is the tool that tells the two apart.\n\n"
+                . "The intervals are measured from the gaps between actual runs, not read "
+                . "from a crontab, so they are what is really happening rather than what "
+                . "was configured.",
+            'parameters' => [],
+        ],
+
+        'set_time_range' => [
+            'group' => 'navigation',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'change the range the dashboard is showing.',
+            'description' =>
+                "Changes the time range every chart on the dashboard is drawn over, and "
+                . "optionally turns on live sampling.\n\n"
+                . "USE THIS when the detail you need is finer than the range being shown. "
+                . "At a day's range a spike lasting ninety seconds is one pixel and may be "
+                . "averaged away entirely; at ten minutes it is the whole chart.\n\n"
+                . "LIVE takes a fresh reading every few seconds rather than waiting for the "
+                . "collector's next run. It is the only way to watch something as it "
+                . "happens, and it only works at the shortest range. Turn it on when "
+                . "somebody is watching a problem occur; leave it off otherwise, because it "
+                . "writes a reading every few seconds for as long as it is on.\n\n"
+                . "This changes what the OPERATOR sees. Say why you are doing it.",
+            'parameters' => [
+                'range' => [
+                    'type' => 'string', 'required' => true,
+                    'enum' => ['10m', '1h', '6h', '24h', '7d', '30d'],
+                    'description' => 'How far back to show. 10m is the finest and is the '
+                        . 'only one that can be live.',
+                ],
+                'live' => [
+                    'type' => 'boolean', 'required' => false, 'default' => false,
+                    'description' => 'Take readings continuously while they watch. Only '
+                        . 'has an effect at the 10m range.',
+                ],
+                'why' => [
+                    'type' => 'string', 'required' => true, 'maxLength' => 200,
+                    'description' => 'What you expect to become visible at this range, in '
+                        . 'one sentence. Shown to them.',
+                ],
+            ],
+        ],
+
         'remember' => [
             'group' => 'memory',
             'where' => 'server',

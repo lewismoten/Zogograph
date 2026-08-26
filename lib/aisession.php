@@ -146,6 +146,20 @@ function aiSystemPrompt(
             . "you where it lives.";
     }
 
+    if (!empty($context['host_commands'])) {
+        $lines[] = "";
+        $lines[] = "ASKING THE HOST";
+        $lines[] = "  Some programs exist on this machine and this account cannot run "
+            . "them - `what_the_terminal_can_run` lists which. For those you may suggest "
+            . "that the operator ASK THEIR HOST to run one and send back the output.";
+        $lines[] = "  That is an ordinary support request and hosts answer it. Write the "
+            . "exact command, say what it will show, and say why it needs root, so the "
+            . "ticket is specific enough to be actioned rather than a conversation.";
+        $lines[] = "  Only ever for reading. Asking a stranger to change a shared server "
+            . "on your behalf is a far larger thing to ask for than looking at it, and it "
+            . "is not yours to ask.";
+    }
+
     if (isset($tools['recommend_command'])) {
         $lines[] = "";
         $lines[] = "THE TERMINAL";
@@ -231,6 +245,7 @@ function aiContext(array $config, PDO $ai, array $session): array
         'charts_here' => [],
         'memories' => [],
         'explain_commands' => (bool)(aiSettings($config)['explain_commands'] ?? true),
+        'host_commands' => (bool)(aiSettings($config)['host_commands'] ?? false),
         'summary' => '',
     ];
 

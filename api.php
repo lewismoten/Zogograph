@@ -6742,6 +6742,7 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         'compact_at' => $settings['compact_at'],
         'compact_automatically' => $settings['compact_automatically'],
         'explain_commands' => $settings['explain_commands'],
+        'host_commands' => $settings['host_commands'],
         'effort_levels' => aiEffortLevels(),
         'tools' => $tools,
         'ready' => $ready['ok'],
@@ -6792,6 +6793,7 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
     $current['ai']['compact_automatically'] =
         ($_POST['compact_automatically'] ?? '0') === '1';
     $current['ai']['explain_commands'] = ($_POST['explain_commands'] ?? '0') === '1';
+    $current['ai']['host_commands'] = ($_POST['host_commands'] ?? '0') === '1';
 
     /*
      * Who it is, which is the operator's to decide.

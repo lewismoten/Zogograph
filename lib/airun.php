@@ -29,6 +29,8 @@ require_once __DIR__ . '/logstream.php';
 require_once __DIR__ . '/logwatch.php';
 require_once __DIR__ . '/aicharts.php';
 require_once __DIR__ . '/aimemory.php';
+require_once __DIR__ . '/terminal.php';
+require_once __DIR__ . '/hostdb.php';
 
 /** How much text one tool may return. Beyond this the reply is trimmed and says so. */
 const AI_RESULT_MAX = 12000;
@@ -73,6 +75,10 @@ function aiRunTool(
              * type. They are given it explicitly rather than opening it here,
              * so this file still has exactly one connection to reason about.
              */
+            'what_the_terminal_can_run' => aiTerminalTools($config),
+            'what_the_host_can_be_asked' => aiHostJobs($config, $pdo),
+            'get_pending_host_requests' => aiPendingHostRequests($config, $pdo),
+            'get_collection_schedule' => aiCronRhythm($config, $pdo),
             'remember' => aiToolRemember($ai, $session, $values),
             'recall' => aiToolRecall($ai, $values),
             'recommend_command' => aiToolRecommend($values),
@@ -923,6 +929,435 @@ function aiEncodeResult(array $result): string
         );
 }
 
+/* --------------------------------------------------- what the host offers -- */
+
+/**
+ * The programs worth knowing about before suggesting a command.
+ *
+ * A fixed list, and it has to be: there is no way to enumerate "every program
+ * on this machine" that is not a walk of the whole PATH, and the answer would
+ * be thousands of entries the model has to read. These are the ones a
+ * diagnostic conversation actually reaches for.
+ *
+ * Grouped by what they are for rather than by package, because the question is
+ * always "how do I find out about X" and never "is coreutils installed".
+ */
+function terminalToolbox(): array
+{
+    return [
+        'disk' => ['df', 'du', 'find', 'ls', 'stat', 'lsof', 'ncdu'],
+        'processes' => ['ps', 'top', 'pgrep', 'pidof', 'strace', 'kill'],
+        'network' => ['ss', 'netstat', 'curl', 'wget', 'dig', 'host', 'nslookup',
+                      'ping', 'traceroute', 'openssl'],
+        'text' => ['grep', 'awk', 'sed', 'sort', 'uniq', 'head', 'tail', 'wc', 'tr'],
+        'files' => ['cat', 'file', 'readlink', 'realpath', 'tar', 'gzip', 'zcat'],
+        'system' => ['uname', 'uptime', 'free', 'vmstat', 'iostat', 'systemctl',
+                     'journalctl', 'crontab'],
+        'php' => ['php', 'composer'],
+    ];
+}
+
+/**
+ * Which of those are actually there.
+ *
+ * `command -v` in one shell rather than one per program: on a shared host each
+ * shell is tens of milliseconds and fifty of them is a visible pause.
+ *
+ * @return array<string, mixed>
+ */
+function aiTerminalTools(array $config): array
+{
+    $settings = terminalSettings($config);
+
+    if (!$settings['can']) {
+        return [
+            'terminal_available' => false,
+            'why' => $settings['why'],
+            'note' => 'There is no terminal on this install and there cannot be. Do not '
+                . 'suggest commands; suggest what the dashboard can do instead.',
+        ];
+    }
+
+    if (!$settings['enabled']) {
+        return [
+            'terminal_available' => false,
+            'why' => 'The terminal is switched off.',
+            'note' => 'The operator can turn it on from the System > Terminal page, where '
+                . 'it is enabled for a chosen length of time and then locks itself again. '
+                . 'Say that, rather than suggesting commands they cannot run.',
+        ];
+    }
+
+    $wanted = [];
+    foreach (terminalToolbox() as $programs) {
+        foreach ($programs as $program) {
+            $wanted[$program] = true;
+        }
+    }
+
+    /*
+     * One shell, printing a line per program it finds.
+     *
+     * command -v is a shell builtin, so this costs one process no matter how
+     * many names are checked.
+     */
+    $script = '';
+    foreach (array_keys($wanted) as $program) {
+        $script .= sprintf('command -v %s >/dev/null 2>&1 && echo %s; ',
+            escapeshellarg($program), escapeshellarg($program));
+    }
+
+    $found = [];
+    $raw = shellRead($settings['shell'] . ' -c ' . escapeshellarg($script) . ' 2>/dev/null');
+    foreach (explode("\n", (string)$raw) as $line) {
+        $line = trim($line);
+        if ($line !== '') {
+            $found[$line] = true;
+        }
+    }
+
+    $out = ['terminal_available' => true, 'shell' => $settings['shell'], 'groups' => []];
+    $missing = [];
+
+    foreach (terminalToolbox() as $what => $programs) {
+        $here = array_values(array_filter($programs, fn(string $p): bool => isset($found[$p])));
+        $gone = array_values(array_filter($programs, fn(string $p): bool => !isset($found[$p])));
+
+        $out['groups'][$what] = ['available' => $here, 'not_found' => $gone];
+        $missing = array_merge($missing, $gone);
+    }
+
+    $out['note'] = sprintf(
+        'Commands run as the web account, not as root, and inside CageFS if this host uses '
+        . 'it - so most of /usr/sbin is invisible even where it exists on the machine. %s '
+        . 'A program not on this list was not looked for rather than known to be absent.',
+        $missing === []
+            ? 'Everything looked for is present.'
+            : count($missing) . ' of the programs looked for are not on the PATH: '
+              . implode(', ', array_slice($missing, 0, 20)) . '.'
+    );
+
+    /*
+     * What root has that the account does not.
+     *
+     * Only when the operator has allowed it. Without this the model has no way
+     * to distinguish "this machine cannot do that" from "this account cannot do
+     * that", which are completely different conversations - the second one ends
+     * with a support ticket that gets answered.
+     */
+    if (!empty($config['ai']['host_commands'])) {
+        $out['what_root_has'] = aiRootCommands($config);
+    }
+
+    return $out;
+}
+
+/**
+ * Programs the host has that this account cannot reach.
+ *
+ * Read from the capability probe the root collector already runs, so this costs
+ * nothing and is as fresh as that probe. The point is that the operator can ask
+ * their host to run something - a support ticket saying "please run `X` and send
+ * me the output" is a normal, answerable request, and knowing which programs
+ * exist is what makes it a specific one.
+ */
+function aiRootCommands(array $config): array
+{
+    $host = hostDb($config, false);
+
+    if ($host === null) {
+        return [
+            'known' => false,
+            'note' => 'The host collector has no database here yet.',
+        ];
+    }
+
+    /*
+     * `account_seen` is the whole point of the table.
+     *
+     * The root collector records both what it can see and what the account can
+     * see, and the difference between the two columns is the answer to "is this
+     * missing, or is it just hidden from me" - which are completely different
+     * conversations. The second one ends with a support ticket that gets
+     * answered.
+     */
+    try {
+        $rows = $host->query(
+            "SELECT name, group_name, version, path FROM host_capabilities
+              WHERE executable = 1 AND (account_seen IS NULL OR account_seen = 0)
+              ORDER BY group_name, name"
+        )->fetchAll();
+    } catch (Throwable) {
+        return [
+            'known' => false,
+            'note' => 'The host collector has not reported what programs exist yet. The '
+                . 'operator can ask for that from the "What the host allows" page.',
+        ];
+    }
+
+    if ($rows === []) {
+        return [
+            'known' => true,
+            'programs' => [],
+            'note' => 'Nothing the host has is hidden from this account, so there is '
+                . 'nothing worth asking the host to run that the terminal cannot.',
+        ];
+    }
+
+    $onlyRoot = array_map(fn(array $row): array => [
+        'program' => (string)$row['name'],
+        'for' => (string)$row['group_name'],
+        'version' => $row['version'] === null ? null : (string)$row['version'],
+        'where' => (string)($row['path'] ?? ''),
+    ], $rows);
+
+    return [
+        'known' => true,
+        'programs' => $onlyRoot,
+        'note' => 'These exist on the machine and this account cannot run them. You may '
+            . 'suggest that the operator ASK THEIR HOST to run one and send back the '
+            . 'output - that is an ordinary support request and hosts answer it. Write the '
+            . 'exact command, say what it will show, and say why it needs root. Do not '
+            . 'suggest anything that changes the machine; a support ticket asking a '
+            . 'stranger to modify a shared server is a different and much larger thing to '
+            . 'ask for.',
+    ];
+}
+
+/**
+ * The jobs root's collector can be asked to do, and how long the answer takes.
+ *
+ * The delay is the whole point of this tool. A request is a row in a table that
+ * root's cron reads on its next run - so the honest answer to "can you check
+ * the whole machine's disk" is "yes, in about four minutes", and a model that
+ * does not know that says "yes" and then has nothing to show.
+ */
+function aiHostJobs(array $config, PDO $pdo): array
+{
+    if (empty($config['host']['enabled'])) {
+        return [
+            'host_collector' => false,
+            'note' => 'There is no root collector on this install, so none of this is '
+                . 'available. Everything you can see is what the account itself can reach.',
+        ];
+    }
+
+    $rhythm = aiCronRhythm($config, $pdo);
+
+    return [
+        'host_collector' => true,
+        'jobs' => [
+            [
+                'what' => 'Walk the whole machine\'s disk',
+                'answers' => 'Where space has gone across every account, /var and /backup, '
+                    . 'including space held by deleted files that are still open.',
+                'ask_from' => 'the Storage page, the "Scan now" button under "The whole '
+                    . 'machine"',
+                'results_on' => 'Filesystems, Biggest directories, and Deleted still '
+                    . 'holding',
+                'takes' => 'tens of seconds once it starts',
+            ],
+            [
+                'what' => 'Probe what the host allows',
+                'answers' => 'Which programs exist, which this account may run, and what '
+                    . 'the kernel and the panel are.',
+                'ask_from' => 'the "What the host allows" page',
+                'results_on' => 'the same page',
+                'takes' => 'a few seconds once it starts',
+            ],
+            [
+                'what' => 'Look a domain up in whois',
+                'answers' => 'Registrar, expiry and status, from a lookup this account '
+                    . 'usually cannot make.',
+                'ask_from' => 'the Domain names page',
+                'results_on' => 'the same page',
+                'takes' => 'a few seconds once it starts',
+            ],
+            [
+                'what' => 'Capture network traffic',
+                'answers' => 'What is actually on the wire, which the account cannot see.',
+                'ask_from' => 'the "Watch the wire" page',
+                'results_on' => 'the same page',
+                'takes' => 'as long as the capture was asked to run for',
+            ],
+            [
+                'what' => 'Rebuild the shared library cache',
+                'answers' => 'Nothing - it changes something. Only useful after a library '
+                    . 'link has been repaired.',
+                'ask_from' => 'the Symlinks page',
+                'results_on' => 'nothing to look at; programs simply start working',
+                'takes' => 'a second once it starts',
+            ],
+        ],
+        'the_delay' => $rhythm['host'],
+        'note' => 'NONE of these happen when the button is pressed. The press leaves a '
+            . 'request; root\'s cron picks it up on its next run. Tell the operator which '
+            . 'page to press it on and roughly how long the wait is - the numbers for that '
+            . 'are in `the_delay`. You may draw a progress bar with show_progress if the '
+            . 'wait is long enough to be worth watching. You cannot press it yourself.',
+    ];
+}
+
+/**
+ * What is already queued, and when it will be picked up.
+ *
+ * @return array<string, mixed>
+ */
+function aiPendingHostRequests(array $config, PDO $pdo): array
+{
+    if (empty($config['host']['enabled'])) {
+        return ['host_collector' => false, 'pending' => [],
+                'note' => 'There is no root collector on this install.'];
+    }
+
+    try {
+        $rows = $pdo->query(
+            'SELECT task, requested_at, requested_by FROM host_tasks ORDER BY requested_at'
+        )->fetchAll();
+    } catch (Throwable) {
+        $rows = [];
+    }
+
+    $rhythm = aiCronRhythm($config, $pdo);
+    $host = $rhythm['host'];
+
+    $pending = array_map(fn(array $row): array => [
+        'job' => (string)$row['task'],
+        'asked_for' => aiWhen((int)$row['requested_at']),
+        'waiting_for' => plainSpan(time() - (int)$row['requested_at'], true),
+        'asked_by' => (string)($row['requested_by'] ?? 'somebody'),
+    ], $rows);
+
+    return [
+        'host_collector' => true,
+        'pending' => $pending,
+        'next_run' => $host,
+        'note' => $pending === []
+            ? 'Nothing is queued. A request would be picked up on the next collector run.'
+            : ($host['running'] ?? true
+                ? 'These are waiting for the next collector run. A job already queued does '
+                  . 'not need asking for again - saying it is already on its way is more '
+                  . 'use than sending somebody to press the button twice.'
+                : 'These are queued and the collector has STOPPED, so nothing is going to '
+                  . 'pick them up. That is the finding, not the queue.'),
+    ];
+}
+
+/**
+ * How often each collector really runs, measured rather than configured.
+ *
+ * From the gaps between actual runs, because a crontab says what was asked for
+ * and this says what is happening - and on a busy shared host those differ.
+ *
+ * @return array{account: array, host: array}
+ */
+function aiCronRhythm(array $config, PDO $pdo): array
+{
+    $describe = function (?int $last, ?int $interval, string $what): array {
+        if ($last === null) {
+            return [
+                'what' => $what,
+                'ever_run' => false,
+                'note' => 'This has never run.',
+            ];
+        }
+
+        $age = time() - $last;
+        $running = $interval !== null && $age <= $interval * 2;
+
+        return [
+            'what' => $what,
+            'ever_run' => true,
+            'last_ran' => aiWhen($last),
+            'last_ran_seconds_ago' => $age,
+            'runs_every' => $interval === null ? null : plainSpan($interval),
+            'runs_every_seconds' => $interval,
+            'running' => $running,
+            'next_due_in_seconds' => $interval === null ? null : max(0, $interval - $age),
+            'next_due' => $interval === null
+                ? 'not enough runs yet to say'
+                : ($age >= $interval ? 'about now' : plainSpan($interval - $age, true)),
+            'note' => $running
+                ? ''
+                : sprintf(
+                    'Nothing for %s on something that usually runs every %s. This '
+                    . 'collector has stopped, which makes every reading from it stale and '
+                    . 'makes its charts look calm rather than broken.',
+                    plainSpan($age, true),
+                    $interval === null ? 'few minutes' : plainSpan($interval)
+                ),
+        ];
+    };
+
+    $accountLast = $pdo->query('SELECT MAX(taken_at) FROM vitals')->fetchColumn();
+    $account = $describe(
+        $accountLast === null || $accountLast === false ? null : (int)$accountLast,
+        collectorInterval($pdo),
+        "the account's own cron, which takes the readings behind most of this dashboard"
+    );
+
+    $hostLast = null;
+    $hostInterval = null;
+
+    if (!empty($config['host']['enabled'])) {
+        try {
+            $hostDb = hostDb($config, false);
+            if ($hostDb !== null) {
+                $found = $hostDb->query('SELECT MAX(taken_at) FROM host_samples')->fetchColumn();
+                $hostLast = $found === null || $found === false ? null : (int)$found;
+
+                $times = $hostDb->query(
+                    'SELECT taken_at FROM host_samples ORDER BY taken_at DESC LIMIT 40'
+                )->fetchAll(PDO::FETCH_COLUMN, 0);
+                $hostInterval = medianGap(array_map('intval', $times));
+            }
+        } catch (Throwable) {
+            // No host database is the same answer as no host collector.
+        }
+    }
+
+    return [
+        'account' => $account,
+        'host' => $describe(
+            $hostLast,
+            $hostInterval,
+            "root's collector, which does everything the account cannot"
+        ),
+    ];
+}
+
+/** The middle gap between a list of timestamps, or null if there are too few. */
+function medianGap(array $times): ?int
+{
+    if (count($times) < 3) {
+        return null;
+    }
+
+    sort($times);
+    $gaps = [];
+    for ($i = 1; $i < count($times); $i++) {
+        $gap = $times[$i] - $times[$i - 1];
+        if ($gap > 0) {
+            $gaps[] = $gap;
+        }
+    }
+
+    if ($gaps === []) {
+        return null;
+    }
+
+    sort($gaps);
+
+    /*
+     * The median, not the mean.
+     *
+     * One four-hour gap where the machine was rebooted would drag an average
+     * into uselessness, and the question here is "how often does this normally
+     * happen" rather than "what was the average over the last week".
+     */
+    return (int)$gaps[intdiv(count($gaps), 2)];
+}
+
 /* --------------------------------------------------------------- memory -- */
 
 /**
@@ -989,8 +1424,8 @@ function aiToolRecall(?PDO $ai, array $values): array
             'kind' => $memory['kind'],
             'subject' => $memory['subject'],
             'body' => $memory['body'],
-            'written' => plainWhen($memory['at']),
-            'last_changed' => plainWhen($memory['updated_at']),
+            'written' => aiWhen($memory['at']),
+            'last_changed' => aiWhen($memory['updated_at']),
             'written_by' => $memory['written_by'] === 'you'
                 ? 'the operator, by hand'
                 : 'you, in an earlier conversation',
