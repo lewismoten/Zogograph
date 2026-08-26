@@ -1077,6 +1077,26 @@ function capabilitiesView(array $config, PDO $pdo, bool $signedIn): array
     $report = capabilityReport($config, $pdo, $host);
     $report['tasks'] = pendingHostTasks($config, $pdo, $host);
 
+    /*
+     * When the host collector last ran at all.
+     *
+     * Without this the page can only say "waiting for the next run", which is
+     * true of a collector that runs every five minutes and true of one that has
+     * never been installed - and those need completely different sentences.
+     * Seventeen hours of "waiting for the next run" is the second case wearing
+     * the first one's words.
+     */
+    $lastRun = 0;
+    if ($host !== null) {
+        try {
+            $lastRun = (int)$host->query('SELECT MAX(taken_at) FROM host_samples')->fetchColumn();
+        } catch (Throwable) {
+            $lastRun = 0;
+        }
+    }
+    $report['host_last_run'] = $lastRun ?: null;
+    $report['host_cron_line'] = hostCronLine();
+
     return $report;
 }
 

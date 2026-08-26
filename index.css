@@ -2797,3 +2797,29 @@ tr.muted-row { opacity: .7; }
 
 .portrait-block { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .portrait-block button { align-self: flex-start; }
+
+/* --------------------------------------------------- the chat, full size -- */
+
+/*
+ * The same panel, given the window.
+ *
+ * It is moved into the page rather than copied, so every rule that positions it
+ * in the corner has to be undone here rather than duplicated: fixed becomes
+ * static, the corner offsets go, and the ceiling on its height becomes the
+ * height of what is left of the window below the top bar.
+ */
+.chat-full { display: flex; min-height: 0; }
+
+.chat-panel.chat-wide {
+  position: static;
+  right: auto;
+  bottom: auto;
+  width: 100%;
+  max-height: none;
+  min-height: 0;
+  height: calc(100vh - var(--topbar-height) - 48px);
+  box-shadow: none;
+}
+
+/* The log is the part that should grow, so it takes what the rest does not. */
+.chat-panel.chat-wide .chat-log { flex: 1; min-height: 0; }

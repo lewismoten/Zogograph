@@ -7524,6 +7524,58 @@ function openChat() {
   refreshChat().catch(error => notice(String(error.message || error)));
 }
 
+/**
+ * Puts the chat panel on its own page, at full size.
+ *
+ * The panel is moved rather than copied. It is the same element, the same
+ * conversation and the same code - a second implementation would be a second
+ * set of bugs, and a second conversation would be worse than either. All this
+ * page does is give it somewhere bigger to stand.
+ */
+function openChatFull() {
+  const panel = $("chatPanel");
+  const home = $("chatFull");
+  if (!panel || !home) return;
+
+  if (panel.parentElement !== home) {
+    // What to go back to. Somebody who had the panel open keeps it open;
+    // somebody who did not is not given one because they looked at a page.
+    chatState.wasOpen = chatState.open;
+    home.appendChild(panel);
+    panel.classList.add("chat-wide");
+  }
+
+  panel.hidden = false;
+  chatState.open = true;
+
+  // Hiding it while it IS the page would leave an empty page and no way back.
+  $("chatClose").hidden = true;
+
+  refreshChat().catch(error => notice(String(error.message || error)));
+  renderChat();
+}
+
+/**
+ * Sends it back to the corner when the page is left.
+ *
+ * Whether it is then shown is whatever it was before: somebody who had the
+ * panel open keeps it, somebody who did not is not given one because they
+ * looked at a page.
+ */
+function undockChat(wasOpen) {
+  const panel = $("chatPanel");
+  const home = $("chatHome");
+  if (!panel || !home || panel.parentElement === home) return;
+
+  home.appendChild(panel);
+  panel.classList.remove("chat-wide");
+  $("chatClose").hidden = false;
+
+  panel.hidden = !wasOpen;
+  chatState.open = wasOpen;
+  renderChat();
+}
+
 /** Hides the panel. The conversation carries on. */
 function hideChat() {
   chatState.open = false;
@@ -8652,12 +8704,47 @@ function withAddressName(address) {
 
 const changedState = { data: null, only: "" };
 
+/**
+ * What is installed, on its own page.
+ *
+ * The same request as "what changed" - one check fills both - but its own page,
+ * because the two answer different questions and one of them is asked far more
+ * often. "What version of OpenSSL is this" was buried under a chart of when it
+ * last moved.
+ */
+async function refreshInstalled() {
+  const body = $("installedBody");
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see this."));
+    return;
+  }
+
+  const to = state.frozenAt || Math.floor(Date.now() / 1000);
+
+  try {
+    /*
+     * The period is sent although this page is a snapshot.
+     *
+     * The action wants one, and asking for the same window the other page uses
+     * means the two share a cached answer rather than making the same call
+     * twice with different arguments.
+     */
+    renderInstalled(await api("changed", {
+      from: to - state.range,
+      to,
+      only: changedState.only,
+    }));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
 async function refreshChanged() {
   const body = $("changedBody");
 
   if (!state.signedIn) {
     body.replaceChildren(note("Sign in to see this."));
-    $("installedBody").replaceChildren();
     return;
   }
 
@@ -8680,7 +8767,15 @@ function renderChanged(data) {
   syncChangedFilter(data);
   drawChangedChart(data);
   renderChangedList(data);
-  renderInstalled(data);
+
+  /*
+   * The other page too, when it happens to be on screen.
+   *
+   * They are separate pages now but one request answers both, so a refresh of
+   * either fills in whatever is visible rather than leaving the neighbour
+   * stale until somebody navigates to it.
+   */
+  if (!$("installedBody").closest(".view")?.hidden) renderInstalled(data);
 }
 
 /** The filter offers only what has actually moved. */
@@ -25009,13 +25104,74 @@ function renderCapSummary(data) {
   frag.appendChild(factGrid(facts));
   if (when.length) frag.appendChild(note(when.join(", ") + "."));
 
-  for (const task of data.tasks || []) {
-    if (!task.pending) continue;
-    frag.appendChild(note(`Requested ${ago(task.requested_at)}: ${task.task} — waiting for the `
-      + "host collector's next run."));
-  }
+  frag.appendChild(pendingHostNote(data));
 
   $("capSummary").replaceChildren(frag);
+}
+
+/**
+ * What is queued for root's collector, and whether it is ever going to run.
+ *
+ * This drew one line per pending request, which after a few rows of "Ask the
+ * host" is a wall of near-identical sentences - seventeen hours of them was
+ * what got reported. Worse, every one of them said "waiting for the host
+ * collector's next run", which is true of a collector that runs every five
+ * minutes and equally true of one that was never installed. Those are opposite
+ * situations and they had the same words.
+ *
+ * So: one line, and it says which case this is.
+ */
+function pendingHostNote(data) {
+  const waiting = (data.tasks || []).filter(task => task.pending);
+  if (!waiting.length) return document.createDocumentFragment();
+
+  const oldest = Math.min(...waiting.map(task => task.requested_at));
+  const lastRun = Number(data.host_last_run) || 0;
+  const wrap = document.createElement("div");
+
+  /*
+   * The collector has run since the oldest request, and the request is still
+   * pending. So it is running and simply has not got to this one - which is
+   * ordinary for a request made a moment ago and odd for one made yesterday.
+   */
+  const ranSince = lastRun > oldest;
+  const stale = !lastRun || (Date.now() / 1000 - lastRun) > 3600;
+
+  const said = document.createElement("div");
+  said.className = stale ? "band-warn" : "muted small";
+
+  if (!lastRun) {
+    said.textContent = `${count(waiting.length, "request")} waiting, the oldest asked `
+      + `${ago(oldest)} — but root's collector has never run here, so nothing is going to `
+      + "answer them. It has to be installed in root's crontab; this account cannot do it.";
+  } else if (stale) {
+    said.textContent = `${count(waiting.length, "request")} waiting, the oldest asked `
+      + `${ago(oldest)}. Root's collector last ran ${ago(lastRun)}, so it is not running on `
+      + "a schedule — these will sit here until it does.";
+  } else if (ranSince) {
+    said.textContent = `${count(waiting.length, "request")} waiting. The collector has run `
+      + `since they were asked for (${ago(lastRun)}) without answering them, which usually `
+      + "means it cannot do what was asked rather than that it has not got to it yet.";
+  } else {
+    said.textContent = `${count(waiting.length, "request")} waiting for root's collector, `
+      + `which last ran ${ago(lastRun)}. The countdown is at the top of the page.`;
+  }
+  wrap.appendChild(said);
+
+  // Which ones, without a paragraph each.
+  const which = document.createElement("div");
+  which.className = "muted small";
+  which.textContent = waiting.map(task => task.task).join(", ");
+  wrap.appendChild(which);
+
+  if (!lastRun && data.host_cron_line) {
+    const how = document.createElement("pre");
+    how.className = "paste";
+    how.textContent = data.host_cron_line;
+    wrap.appendChild(how);
+  }
+
+  return wrap;
 }
 
 function renderCapList(data) {
@@ -26142,7 +26298,7 @@ const VIEWS = {
 
   capabilities: {
     label: "What the host allows",
-    parent: "system",
+    parent: "sys-terminal",
     refresh: async () => {
       await refreshCapabilities();
       await refreshCapabilityChanges();
@@ -26228,7 +26384,6 @@ const VIEWS = {
      */
     manual: true,
     label: "Terminal",
-    parent: "system",
     refresh: () => refreshTerminal(),
   },
   "sys-memory": {
@@ -26262,10 +26417,30 @@ const VIEWS = {
   },
   "sys-changed": {
     label: "What changed",
-    parent: "system",
+    parent: "sys-terminal",
     refresh: () => refreshChanged(),
   },
+  "sys-installed": {
+    label: "What is installed now",
+    parent: "sys-terminal",
+    refresh: () => refreshInstalled(),
+  },
   "sys-ai": {
+    /*
+     * The conversation, with the window to itself.
+     *
+     * Not on the timer because the chat runs its own poll, which is faster
+     * while a turn is in flight and slower when it is not - a view refresh on
+     * top of that would fetch the same session again for no reason.
+     */
+    manual: true,
+    // Replaced by renderChatIdentity once the persona has loaded, because the
+    // operator can rename it and a menu that keeps the old name is a bug.
+    label: "Mr. Radar",
+    parent: null,
+    refresh: () => openChatFull(),
+  },
+  "sys-ai-identity": {
     /*
      * Never on the timer.
      *
@@ -26276,10 +26451,8 @@ const VIEWS = {
      * written.
      */
     manual: true,
-    // Replaced by renderChatIdentity once the persona has loaded, because the
-    // operator can rename it and a menu that keeps the old name is a bug.
-    label: "Mr. Radar",
-    parent: null,
+    label: "Identity",
+    parent: "sys-ai",
     refresh: () => refreshAiSettings(),
   },
   "scans-account": {
@@ -26391,7 +26564,18 @@ function showView(view, push = true) {
   if (!VIEWS[view]) view = DEFAULT_VIEW;
 
   const changed = state.view !== view;
+  const leavingChat = state.view === "sys-ai" && view !== "sys-ai";
   state.view = view;
+
+  /*
+   * The chat goes back to the corner before the pages swap.
+   *
+   * It lives inside the page it is docked to, so hiding that page would take
+   * the conversation off the screen with it - and the panel is supposed to
+   * follow you between pages. Moved first, so it is never inside a hidden
+   * section even for a frame.
+   */
+  if (leavingChat) undockChat(chatState.wasOpen ?? false);
 
   for (const section of document.querySelectorAll("[data-view]")) {
     section.hidden = section.dataset.view !== view;
