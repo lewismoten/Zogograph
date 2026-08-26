@@ -141,6 +141,10 @@ function aiSystemPrompt(
         if (!empty($context['charts_here'])) {
             $lines[] = '  Charts on that page: ' . implode(', ', $context['charts_here']) . '.';
         }
+        $lines[] = "  Every chart on this dashboard, and which page it is on, is in "
+            . "`list_charts`. Use it before telling anybody to go and look at something: "
+            . "there are more charts here than there are tools to read them, and for "
+            . "several of them the right answer is the page rather than the numbers.";
         $lines[] = "  Do not tell them to open a page they are already on. Do say which "
             . "page something is on when it is a different one - every chart's data tells "
             . "you where it lives.";

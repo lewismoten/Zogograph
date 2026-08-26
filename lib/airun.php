@@ -31,6 +31,11 @@ require_once __DIR__ . '/aicharts.php';
 require_once __DIR__ . '/aimemory.php';
 require_once __DIR__ . '/terminal.php';
 require_once __DIR__ . '/hostdb.php';
+require_once __DIR__ . '/symlinks.php';
+require_once __DIR__ . '/backups.php';
+require_once __DIR__ . '/uptime.php';
+// serviceStateNote, for the service list.
+require_once __DIR__ . '/network.php';
 
 /** How much text one tool may return. Beyond this the reply is trimmed and says so. */
 const AI_RESULT_MAX = 12000;
@@ -75,6 +80,15 @@ function aiRunTool(
              * type. They are given it explicitly rather than opening it here,
              * so this file still has exactly one connection to reason about.
              */
+            'get_gauges' => aiGauges($config, $pdo),
+            'list_charts' => aiListCharts($config),
+            'get_filesystems' => aiFilesystems($config, $pdo),
+            'get_symlink_problems' => aiSymlinkProblems($config, $pdo, $values),
+            'get_backups' => aiBackups($config, $pdo),
+            'get_domain_expiry' => aiDomainExpiry($config, $pdo),
+            'get_services' => aiServices($config, $pdo, $values),
+            'get_uptime' => aiUptime($config, $pdo, $values),
+            'get_notes' => aiNotes($config, $pdo, $values),
             'what_the_terminal_can_run' => aiTerminalTools($config, $pdo),
             'what_the_host_can_be_asked' => aiHostJobs($config, $pdo),
             'get_pending_host_requests' => aiPendingHostRequests($config, $pdo),
@@ -927,6 +941,433 @@ function aiEncodeResult(array $result): string
             strlen($json),
             AI_RESULT_MAX
         );
+}
+
+/* ------------------------------------------- the rest of the dashboard -- */
+
+/**
+ * Every chart, and where to find it.
+ *
+ * Sorted by page so the answer reads as a map rather than a list, which is what
+ * it is for: the model needs to be able to say "that is on the Storage page"
+ * without having been to the Storage page.
+ */
+function aiListCharts(array $config): array
+{
+    $views = aiViews();
+    $byPage = [];
+
+    foreach (aiEveryChart() as $chart) {
+        $page = $chart['page'];
+        $key = $page === null ? '(not on any page)' : $page;
+
+        $byPage[$key][] = array_filter([
+            'id' => $chart['id'],
+            'name' => $chart['name'],
+            'shows' => $chart['shows'],
+            'data_available' => $chart['data_available'],
+            'note' => $chart['note'] ?? null,
+        ], fn($value): bool => $value !== null);
+    }
+
+    $pages = [];
+    foreach ($byPage as $page => $charts) {
+        $pages[] = [
+            'page' => $page,
+            'page_is_about' => $views[$page] ?? null,
+            'charts' => $charts,
+        ];
+    }
+
+    return [
+        'pages' => $pages,
+        'note' => 'Use open_page with the page name to take somebody to one of these. '
+            . 'Where data_available is false you cannot read the chart yourself - it is '
+            . 'still real, and sending them to look at it is often the right answer.',
+    ];
+}
+
+/** Every filesystem the host collector can see. */
+function aiFilesystems(array $config, PDO $pdo): array
+{
+    $host = hostDb($config, false);
+
+    if ($host === null) {
+        return [
+            'error' => 'This needs the host collector, which is not set up here. The '
+                . 'account can only see the filesystem its own home directory is on - '
+                . 'that one is in get_current_status and get_gauges.',
+        ];
+    }
+
+    try {
+        $at = $host->query('SELECT MAX(taken_at) FROM host_mounts')->fetchColumn();
+        if ($at === null || $at === false) {
+            throw new RuntimeException('nothing recorded');
+        }
+
+        $stmt = $host->prepare(
+            'SELECT * FROM host_mounts WHERE taken_at = ? ORDER BY used_percent DESC'
+        );
+        $stmt->execute([(int)$at]);
+        $rows = $stmt->fetchAll();
+    } catch (Throwable) {
+        return [
+            'error' => 'The host collector has not recorded any filesystems yet. It does '
+                . 'that on its next run.',
+        ];
+    }
+
+    if ($rows === []) {
+        return ['error' => 'The host collector has not recorded any filesystems yet.'];
+    }
+
+    return [
+        'measured' => aiWhen((int)$at),
+        'filesystems' => array_map(fn(array $row): array => [
+            'mounted_on' => (string)$row['mount'],
+            'device' => (string)($row['device'] ?? ''),
+            'kind' => (string)($row['type'] ?? ''),
+            'size' => humanBytes((int)$row['total_bytes']),
+            'used_percent' => $row['used_percent'] === null
+                ? null : round((float)$row['used_percent'], 1),
+            'free' => humanBytes((int)$row['free_bytes']),
+        ], $rows),
+        'note' => "The account's own disk figures are for whichever of these its home "
+            . 'directory is on. A full /var or /tmp breaks writes while the account gauge '
+            . 'stays comfortable, and that is a fault nothing else here shows.',
+    ];
+}
+
+/** The last symlink walk, as the model would want it. */
+function aiSymlinkProblems(array $config, PDO $pdo, array $values): array
+{
+    $last = lastSymlinkCheck($pdo);
+
+    if ($last === null) {
+        return [
+            'error' => 'No symlink check has been run yet. It walks the whole watched '
+                . 'directory and takes tens of seconds, so it runs when somebody asks. '
+                . 'The operator can start one from the Symlinks page under Storage.',
+        ];
+    }
+
+    $wanted = (string)($values['kind'] ?? 'any');
+    $limit = (int)($values['limit'] ?? 25);
+
+    $problems = $last['problems'];
+    if ($wanted !== 'any') {
+        $problems = array_values(array_filter(
+            $problems,
+            fn(array $p): bool => $p['kind'] === $wanted
+        ));
+    }
+
+    return [
+        'checked' => aiWhen((int)$last['at']),
+        'links_walked' => $last['links'],
+        'counts' => $last['kinds'],
+        'matching' => count($problems),
+        'problems' => array_map(fn(array $p): array => [
+            'kind' => $p['kind'],
+            'link' => $p['path'],
+            'points_at' => $p['target'],
+            'why_it_matters' => $p['note'],
+        ], array_slice($problems, 0, max(1, $limit))),
+        'note' => 'A loop or an ancestor link is an infinitely deep directory to anything '
+            . 'that follows links, which is how a backup never finishes and how a disk '
+            . 'fills with one file copied many times. A broken link is untidy rather than '
+            . 'dangerous. This is the stored result of the last walk, not a fresh one.',
+    ];
+}
+
+/**
+ * Backups the host collector has found.
+ *
+ * Read from the host database rather than through the page's own view: that
+ * function lives in api.php, which a library must not depend on - a tool that
+ * only works when it happens to be called from a web request is a tool that
+ * fails from cron, which is exactly where alert triage runs it.
+ */
+function aiBackups(array $config, PDO $pdo): array
+{
+    $host = hostDb($config, false);
+
+    if ($host === null) {
+        return [
+            'error' => 'Backups live outside this account, so this needs the host '
+                . 'collector. Not being able to see them is NOT the same as there being '
+                . 'none - say which.',
+        ];
+    }
+
+    try {
+        $at = $host->query('SELECT MAX(taken_at) FROM host_backups')->fetchColumn();
+        if ($at === null || $at === false) {
+            throw new RuntimeException('nothing recorded');
+        }
+
+        $stmt = $host->prepare(
+            'SELECT account, created_at, type, bytes, destination, path
+               FROM host_backups WHERE taken_at = ?
+              ORDER BY created_at DESC'
+        );
+        $stmt->execute([(int)$at]);
+        $rows = $stmt->fetchAll();
+    } catch (Throwable) {
+        return [
+            'backups' => [],
+            'note' => 'The host collector has not recorded any backups. That is NOT proof '
+                . 'there are none - it looks where backups normally live, and a machine '
+                . 'can be backed up somewhere else entirely.',
+        ];
+    }
+
+    if ($rows === []) {
+        return [
+            'backups' => [],
+            'measured' => aiWhen((int)$at),
+            'note' => 'Nothing was found in the usual places. That is NOT proof there are '
+                . 'no backups. Say that rather than telling somebody they have none.',
+        ];
+    }
+
+    $newest = 0;
+    $total = 0;
+    foreach ($rows as $row) {
+        $newest = max($newest, (int)($row['created_at'] ?? 0));
+        $total += (int)($row['bytes'] ?? 0);
+    }
+
+    return [
+        'measured' => aiWhen((int)$at),
+        'newest' => $newest > 0 ? aiWhen($newest) : null,
+        'newest_age' => $newest > 0
+            ? plainSpan(time() - $newest, true) . ' old'
+            : 'not known',
+        'total_size' => humanBytes($total),
+        'how_many' => count($rows),
+        'backups' => array_map(fn(array $row): array => [
+            'account' => (string)($row['account'] ?? ''),
+            'kind' => (string)($row['type'] ?? ''),
+            'made' => $row['created_at'] ? aiWhen((int)$row['created_at']) : null,
+            'size' => $row['bytes'] ? humanBytes((int)$row['bytes']) : null,
+            'where' => (string)($row['destination'] ?? $row['path'] ?? ''),
+        ], array_slice($rows, 0, 25)),
+        'note' => 'Check the age before advising anything destructive. A backup from this '
+            . 'morning and one from March lead to completely different advice.',
+    ];
+}
+
+/** Watched domains and when they expire. */
+function aiDomainExpiry(array $config, PDO $pdo): array
+{
+    try {
+        $rows = $pdo->query(
+            'SELECT name, registrar, expires_at, last_checked_at, status, last_error
+               FROM domains ORDER BY expires_at IS NULL, expires_at'
+        )->fetchAll();
+    } catch (Throwable $e) {
+        return ['error' => 'The domain list could not be read: ' . $e->getMessage()];
+    }
+
+    if ($rows === []) {
+        return [
+            'domains' => [],
+            'note' => 'No domains are being watched. The operator can add one on the '
+                . 'Domain names page.',
+        ];
+    }
+
+    return [
+        'domains' => array_map(function (array $row): array {
+            $expires = $row['expires_at'] === null ? null : (int)$row['expires_at'];
+
+            return [
+                'domain' => (string)$row['name'],
+                'registrar' => (string)($row['registrar'] ?? ''),
+                'expires' => $expires === null ? 'not known' : date('Y-m-d', $expires),
+                'left' => $expires === null
+                    ? null
+                    : ($expires < time()
+                        ? 'EXPIRED ' . plainSpan(time() - $expires, true) . ' ago'
+                        : plainSpan($expires - time(), true)),
+                'status' => (string)($row['status'] ?? ''),
+                'looked_up' => $row['last_checked_at'] === null
+                    ? null : aiWhen((int)$row['last_checked_at']),
+                'lookup_failed' => $row['last_error'] ?: null,
+            ];
+        }, $rows),
+        'note' => 'An expired domain looks exactly like a network fault from inside the '
+            . 'machine, and no amount of looking at the server will find it.',
+    ];
+}
+
+/**
+ * systemd units, worst first.
+ *
+ * From the host database directly, for the same reason as the backups above: a
+ * library that reached into api.php would work from a web request and fail from
+ * cron, and cron is where alert triage calls these.
+ */
+function aiServices(array $config, PDO $pdo, array $values): array
+{
+    $host = hostDb($config, false);
+
+    if ($host === null) {
+        return ['error' => 'This needs the host collector, which is not set up here.'];
+    }
+
+    try {
+        $sample = (int)$host->query('SELECT MAX(sample_id) FROM host_units')->fetchColumn();
+        if ($sample <= 0) {
+            throw new RuntimeException('nothing recorded');
+        }
+
+        $stmt = $host->prepare('SELECT * FROM host_units WHERE sample_id = ?');
+        $stmt->execute([$sample]);
+        $all = $stmt->fetchAll();
+    } catch (Throwable) {
+        return [
+            'error' => 'No service units have been recorded. The collector runs '
+                . 'systemctl; on a machine without systemd there is nothing to list.',
+        ];
+    }
+
+    $rank = ['failed' => 0, 'masked' => 1, 'running-not-enabled' => 2,
+             'enabled-not-running' => 3, 'running' => 4, 'stopped' => 5];
+    usort($all, fn(array $a, array $b): int =>
+        (($rank[$a['state']] ?? 9) <=> ($rank[$b['state']] ?? 9))
+        ?: strcmp((string)$a['name'], (string)$b['name']));
+
+    $counts = [];
+    foreach ($all as $row) {
+        $counts[(string)$row['state']] = ($counts[(string)$row['state']] ?? 0) + 1;
+    }
+
+    $wanted = (string)($values['state'] ?? 'problems');
+    $limit = (int)($values['limit'] ?? 40);
+
+    $rows = $all;
+    if ($wanted === 'problems') {
+        $rows = array_values(array_filter($rows, fn(array $r): bool =>
+            in_array((string)$r['state'],
+                ['failed', 'masked', 'running-not-enabled', 'enabled-not-running'],
+                true)));
+    } elseif ($wanted !== 'all') {
+        $rows = array_values(array_filter(
+            $rows,
+            fn(array $r): bool => (string)$r['state'] === $wanted
+        ));
+    }
+
+    return [
+        'counts' => $counts,
+        'matching' => count($rows),
+        'services' => array_map(fn(array $r): array => [
+            'service' => (string)$r['name'],
+            'state' => (string)$r['state'],
+            'means' => serviceStateNote((string)$r['state']),
+            'at_boot' => (string)($r['enabled'] ?? ''),
+            'systemd_says' => sprintf('%s/%s', $r['active'] ?? '', $r['sub'] ?? ''),
+            'what_it_is' => (string)($r['description'] ?? ''),
+        ], array_slice($rows, 0, max(1, $limit))),
+        'note' => 'A failed unit uses no CPU and no memory, so it is absent from every '
+            . 'other panel here rather than standing out in one. A masked unit cannot be '
+            . 'started at all until somebody unmasks it, which is worth saying because '
+            . '"start it" fails with a message people find confusing.',
+    ];
+}
+
+/** Restarts, and when each collector was actually writing. */
+function aiUptime(array $config, PDO $pdo, array $values): array
+{
+    $hours = (int)($values['hours'] ?? 168);
+    $to = time();
+    $from = $to - ($hours * SPAN_HOUR);
+
+    $rows = $pdo->prepare(
+        'SELECT taken_at, boot_at FROM vitals WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
+    );
+    $rows->execute([$from, $to]);
+    $analysis = analyseUptime($rows->fetchAll(), $from, $to);
+
+    /*
+     * A gap in the readings is not the same as the machine being down.
+     *
+     * analyseUptime keeps them apart - an outage is a gap with a restart on the
+     * far side of it, and a gap on its own is a collector that stopped. They
+     * look identical on every chart here and mean opposite things, so they are
+     * reported as two lists rather than one.
+     */
+    $describe = fn(array $gap): array => [
+        'from' => aiWhen((int)$gap['from']),
+        'to' => aiWhen((int)$gap['to']),
+        // Outages report from/to and no length; gaps report all three.
+        'lasted' => plainSpan(
+            (int)($gap['seconds'] ?? ((int)$gap['to'] - (int)$gap['from'])),
+            true
+        ),
+        'kind' => (string)($gap['kind'] ?? 'unknown'),
+    ];
+
+    return [
+        'period' => 'the last ' . plainSpan($hours * SPAN_HOUR, true),
+        'restarts' => (int)($analysis['boots'] ?? 0),
+        'up_percent' => $analysis['uptime_percent'] ?? null,
+        'covered_percent' => $analysis['coverage_percent'] ?? null,
+        'outages' => array_map($describe, array_slice($analysis['outages'] ?? [], 0, 20)),
+        'gaps_in_the_readings' => array_map(
+            $describe,
+            array_slice($analysis['gaps'] ?? [], 0, 20)
+        ),
+        'collectors' => aiCronRhythm($config, $pdo),
+        'note' => 'An OUTAGE is a gap with a restart after it - the machine was away. A '
+            . 'GAP is a gap with no restart - the collector stopped and the machine '
+            . 'carried on. They are identical on every chart here and mean opposite '
+            . 'things, and a cluster of alerts just after a restart is usually a machine '
+            . 'coming back rather than one in trouble.',
+    ];
+}
+
+/** What people have written down. */
+function aiNotes(array $config, PDO $pdo, array $values): array
+{
+    $hours = (int)($values['hours'] ?? 720);
+    $limit = (int)($values['limit'] ?? 20);
+    $since = time() - ($hours * SPAN_HOUR);
+
+    try {
+        $stmt = $pdo->prepare(
+            'SELECT at, written_at, body, scope, view, chart, link, who
+               FROM notes WHERE at >= ? ORDER BY at DESC LIMIT ?'
+        );
+        $stmt->execute([$since, max(1, $limit)]);
+        $rows = $stmt->fetchAll();
+    } catch (Throwable) {
+        return ['notes' => [], 'note' => 'No notes have been written.'];
+    }
+
+    if ($rows === []) {
+        return [
+            'notes' => [],
+            'note' => 'Nobody has written anything down in that period. That is not a '
+                . 'finding - most changes go unrecorded.',
+        ];
+    }
+
+    return [
+        'notes' => array_map(fn(array $row): array => [
+            'about' => aiWhen((int)$row['at']),
+            'said' => (string)$row['body'],
+            'by' => (string)($row['who'] ?? 'somebody'),
+            'on_page' => $row['view'],
+            'link' => $row['link'],
+        ], $rows),
+        'note' => 'These are people\'s own words about their own machine, and are the '
+            . 'most reliable thing you have. Quote them rather than paraphrasing. A note '
+            . 'is dated by what it is ABOUT, which is not always when it was written.',
+    ];
 }
 
 /* --------------------------------------------------- what the host offers -- */

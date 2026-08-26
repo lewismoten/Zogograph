@@ -94,7 +94,17 @@ function aiChartCatalogue(): array
         ],
         'diskUsedChart' => [
             'name' => 'How full the disk is',
-            'view' => 'charts',
+            /*
+             * No page has this one.
+             *
+             * Its numbers are real and show_chart can draw it in the
+             * conversation, but there is no canvas for it anywhere - so telling
+             * somebody to "look at it on Over time" sends them to a page that
+             * does not have it. That happened because the catalogue's `view`
+             * was read as "where this is" when it only ever meant "where the
+             * data comes from".
+             */
+            'view' => null,
             'what' => 'Disk and inode use as percentages. The same readings as Room left, '
                 . 'the other way up - this is the one to use when the question is "how '
                 . 'close to full", and Room left when it is "how much is there".',
@@ -169,6 +179,7 @@ function aiChartData(PDO $pdo, string $chartId, int $hours): array
         'name' => $chart['name'],
         'shown_on' => $chart['view'],
         'page' => $chart['view'],
+        'on_a_page' => $chart['view'] !== null,
         'what' => $chart['what'],
         'period' => 'the last ' . plainSpan($hours * SPAN_HOUR, true),
         'bucket' => plainSpan($bucket),
@@ -239,4 +250,242 @@ function aiChartData(PDO $pdo, string $chartId, int $hours): array
         . 'tell you.';
 
     return $out;
+}
+/**
+ * Every chart on the dashboard, whether or not its data can be fetched.
+ *
+ * Two different questions, and conflating them was a real fault: the catalogue
+ * above is "charts whose numbers this can serve", and somebody reading it as
+ * "charts that exist" gets sent to a page for a chart that is not on it.
+ * `diskUsedChart` is exactly that - its data is real and it is drawn on demand
+ * in the conversation, but no page has one.
+ *
+ * This list is the other half: what is on which page. It is written down rather
+ * than discovered, because the only place the truth lives is the markup, and
+ * the model cannot read the markup.
+ *
+ * @return list<array<string, mixed>>
+ */
+function aiEveryChart(): array
+{
+    $fetchable = aiChartCatalogue();
+    $out = [];
+
+    foreach ($fetchable as $id => $chart) {
+        $out[] = [
+            'id' => $id,
+            'name' => $chart['name'],
+            'page' => $chart['view'],
+            'shows' => $chart['what'],
+            'data_available' => true,
+            'note' => $chart['view'] === null
+                ? 'Not on any page. You can draw it in the conversation with show_chart, '
+                  . 'but do not send anybody to look at it.'
+                : null,
+        ];
+    }
+
+    /*
+     * The rest: drawn from data this cannot serve as a series.
+     *
+     * A pie of file types and a treemap of directories are not time series and
+     * there is nothing sensible for get_chart_data to return for them - but
+     * knowing they exist, and on which page, is what lets the assistant say
+     * "the answer to that is the treemap on Tree map" instead of describing
+     * numbers at somebody.
+     */
+    foreach ([
+        ['typePie', 'What the space is made of', 'storage',
+         'A pie of disk use by file extension, from the last completed scan.'],
+        ['typeGrowthChart', 'What grew', 'storage',
+         'How each file type has grown between scans.'],
+        ['categoryChart', 'The watched categories', 'storage',
+         'Disk use for the categories that raise alerts and can be emptied.'],
+        ['historyChart', 'One path over time', 'storage-files',
+         'The size of a single file or directory across scans.'],
+        ['treemap', 'Tree map', 'storage-map',
+         'Every directory as a rectangle in proportion to its size. The fastest way '
+         . 'to see where space went when nobody knows where to start.'],
+        ['hostChart', 'Memory on the machine', 'host',
+         'What the whole machine is using, as opposed to this account.'],
+        ['hostServiceChart', 'Memory per service', 'mem-services',
+         'Which services are holding memory, over time.'],
+        ['hostPie', 'Where memory goes', 'mem-goes',
+         'A breakdown of the machine memory that is not free.'],
+        ['hostIoChart', 'Disk I/O on the machine', 'storage-io',
+         'Bytes reaching the disks, for the machine rather than the account.'],
+        ['urlChart', 'How a site answered', 'net-urls',
+         'Response time and failures for one watched address, with the moments its '
+         . 'watched value changed marked on it.'],
+        ['urlValueChart', 'What a site reported', 'net-urls',
+         'The number extracted from a watched page, over time.'],
+        ['capChanges', 'When programs changed', 'capabilities',
+         'When something the host provides appeared, went, or changed version.'],
+        ['alertTimeline', 'When alerts fired', 'alerts',
+         'Alerts per hour or per day, stacked by severity, with restarts marked.'],
+        ['uptimeChart', 'What was reporting', 'uptime',
+         'Two tracks: whether the machine was up, and whether each collector was '
+         . 'writing readings.'],
+        ['changedChart', 'When software changed', 'sys-changed',
+         'Kernel, PHP and library versions changing underneath the account.'],
+    ] as [$id, $name, $page, $shows]) {
+        $out[] = [
+            'id' => $id,
+            'name' => $name,
+            'page' => $page,
+            'shows' => $shows,
+            'data_available' => false,
+        ];
+    }
+
+    return $out;
+}
+
+/**
+ * The gauges on the front page: what each reads now, and what that means.
+ *
+ * The gauges are the one part of this dashboard designed to be understood at a
+ * glance, and the assistant could not see them at all - it could fetch the raw
+ * numbers behind them but not the bands that turn a number into "urgent". A
+ * model reasoning without those will contradict what the person is looking at,
+ * which is worse than saying nothing.
+ *
+ * The bands below are the ones the page draws, copied from renderGauges in
+ * index.js. They are NOT the alert thresholds - those are the operator's
+ * settings and fire emails; these are fixed and only colour an arc. Two
+ * different numbers that both mean "bad", and telling somebody the wrong one is
+ * how a conversation ends up arguing with a screen.
+ *
+ * @return array<string, mixed>
+ */
+function aiGauges(array $config, PDO $pdo): array
+{
+    $row = $pdo->query('SELECT * FROM vitals ORDER BY taken_at DESC, id DESC LIMIT 1')
+        ->fetch();
+
+    if ($row === false) {
+        return ['error' => 'No readings have been collected yet, so the gauges on the '
+            . 'front page are empty too.'];
+    }
+
+    $number = fn(?string $key): ?float =>
+        $key === null || $row[$key] === null ? null : (float)$row[$key];
+
+    /*
+     * Worked out the way the page works them out, not read from a column.
+     *
+     * disk_used_percent exists and the gauge does not use it - it divides used
+     * by total itself. On a row where one of those is null the two disagree,
+     * and the gauge is the thing being described here.
+     */
+    $share = function (?float $part, ?float $whole): ?float {
+        if ($part === null || $whole === null || $whole <= 0) {
+            return null;
+        }
+        return round(($part / $whole) * 100, 1);
+    };
+
+    $band = function (?float $value, float $warn, float $crit): string {
+        if ($value === null) {
+            return 'not measured';
+        }
+        return $value >= $crit ? 'urgent' : ($value >= $warn ? 'watch' : 'healthy');
+    };
+
+    $cores = $number('cpu_cores');
+    $load = $number('load1');
+    $perCore = ($load !== null && $cores !== null && $cores > 0)
+        ? round(($load / $cores) * 100, 1)
+        : null;
+
+    $disk = $share($number('disk_used_bytes'), $number('disk_total_bytes'));
+    $inodes = $share($number('inodes_used'), $number('inodes_total'));
+    $cpu = $number('cpu_percent');
+    $memory = $number('mem_used_percent');
+
+    $gauges = [
+        [
+            'gauge' => 'Disk used',
+            'reads' => $disk,
+            'units' => 'percent',
+            'verdict' => $band($disk, 88, 95),
+            'watch_above' => 88,
+            'urgent_above' => 95,
+            'beneath_it' => $number('disk_total_bytes') === null
+                ? 'not reported'
+                : sprintf('%s free of %s',
+                    humanBytes((int)$row['disk_free_bytes']),
+                    humanBytes((int)$row['disk_total_bytes'])),
+            'chart' => 'diskUsedChart',
+        ],
+        [
+            'gauge' => 'Inodes used',
+            'reads' => $inodes,
+            'units' => 'percent',
+            'verdict' => $band($inodes, 88, 95),
+            'watch_above' => 88,
+            'urgent_above' => 95,
+            'beneath_it' => $number('inodes_total') === null
+                ? 'not reported'
+                : number_format((int)$row['inodes_free']) . ' free',
+            'chart' => 'roomChart',
+            'note' => 'An inode is one file. A disk with free gigabytes and no inodes '
+                . 'still refuses to create a file, and nothing about the disk gauge '
+                . 'shows that.',
+        ],
+        [
+            'gauge' => 'CPU',
+            'reads' => $cpu,
+            'units' => 'percent',
+            'verdict' => $band($cpu, 70, 90),
+            'watch_above' => 70,
+            'urgent_above' => 90,
+            'chart' => 'cpuChart',
+            'note' => 'A percentage of what THIS ACCOUNT may use, not of the machine. '
+                . '100% here on an idle server is being throttled, which is a real '
+                . 'problem and a different one from a busy server.',
+        ],
+        [
+            'gauge' => 'Memory',
+            'reads' => $memory,
+            'units' => 'percent',
+            'verdict' => $band($memory, 80, 92),
+            'watch_above' => 80,
+            'urgent_above' => 92,
+            'beneath_it' => $number('mem_total_bytes') === null
+                ? 'not reported'
+                : sprintf('%s available of %s',
+                    humanBytes((int)$row['mem_available_bytes']),
+                    humanBytes((int)$row['mem_total_bytes'])),
+            'chart' => 'cpuChart',
+        ],
+        [
+            'gauge' => 'Load',
+            'reads' => $perCore,
+            'units' => 'percent of one process per core',
+            'verdict' => $band($perCore, 100, 150),
+            'watch_above' => 100,
+            'urgent_above' => 150,
+            'beneath_it' => $load === null
+                ? 'not reported'
+                : ($cores
+                    ? sprintf('%.2f over %d cores', $load, (int)$cores)
+                    : sprintf('%.2f, cores unknown', $load)),
+            'chart' => 'loadChart',
+            'note' => 'The gauge shows load as a percentage of one process per core, so '
+                . '100 means exactly as much work as there are cores. The raw load '
+                . 'average is in beneath_it.',
+        ],
+    ];
+
+    return [
+        'measured' => aiWhen((int)$row['taken_at']),
+        'shown_on' => 'overview',
+        'gauges' => $gauges,
+        'note' => 'This is what the operator sees at a glance on the front page. The '
+            . 'bands here colour the arcs and are fixed; they are NOT the alert '
+            . 'thresholds, which are configurable and are what sends email. If you '
+            . 'disagree with a verdict, say you are disagreeing with where the band is '
+            . 'drawn rather than stating a different number.',
+    ];
 }

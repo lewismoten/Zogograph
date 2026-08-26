@@ -554,6 +554,232 @@ function aiToolCatalogue(): array
 
         /* --------------------------------------------------- saying things -- */
 
+        'get_gauges' => [
+            'group' => 'diagnostic',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'read the five gauges on the front page.',
+            'description' =>
+                "The five arcs at the top of the Overview page - disk, inodes, CPU, "
+                . "memory and load - with what each reads now and which band it is in.\n\n"
+                . "USE THIS EARLY, and use it whenever the person says something is or "
+                . "is not a problem. It is the only tool that tells you what THEY are "
+                . "looking at: the same numbers are available raw from "
+                . "get_current_status, but without the bands you cannot tell whether the "
+                . "screen in front of them is green or red, and disagreeing with a screen "
+                . "you cannot see is the fastest way to sound wrong.\n\n"
+                . "The bands here colour the arcs and are fixed. They are NOT the alert "
+                . "thresholds, which are configurable and are what sends email - so a "
+                . "gauge can be amber with no alert raised, and that is not a fault.\n\n"
+                . "Each gauge names the chart that plots it over time, so \"the disk "
+                . "gauge is amber\" can become \"and here is how it got there\".",
+            'parameters' => [],
+        ],
+
+        'list_charts' => [
+            'group' => 'navigation',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'list every chart and which page it is on.',
+            'description' =>
+                "Every chart on this dashboard: its id, what it plots, which page it is "
+                . "on, and whether you can fetch its numbers.\n\n"
+                . "USE THIS BEFORE sending anybody to look at something. There are more "
+                . "charts here than there are tools - pie charts, a treemap of "
+                . "directories, per-service memory, a timeline of alerts - and for most "
+                . "of them the right answer to a question is \"that is the treemap on the "
+                . "Tree map page\" rather than a wall of numbers.\n\n"
+                . "`data_available` says whether get_chart_data can serve that chart. "
+                . "When it is false the chart is still real and still worth sending "
+                . "somebody to; you simply cannot read it yourself.\n\n"
+                . "A chart with a null page is one that can be drawn in the conversation "
+                . "and is not on any page. Do not tell anybody to go and look at it.",
+            'parameters' => [],
+        ],
+
+        'get_filesystems' => [
+            'group' => 'diagnostic',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'every mounted filesystem and how full it is.',
+            'description' =>
+                "Every filesystem on the machine, with size, used, free and inode use.\n\n"
+                . "USE THIS when the disk figures do not add up, which happens more often "
+                . "than it sounds. The account's own reading is for the filesystem its "
+                . "home directory is on; a machine with a separate /var or /tmp can have "
+                . "one of those full while the account's own gauge is comfortable, and "
+                . "the symptom is writes failing for no visible reason.\n\n"
+                . "This comes from the host collector, so it is as fresh as that "
+                . "collector's last run and is absent entirely where there is no host "
+                . "collector. It says which.",
+            'parameters' => [],
+        ],
+
+        'get_symlink_problems' => [
+            'group' => 'diagnostic',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'symlinks that are broken, looping or leave the account.',
+            'description' =>
+                "The result of the last symlink walk: links that point at nothing, links "
+                . "that form a loop, links into their own ancestors, and links that leave "
+                . "the watched directory.\n\n"
+                . "USE THIS when a backup takes forever or never finishes, when `du` and "
+                . "the dashboard disagree about a directory's size, or when something "
+                . "reports an impossible amount of data. A link pointing at one of its "
+                . "own ancestors is an infinitely deep directory to anything that follows "
+                . "links - and backups, du, tar and web crawlers all do - which is how a "
+                . "disk fills with one file copied ten thousand times.\n\n"
+                . "This reads the STORED result of the last walk rather than walking the "
+                . "tree, which takes tens of seconds. If nothing has been checked it says "
+                . "so; the operator can run one from the Symlinks page.",
+            'parameters' => [
+                'kind' => [
+                    'type' => 'string', 'required' => false,
+                    'enum' => ['any', 'broken', 'loop', 'ancestor', 'outside'],
+                    'default' => 'any',
+                    'description' => 'Narrow it to one kind. "loop" and "ancestor" are '
+                        . 'the two that cause runaway descent; "broken" is untidy rather '
+                        . 'than dangerous; "outside" makes measured sizes misleading.',
+                ],
+                'limit' => [
+                    'type' => 'integer', 'minimum' => 1, 'maximum' => 100,
+                    'required' => false, 'default' => 25,
+                    'description' => 'How many to return. The counts are always for all '
+                        . 'of them, however few are listed.',
+                ],
+            ],
+        ],
+
+        'get_backups' => [
+            'group' => 'diagnostic',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'what backups exist and how old each one is.',
+            'description' =>
+                "Backups found on this machine, with when each was made and how large.\n\n"
+                . "USE THIS before suggesting anything destructive, and whenever somebody "
+                . "asks whether it is safe to delete something. \"There is a backup from "
+                . "four hours ago\" and \"the newest backup is from March\" lead to "
+                . "completely different advice, and you cannot tell which without asking.\n\n"
+                . "ALSO USE IT when the disk is filling: backups are frequently most of "
+                . "what is on a disk, and an old one nobody meant to keep is the easiest "
+                . "space there is to recover.\n\n"
+                . "Absence of backups here is not proof there are none - this finds the "
+                . "ones in the usual places. Say that rather than telling somebody they "
+                . "have no backups.",
+            'parameters' => [],
+        ],
+
+        'get_domain_expiry' => [
+            'group' => 'diagnostic',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'watched domain names and when each expires.',
+            'description' =>
+                "Every domain being watched, when it expires, and who it is registered "
+                . "with.\n\n"
+                . "USE THIS when a site has stopped answering and nothing on the machine "
+                . "explains it. An expired domain looks exactly like a network fault from "
+                . "inside the machine, and it is the one cause that no amount of looking "
+                . "at the server will find.\n\n"
+                . "The dates come from whois, which the host collector runs, so they are "
+                . "as fresh as the last lookup. Each row says when it was checked.",
+            'parameters' => [],
+        ],
+
+        'get_services' => [
+            'group' => 'diagnostic',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'systemd units, with the broken ones first.',
+            'description' =>
+                "Every service the machine knows about, worst state first: failed, "
+                . "masked, running-when-it-should-not-be, and meant-to-be-running-and-is-"
+                . "not.\n\n"
+                . "USE THIS when something is not answering. A FAILED unit is invisible "
+                . "everywhere else on this dashboard - it uses no CPU and no memory, so "
+                . "it does not appear in any list of what is busy - and it is one of the "
+                . "few faults where the cause and the fix are both a single line.\n\n"
+                . "A MASKED unit cannot be started at all until somebody unmasks it, "
+                . "which is worth saying out loud because \"start it\" will fail with a "
+                . "message people find confusing.\n\n"
+                . "This needs the host collector. Without one there is no service list "
+                . "and it says so.",
+            'parameters' => [
+                'state' => [
+                    'type' => 'string', 'required' => false,
+                    'enum' => ['problems', 'all', 'failed', 'masked', 'running',
+                               'stopped'],
+                    'default' => 'problems',
+                    'description' => '"problems" is failed, masked, and anything running '
+                        . 'when it should not be or not running when it should. That is '
+                        . 'chosen by state and never by name - no service here is more '
+                        . 'important than another, only more broken.',
+                ],
+                'limit' => [
+                    'type' => 'integer', 'minimum' => 1, 'maximum' => 100,
+                    'required' => false, 'default' => 40,
+                    'description' => 'How many to return.',
+                ],
+            ],
+        ],
+
+        'get_uptime' => [
+            'group' => 'diagnostic',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'when the machine restarted and when each collector was running.',
+            'description' =>
+                "Two records over a period: when the machine was up, and when each "
+                . "collector was actually writing readings.\n\n"
+                . "USE THIS whenever a chart has a gap in it, and whenever a cluster of "
+                . "alerts arrives together. A gap where the collector stopped and a gap "
+                . "where the machine was off look identical on every chart here and mean "
+                . "opposite things - one is missing data about a working machine, the "
+                . "other is a machine that was not there.\n\n"
+                . "A run of warnings just after a restart is usually a machine coming "
+                . "back rather than a machine in trouble. The same run with no restart "
+                . "under it is something else entirely.",
+            'parameters' => [
+                'hours' => [
+                    'type' => 'integer', 'minimum' => 1, 'maximum' => 2160,
+                    'required' => false, 'default' => 168,
+                    'description' => 'How far back to look.',
+                ],
+            ],
+        ],
+
+        'get_notes' => [
+            'group' => 'diagnostic',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'what people have written down against pages and charts.',
+            'description' =>
+                "Notes the operator or their colleagues have written, with when each one "
+                . "is ABOUT - which is not always when it was written.\n\n"
+                . "USE THIS when a chart bends and you are about to explain why. Somebody "
+                . "may already have: \"moved the backup window\", \"upgraded PHP\", "
+                . "\"cleared the cache\" are the explanations for most sudden steps in "
+                . "these charts, and a note saying so is worth more than any amount of "
+                . "inference from the readings.\n\n"
+                . "These are people's own words about their own machine. Treat them as "
+                . "the most reliable thing you have, and quote them rather than "
+                . "paraphrasing.",
+            'parameters' => [
+                'hours' => [
+                    'type' => 'integer', 'minimum' => 1, 'maximum' => 8760,
+                    'required' => false, 'default' => 720,
+                    'description' => 'How far back to look, by what the note is about.',
+                ],
+                'limit' => [
+                    'type' => 'integer', 'minimum' => 1, 'maximum' => 50,
+                    'required' => false, 'default' => 20,
+                    'description' => 'How many to return.',
+                ],
+            ],
+        ],
+
         'what_the_terminal_can_run' => [
             'group' => 'terminal',
             'where' => 'server',
@@ -1344,6 +1570,16 @@ function aiViews(): array
         'storage-files' => 'the largest files and directories, and what has grown',
         'storage-links' => 'symlinks that are broken, looping, or leave the account',
         'storage-io' => 'how hard the disks are working',
+        /*
+         * Three pages that have charts on them and were not on this list, so
+         * open_page could not reach them - which meant the assistant could tell
+         * somebody a treemap existed and not send them to it.
+         */
+        'storage-map' => 'every directory drawn as a rectangle in proportion to its '
+            . 'size, which is the fastest way to see where space went when nobody '
+            . 'knows where to start',
+        'mem-services' => 'which services are holding memory, over time',
+        'mem-goes' => 'where the machine\'s memory goes, broken down',
         'log-stream' => 'the newest lines from every log at once, and repeated messages',
         'host-disk' => 'every filesystem on the machine and how full each is',
         'cpu' => 'processor use, for the account and for the machine',
