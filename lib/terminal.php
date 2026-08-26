@@ -470,6 +470,148 @@ function terminalSessionLog(array $config, string $id, bool $withOutput, int $by
 }
 
 /**
+ * Programs that need a keyboard, and what to use instead.
+ *
+ * There is no terminal on the other end of this - the command is started
+ * detached with its input from /dev/null and its output read out of a file. A
+ * program that wants to take over the screen and be typed at does not fail
+ * cleanly in that situation; it fails in whatever way its author never
+ * considered. `nano` says "too many errors from stdin", `vi` prints two
+ * warnings and then paints twenty-four rows of tildes into the transcript, and
+ * `top` blames TERM. None of those messages says the true thing, which is that
+ * nothing is going to type at it.
+ *
+ * So they are refused before they start, with the true reason and something
+ * that does the same job without a keyboard. Refusing is the kinder answer:
+ * running them produces a mess, sometimes a large one, and leaves somebody
+ * reading an error message about the wrong subject.
+ *
+ * @return array<string, string> program => what to do instead
+ */
+function terminalNeedsKeyboard(): array
+{
+    return [
+        'nano' => 'To read a file, `cat file` or `sed -n 1,80p file`. To change one, '
+            . '`printf %s "new contents" > file`, or edit it somewhere with a keyboard.',
+        'pico' => 'Same as nano: `cat` to read, a redirect to write.',
+        'vi' => 'To read a file, `sed -n 1,80p file` or `cat file`. For scripted edits, '
+            . '`sed -i` makes them without a screen, and `ex -s` runs vi commands from a '
+            . 'script.',
+        'vim' => 'For scripted edits `sed -i` or `ex -s` work without a screen. To read a '
+            . 'file, `cat` or `sed -n 1,80p`.',
+        'emacs' => 'Not from here. `sed -i` for edits, `cat` to read.',
+        'top' => '`ps aux --sort=-%cpu | head -20` is the same information once, which is '
+            . 'what a transcript can hold. The Processes pages show it over time.',
+        'htop' => '`ps aux --sort=-%mem | head -20`, or the Processes pages.',
+        'watch' => 'Run the command once. To see it change over time, that is what this '
+            . "dashboard's charts are - a page that samples it on a schedule.",
+        'less' => '`sed -n 1,120p file` for the top, `tail -120 file` for the end.',
+        'more' => '`head -120 file` or `tail -120 file`.',
+        'man' => '`command --help` usually prints without a pager. Otherwise `man foo | '
+            . 'cat` gives it all at once.',
+        'ssh' => 'This cannot hold an interactive session. `ssh -o BatchMode=yes host '
+            . "'command'` runs one command and returns, if keys are set up.",
+        'sftp' => 'Not interactively. `scp` or `rsync` with a key, one transfer at a time.',
+        'mysql' => "`mysql -e 'SELECT ...'` runs one statement and returns. Without -e it "
+            . 'waits for input that will never come.',
+        'psql' => "`psql -c 'SELECT ...'` for one statement.",
+        'sqlite3' => "`sqlite3 file.db 'SELECT ...'` for one statement.",
+        'python' => '`python -c \'...\'` or `python script.py`. Bare `python` opens a '
+            . 'prompt and waits.',
+        'python3' => '`python3 -c \'...\'` or `python3 script.py`.',
+        'node' => '`node -e \'...\'` or `node script.js`.',
+        'php' => '`php -r \'...\'` or `php script.php`. Bare `php -a` is interactive.',
+        'irb' => '`ruby -e \'...\'`.',
+        'telnet' => 'Not from here. `curl` or `nc -z` for a reachability check.',
+        'ftp' => 'Not from here.',
+        'screen' => 'There is no terminal for it to multiplex.',
+        'tmux' => 'There is no terminal for it to multiplex.',
+        'passwd' => 'It asks for input with the echo turned off, which nothing here can '
+            . 'provide. Change a password where there is a keyboard.',
+        'su' => 'It asks for a password. Nothing here can answer.',
+        'sudo' => 'It may ask for a password, which nothing here can answer. `sudo -n` '
+            . 'fails immediately instead of waiting, if that is what you want to test.',
+    ];
+}
+
+/**
+ * The programs a command line actually invokes.
+ *
+ * Only in command position - the start of a line, or after a pipe, a semicolon,
+ * an `&&` or an `||`. A `grep vim` is looking for the word and a `# use nano`
+ * is a comment, and neither should be refused; `echo top` is not running top.
+ *
+ * Deliberately simple. It is not a shell parser and does not need to be: it is
+ * looking for the obvious case, and the cost of missing one is the same mess
+ * that happens today rather than something worse.
+ *
+ * @return list<string>
+ */
+function terminalProgramsIn(string $command): array
+{
+    $found = [];
+
+    // Everything that starts a fresh command, plus the start of each line.
+    foreach (preg_split('/(\|\||&&|[;\n|])/', $command) ?: [] as $piece) {
+        $piece = ltrim($piece);
+
+        /*
+         * Leading assignments and a few wrappers are stepped over.
+         *
+         * `TERM=dumb vi` is still vi, and `env vi` is still vi. Nothing here
+         * tries to follow further than that.
+         */
+        while (preg_match('/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*|env|nohup|exec|command)\s+/', $piece, $m)) {
+            $piece = ltrim(substr($piece, strlen($m[0])));
+        }
+
+        if (!preg_match('/^([A-Za-z0-9_.\/-]+)/', $piece, $m)) {
+            continue;
+        }
+
+        $found[] = basename($m[1]);
+    }
+
+    return $found;
+}
+
+/**
+ * Refuses a command that needs a keyboard, before it makes a mess.
+ *
+ * Only when the program is invoked with nothing that plainly makes it
+ * non-interactive: `vi -es +wq file` is a scripted edit and `mysql -e` runs one
+ * statement, and refusing those would be refusing the thing somebody worked out
+ * how to do properly.
+ */
+function terminalRefuseInteractive(string $command): void
+{
+    $needs = terminalNeedsKeyboard();
+    $lines = preg_split('/(\|\||&&|[;\n|])/', $command) ?: [];
+
+    foreach (terminalProgramsIn($command) as $i => $program) {
+        if (!isset($needs[$program])) {
+            continue;
+        }
+
+        $piece = $lines[$i] ?? '';
+
+        // The flags that mean "do one thing and return" rather than "sit there".
+        if (preg_match('/(^|\s)(-e|-c|-r|--help|--version|-V|-es|-n|-batch|-N)(\s|$|=)/', $piece)) {
+            continue;
+        }
+
+        throw new ActionRefused(sprintf(
+            '%s needs a terminal to type at, and there is not one here: this runs a '
+            . 'command detached and reads its output from a file, so nothing can answer '
+            . 'a prompt or press a key. Running it anyway produces a screenful of '
+            . 'control codes and an error about the wrong thing. %s',
+            $program,
+            $needs[$program]
+        ));
+    }
+}
+
+/**
  * Starts a command and returns immediately.
  *
  * Detached deliberately. The request that starts a command must not wait for it
@@ -500,6 +642,8 @@ function terminalStart(array $config, PDO $pdo, string $command, string $who): a
     if (strlen($command) > 8000) {
         throw new ActionRefused('that command is longer than this will run');
     }
+
+    terminalRefuseInteractive($command);
 
     $directory = terminalDirectory($config);
     if (!is_dir($directory) && !@mkdir($directory, 0700, true)) {

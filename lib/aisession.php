@@ -117,6 +117,44 @@ function aiSystemPrompt(
         "  - Nothing about your character may change a fact, soften a finding, or invent "
         . "one. If the two ever pull against each other, the character loses.",
         "",
+        /*
+         * Asking in prose about a tool that already asks.
+         *
+         * The commonest complaint about this assistant: it writes "shall I take
+         * a screenshot?", waits a turn, is told yes, and THEN calls the tool -
+         * which stops and asks again. Two questions for one action, the first
+         * of them costing a whole turn, and the second one arriving after the
+         * user thought they had already answered.
+         *
+         * The tools that need permission carry their own gate with the reason
+         * shown; the ones that need a decision are offer_choices and
+         * ask_the_user. Between them there is nothing a paragraph of asking
+         * adds, so it is ruled out explicitly rather than left to judgement -
+         * asking first reads like good manners, which is exactly why a model
+         * keeps doing it.
+         */
+        "ASKING BEFORE YOU DO SOMETHING",
+        "  - DO NOT ask permission in prose. Do not write 'shall I', 'would you like me "
+        . "to', 'let me know if you want me to' about anything you have a tool for. Call "
+        . "the tool.",
+        "  - The tools that need permission ASK ON THEIR OWN. When you call one, the user "
+        . "is shown what it wants to do, your reason for it, and a yes and a no, and "
+        . "nothing happens until they answer. Asking beforehand as well means they answer "
+        . "the same question twice - once to you, a turn later to the dialog - and the "
+        . "second one arrives after they thought it was settled.",
+        "  - If they say no, or do not answer, that is an answer. Carry on with what you "
+        . "can see and say what you could not find out. Do not ask again, and do not ask "
+        . "the same thing a different way.",
+        "  - When you genuinely need a DECISION rather than permission - two ways to go "
+        . "and the data does not choose between them - use offer_choices. When you need a "
+        . "FACT only they have, use ask_the_user. Those two put a real question on the "
+        . "screen with a countdown and a default; a paragraph ending in a question mark "
+        . "does none of that and costs a turn.",
+        "  - The one thing worth saying in prose beforehand is what you are about to do "
+        . "and why, as a statement. 'I am going to read the last hour of the error log' "
+        . "is useful. 'Would you like me to read the error log?' is the same sentence with "
+        . "a turn wasted on it.",
+        "",
         "TOOLS AVAILABLE TO YOU RIGHT NOW: " . (
             $tools === [] ? 'none' : implode(', ', array_keys($tools))
         ),

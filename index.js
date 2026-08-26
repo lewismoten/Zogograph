@@ -11426,7 +11426,45 @@ function renderTerminalBuffer() {
     frag.appendChild(terminalEntry(entry));
   }
 
+  /*
+   * Whether the reader was at the bottom has to be asked BEFORE the rebuild.
+   *
+   * replaceChildren empties the box, which puts scrollTop back to zero, so
+   * anything asking "are we at the end" afterwards is asking about a box that
+   * has just been scrolled to the top by the act of redrawing it. The answer
+   * was always no, so the view was never pinned back - which is why every
+   * command jumped the transcript to the top.
+   *
+   * A first draw counts as pinned: a terminal opens at its prompt.
+   */
+  const hadContent = out.childElementCount > 0;
+  const wasPinned = hadContent
+    && out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+  const wasAt = out.scrollTop;
+
   out.replaceChildren(frag);
+
+  if (wasPinned || termState.pin) {
+    out.scrollTop = out.scrollHeight;
+  } else if (hadContent) {
+    out.scrollTop = wasAt;
+  } else if (termState.scrollTop !== null) {
+    /*
+     * A box that was rebuilt with the rest of the page.
+     *
+     * It arrives empty, which looks exactly like a first draw and was being
+     * treated as one - so every command that finished scrolled the transcript
+     * back to the top, or to the bottom, depending on which rule won. Where the
+     * reader was is remembered by renderTerminal across the rebuild.
+     */
+    out.scrollTop = termState.scrollTop;
+  } else {
+    // Genuinely the first draw. A terminal opens at its prompt.
+    out.scrollTop = out.scrollHeight;
+  }
+
+  termState.pin = false;
+  termState.scrollTop = null;
 }
 
 /** One command and what it printed. */
@@ -11626,6 +11664,11 @@ const termState = {
   buffer: [],
   // Where the up-arrow has walked back to, or null for "not walking".
   recall: null,
+  // Set when the next redraw should end at the bottom whatever the box was
+  // showing beforehand - a command just run, rather than output arriving.
+  pin: false,
+  // Where the reader was, carried across a rebuild of the whole page.
+  scrollTop: null,
 };
 
 async function refreshTerminal() {
@@ -11872,6 +11915,19 @@ function renderTerminal(data) {
   const wasTyping = document.activeElement === $("terminalInput");
   const typed = $("terminalInput")?.value ?? "";
   const at = $("terminalInput")?.selectionStart ?? typed.length;
+
+  /*
+   * Where the reader was in the transcript, for the same reason.
+   *
+   * The box is about to be thrown away and rebuilt empty, and an empty box is
+   * indistinguishable from a first draw unless somebody remembers.
+   */
+  const scrollBox = $("terminalOut");
+  if (scrollBox) {
+    const atEnd = scrollBox.scrollHeight - scrollBox.scrollTop - scrollBox.clientHeight < 40;
+    if (atEnd) termState.pin = true;
+    else termState.scrollTop = scrollBox.scrollTop;
+  }
 
   body.replaceChildren(...parts);
   renderTerminalActions();
@@ -12234,8 +12290,16 @@ async function runTerminal(command) {
     took: null,
     exit_code: null,
   });
-  renderTerminalBuffer();
+  /*
+   * The pin is set before the redraw that consumes it.
+   *
+   * Setting it afterwards leaves it standing until the NEXT redraw, which for a
+   * command that prints nothing for a second is a redraw a second later - long
+   * enough to have scrolled up to read something, and be yanked back by output
+   * you were not waiting for.
+   */
   scrollTerminalToEnd();
+  renderTerminalBuffer();
 
   watchTerminal(result.run.id, false);
 }
@@ -12252,8 +12316,17 @@ function scrollTerminalToEnd(force = true) {
   const out = $("terminalOut");
   if (!out) return;
 
-  const atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
-  if (force || atEnd) out.scrollTop = out.scrollHeight;
+  /*
+   * Asks the next redraw to pin, rather than scrolling now.
+   *
+   * Scrolling here and rebuilding a moment later loses the scroll to the
+   * rebuild, which is what happened. The redraw is the only place that knows
+   * both what the box looked like before and what it looks like after, so it is
+   * the only place that can put the view back.
+   */
+  // Only the flag. Scrolling here as well would be scrolling a box that is
+  // about to be rebuilt, which is the thing that did not work.
+  if (force) termState.pin = true;
 }
 
 /** Follows one command's output until it stops. */
@@ -12305,8 +12378,9 @@ async function pollTerminal() {
     entry.capped = Boolean(data.capped);
 
     if (data.text || !data.running) {
+      // Following the tail is renderTerminalBuffer's job now: it is the only
+      // place that can see where the box was before it was rebuilt.
       renderTerminalBuffer();
-      scrollTerminalToEnd(false);
     }
   }
 
@@ -12372,7 +12446,6 @@ async function pollTerminal() {
       // The whole page was rebuilt, so the transcript has to be put back -
       // and it is the buffer, not just this command's output.
       renderTerminalBuffer();
-      scrollTerminalToEnd(false);
       renderTerminalActions();
     }).catch(() => {});
   }
