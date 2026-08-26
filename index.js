@@ -10889,6 +10889,199 @@ function purgeButton(entry) {
  * makes a command that prints for ten minutes cost the same per poll as one
  * that printed a line - and is why this can be pointed at a `tail -f`.
  */
+/* --------------------------------------------------- terminal sessions -- */
+
+const sessionState = { list: [], open: null, log: null, withOutput: true };
+
+async function refreshSessions() {
+  const body = $("sessionsBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see terminal sessions."));
+    return;
+  }
+
+  try {
+    const data = await api("terminal-sessions");
+    sessionState.list = data.sessions || [];
+    renderSessionList();
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderSessionList() {
+  const body = $("sessionsBody");
+
+  if (!sessionState.list.length) {
+    body.replaceChildren(note(
+      "Nothing yet. A session starts the first time a command is run and stays open "
+      + "until an hour goes by without one."
+    ));
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.id = "sessionsTable";
+  body.replaceChildren(holder);
+
+  renderTable("sessionsTable", sessionState.list, [
+    {
+      label: "Topic",
+      className: "name",
+      render: row => {
+        if (row.topic) return row.topic;
+        // Unnamed sessions say so rather than showing a blank cell, and say it
+        // in a way that reads as an invitation rather than as missing data.
+        const said = document.createElement("span");
+        said.className = "muted";
+        said.textContent = "no topic yet";
+        return said;
+      },
+    },
+    { label: "Started", render: row => whenSpan(row.started_at) },
+    { label: "Last command", render: row => whenSpan(row.last_at) },
+    { label: "Commands", className: "size", render: row => row.commands },
+    { label: "Who", render: row => row.who || "" },
+  ], row => openSession(row.id), null, row => row.id);
+}
+
+/** Opens one session's log. */
+async function openSession(id) {
+  sessionState.open = id;
+
+  try {
+    const data = await api("terminal-session", {
+      id,
+      output: sessionState.withOutput ? "1" : "0",
+    });
+    sessionState.log = data;
+    renderSessionLog();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+}
+
+function renderSessionLog() {
+  const panel = $("sessionLogPanel");
+  const data = sessionState.log;
+  if (!data) { panel.hidden = true; return; }
+
+  panel.hidden = false;
+
+  const session = data.session;
+  $("sessionLogTitle").textContent = session?.topic
+    || `Session of ${whenLabel(session?.started_at ?? 0)}`;
+
+  /*
+   * The four things worth taking away, which are four different jobs.
+   *
+   * Just the commands is what goes in a runbook or a ticket. One command with
+   * its output is what you send somebody who asked about that one. The whole
+   * log is the record of the sitting. And the last output is what goes into a
+   * search box.
+   */
+  const copies = [
+    ["Copy just the commands", () => data.commands.map(c => c.command).join("\n")],
+    ["Copy the whole log", () => data.commands.map(sessionEntryText).join("\n\n")],
+    ["Copy the last output", () => stripAnsi(data.commands.at(-1)?.text || "")],
+  ];
+
+  const row = $("sessionLogCopy");
+  row.replaceChildren();
+  for (const [label, take] of copies) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "link";
+    button.textContent = label;
+    button.addEventListener("click", () => copyText(take()));
+    row.appendChild(button);
+  }
+
+  const body = $("sessionLogBody");
+  if (!data.commands.length) {
+    body.replaceChildren(note("Nothing was run in this one, or it has been swept."));
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+
+  for (const command of data.commands) {
+    const entry = terminalEntry({
+      command: command.command,
+      text: command.text || "",
+      running: command.running,
+      took: command.took,
+      exit_code: command.exit_code,
+      timed_out: command.timed_out,
+      stopped_by: command.stopped_by,
+    });
+
+    // Which command this was, so one of them can be copied on its own.
+    const tools = document.createElement("div");
+    tools.className = "term-copy";
+
+    const one = document.createElement("button");
+    one.type = "button";
+    one.className = "link";
+    one.textContent = "Copy this one";
+    one.addEventListener("click", () => copyText(sessionEntryText(command)));
+    tools.appendChild(one);
+
+    if (command.text) {
+      const just = document.createElement("button");
+      just.type = "button";
+      just.className = "link";
+      just.textContent = "Copy only its output";
+      just.addEventListener("click", () => copyText(stripAnsi(command.text)));
+      tools.appendChild(just);
+    }
+
+    if (command.text_from_end) {
+      const said = document.createElement("span");
+      said.className = "muted small";
+      said.textContent = "the end of a longer output";
+      tools.appendChild(said);
+    }
+
+    entry.appendChild(tools);
+    frag.appendChild(entry);
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "term-out session-log";
+  wrap.appendChild(frag);
+  body.replaceChildren(wrap);
+}
+
+/** One command as it reads in a copied log. */
+function sessionEntryText(command) {
+  const bits = [
+    command.took === null || command.took === undefined ? "" : humanSpan(command.took),
+    command.stopped_by ? "stopped" : "",
+    command.timed_out ? "timed out" : "",
+    command.exit_code === null || command.exit_code === undefined
+      ? "" : `exit ${command.exit_code}`,
+  ].filter(Boolean).join(" · ");
+
+  return `$ ${command.command}${bits ? `   [${bits}]` : ""}\n`
+    + stripAnsi(command.text || "");
+}
+
+/** One place that talks to the clipboard, so one place says when it cannot. */
+async function copyText(text) {
+  if (!text || !text.trim()) {
+    notice("There is nothing to copy.");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    notice(`Copied ${humanBytes(text.length)}.`, true);
+  } catch {
+    notice("This browser would not let the page write to the clipboard.");
+  }
+}
+
 /* -------------------------------------------------------- terminal output -- */
 
 /**
@@ -27908,6 +28101,12 @@ const VIEWS = {
     parent: "sys-terminal",
     refresh: () => refreshInstalled(),
   },
+  "sys-sessions": {
+    manual: true,
+    label: "Sessions",
+    parent: "sys-terminal",
+    refresh: () => refreshSessions(),
+  },
   "sys-ai": {
     /*
      * The conversation, with the window to itself.
@@ -28816,6 +29015,39 @@ async function stopTerminal() {
 }
 
 $("terminalStop").addEventListener("click", () => stopTerminal());
+
+$("sessionShowOutput").addEventListener("change", event => {
+  sessionState.withOutput = event.target.checked;
+  if (sessionState.open) openSession(sessionState.open);
+});
+
+$("sessionClose").addEventListener("click", () => {
+  sessionState.open = null;
+  sessionState.log = null;
+  $("sessionLogPanel").hidden = true;
+});
+
+$("sessionName").addEventListener("click", async () => {
+  if (!sessionState.open) return;
+
+  const topic = prompt(
+    "What was this session about?\n\nName the thing: the path, the service, the "
+    + "symptom. Specific enough to pick out of a list of thirty.",
+    sessionState.log?.session?.topic || ""
+  );
+  if (topic === null) return;
+
+  try {
+    const fresh = await post("terminal-name-session", { id: sessionState.open, topic });
+    sessionState.list = fresh.sessions || [];
+    renderSessionList();
+    if (sessionState.log?.session) sessionState.log.session.topic = topic;
+    renderSessionLog();
+    notice("Named.", true);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
 
 $("memoryAdd").addEventListener("click", () => {
   if (!memoryState.data) {

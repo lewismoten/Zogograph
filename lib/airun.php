@@ -98,6 +98,8 @@ function aiRunTool(
             'recall' => aiToolRecall($ai, $values),
             'recommend_command' => aiToolRecommend($values),
             'set_session_topic' => aiSetSessionTopic($ai, $session, $values),
+            'get_terminal_commands' => aiTerminalCommands($config, $values),
+            'get_terminal_output' => aiTerminalOutput($config, $values),
             default => ['error' => 'That tool does not run on the server.'],
         };
     } catch (Throwable $e) {
@@ -1693,6 +1695,111 @@ function aiHostJobs(array $config, PDO $pdo): array
             . 'page to press it on and roughly how long the wait is - the numbers for that '
             . 'are in `the_delay`. You may draw a progress bar with show_progress if the '
             . 'wait is long enough to be worth watching. You cannot press it yourself.',
+    ];
+}
+
+/**
+ * What the user has been running, without what any of it said.
+ *
+ * The two halves are separate tools because they carry completely different
+ * risk. A command line is what somebody chose to type; the output is whatever
+ * was in a file. An operator who wants the assistant to be able to check what
+ * was run without being able to read a config file can have exactly that.
+ */
+function aiTerminalCommands(array $config, array $values): array
+{
+    $sessions = terminalSessions($config);
+    if ($sessions === []) {
+        return [
+            'commands' => [],
+            'note' => 'Nothing has been run in the terminal, or it is switched off.',
+        ];
+    }
+
+    $session = $sessions[0];
+    $limit = max(1, min(50, (int)($values['limit'] ?? 20)));
+    $rows = terminalSessionLog($config, (string)$session['id'], false);
+    $rows = array_slice($rows, -$limit);
+
+    return [
+        'session' => [
+            'topic' => (string)($session['topic'] ?? '') ?: null,
+            'started' => aiWhen((int)$session['started_at']),
+            'commands_in_it' => (int)($session['commands'] ?? count($rows)),
+        ],
+        'commands' => array_map(fn(array $row): array => [
+            'id' => $row['id'],
+            'command' => $row['command'],
+            'ran' => aiWhen($row['started_at']),
+            'took' => $row['took'] === null ? null : plainSpan((int)$row['took'], true),
+            'still_running' => $row['running'],
+            'exit_code' => $row['exit_code'],
+            'stopped_by_user' => $row['stopped_by'] !== null,
+            'timed_out' => $row['timed_out'],
+            'printed_bytes' => $row['bytes'],
+        ], $rows),
+        'note' => 'This is what was typed, not what came back. `exit_code` 0 is success, '
+            . '127 is "no such program", 126 is "not executable", and over 128 means a '
+            . 'signal - 130 Ctrl-C, 137 SIGKILL, 143 SIGTERM. To read what one printed, '
+            . 'get_terminal_output takes the id above, and asks the user first.',
+    ];
+}
+
+/**
+ * What one command printed.
+ *
+ * The end of it rather than the beginning, and only as much as was asked for.
+ * Everything this returns is something that has left the machine it describes.
+ */
+function aiTerminalOutput(array $config, array $values): array
+{
+    $sessions = terminalSessions($config);
+    if ($sessions === []) {
+        return ['error' => 'Nothing has been run in the terminal.'];
+    }
+
+    $bytes = max(256, min(65536, (int)($values['bytes'] ?? 8192)));
+    $rows = terminalSessionLog($config, (string)$sessions[0]['id'], true, $bytes);
+
+    if ($rows === []) {
+        return ['error' => 'That session has no commands left on disk.'];
+    }
+
+    $wanted = trim((string)($values['command_id'] ?? ''));
+    $row = null;
+
+    if ($wanted === '') {
+        $row = $rows[count($rows) - 1];
+    } else {
+        foreach ($rows as $one) {
+            if ($one['id'] === $wanted) {
+                $row = $one;
+            }
+        }
+    }
+
+    if ($row === null) {
+        return [
+            'error' => 'There is no command with that id in the most recent session.',
+            'note' => 'The ids come from get_terminal_commands, and only the most recent '
+                . 'session is readable.',
+        ];
+    }
+
+    return [
+        'command' => $row['command'],
+        'ran' => aiWhen($row['started_at']),
+        'exit_code' => $row['exit_code'],
+        'still_running' => $row['running'],
+        'printed_bytes' => $row['bytes'],
+        'showing' => ($row['text_from_end'] ?? false)
+            ? 'the last ' . humanBytes(strlen((string)($row['text'] ?? '')))
+              . ' of it, because it was longer than was asked for'
+            : 'all of it',
+        'output' => (string)($row['text'] ?? ''),
+        'note' => 'This came off a machine you are helping with and may hold things that '
+            . 'were not meant to travel - a password in a config file, an address in a '
+            . 'mail log. Quote the line that answers the question, not the whole of it.',
     ];
 }
 

@@ -150,6 +150,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'terminal-unlock' => doTerminalUnlock($config, $pdo, $post),
         'terminal-lock' => doTerminalLock($config, $pdo, $post),
         'terminal-permit' => doTerminalPermit($config, $pdo, $post),
+        'terminal-sessions' => terminalSessionsView($config, $signedIn),
+        'terminal-session' => terminalSessionView($config, $signedIn),
+        'terminal-name-session' => doTerminalNameSession($config, $pdo, $post),
         'terminal-forget' => doTerminalForget($config, $pdo, $post),
         'ai-memories' => aiMemoriesView($config, $signedIn),
         'ai-memory-save' => doAiMemorySave($config, $pdo, $post),
@@ -8145,6 +8148,78 @@ function doTerminalPermit(array $config, PDO $pdo, bool $post): array
     );
 
     return ['ok' => true] + terminalView($config, $pdo, true);
+}
+
+/**
+ * Every session, for the list.
+ *
+ * The topic is the point of the page: a list of times is a list nobody reads,
+ * and "the disk filling on Tuesday" is something somebody comes back for.
+ */
+function terminalSessionsView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see terminal sessions');
+    }
+
+    return [
+        'sessions' => terminalSessions($config),
+        'gap' => TERMINAL_SESSION_GAP,
+    ];
+}
+
+/**
+ * One session, with or without what the commands printed.
+ *
+ * Two different questions with two different answers: "what did I run" is safe
+ * to put on a screen anybody can see, and "what did it say" is whatever
+ * happened to be in those files.
+ */
+function terminalSessionView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see terminal sessions');
+    }
+
+    $id = (string)($_GET['id'] ?? '');
+    if (!preg_match('/^[0-9a-f]{12}$/', $id)) {
+        throw new ActionRefused('that is not a session');
+    }
+
+    $withOutput = ($_GET['output'] ?? '1') === '1';
+
+    $sessions = terminalSessions($config);
+    $found = null;
+    foreach ($sessions as $session) {
+        if ((string)($session['id'] ?? '') === $id) {
+            $found = $session;
+        }
+    }
+
+    return [
+        'session' => $found,
+        'commands' => terminalSessionLog($config, $id, $withOutput),
+        'with_output' => $withOutput,
+    ];
+}
+
+/** Gives a session a topic. */
+function doTerminalNameSession(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = (string)($_POST['id'] ?? '');
+    if (!preg_match('/^[0-9a-f]{12}$/', $id)) {
+        throw new ActionRefused('that is not a session');
+    }
+
+    $topic = (string)($_POST['topic'] ?? '');
+    $named = terminalNameSession($config, $id, $topic);
+
+    logAction($pdo, 'terminal_session_named', $id, $named ? 'ok' : 'missing', 0, 0,
+        mb_substr($topic, 0, 80));
+
+    return ['ok' => $named] + terminalSessionsView($config, true);
 }
 
 /** Locks it again, now. */

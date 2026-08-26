@@ -258,6 +258,217 @@ function terminalDirectory(array $config): string
     return dirname((string)$config['database']) . '/terminal';
 }
 
+/* ------------------------------------------------------------------ *
+ * Sessions
+ * ------------------------------------------------------------------ */
+
+/**
+ * A run of commands that belong together.
+ *
+ * The commands were already on disk, one file each, and that is a pile rather
+ * than a record: "what did I do on Tuesday" meant reading twenty JSON files in
+ * modification order and hoping. A session groups them the way the work
+ * actually happened, carries a topic somebody can search for later, and is what
+ * makes the whole thing reviewable rather than merely logged.
+ *
+ * Which session a command belongs to is decided when it starts: the newest one,
+ * unless the gap since the last command is long enough that it was plainly a
+ * different sitting.
+ */
+const TERMINAL_SESSION_GAP = 3600;
+
+/** The sessions file, which is small enough to rewrite whole. */
+function terminalSessionsFile(array $config): string
+{
+    return terminalDirectory($config) . '/sessions.json';
+}
+
+/**
+ * Every session, newest first.
+ *
+ * @return list<array>
+ */
+function terminalSessions(array $config): array
+{
+    $file = terminalSessionsFile($config);
+    $raw = is_file($file) ? file_get_contents($file) : false;
+    $found = $raw === false ? null : json_decode($raw, true);
+
+    if (!is_array($found)) {
+        return [];
+    }
+
+    usort($found, fn(array $a, array $b): int => ($b['started_at'] ?? 0) <=> ($a['started_at'] ?? 0));
+
+    return array_values(array_filter($found, 'is_array'));
+}
+
+/** Writes the list back. */
+function terminalWriteSessions(array $config, array $sessions): void
+{
+    $file = terminalSessionsFile($config);
+    @file_put_contents($file, json_encode(array_values($sessions), JSON_PRETTY_PRINT));
+    @chmod($file, 0600);
+}
+
+/**
+ * The session a command starting now belongs to, making one if needed.
+ *
+ * The gap is what decides it. Somebody who ran three commands, went to lunch and
+ * came back to run three more was doing two different things, and a record that
+ * says otherwise is a worse record than no grouping at all.
+ */
+function terminalSessionFor(array $config, string $who): array
+{
+    $sessions = terminalSessions($config);
+    $now = time();
+
+    if ($sessions !== []) {
+        $newest = $sessions[0];
+        if ($now - (int)($newest['last_at'] ?? 0) < TERMINAL_SESSION_GAP) {
+            $newest['last_at'] = $now;
+            $newest['commands'] = (int)($newest['commands'] ?? 0) + 1;
+            $sessions[0] = $newest;
+            terminalWriteSessions($config, $sessions);
+
+            return ['id' => (string)$newest['id'], 'seq' => (int)$newest['commands']];
+        }
+    }
+
+    $session = [
+        'id' => bin2hex(random_bytes(6)),
+        'started_at' => $now,
+        'last_at' => $now,
+        'commands' => 1,
+        'topic' => '',
+        'who' => $who,
+    ];
+
+    array_unshift($sessions, $session);
+
+    /*
+     * A hundred sessions, oldest dropped.
+     *
+     * The commands themselves are swept on their own schedule; this is only the
+     * index, and an index that grows for ever is a file that eventually takes a
+     * second to parse on every page load.
+     */
+    terminalWriteSessions($config, array_slice($sessions, 0, 100));
+
+    return ['id' => (string)$session['id'], 'seq' => 1];
+}
+
+/**
+ * Which session this command is in, and where in it.
+ *
+ * The position matters because several commands can start within the same
+ * second - a script, or somebody typing fast - and a second is the finest
+ * timestamp on disk. Sorting by time alone put them in whatever order the
+ * filesystem happened to list them, which for a transcript is no order at all.
+ *
+ * @return array{session: string, seq: int}
+ */
+function terminalOrdinal(array $config, string $who): array
+{
+    $where = terminalSessionFor($config, $who);
+
+    return ['session' => $where['id'], 'seq' => $where['seq']];
+}
+
+/** Names a session, or renames it. */
+function terminalNameSession(array $config, string $id, string $topic): bool
+{
+    $topic = trim(preg_replace('/\s+/u', ' ', $topic) ?? $topic);
+    if (mb_strlen($topic) > 80) {
+        throw new ActionRefused('that topic is longer than the list will show');
+    }
+
+    $sessions = terminalSessions($config);
+    $found = false;
+
+    foreach ($sessions as $i => $session) {
+        if ((string)($session['id'] ?? '') === $id) {
+            $sessions[$i]['topic'] = $topic;
+            $found = true;
+        }
+    }
+
+    if ($found) {
+        terminalWriteSessions($config, $sessions);
+    }
+
+    return $found;
+}
+
+/**
+ * Everything one session ran, with as much of each answer as was asked for.
+ *
+ * `$withOutput` is the whole reason this takes a parameter. The commands alone
+ * are safe to show and safe to hand to an assistant - they are what somebody
+ * typed. The output is whatever the machine said back, which can be a password
+ * file, a database dump or a customer's email address, and deserves its own
+ * decision.
+ */
+function terminalSessionLog(array $config, string $id, bool $withOutput, int $bytes = 65536): array
+{
+    $directory = terminalDirectory($config);
+    $files = glob($directory . '/*.json') ?: [];
+    $rows = [];
+
+    foreach ($files as $file) {
+        $meta = json_decode((string)@file_get_contents($file), true);
+        if (!is_array($meta) || (string)($meta['session'] ?? '') !== $id) {
+            continue;
+        }
+
+        $outFile = $directory . '/' . $meta['id'] . '.out';
+        $size = is_file($outFile) ? (int)filesize($outFile) : 0;
+        $running = terminalRunning($meta);
+        $ended = !$running && is_file($outFile) ? (int)filemtime($outFile) : null;
+
+        $row = [
+            'id' => (string)$meta['id'],
+            'seq' => (int)($meta['seq'] ?? 0),
+            'command' => (string)$meta['command'],
+            'started_at' => (int)$meta['started_at'],
+            'who' => (string)($meta['who'] ?? ''),
+            'running' => $running,
+            'bytes' => $size,
+            'took' => $ended === null ? null : max(0, $ended - (int)$meta['started_at']),
+            'exit_code' => terminalExitCode($config, (string)$meta['id']),
+            'timed_out' => (bool)($meta['timed_out'] ?? false),
+            'stopped_by' => $meta['stopped_by'] ?? null,
+        ];
+
+        if ($withOutput && $size > 0) {
+            /*
+             * The end of the output, not the beginning.
+             *
+             * What a command was doing when it stopped is almost always the
+             * half worth reading, and an error is usually the last thing said.
+             */
+            $handle = @fopen($outFile, 'rb');
+            if ($handle !== false) {
+                if ($size > $bytes) {
+                    fseek($handle, $size - $bytes);
+                }
+                $row['text'] = (string)fread($handle, $bytes);
+                $row['text_from_end'] = $size > $bytes;
+                fclose($handle);
+            }
+        }
+
+        $rows[] = $row;
+    }
+
+    // By position in the session, falling back to time for anything written
+    // before positions were recorded.
+    usort($rows, fn(array $a, array $b): int =>
+        [$a['seq'], $a['started_at']] <=> [$b['seq'], $b['started_at']]);
+
+    return $rows;
+}
+
 /**
  * Starts a command and returns immediately.
  *
@@ -436,7 +647,7 @@ function terminalStart(array $config, PDO $pdo, string $command, string $who): a
         'who' => $who,
         'max_seconds' => $settings['max_seconds'],
         'started_in' => $cwd,
-    ], JSON_PRETTY_PRINT));
+    ] + terminalOrdinal($config, $who), JSON_PRETTY_PRINT));
 
     return ['id' => $id, 'pid' => $pid];
 }
