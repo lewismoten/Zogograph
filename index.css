@@ -51,6 +51,20 @@
  */
 [hidden] { display: none !important; }
 
+/* Visible to screen readers and document outlines without adding a second
+   visual heading to every data-dense view. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 * { box-sizing: border-box; }
 body { margin: 0; padding: 24px; max-width: 1600px; margin-inline: auto; }
 h1 { font-size: 1.35rem; margin: 0; }
@@ -258,6 +272,7 @@ tr.clickable:hover { background: #202020; }
   background: #4b1c1c;
   border-radius: 8px;
   margin-bottom: 12px;
+  overflow-wrap: anywhere;
 }
 #notice.ok { background: #1c4b2a; }
 
@@ -747,37 +762,52 @@ body {
   border-bottom: 1px solid var(--line);
 }
 
-.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: inherit; }
-
-/*
- * The mark: concentric arcs, drawn in CSS.
- *
- * A scope looking at something. No image file, so it cannot be the one asset
- * that fails to upload and leaves a broken icon in the corner.
- */
-.brand-mark {
-  width: 26px; height: 26px; border-radius: 50%;
-  border: 2px solid var(--accent);
-  position: relative;
-  flex: none;
-}
-.brand-mark::before,
-.brand-mark::after {
-  content: "";
-  position: absolute;
-  border-radius: 50%;
-  border: 2px solid var(--accent);
-  opacity: .55;
-}
-.brand-mark::before { inset: 4px; }
-.brand-mark::after { inset: 9px; opacity: 1; background: var(--accent); border: 0; }
+.brand { display: flex; align-items: center; text-decoration: none; color: inherit; }
 
 .brand-text { display: flex; flex-direction: column; line-height: 1.15; }
 .brand-text strong { font-size: 1.04rem; letter-spacing: -.02em; }
 .brand-text small { color: var(--dim); font-size: .7rem; letter-spacing: .01em; }
 
 .topbar-controls { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
 .control-label { color: var(--muted); font-size: .78rem; margin-right: 4px; }
+
+/* The page request belongs with the collector clock, not inside a panel that
+   will be replaced by its result. This remains visible while the reader moves
+   through the dashboard, and its spoken state is available to screen readers. */
+.fetch-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: .76rem;
+  white-space: nowrap;
+}
+.fetch-state-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px rgba(86, 201, 138, .12);
+}
+.fetch-state.is-loading { color: var(--text); }
+.fetch-state.is-loading .fetch-state-dot {
+  background: var(--accent);
+  animation: fetchPulse 1s ease-in-out infinite;
+}
+.fetch-state.is-error .fetch-state-dot { background: var(--crit); box-shadow: 0 0 0 3px rgba(242, 97, 107, .12); }
+@keyframes fetchPulse { 50% { opacity: .35; } }
+
+.header-help {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--text);
+  font-weight: 700;
+  line-height: 1;
+}
 
 .icon-button {
   display: none;
@@ -856,6 +886,47 @@ main {
 .view { display: flex; flex-direction: column; gap: 20px; }
 .view[hidden] { display: none; }
 
+/* A signed-out visitor still gets a useful explanation of the destination.
+   It is inserted by the router, so one authoritative description serves both
+   this compact guide and the header Help control. */
+.view-guide {
+  padding: 16px 18px;
+  border: 1px solid rgba(104, 167, 255, .28);
+  border-radius: 14px;
+  background: linear-gradient(110deg, rgba(104, 167, 255, .12), rgba(104, 167, 255, .035));
+}
+.view-guide h2 { margin: 0 0 6px; }
+.view-guide p { max-width: 78ch; margin: 6px 0; color: var(--muted); }
+.view-guide .view-guide-auth { color: var(--text); }
+.view-guide-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+
+.page-help-dialog { width: min(680px, calc(100vw - 28px)); max-height: min(780px, calc(100vh - 28px)); }
+.page-help-dialog::backdrop { background: rgba(2, 8, 18, .72); backdrop-filter: blur(3px); }
+.page-help-dialog p { line-height: 1.6; }
+.page-help-dialog h3 { margin: 20px 0 6px; font-size: .92rem; }
+.page-help-commands {
+  margin: 8px 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: .82rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre;
+}
+.page-help-links { margin: 8px 0 0; padding-left: 20px; }
+.page-help-links li + li { margin-top: 4px; }
+
+.tool-extension {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
 /* ---------------------------------------------------------- poll ring -- */
 
 .poll {
@@ -864,6 +935,7 @@ main {
   background: none; border: 0; cursor: pointer;
   flex: none;
 }
+.poll-brand { margin-right: -4px; }
 .poll svg { width: 30px; height: 30px; transform: rotate(-90deg); }
 .poll-track { fill: none; stroke: var(--line); stroke-width: 3; }
 .poll-fill {
@@ -1026,19 +1098,55 @@ tr.clickable:hover { background: var(--panel-hover); }
   .control-label { display: none; }
   #lastSeen { display: none; }
   .topbar { gap: 8px; padding: 0 10px; }
-  .topbar-controls { gap: 6px; min-width: 0; }
+  /* The flexible space belongs before all of the controls. Giving it to the
+     controls themselves pushed the Help and sign-in buttons beyond the edge. */
+  .brand { margin-right: auto; }
+  .topbar-controls { margin-left: 0; gap: 6px; min-width: 0; }
   /* The controls shrink before they overflow: a select running off the right
      edge of a phone is worse than a narrow one. */
   .topbar-controls select { max-width: 116px; }
   #live .dot + * , #live { font-size: .82rem; }
+  .fetch-state { display: none; }
+  .topbar-actions { flex: none; }
 }
 
 @media (max-width: 520px) {
+  :root { --topbar-height: 92px; }
+  .topbar {
+    height: var(--topbar-height);
+    flex-wrap: wrap;
+    align-content: center;
+    padding: 6px 10px;
+    row-gap: 4px;
+  }
+  .topbar-controls { order: 2; flex: 1 1 100%; margin-left: 0; }
+  /* Anchored to the second row rather than taking part in the wrap: the page
+     controls can never push Help or sign-in into an invisible third row. */
+  .topbar-actions { position: absolute; right: 10px; bottom: 7px; gap: 6px; }
   /* Percent-free and change-per-reading are refinements; on a phone the space
      goes to the range, which everything else depends on. */
   #unitsWrap { display: none !important; }
-  #live { padding: 6px 8px; }
+  /* The range and Help control apply to every view; Live is a refinement.
+     On a phone it gives up its space so Help never falls outside the header. */
+  #live { display: none; }
   .brand-text strong { font-size: .95rem; }
+  #signInOut { padding: 5px 8px; font-size: .8rem; }
+}
+
+@media (max-width: 420px) {
+  .topbar { padding: 0 7px; gap: 4px; }
+  .topbar-actions { right: 7px; }
+  .topbar-controls { gap: 4px; }
+  .topbar-controls select { max-width: 94px; }
+  .brand { gap: 0; }
+  .poll, .poll svg { width: 27px; height: 27px; }
+  .header-help { width: 27px; height: 27px; }
+  main { padding: 14px 12px 28px; }
+  .view-guide { padding: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fetch-state.is-loading .fetch-state-dot { animation: none; }
 }
 
 /*

@@ -559,10 +559,11 @@ return [
          *       'take_screenshot'      => ['permission' => true],
          *   ]
          *
-         * Anything absent uses the default in lib/aitools.php: reading tools
-         * on, anything that acts off. A tool switched off is not described to
-         * the model at all - one told about a tool it cannot use keeps trying
-         * it and explains its absence to the user as a fault.
+         * Anything absent uses the default in lib/aitools.php: diagnostic
+         * reading tools on, every other subject off until you enable it. A tool
+         * switched off is not described to the model at all - one told about a
+         * tool it cannot use keeps trying it and explains its absence to the
+         * user as a fault.
          */
         /*
          * Who it is. All three are optional; blank means the default.

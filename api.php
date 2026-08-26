@@ -7265,6 +7265,17 @@ function aiBrowserResult(PDO $ai, int $session, array $run): array
         return ['opened' => (string)($arguments['page'] ?? '')];
     }
 
+    if ($tool === 'request_tool_group') {
+        $arguments = json_decode((string)$run['arguments'], true) ?: [];
+        $subject = (string)($arguments['subject'] ?? '');
+        aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+            'requested' => $subject,
+            'note' => 'The Tools settings page is open. The operator must choose and save '
+                . 'the additional subject; nothing was enabled automatically.',
+        ]);
+        return ['requested' => $subject];
+    }
+
     if ($tool === 'show_progress' || $tool === 'show_reaction') {
         $arguments = json_decode((string)$run['arguments'], true) ?: [];
 
@@ -7647,7 +7658,7 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
             'description' => $tool['description'],
             'enabled' => array_key_exists('enabled', $mine)
                 ? (bool)$mine['enabled']
-                : $tool['where'] !== 'ask',
+                : aiToolDefaultEnabled($tool),
             'permission' => array_key_exists('permission', $mine)
                 ? (bool)$mine['permission']
                 : (bool)$tool['permission'],
@@ -7673,7 +7684,6 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
                 'items' => $spec['items'] ?? null,
                 'maxItems' => $spec['maxItems'] ?? null,
             ], ($live[$name]['parameters'] ?? $tool['parameters']) ?? []),
-            'group' => $tool['group'],
             /*
              * Why a tool cannot be tried, when it cannot.
              *
@@ -7681,8 +7691,6 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
              * conclusion that they do not exist.
              */
             'why_not' => aiWhyNotTryable($tool, isset($live[$name])),
-            'where' => $tool['where'],
-            'permission' => (bool)$tool['permission'],
             // Whether asking first would be asking about asking. The page shows
             // these as not applicable rather than as an unticked box.
             'asks_by_design' => in_array($name, aiToolsThatAsk(), true),
@@ -8324,7 +8332,7 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
         $ask = in_array($name, $needPermission, true);
         $mine = [];
 
-        if ($on !== ($tool['where'] !== 'ask')) {
+        if ($on !== aiToolDefaultEnabled($tool)) {
             $mine['enabled'] = $on;
         }
         if ($ask !== (bool)$tool['permission']) {

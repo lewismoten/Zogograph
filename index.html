@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hostscope</title>
+<meta name="description" content="Hostscope is a private, self-hosted dashboard for understanding server capacity, health, and activity.">
+<meta name="theme-color" content="#0b1018">
+<title>Hostscope — server monitoring</title>
 <link rel="stylesheet" href="index.css">
 <script src="index.js" defer></script>
 </head>
@@ -16,8 +18,19 @@
     <span aria-hidden="true">&#9776;</span>
   </button>
 
+  <!-- The collector clock is the product mark. Keeping it here avoids a
+       decorative look-alike and leaves its state visible on every route. -->
+  <button id="pollState" class="poll poll-brand" aria-label="Collector status; refresh now" title="Refresh now">
+    <svg viewBox="0 0 36 36" aria-hidden="true">
+      <circle class="poll-track" cx="18" cy="18" r="15"></circle>
+      <circle class="poll-fill" cx="18" cy="18" r="15"></circle>
+      <circle class="poll-host-track" cx="18" cy="18" r="9"></circle>
+      <circle class="poll-host-fill" cx="18" cy="18" r="9"></circle>
+    </svg>
+    <span class="poll-dot" aria-hidden="true"></span>
+  </button>
+
   <a class="brand" href="#/overview">
-    <span class="brand-mark" aria-hidden="true"></span>
     <span class="brand-text">
       <strong>Hostscope</strong>
       <small>clear server monitoring</small>
@@ -51,30 +64,15 @@
       <span class="dot" aria-hidden="true"></span> Live
     </button>
 
-    <!--
-      The poll indicator: a ring that fills while a request is in flight and
-      drains to show how long until the next one. It replaces a static
-      "updated 12s ago", which said the same thing without saying whether
-      anything was happening about it.
-    -->
-    <button id="pollState" class="poll" aria-label="Refresh now" title="Refresh now">
-      <svg viewBox="0 0 36 36" aria-hidden="true">
-        <!--
-          Two rings for two collectors, and they are independent.
+    <span id="fetchState" class="fetch-state" role="status" aria-live="polite">
+      <span class="fetch-state-dot" aria-hidden="true"></span>
+      <span>Ready</span>
+    </span>
 
-          The outer one is this account's cron; the inner is root's. They run on
-          separate clocks, fail separately, and the page asking the server again
-          is a third thing that is not either of them - so nothing the browser
-          does is allowed to make either ring move.
-        -->
-        <circle class="poll-track" cx="18" cy="18" r="15"></circle>
-        <circle class="poll-fill" cx="18" cy="18" r="15"></circle>
-        <circle class="poll-host-track" cx="18" cy="18" r="9"></circle>
-        <circle class="poll-host-fill" cx="18" cy="18" r="9"></circle>
-      </svg>
-      <span class="poll-dot" aria-hidden="true"></span>
-    </button>
+  </div>
 
+  <div class="topbar-actions">
+    <button id="pageHelp" class="header-help" type="button" aria-label="Help for this page" title="Help for this page">?</button>
     <button id="signInOut" class="primary">Sign in</button>
   </div>
 </header>
@@ -492,6 +490,7 @@
   <div class="scrim" id="scrim" hidden></div>
 
   <main id="main">
+    <h1 id="pageTitle" class="sr-only">Hostscope server monitoring dashboard</h1>
     <div id="notice"></div>
     <!--
       Something a person said, as opposed to something the machine noticed.
@@ -2877,6 +2876,14 @@
   </div>
   <p class="muted small" id="listDialogNote"></p>
   <div id="listDialogBody" class="scroll-list"></div>
+</dialog>
+
+<dialog id="pageHelpDialog" class="page-help-dialog" aria-labelledby="pageHelpTitle">
+  <div class="panel-head">
+    <h2 id="pageHelpTitle">Page help</h2>
+    <button id="pageHelpClose" class="link" type="button">Close</button>
+  </div>
+  <div id="pageHelpBody"></div>
 </dialog>
 
 <dialog id="askDialog">

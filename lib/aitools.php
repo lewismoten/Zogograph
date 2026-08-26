@@ -1686,6 +1686,36 @@ function aiToolCatalogue(): array
             ],
         ],
 
+        'request_tool_group' => [
+            'group' => 'diagnostic',
+            'where' => 'browser',
+            'permission' => true,
+            'summary' => 'ask to enable a subject-specific set of tools.',
+            'description' =>
+                "Asks the operator to enable one additional subject of tools, then opens "
+                . "the Tools settings page where they can inspect and save that choice. "
+                . "It never enables anything by itself.\n\n"
+                . "USE THIS only after the diagnostic tools have shown that the next "
+                . "question needs a disabled subject, such as host processes, terminal "
+                . "commands, navigation, memory analysis, or pictures. Say what that "
+                . "subject would let you check before calling it.\n\n"
+                . "DO NOT use this as a first step, or to request more than one subject "
+                . "at once. The point of the smaller initial set is to keep the operator "
+                . "in control of what you can see and do.",
+            'parameters' => [
+                'subject' => [
+                    'type' => 'string',
+                    'enum' => ['host', 'memory', 'navigation', 'terminal', 'pictures'],
+                    'required' => true,
+                    'description' => 'The one tool subject that would answer the next question.',
+                ],
+                'why' => [
+                    'type' => 'string', 'maxLength' => 200, 'required' => true,
+                    'description' => 'A concise explanation for the operator of what this subject would let you check.',
+                ],
+            ],
+        ],
+
         'take_screenshot' => [
             'group' => 'navigation',
             'where' => 'browser',
@@ -1771,6 +1801,19 @@ function aiTools(array $views): array
  *
  * @return array<string, array<string, mixed>>
  */
+function aiToolDefaultEnabled(array $tool): bool
+{
+    /*
+     * Start with the small, read-only set that answers "what is happening?".
+     *
+     * The operator can add a subject on the Tools page when the conversation
+     * needs it. A model presented with every possible capability at once tends
+     * to reach sideways before it has established the basic facts, while a
+     * smaller first set makes the next permission decision meaningful.
+     */
+    return $tool['where'] !== 'ask' && $tool['group'] === 'diagnostic';
+}
+
 function aiEnabledTools(array $config, array $views): array
 {
     $settings = $config['ai']['tools'] ?? [];
@@ -1827,7 +1870,7 @@ function aiEnabledTools(array $config, array $views): array
         // rather than reads, which is off unless explicitly turned on.
         $on = array_key_exists('enabled', $mine)
             ? (bool)$mine['enabled']
-            : $tool['where'] !== 'ask';
+            : aiToolDefaultEnabled($tool);
 
         if (!$on) {
             continue;

@@ -6054,6 +6054,39 @@ function renderAiTools(data) {
   parts.push(table);
 
   /*
+   * A conversation should begin with a small diagnostic surface. When it has
+   * established that the question is about a particular subject, this gives
+   * the operator one deliberate step to extend that subject rather than asking
+   * them to recognise and tick every individual capability.
+   */
+  const extension = document.createElement("div");
+  extension.className = "tool-extension";
+  const extensionText = document.createElement("span");
+  extensionText.className = "muted small";
+  const inactive = groups.get(toolTab)?.filter(tool => !tool.enabled).length ?? 0;
+  extensionText.textContent = inactive
+    ? `Mr. Radar starts with diagnostic tools. Enable ${TOOL_GROUP_NAMES[toolTab] ?? toolTab} tools if this conversation needs that subject.`
+    : `All ${TOOL_GROUP_NAMES[toolTab] ?? toolTab} tools are enabled for Mr. Radar.`;
+  extension.appendChild(extensionText);
+  if (inactive && data.writable) {
+    const enableGroup = document.createElement("button");
+    enableGroup.type = "button";
+    enableGroup.className = "link";
+    enableGroup.textContent = `Enable this subject (${inactive})`;
+    enableGroup.addEventListener("click", () => {
+      for (const tool of groups.get(toolTab) ?? []) {
+        const toggle = body.querySelector(`.tool-on[data-tool="${tool.name}"]`);
+        if (toggle) toggle.checked = true;
+      }
+      enableGroup.disabled = true;
+      enableGroup.textContent = "Subject enabled — save settings";
+      extensionText.textContent = `${TOOL_GROUP_NAMES[toolTab] ?? toolTab} tools will be available after you save these settings.`;
+    });
+    extension.appendChild(enableGroup);
+  }
+  parts.push(extension);
+
+  /*
    * A Save, on the page the ticks are on.
    *
    * This page had none: ticking a tool did nothing until you happened to visit
@@ -8585,6 +8618,15 @@ async function runBrowserTool(run) {
        */
       location.hash = `#/${page}?range=${range}`;
       result = {};
+    } else if (run.tool === "request_tool_group") {
+      const subject = String(run.arguments.subject || "");
+      const label = TOOL_GROUP_NAMES[subject] ?? subject;
+      notice(
+        `${chatState.who.name} requested ${label} tools — review and save the choice.`,
+        true
+      );
+      location.hash = "#/sys-ai-tools";
+      result = { subject };
     } else if (run.tool === "offer_choices") {
       result = await runOfferChoices(run.arguments);
     } else if (run.tool === "ask_the_user") {
@@ -9968,6 +10010,7 @@ function chatToolPhrase(tool, args) {
     get_chart_data: `Read the numbers behind ${chartNames.known?.[args.chart]?.name ?? args.chart}`,
     get_chart_image: `Looked at ${chartNames.known?.[args.chart]?.name ?? args.chart}`,
     open_page: `Opened ${VIEWS[args.page]?.label ?? args.page}`,
+    request_tool_group: `Requested ${TOOL_GROUP_NAMES[args.subject] ?? args.subject} tools`,
     take_screenshot: "Took a screenshot",
     show_progress: `Showed progress on ${args.what ?? "something"}`,
     set_time_range: `Switched the view to the last ${args.range ?? "?"}`
@@ -14117,6 +14160,15 @@ async function tryBrowserTool(tool, args) {
     shown.appendChild(link);
 
     return { result: {}, shown };
+  }
+
+  if (name === "request_tool_group") {
+    const subject = String(args.subject || "");
+    const shown = document.createElement("div");
+    shown.className = "try-shown";
+    shown.textContent = "In a conversation this asks for permission, then opens the Tools settings page. "
+      + `The operator decides whether to enable ${TOOL_GROUP_NAMES[subject] ?? subject} tools and must save the choice.`;
+    return { result: { requested: subject }, shown };
   }
 
   if (name === "take_screenshot") {
@@ -20307,22 +20359,16 @@ function section(title, contents) {
 }
 
 /*
- * Something on screen while a request is in flight.
+ * A spoken per-panel fallback while a request is in flight.
  *
- * A panel that is blank for four seconds and then full is indistinguishable
- * from a panel that is broken, and the pages that take longest - the backup
- * analysis, a disk walk being read back - are exactly the ones where somebody
- * concludes it does not work and goes away.
+ * The visible state lives in the persistent header now. Keeping this node for
+ * assistive technology means a panel which is replaced asynchronously still
+ * announces its change without adding a spinner that shifts the page just
+ * before the answer appears.
  */
 function spinner(text = "Loading\u2026") {
   const wrap = document.createElement("p");
-  wrap.className = "loading";
-
-  const ring = document.createElement("span");
-  ring.className = "loading-ring";
-  ring.setAttribute("aria-hidden", "true");
-  wrap.appendChild(ring);
-
+  wrap.className = "loading sr-only";
   wrap.appendChild(document.createTextNode(text));
   wrap.setAttribute("role", "status");
   return wrap;
@@ -20595,6 +20641,7 @@ function escapeHtml(text) {
 
 function applySignedInChrome() {
   $("signInOut").textContent = state.signedIn ? "Sign out" : "Sign in";
+  renderViewGuide(state.view);
   renderEmptyButtons();
 }
 
@@ -29475,6 +29522,171 @@ const VIEWS = {
 const DEFAULT_VIEW = "overview";
 
 /*
+ * The shared, operator-facing explanation for every route.
+ *
+ * Views are deliberately grouped by the question they answer rather than by
+ * their implementation. A person who opens "Each core" needs the same shell
+ * commands and context as somebody opening "What is burning it", and keeping
+ * that explanation in one place stops fifty near-identical blurbs drifting.
+ */
+const HELP_PROFILES = {
+  vitals: {
+    purpose: "Shows the current health of this account and how its capacity has changed over time.",
+    useful: "Use it to decide whether a problem is disk space, inodes, CPU, memory, load, or a trend that needs a closer look.",
+    commands: ["php cron.php --vitals", "df -h", "df -i", "uptime", "free -h"],
+    links: [
+      ["PHP command-line interface", "https://www.php.net/manual/en/features.commandline.php"],
+      ["GNU df manual", "https://www.gnu.org/software/coreutils/manual/html_node/df-invocation.html"],
+      ["procps uptime manual", "https://man7.org/linux/man-pages/man1/uptime.1.html"],
+    ],
+  },
+  storage: {
+    purpose: "Explains where filesystem space is being used, what changed, and what can safely be investigated next.",
+    useful: "Use it when capacity is shrinking, a scan or log is growing, or a path needs to be traced before any cleanup.",
+    commands: ["php cron.php --scan", "df -h", "du -xhd 1 . | sort -h", "find . -xdev -type f -size +100M -print"],
+    links: [
+      ["GNU du manual", "https://www.gnu.org/software/coreutils/manual/html_node/du-invocation.html"],
+      ["GNU find manual", "https://www.gnu.org/software/findutils/manual/html_mono/find.html"],
+      ["crontab manual", "https://man7.org/linux/man-pages/man5/crontab.5.html"],
+    ],
+  },
+  host: {
+    purpose: "Shows how processor, memory, processes, and services are behaving on the host.",
+    useful: "Use it to distinguish an account limit from host-wide pressure and to find the process or service behind a spike.",
+    commands: ["php host-cron.php --collect", "top", "ps aux --sort=-%cpu | head", "free -h", "systemctl --failed"],
+    links: [
+      ["procps ps manual", "https://man7.org/linux/man-pages/man1/ps.1.html"],
+      ["procps top manual", "https://man7.org/linux/man-pages/man1/top.1.html"],
+      ["systemctl manual", "https://www.freedesktop.org/software/systemd/man/latest/systemctl.html"],
+    ],
+  },
+  network: {
+    purpose: "Shows the network identity, connections, names, and external checks associated with this server.",
+    useful: "Use it to investigate reachability, DNS changes, unexpected listeners, traffic, and domain expiry before they become outages.",
+    commands: ["ss -tulpn", "ip -s link", "dig example.com", "curl -I https://example.com"],
+    links: [
+      ["iproute2 ip manual", "https://man7.org/linux/man-pages/man8/ip.8.html"],
+      ["BIND dig manual", "https://bind9.readthedocs.io/en/latest/manpages.html#dig-dig"],
+      ["curl documentation", "https://curl.se/docs/manpage.html"],
+    ],
+  },
+  system: {
+    purpose: "Shows how Hostscope itself is configured, scheduled, and retaining the data it collects.",
+    useful: "Use it to verify that the monitor is healthy before drawing conclusions from its measurements or changing its configuration.",
+    commands: ["php health.php", "php cron.php --vitals --quiet", "crontab -l"],
+    links: [
+      ["PHP command-line interface", "https://www.php.net/manual/en/features.commandline.php"],
+      ["crontab manual", "https://man7.org/linux/man-pages/man5/crontab.5.html"],
+    ],
+  },
+  assistant: {
+    purpose: "Lets Mr. Radar investigate the monitored machine using only the tools this installation has made available.",
+    useful: "Start with a question in plain language. Read-only diagnostic tools are available first; anything that changes data, runs a command, or shares material asks for permission before it happens.",
+    commands: ["php health.php", "php cron.php --vitals", "php cron.php --scan"],
+    links: [
+      ["PHP command-line interface", "https://www.php.net/manual/en/features.commandline.php"],
+      ["crontab manual", "https://man7.org/linux/man-pages/man5/crontab.5.html"],
+    ],
+  },
+};
+
+function helpProfileFor(view) {
+  if (["overview", "charts", "alerts", "uptime", "calendar"].includes(view)) return HELP_PROFILES.vitals;
+  if (view.startsWith("storage") || view.startsWith("disk-") || view === "host-disk" || view === "cagefs" || view === "host-layout" || view.startsWith("backups")) return HELP_PROFILES.storage;
+  if (view === "cpu" || view.startsWith("cpu-") || view === "host" || view.startsWith("mem-") || ["processes", "services", "busy", "units"].includes(view)) return HELP_PROFILES.host;
+  if (["network", "domains", "whois", "whoami"].includes(view) || view.startsWith("net-") || view.startsWith("dns")) return HELP_PROFILES.network;
+  if (view.startsWith("sys-ai")) return HELP_PROFILES.assistant;
+  return HELP_PROFILES.system;
+}
+
+function appendHelpLink(list, label, href) {
+  const item = document.createElement("li");
+  const link = document.createElement("a");
+  link.href = href;
+  link.textContent = label;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  item.appendChild(link);
+  list.appendChild(item);
+}
+
+function buildPageHelp(view) {
+  const profile = helpProfileFor(view);
+  const fragment = document.createDocumentFragment();
+
+  for (const [heading, text] of [["What this page is for", profile.purpose], ["Why it is useful", profile.useful]]) {
+    const title = document.createElement("h3");
+    title.textContent = heading;
+    const paragraph = document.createElement("p");
+    paragraph.textContent = text;
+    fragment.append(title, paragraph);
+  }
+
+  const commandsTitle = document.createElement("h3");
+  commandsTitle.textContent = "Related terminal commands";
+  const commands = document.createElement("pre");
+  commands.className = "page-help-commands";
+  commands.textContent = profile.commands.join("\n");
+  const commandsNote = document.createElement("p");
+  commandsNote.className = "muted small";
+  commandsNote.textContent = "These are read-only checks or the collectors that supply this dashboard. Run only commands appropriate for this host and account.";
+  fragment.append(commandsTitle, commands, commandsNote);
+
+  const linksTitle = document.createElement("h3");
+  linksTitle.textContent = "Official command references";
+  const links = document.createElement("ul");
+  links.className = "page-help-links";
+  for (const [label, href] of profile.links) appendHelpLink(links, label, href);
+  fragment.append(linksTitle, links);
+  return fragment;
+}
+
+function showPageHelp() {
+  const dialog = $("pageHelpDialog");
+  const title = $("pageHelpTitle");
+  const body = $("pageHelpBody");
+  if (!dialog || !title || !body) return;
+  title.textContent = `${VIEWS[state.view]?.label ?? "This page"} help`;
+  body.replaceChildren(buildPageHelp(state.view));
+  dialog.showModal();
+}
+
+function renderViewGuide(view) {
+  const section = document.querySelector(`[data-view="${view}"]`);
+  if (!section) return;
+  section.querySelector(":scope > .view-guide")?.remove();
+  if (state.signedIn) return;
+
+  const profile = helpProfileFor(view);
+  const guide = document.createElement("section");
+  guide.className = "view-guide";
+  guide.setAttribute("aria-label", "Access and page guide");
+
+  const heading = document.createElement("h2");
+  heading.textContent = VIEWS[view]?.label ?? "This page";
+  const purpose = document.createElement("p");
+  purpose.textContent = profile.purpose;
+  const access = document.createElement("p");
+  access.className = "view-guide-auth";
+  access.textContent = "Sign in to see protected measurements and controls. This guide remains available so the page is never an unexplained empty state.";
+  const actions = document.createElement("div");
+  actions.className = "view-guide-actions";
+  const signIn = document.createElement("button");
+  signIn.type = "button";
+  signIn.className = "primary";
+  signIn.textContent = "Sign in to continue";
+  signIn.addEventListener("click", () => $("signInOut")?.click());
+  const help = document.createElement("button");
+  help.type = "button";
+  help.className = "link";
+  help.textContent = "Read page help";
+  help.addEventListener("click", showPageHelp);
+  actions.append(signIn, help);
+  guide.append(heading, purpose, access, actions);
+  section.prepend(guide);
+}
+
+/*
  * The address bar is the state.
  *
  * #/storage?range=604800 is a link somebody can send, and the person who opens
@@ -29546,6 +29758,7 @@ function showView(view, push = true) {
   for (const section of document.querySelectorAll("[data-view]")) {
     section.hidden = section.dataset.view !== view;
   }
+  renderViewGuide(view);
   /*
    * Sub-items appear only under the section you are in.
    *
@@ -29567,6 +29780,8 @@ function showView(view, push = true) {
   }
 
   document.title = `${VIEWS[view].label} · Hostscope`;
+  const pageTitle = $("pageTitle");
+  if (pageTitle) pageTitle.textContent = `${VIEWS[view].label} — Hostscope server monitoring`;
 
   /*
    * The pending strip is per-page, so changing page changes what belongs in it.
@@ -29653,6 +29868,7 @@ const hostClock = { lastAt: null, interval: null, at: 0 };
  * report the working half and hide the broken one.
  */
 const accountClock = { lastAt: null, interval: null };
+let fetchFailed = false;
 
 function setPollState(busy, every) {
   poll.busy = busy;
@@ -29663,7 +29879,19 @@ function setPollState(busy, every) {
   const el = $("pollState");
   // `busy` brightens the account ring; it never moves an arc. See drawPoll.
   if (el) el.classList.toggle("busy", busy);
+  setFetchState(busy ? "loading" : fetchFailed ? "error" : "ready");
   drawPoll();
+}
+
+/* The request state is a small, persistent part of the shell rather than a
+ * spinner which changes the page's layout just before its data arrives. */
+function setFetchState(kind) {
+  const stateEl = $("fetchState");
+  if (!stateEl) return;
+  stateEl.classList.toggle("is-loading", kind === "loading");
+  stateEl.classList.toggle("is-error", kind === "error");
+  const label = stateEl.querySelector("span:last-child");
+  if (label) label.textContent = kind === "loading" ? "Loading" : kind === "error" ? "Could not refresh" : "Ready";
 }
 
 /*
@@ -29751,6 +29979,7 @@ async function refreshCurrent(fromPoll = false) {
   if (document.hidden) return;
 
   const view = VIEWS[state.view] || VIEWS[DEFAULT_VIEW];
+  fetchFailed = false;
   setPollState(true);
 
   try {
@@ -29783,6 +30012,8 @@ async function refreshCurrent(fromPoll = false) {
     }
     clearStaleNotice();
   } catch (error) {
+    fetchFailed = true;
+    setFetchState("error");
     notice(String(error.message || error));
   } finally {
     setPollState(false, pollInterval());
@@ -30825,6 +31056,8 @@ $("navToggle").addEventListener("click", () => {
   document.body.classList.contains("nav-open") ? closeNav() : openNav();
 });
 $("scrim").addEventListener("click", closeNav);
+$("pageHelp").addEventListener("click", showPageHelp);
+$("pageHelpClose").addEventListener("click", () => $("pageHelpDialog").close());
 
 document.addEventListener("keydown", event => {
   if (event.key === "Escape") closeNav();
