@@ -194,6 +194,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-compact-chat' => doAiCompactSession($config, $pdo, $post),
         'ai-asset' => aiAssetView($config, $signedIn),
         'ai-settings' => aiSettingsView($config, $pdo, $signedIn),
+        'ai-personality-save' => doAiPersonalitySave($config, $pdo, $post),
+        'ai-personality-forget' => doAiPersonalityForget($config, $pdo, $post),
+        'ai-portrait-clear' => doAiPortraitClear($config, $pdo, $post),
         'ai-settings-save' => doAiSettingsSave($config, $pdo, $post),
         'ai-price-save' => doAiPriceSave($config, $pdo, $post),
         'ai-price-forget' => doAiPriceForget($config, $pdo, $post),
@@ -6979,6 +6982,73 @@ function doAiStop(array $config, PDO $pdo, bool $post): array
  * page that leaks it into every browser cache and history entry that ever
  * renders it.
  */
+/**
+ * Keeps the current name, emoji and character as a personality of its own.
+ *
+ * Saving does not switch to it - it is already in force, since it is what the
+ * boxes hold. This is the "I want to be able to come back to this" button.
+ */
+function doAiPersonalitySave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $label = (string)($_POST['label'] ?? '');
+    $persona = aiPersonaFrom($_POST);
+
+    aiPersonalitySave(
+        $pdo,
+        $label,
+        $persona['name'],
+        $persona['emoji'],
+        $persona['personality']
+    );
+
+    logAction($pdo, 'ai_personality_save', $label, 'ok', 0, 0, $persona['name']);
+
+    return ['ok' => true] + aiSettingsView($config, $pdo, true);
+}
+
+/**
+ * Removes one of the operator's own.
+ *
+ * The built-in three cannot be removed - they are what the page falls back to,
+ * and an install with no personalities at all would have no way back to one.
+ */
+function doAiPersonalityForget(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    $gone = aiPersonalityForget($pdo, $id);
+
+    logAction($pdo, 'ai_personality_forget', (string)$id, $gone ? 'ok' : 'missing', 0, 0, null);
+
+    return ['ok' => $gone] + aiSettingsView($config, $pdo, true);
+}
+
+/**
+ * Throws away the self-portrait.
+ *
+ * The record of it stays in the image log - it was generated, it cost
+ * something, and deleting the evidence of a charge is not this button's job.
+ * What goes is the url, which is what makes it the current portrait, so the
+ * page falls back to the emoji until it draws another.
+ */
+function doAiPortraitClear(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused(aiPersona($config)['name'] . ' has no database');
+    }
+
+    $ai->exec("UPDATE ai_images SET url = NULL WHERE kind = 'portrait'");
+    logAction($pdo, 'ai_portrait_clear', null, 'ok', 0, 0, null);
+
+    return ['ok' => true] + aiSettingsView($config, $pdo, true);
+}
+
 function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
@@ -7078,6 +7148,16 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
             'default_personality' => $persona['default_personality'],
             'portrait' => $ai === null ? null : aiPortrait($ai),
         ],
+        /*
+         * The characters on offer, built-in and saved.
+         *
+         * Sent with the settings rather than fetched on demand, because the
+         * page that shows them is this one and a second request to fill one
+         * dropdown is a second request.
+         */
+        'personalities' => aiPersonalities($pdo, $config),
+        'personality_max' => AI_PERSONALITY_MAX,
+
         'pictures' => $pictures + [
             // The key is never sent back; only whether one is set.
             'api_key' => null,

@@ -5404,15 +5404,14 @@ function personaFields(data) {
   const form = document.createElement("div");
   form.className = "settings";
 
-  const emoji = document.createElement("input");
-  emoji.type = "text";
-  emoji.id = "aiEmoji";
-  emoji.value = who.emoji;
-  emoji.size = 4;
-  emoji.maxLength = 8;
-  form.appendChild(fieldRow("Emoji", emoji,
-    "Shown beside the name everywhere it appears, including in the menu."));
-
+  /*
+   * The name first, then the emoji.
+   *
+   * The name is what everything else here is named after and what appears in
+   * the menu; the emoji is a decoration on it. Asking for the decoration first
+   * put the more important field second, which is not what the eye does with a
+   * form.
+   */
   const name = document.createElement("input");
   name.type = "text";
   name.id = "aiName";
@@ -5422,12 +5421,52 @@ function personaFields(data) {
   form.appendChild(fieldRow("Name", name,
     "What it calls itself, and what this page and the menu call it."));
 
+  const emoji = document.createElement("input");
+  emoji.type = "text";
+  emoji.id = "aiEmoji";
+  emoji.value = who.emoji;
+  emoji.size = 4;
+  emoji.maxLength = 8;
+  form.appendChild(fieldRow("Emoji", emoji,
+    "Shown beside the name everywhere it appears, including in the menu."));
+
+  const personality = document.createElement("textarea");
+  personality.id = "aiPersonality";
+  personality.rows = 24;
+  personality.className = "wide-field persona-box";
+  personality.spellcheck = false;
+  personality.value = who.personality;
+
+  /*
+   * The character box gets the room the character needs.
+   *
+   * It holds a page of instructions and was a four-line slot, so editing it
+   * meant scrolling a box to read a paragraph. Everything else on this page is
+   * one line; this is the one field that is a document.
+   */
+  form.appendChild(fieldRow("Character", personality,
+    "Sent with every single request, so length here is a cost on every turn. It cannot "
+    + "override the rules that keep the answers honest — never state a cause you have "
+    + "not measured, say when a tool returned nothing — which are added after it and "
+    + "say so."));
+
+  /*
+   * The picker is built after the boxes because it writes into them.
+   *
+   * It replaced a "put the character back" link: that restored one particular
+   * character, which was the only one there was. With a list of them, going
+   * back to the default is choosing the default.
+   */
+  wrap.appendChild(personalityPicker(data, { name, emoji, personality }));
+
   if (who.portrait) {
     const face = document.createElement("div");
+    face.className = "portrait-block";
+
     const image = document.createElement("img");
     image.className = "portrait";
     image.src = who.portrait.url;
-    image.alt = "";
+    image.alt = `${who.name}, as it describes itself`;
     face.appendChild(image);
 
     const said = document.createElement("div");
@@ -5435,49 +5474,186 @@ function personaFields(data) {
     said.textContent = `Drawn ${ago(who.portrait.at)}, from: "${who.portrait.as}"`;
     face.appendChild(said);
 
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "link danger";
+    clear.textContent = "Clear this portrait";
+    clear.addEventListener("click", async () => {
+      const yes = await askFirst("Clear the portrait?", [
+        "The picture stops being shown and the emoji takes its place until it draws "
+        + "another one.",
+        "The record of it stays in the image log — it was generated and it cost "
+        + "something, and that is worth keeping whether or not the picture is shown.",
+      ], "Clear it", true);
+      if (!yes) return;
+
+      try {
+        renderAiSettings(await post("ai-portrait-clear", {}));
+        notice("Cleared.", true);
+      } catch (error) {
+        notice(String(error.message || error));
+      }
+    });
+    face.appendChild(clear);
+
     form.appendChild(fieldRow("Portrait", face,
-      "It drew this itself. Turning off self-portraits below stops it drawing another; "
-      + "this one stays until it does."));
+      "It drew this itself, the last time it was asked to. Turning off self-portraits "
+      + "below stops it drawing another; this one stays until it does."));
   }
 
-  const personality = document.createElement("textarea");
-  personality.id = "aiPersonality";
-  personality.rows = 12;
-  personality.className = "wide-field";
-  personality.spellcheck = false;
-  personality.value = who.personality;
-  form.appendChild(fieldRow("Character", personality,
-    "Sent with every single request, so length here is a cost on every turn. It cannot "
-    + "override the rules that keep the answers honest — never state a cause you have "
-    + "not measured, say when a tool returned nothing — which are added after it and "
-    + "say so."));
-
   wrap.appendChild(form);
+  return wrap;
+}
+
+/**
+ * Choosing a character, saving one, and throwing one away.
+ *
+ * Choosing fills the boxes and does not save - the same as every other setting
+ * on this page, which is only written when Save is pressed. Somebody trying one
+ * on can read it, change their mind and leave without having changed anything.
+ */
+function personalityPicker(data, boxes) {
+  const list = data.personalities ?? [];
+
+  const wrap = document.createElement("div");
+  wrap.className = "persona-picker";
+
+  const row = document.createElement("div");
+  row.className = "pattern-row";
+
+  const pick = document.createElement("select");
+  pick.id = "aiPersonalityPick";
+
+  /*
+   * "Something of your own" is first and is what an edited character selects.
+   *
+   * Without it, a character somebody has written themselves would leave the
+   * dropdown showing whichever preset it least resembled, which is a lie about
+   * what is in force.
+   */
+  const own = document.createElement("option");
+  own.value = "";
+  own.textContent = "— your own wording —";
+  pick.appendChild(own);
+
+  const built = document.createElement("optgroup");
+  built.label = "Built in";
+  const mine = document.createElement("optgroup");
+  mine.label = "Yours";
+
+  for (const entry of list) {
+    const option = document.createElement("option");
+    option.value = entry.key;
+    option.textContent = `${entry.emoji} ${entry.name}`;
+    option.selected = entry.in_use;
+    (entry.mine ? mine : built).appendChild(option);
+  }
+
+  pick.appendChild(built);
+  if (mine.childElementCount) pick.appendChild(mine);
+  row.appendChild(pick);
+
+  const said = document.createElement("span");
+  said.className = "muted small";
+  row.appendChild(said);
+
+  wrap.appendChild(row);
+
+  const chosen = () => list.find(entry => entry.key === pick.value) ?? null;
+
+  const sync = () => {
+    const entry = chosen();
+    said.textContent = entry
+      ? entry.who
+      : "The boxes below are not one of these. Save it as one to come back to it.";
+    forget.hidden = !entry?.mine;
+  };
+
+  pick.addEventListener("change", () => {
+    const entry = chosen();
+    if (entry) {
+      boxes.name.value = entry.name;
+      boxes.emoji.value = entry.emoji;
+      boxes.personality.value = entry.character;
+      notice(`Filled in with ${entry.name}. Press Save to apply it.`, true);
+    }
+    sync();
+  });
+
+  /*
+   * Editing the boxes moves the dropdown to "your own wording".
+   *
+   * Otherwise it keeps naming a character that is no longer what is in the box,
+   * and somebody comes back later believing they are running the built-in one.
+   */
+  const drifted = () => {
+    const entry = chosen();
+    if (!entry) return;
+    const same = boxes.name.value === entry.name
+      && boxes.emoji.value === entry.emoji
+      && boxes.personality.value.trim() === entry.character.trim();
+    if (!same) {
+      pick.value = "";
+      sync();
+    }
+  };
+  for (const box of [boxes.name, boxes.emoji, boxes.personality]) {
+    box.addEventListener("input", drifted);
+  }
 
   const actions = document.createElement("div");
   actions.className = "inspect-actions";
 
-  const reset = document.createElement("button");
-  reset.type = "button";
-  reset.className = "link";
-  reset.textContent = "Put the character back";
-  reset.title = "Restores the default name, emoji and personality in the boxes";
-  reset.addEventListener("click", () => {
-    name.value = who.default_name;
-    emoji.value = who.default_emoji;
-    personality.value = who.default_personality;
-    notice("Filled in with the defaults. Press Save to apply them.", true);
-  });
-  actions.appendChild(reset);
+  const keep = document.createElement("button");
+  keep.type = "button";
+  keep.className = "link";
+  keep.textContent = "Save these as a personality";
+  keep.addEventListener("click", () => {
+    const label = prompt(
+      "What should this one be called in the list?",
+      boxes.name.value || "My assistant"
+    );
+    if (label === null) return;
 
-  if (who.edited) {
-    const said = document.createElement("span");
-    said.className = "muted small";
-    said.textContent = "This has been edited.";
-    actions.appendChild(said);
-  }
+    post("ai-personality-save", {
+      label,
+      name: boxes.name.value,
+      emoji: boxes.emoji.value,
+      personality: boxes.personality.value,
+    }).then(fresh => {
+      renderAiSettings(fresh);
+      notice("Saved. It is in the list now.", true);
+    }).catch(error => notice(String(error.message || error)));
+  });
+  actions.appendChild(keep);
+
+  const forget = document.createElement("button");
+  forget.type = "button";
+  forget.className = "link danger";
+  forget.textContent = "Delete this personality";
+  forget.hidden = true;
+  forget.addEventListener("click", async () => {
+    const entry = chosen();
+    if (!entry?.mine) return;
+
+    const yes = await askFirst(`Delete ${entry.name}?`, [
+      "It goes from the list. The boxes keep what is in them, so whatever is in force "
+      + "stays in force until you change it.",
+    ], "Delete it", true);
+    if (!yes) return;
+
+    try {
+      renderAiSettings(await post("ai-personality-forget", { id: entry.id }));
+      notice("Deleted.", true);
+    } catch (error) {
+      notice(String(error.message || error));
+    }
+  });
+  actions.appendChild(forget);
 
   wrap.appendChild(actions);
+  sync();
+
   return wrap;
 }
 

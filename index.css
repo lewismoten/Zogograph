@@ -2772,3 +2772,28 @@ tr.muted-row { opacity: .7; }
 #descriptionForm button { align-self: flex-start; }
 #descriptionName { min-width: 200px; }
 #descriptionLink { flex: 1; min-width: 240px; }
+
+/* ------------------------------------------------------ who it is -- */
+
+/*
+ * The character box is a document, not a field.
+ *
+ * It holds a page of instructions and everything around it holds one line, so
+ * it takes the whole width and enough height to read a paragraph without
+ * scrolling a box inside a page.
+ */
+.persona-box {
+  width: 100%;
+  min-height: 420px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .82rem;
+  line-height: 1.6;
+}
+
+.persona-picker { margin-bottom: 18px; }
+.persona-picker .pattern-row { align-items: center; }
+.persona-picker .muted { flex: 1; min-width: 220px; }
+
+.portrait-block { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.portrait-block button { align-self: flex-start; }

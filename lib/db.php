@@ -595,6 +595,31 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        33 => [
+            /*
+             * Personalities the operator has saved.
+             *
+             * The config file holds the one in force, the same way it holds
+             * every other assistant setting. This holds the ones to switch
+             * between - a thing somebody collects several of, which is not a
+             * shape a config file of single values has room for.
+             *
+             * `label` is what it is called in the list and `name` is what the
+             * assistant calls itself, and they are different: two personalities
+             * can both be called Mr. Radar while being "the terse one" and "the
+             * one I use for clients".
+             */
+            "CREATE TABLE personalities (
+                id        INTEGER PRIMARY KEY,
+                label     TEXT NOT NULL,
+                name      TEXT NOT NULL,
+                emoji     TEXT NOT NULL,
+                character TEXT NOT NULL,
+                added_at  INTEGER NOT NULL
+            )",
+            'CREATE UNIQUE INDEX personalities_label ON personalities (label)',
+        ],
+
         32 => [
             /*
              * What the operator knows about a process or a slab cache.
