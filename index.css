@@ -938,12 +938,33 @@ select, input {
 }
 
 table { font-size: .86rem; }
+/*
+ * Headings that stay put.
+ *
+ * Below the top bar rather than at the top of the window: `top: 0` parked them
+ * underneath it, where they were painted over and looked like nothing was
+ * sticky at all. The z-index sits under the bar's 30 for the same reason and
+ * above the rows so they pass behind it.
+ *
+ * The background is not optional - a transparent sticky header has the rows
+ * scrolling through it.
+ */
 th {
-  position: sticky; top: 0;
+  position: sticky; top: var(--topbar-height);
+  z-index: 5;
   background: var(--panel);
   font-weight: 600; color: var(--muted);
   font-size: .76rem; text-transform: uppercase; letter-spacing: .05em;
 }
+
+/*
+ * Except inside a dialog or a box that scrolls on its own.
+ *
+ * There the scrollport is the box, not the window, and the top bar is not
+ * over it - so the offset that is right everywhere else would push the
+ * heading down by a top bar's height into the middle of the box.
+ */
+dialog th, .scroll-list th, .raw-body th, .try-result th { top: 0; }
 td, th { border-bottom: 1px solid var(--line-soft); }
 tr.clickable:hover { background: var(--panel-hover); }
 
@@ -1007,7 +1028,39 @@ tr.clickable:hover { background: var(--panel-hover); }
  * horizontally moves the navigation off the screen, so the table is the thing
  * that gives.
  */
-.panel > div:has(> table) { overflow-x: auto; }
+/*
+ * Only the tables that actually need it scroll sideways.
+ *
+ * This used to apply to every table wrapper unconditionally, which quietly
+ * cost every table on the site its sticky header: a box with overflow-x:auto
+ * is a scroll container, and a sticky header inside one sticks to that box
+ * rather than to the window - so it scrolled away with the page. Measured,
+ * not guessed: the header ended up 222px above the top of the window.
+ *
+ * There is no CSS for "wide enough to need it", so a script measures each
+ * wrapper and adds the class. A table that does need it keeps the sideways
+ * scroll and loses the sticky header, which is the trade the browser forces
+ * and is the rarer case by far.
+ */
+.panel > div:has(> table).scrolls-x {
+  /*
+   * A table too wide to fit scrolls in both directions, inside its own box.
+   *
+   * Sideways because the alternative is the page scrolling and taking the
+   * navigation off the screen. Downwards because that is what makes the
+   * heading stick: a sticky heading sticks to the nearest scroll container,
+   * and the sideways scroll has already made this box one - so unless the box
+   * scrolls vertically too, the heading has nothing to stick to and rides
+   * away with the page. Measured: 222px above the top of the window.
+   *
+   * The height leaves room for the top bar and the panel's own heading, so a
+   * long table fills what is left of the window rather than the whole of it.
+   */
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+}
+/* Inside that box the top bar is not overhead, so the heading sits at its top. */
+.panel > div:has(> table).scrolls-x th { top: 0; }
 .scroll-x { overflow-x: auto; }
 
 @media (max-width: 620px) {
@@ -2646,3 +2699,40 @@ tr.muted-row { opacity: .7; }
   display: flex; justify-content: flex-end; align-items: center;
   gap: 14px; margin-top: 18px;
 }
+
+/* --------------------------------------------------- trying a tool out -- */
+
+/*
+ * What a browser tool actually drew, beside the JSON it returned.
+ *
+ * Capped in height rather than scaled to fit: a chart squeezed into a thumbnail
+ * proves it rendered and nothing about whether it rendered correctly, which is
+ * the only question this page exists to answer.
+ */
+.try-chart {
+  display: block; max-width: 100%; max-height: 420px;
+  border: 1px solid var(--line); border-radius: 10px; margin-top: 8px;
+}
+.try-shown {
+  display: flex; flex-direction: column; gap: 8px;
+  font-size: .88rem; line-height: 1.6; color: #cfcfcf;
+}
+
+/* ------------------------------------------------------ a moment, in full -- */
+
+/*
+ * Every format of one date, as names and values.
+ *
+ * It was a `title` holding three lines with no labels, which meant working out
+ * for yourself which line was the ISO one and waiting a second to see any of
+ * them. A table says which is which, and the bubble it sits in appears on
+ * contact.
+ */
+.when-detail { border-collapse: collapse; width: 100%; font-size: .82rem; }
+.when-detail td { padding: 3px 0; vertical-align: baseline; }
+.when-name { color: var(--muted); padding-right: 12px !important; white-space: nowrap; }
+.when-value { color: var(--text); }
+/* The first row answers the question the rest are evidence for. */
+.when-detail tr:first-child .when-value { color: var(--text); font-weight: 600; }
+.when-detail tr:first-child td { padding-bottom: 7px; }
+.when-detail tr:nth-child(2) td { border-top: 1px solid var(--line); padding-top: 7px; }

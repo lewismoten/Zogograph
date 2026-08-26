@@ -6969,6 +6969,8 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
              * conclusion that they do not exist.
              */
             'why_not' => aiWhyNotTryable($tool, isset($live[$name])),
+            'where' => $tool['where'],
+            'permission' => (bool)$tool['permission'],
             /*
              * Whether the model is actually being offered this, and why not.
              *
@@ -7105,9 +7107,17 @@ function aiWhyNotOffered(array $config, string $name, array $tool): string
  */
 function aiWhyNotTryable(array $tool, bool $enabled): ?string
 {
+    /*
+     * A browser tool is not untestable; it is tested in the browser.
+     *
+     * This used to say "there is nothing to run here", which was true of the
+     * server and beside the point - the work happens in the window that is
+     * reading this. Two of them were broken for weeks behind that sentence
+     * because nothing could exercise them. The page runs them itself now, so
+     * the only thing left to say is which of them the server never sees.
+     */
     if ($tool['where'] === 'browser') {
-        return 'This one happens in the browser during a conversation - it draws '
-            . 'something, or moves you to a page. There is nothing to run here.';
+        return null;
     }
 
     if ($tool['group'] === 'pictures' && !$enabled) {

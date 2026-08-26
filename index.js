@@ -281,9 +281,105 @@ function whenSpan(epoch) {
   const span = document.createElement("span");
   span.className = "when";
   span.textContent = whenLabel(epoch);
-  span.title = whenTitle(epoch);
-  return span;
+  return withWhenBubble(span, epoch);
 }
+
+/**
+ * Everything about a moment, as a small table.
+ *
+ * A `title` was doing this, which is to say it appeared after about a second
+ * and then only as one run of text. A second is long enough for somebody to
+ * decide nothing is going to happen. This shows on contact, and since it is
+ * built rather than concatenated it can lay the formats out as names and
+ * values instead of three lines the reader has to work out for themselves.
+ *
+ * How long ago is first, because it is the question the other four are being
+ * consulted to answer.
+ */
+function whenBubble(epoch) {
+  const at = new Date(epoch * 1000);
+  const now = Date.now() / 1000;
+
+  const table = document.createElement("table");
+  table.className = "when-detail";
+  table.dataset.helpKey = `when:${epoch}`;
+
+  const rows = [
+    [
+      epoch > now ? "From now" : "Ago",
+      humanSpan(Math.abs(now - epoch)),
+    ],
+    ["Local", at.toLocaleString()],
+    ["Date", at.toLocaleDateString(undefined, {
+      weekday: "long", day: "numeric", month: "long", year: "numeric",
+    })],
+    ["Time", at.toLocaleTimeString()],
+    ["ISO", at.toISOString()],
+    ["Unix", String(epoch)],
+  ];
+
+  const body = table.createTBody();
+  for (const [name, value] of rows) {
+    const row = body.insertRow();
+
+    const label = row.insertCell();
+    label.className = "when-name";
+    label.textContent = name;
+
+    const said = row.insertCell();
+    // Monospace for the two that get copied into something else, so a digit
+    // can be counted rather than guessed at.
+    said.className = ["ISO", "Unix"].includes(name) ? "when-value cmd" : "when-value";
+    said.textContent = value;
+  }
+
+  return table;
+}
+
+/**
+ * Attaches the rich bubble to anything showing a moment.
+ *
+ * Kept separate from whenSpan because dates are drawn in a dozen places that
+ * build their own element - a billing row, a chart caption - and every one of
+ * them should behave the same way when pointed at.
+ */
+function withWhenBubble(element, epoch) {
+  if (!epoch) return element;
+
+  const key = `when:${epoch}`;
+  const build = () => whenBubble(epoch);
+
+  /*
+   * No `title` alongside it.
+   *
+   * The browser's own tooltip would arrive a second later and sit on top of
+   * this one saying the same thing in a worse format. The accessible name
+   * carries the detail instead, which is what a screen reader reads anyway.
+   */
+  element.setAttribute("aria-label", `${whenLabel(epoch)} — ${whenTitle(epoch).replace(/\n/g, ", ")}`);
+  element.tabIndex = 0;
+
+  element.addEventListener("pointerenter", () => {
+    if (helpBubble?.dataset.pinned !== "yes") showHelp(element, build(), false);
+  });
+  element.addEventListener("pointerleave", () => {
+    if (helpBubble?.dataset.pinned !== "yes") hideHelp();
+  });
+  element.addEventListener("focus", () => showHelp(element, build(), false));
+  element.addEventListener("blur", () => {
+    if (helpBubble?.dataset.pinned !== "yes") hideHelp();
+  });
+
+  element.addEventListener("click", event => {
+    event.stopPropagation();
+    const open = helpBubble && !helpBubble.hidden && helpBubble.dataset.pinned === "yes";
+    if (open && helpBubble.dataset.key === key) hideHelp();
+    else showHelp(element, build(), true);
+  });
+
+  return element;
+}
+
 
 function ago(epoch) {
   if (!epoch) return "";
@@ -2672,6 +2768,10 @@ function renderTable(target, rows, columns, onRowClick, rowClass, key) {
   });
 
   el.replaceChildren(tools, table, more);
+
+  // Whether this one needs to scroll sideways can only be known once it is in
+  // the document with a width.
+  markWideTables(el.parentElement ?? document);
 }
 
 /**
@@ -5113,9 +5213,77 @@ function renderAiSettings(data) {
 }
 
 /** Every tool, what it does, and whether it may. */
+/**
+ * What each group of tools is called on its tab.
+ *
+ * The catalogue's own keys are lower-case single words because they are keys.
+ * These are what a person reads.
+ */
+const TOOL_GROUP_NAMES = {
+  diagnostic: "Diagnostic",
+  navigation: "Navigation",
+  terminal: "Terminal",
+  host: "Host",
+  memory: "Memory",
+  pictures: "Pictures",
+};
+
+/*
+ * Which group of tools the page is showing.
+ *
+ * Kept outside the render so that ticking a box, which re-renders the whole
+ * table, does not throw somebody back to the first tab.
+ */
+let toolTab = "diagnostic";
+
 function renderAiTools(data) {
   const body = $("aiToolsBody");
   const parts = [];
+
+  /*
+   * A tab per group, because thirty-nine rows is a list nobody reads.
+   *
+   * Grouped the way the catalogue already groups them rather than by some new
+   * arrangement invented here: "navigation" and "terminal" are what the tools
+   * say about themselves, and a second taxonomy over the top of the first is
+   * how the two stop agreeing.
+   *
+   * The count is on the tab. A group with nothing in it - pictures, on an
+   * install with no key - still gets a tab, because a missing tab reads as a
+   * missing feature, which is the exact confusion this page keeps causing.
+   */
+  const groups = new Map();
+  for (const tool of data.tools) {
+    if (!groups.has(tool.group)) groups.set(tool.group, []);
+    groups.get(tool.group).push(tool);
+  }
+
+  if (!groups.has(toolTab)) toolTab = groups.keys().next().value ?? "diagnostic";
+
+  const tabs = document.createElement("div");
+  tabs.className = "seg-row";
+
+  for (const [group, list] of groups) {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = group === toolTab ? "seg on" : "seg";
+    tab.textContent = `${TOOL_GROUP_NAMES[group] ?? group} (${list.length})`;
+
+    // How many of this group are switched on, so a group that is entirely off
+    // says so from the tab rather than only once it is opened.
+    const on = list.filter(t => t.enabled).length;
+    tab.title = on === list.length
+      ? "All of these are switched on."
+      : `${on} of ${list.length} switched on.`;
+
+    tab.addEventListener("click", () => {
+      toolTab = group;
+      renderAiTools(data);
+    });
+    tabs.appendChild(tab);
+  }
+
+  parts.push(tabs);
 
   const table = document.createElement("table");
   table.className = "retention";
@@ -5129,7 +5297,7 @@ function renderAiTools(data) {
 
   const tbody = table.createTBody();
 
-  for (const tool of data.tools) {
+  for (const tool of groups.get(toolTab) ?? []) {
     const row = tbody.insertRow();
 
     const what = row.insertCell();
@@ -5754,7 +5922,7 @@ async function refreshAiSessions() {
     body.replaceChildren(...parts);
 
     renderTable("aiSessionTable", data.sessions, [
-      { label: "Started", render: row => humanTime(row.started_at) },
+      { label: "Started", render: row => whenSpan(row.started_at) },
       { label: "Ran for", render: row => row.ran_for },
       {
         label: "How it ended",
@@ -8486,7 +8654,7 @@ function renderChangedList(data) {
   body.replaceChildren(holder);
 
   renderTable("changedTable", data.events, [
-    { label: "Noticed", render: row => humanTime(row.at) },
+    { label: "Noticed", render: row => whenSpan(row.at) },
     {
       label: "What",
       className: "name",
@@ -9106,7 +9274,7 @@ function renderNotes(data) {
     body.replaceChildren(holder);
 
     renderTable("notesTable", data.rows, [
-      { label: "About", render: row => humanTime(row.at) },
+      { label: "About", render: row => whenSpan(row.at) },
       {
         label: "",
         render: row => {
@@ -9349,7 +9517,7 @@ function renderSnapshotFiles(data) {
 
   renderTable("snapshotTable", files, [
     { label: "File", className: "name", render: row => row.name },
-    { label: "Made", render: row => `${humanTime(row.at)} (${humanSpan(Date.now() / 1000 - row.at)} ago)` },
+    { label: "Made", render: row => whenSpan(row.at) },
     { label: "Size", className: "size", render: row => humanBytes(row.bytes) },
     {
       label: "",
@@ -10790,7 +10958,7 @@ function renderLatestReport(report) {
 
 /* ------------------------------------------------------------ trying one -- */
 
-const tryState = { tool: null, last: null };
+const tryState = { tool: null, last: null, shown: null };
 
 /**
  * A form for one tool's parameters, built from the tool's own declarations.
@@ -10871,6 +11039,15 @@ function renderAiTry(data) {
 
   const out = document.createElement("div");
   out.id = "aiTryResult";
+  /*
+   * The last result is put back, not thrown away.
+   *
+   * This page re-renders on every poll, and set_time_range re-renders it
+   * immediately by design - it changes the range, which refreshes the view the
+   * results are sitting in. So the one tool whose whole job is to change the
+   * dashboard was the one tool that appeared to do nothing.
+   */
+  if (tryState.shown) out.replaceChildren(...tryState.shown);
   parts.push(out);
 
   body.replaceChildren(...parts);
@@ -10892,6 +11069,15 @@ function renderAiTry(data) {
           "This one really generates a picture, which really costs whatever one costs "
           + "and counts against the hourly limit. It is not a dry run."
         ));
+      } else if (tool.where === "browser") {
+        what.appendChild(note(
+          "This one does its work in this window, so it runs here for real — it will "
+          + "draw, or change the range, or ask for a screenshot, exactly as it would "
+          + "mid-conversation."
+          + (tool.permission
+            ? " It asks your permission first, and so does this."
+            : "")
+        ));
       }
     }
 
@@ -10903,6 +11089,247 @@ function renderAiTry(data) {
   pick.addEventListener("change", sync);
   go.addEventListener("click", () => runAiTry(tools.find(t => t.name === pick.value)));
   sync();
+}
+
+/* ------------------------------------------------- trying a browser tool -- */
+
+/**
+ * Running a browser tool from the test page, for real.
+ *
+ * These used to say "cannot be run here", which was true of the server and
+ * false of the point: every one of them does its work in this window, and this
+ * window is right here. Saying a tool cannot be tested when the only thing
+ * stopping it was that nobody wrote the call is how a tool stays broken -
+ * redraw_yourself and show_reaction were both broken for weeks behind that
+ * sentence.
+ *
+ * So they run. The difference from a conversation is only what happens to the
+ * result: there is no session to report back to, so the result is shown here
+ * instead. Everything before that - the same call, the same drawing, the same
+ * permission question - is the real thing.
+ *
+ * Returns {result, shown}: what the model would have received, and a node
+ * demonstrating what the user would have seen.
+ */
+async function tryBrowserTool(tool, args) {
+  const name = tool.name;
+
+  /*
+   * The permission question, asked before anything happens.
+   *
+   * A tool that asks the user first is a tool whose test has to ask too. Test
+   * it without the question and the thing being tested is not the tool; it is
+   * the tool with its most important part removed - and "allow" is where a
+   * real conversation most often stops.
+   */
+  if (tool.permission) {
+    const allowed = await askFirst(
+      `Allow this? — ${name}`,
+      [
+        `In a conversation this is where ${chatState.who.name} stops and asks. It would `
+        + `say what it wants to do and why, and nothing happens until you answer.`,
+        args.why ? `Its reason, from the form above: “${args.why}”` : `It gave no reason.`,
+        "Answering here runs the tool exactly as allowing it in a conversation would.",
+      ],
+      "Allow it"
+    );
+
+    if (!allowed) {
+      return {
+        result: { error: "the user did not allow it" },
+        shown: note(
+          "Refused, which is what a refusal looks like to the model: an error, in the "
+          + "same shape as any other. It carries on without whatever this would have "
+          + "told it."
+        ),
+      };
+    }
+  }
+
+  if (name === "show_progress") {
+    // The same card the chat draws, from the same arguments.
+    return {
+      result: {},
+      shown: chatProgressCard({ arguments: args, at: Math.floor(Date.now() / 1000) }),
+    };
+  }
+
+  if (name === "show_reaction") {
+    const found = await post("ai-reaction", { mood: args.mood, session: 0 });
+
+    if (!found.ok) {
+      return {
+        result: {},
+        shown: note(
+          `No picture came back: ${found.error || "the search found nothing"}. In a `
+          + "conversation this is not a failure — the aside simply does not happen and "
+          + "the turn carries on."
+        ),
+      };
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "chat-reaction";
+    const image = document.createElement("img");
+    image.src = found.url;
+    image.alt = String(args.mood || "a reaction");
+    wrap.appendChild(image);
+    if (args.why) {
+      const caption = document.createElement("div");
+      caption.className = "muted small";
+      caption.textContent = args.why;
+      wrap.appendChild(caption);
+    }
+
+    return { result: { image_url: found.url }, shown: wrap };
+  }
+
+  if (name === "show_chart") {
+    const card = await drawChatChart(args);
+    const wrap = document.createElement("div");
+
+    const image = document.createElement("img");
+    image.src = card.image;
+    image.alt = `the ${args.chart} chart`;
+    image.className = "try-chart";
+    wrap.appendChild(image);
+
+    if (args.why) {
+      const caption = document.createElement("div");
+      caption.className = "muted small";
+      caption.textContent = args.why;
+      wrap.appendChild(caption);
+    }
+
+    /*
+     * The model gets a confirmation, not the picture.
+     *
+     * Shown as such, because the difference between show_chart and
+     * get_chart_image is exactly this and it is the thing people get wrong.
+     */
+    return { result: { shown: "(a picture of the chart, kept in the transcript)" }, shown: wrap };
+  }
+
+  if (name === "get_chart_image") {
+    const url = await renderChartImage(args);
+    const image = document.createElement("img");
+    image.src = url;
+    image.alt = `the ${args.chart} chart`;
+    image.className = "try-chart";
+
+    return {
+      result: { image: `(${humanBytes(Math.round(url.length * 0.75))} of image data)` },
+      shown: image,
+    };
+  }
+
+  if (name === "set_time_range") {
+    const seconds = { "10m": 600, "1h": 3600, "6h": 21600,
+                      "24h": 86400, "7d": 604800, "30d": 2592000 }[args.range];
+
+    if (!seconds) {
+      return { result: { error: `There is no "${args.range}" range.` }, shown: null };
+    }
+
+    const picker = $("range");
+    if (![...picker.options].some(o => Number(o.value) === seconds)) {
+      return {
+        result: {
+          error: `This dashboard does not offer a ${args.range} range. It offers: `
+            + `${[...picker.options].map(o => o.textContent).join(", ")}.`,
+        },
+        shown: null,
+      };
+    }
+
+    // Really changed, because a test that leaves the dashboard alone has not
+    // tested the one thing this tool does.
+    picker.value = String(seconds);
+    picker.dispatchEvent(new Event("change", { bubbles: true }));
+
+    const shown = document.createElement("div");
+    shown.className = "try-shown";
+    shown.textContent = "The range picker at the top of the page now reads "
+      + `“${[...picker.options].find(o => Number(o.value) === seconds).textContent}”, `
+      + "and every chart on the page has been redrawn to match.";
+
+    return {
+      result: {
+        range: args.range,
+        live: false,
+        note: "The dashboard is showing that range now.",
+      },
+      shown,
+    };
+  }
+
+  if (name === "open_page") {
+    const page = String(args.page || "");
+    if (!VIEWS[page]) {
+      return { result: { error: `there is no page called ${page}` }, shown: null };
+    }
+
+    const hours = Number(args.hours);
+    const range = Number.isFinite(hours) && hours > 0
+      ? Math.min(31536000, Math.round(hours * 3600))
+      : state.range;
+
+    /*
+     * A link, rather than going there.
+     *
+     * In a conversation moving the user is the whole point. From a test page it
+     * would take somebody away from the results they asked for, so this shows
+     * where it would have taken them and lets them decide.
+     */
+    const shown = document.createElement("div");
+    shown.className = "try-shown";
+
+    const said = document.createElement("div");
+    said.textContent = "In a conversation this moves you straight there. Here it is a "
+      + "link, so you do not lose these results:";
+    shown.appendChild(said);
+
+    const link = document.createElement("a");
+    link.href = `#/${page}?range=${range}`;
+    link.textContent = `${VIEWS[page].label || page} — #/${page}`;
+    shown.appendChild(link);
+
+    return { result: {}, shown };
+  }
+
+  if (name === "take_screenshot") {
+    const raw = await captureScreen();
+    const edited = await editScreenshot(raw, args.why);
+
+    if (edited === null) {
+      return {
+        result: { error: "the user decided not to send a screenshot" },
+        shown: note("Cancelled, and nothing left this window."),
+      };
+    }
+
+    const wrap = document.createElement("div");
+
+    const said = document.createElement("div");
+    said.className = "muted small";
+    said.textContent = "This is the image exactly as it would be sent — cropped as you "
+      + "chose, with the redactions painted in rather than drawn over. What is black "
+      + "here is black in the file.";
+    wrap.appendChild(said);
+
+    const image = document.createElement("img");
+    image.src = edited;
+    image.alt = "the screenshot as it would be sent";
+    image.className = "try-chart";
+    wrap.appendChild(image);
+
+    return {
+      result: { image: `(${humanBytes(Math.round(edited.length * 0.75))} of image data)` },
+      shown: wrap,
+    };
+  }
+
+  throw new Error(`this page does not know how to try ${name}`);
 }
 
 /** One input per declared parameter, typed the way the parameter is. */
@@ -10977,6 +11404,18 @@ function tryFields(tool) {
   });
 }
 
+/**
+ * Puts a result on the page and remembers it.
+ *
+ * Remembered because this view redraws itself on a timer, and because
+ * set_time_range redraws it deliberately - the tool that changes the dashboard
+ * was wiping the evidence that it had.
+ */
+function showTryResult(parts) {
+  tryState.shown = parts;
+  $("aiTryResult").replaceChildren(...parts);
+}
+
 /** Collects the form, sends it, and shows what came back. */
 async function runAiTry(tool) {
   const said = $("aiTrySaid");
@@ -11003,7 +11442,41 @@ async function runAiTry(tool) {
   }
 
   said.textContent = "Running…";
-  out.replaceChildren();
+  showTryResult([]);
+
+  /*
+   * A browser tool never leaves this window.
+   *
+   * Sending it to the server would get "that tool does not run on the server",
+   * which is the error the model used to get - and the reason it was reported
+   * as broken. The page runs it, and shows what the user would have seen
+   * beside what the model would have received.
+   */
+  if (tool.where === "browser") {
+    const began = performance.now();
+    try {
+      const { result, shown } = await tryBrowserTool(tool, args);
+      const parts = [];
+
+      if (shown) parts.push(section("What you would have seen", shown));
+
+      parts.push(section("What it was given", jsonBlock(JSON.stringify(args, null, 2))));
+      parts.push(section("What the model gets back",
+        jsonBlock(JSON.stringify(result, null, 2))));
+      parts.push(note(
+        "This ran in this window, which is where it runs in a conversation too. The "
+        + "only difference is that the result is shown here instead of being handed "
+        + "back to the model."
+      ));
+
+      said.textContent = `${Math.round(performance.now() - began)}ms, in this window`;
+      showTryResult(parts);
+    } catch (error) {
+      said.textContent = "";
+      showTryResult([note(String(error.message || error))]);
+    }
+    return;
+  }
 
   try {
     const result = await post("ai-try", {
@@ -11015,9 +11488,9 @@ async function runAiTry(tool) {
 
     if (!result.ok) {
       said.textContent = "";
-      out.replaceChildren(note(
+      showTryResult([note(
         `Refused before it ran: ${result.refused}\n\n${result.note}`
-      ));
+      )]);
       return;
     }
 
@@ -11053,10 +11526,10 @@ async function runAiTry(tool) {
       + "than written, so copying this gives you the JSON and nothing else."
     ));
 
-    out.replaceChildren(...parts);
+    showTryResult(parts);
   } catch (error) {
     said.textContent = "";
-    out.replaceChildren(note(String(error.message || error)));
+    showTryResult([note(String(error.message || error))]);
   }
 }
 
@@ -13363,7 +13836,7 @@ function renderHostFiles(rows, totals) {
       },
     },
     { label: "Owner", render: group => group[0].owner ?? "—" },
-    { label: "Last written", className: "size", render: group => humanTime(group[0].mtime) },
+    { label: "Last written", className: "size", render: group => whenSpan(group[0].mtime) },
     // Keyed on the path, so a poll that only changes a size patches the cells
     // rather than rebuilding the table under the reader.
   ], null, null, group => group[0].path);
@@ -13927,7 +14400,7 @@ function renderHostDaemons(daemons) {
             : `not in ${count(daemons.history_days, "day")}`;
           return span;
         }
-        return humanTime(row.last_down_at);
+        return whenSpan(row.last_down_at);
       },
     },
     {
@@ -20669,6 +21142,46 @@ function renderFetchHeaders(data) {
   return wrap;
 }
 
+/* ------------------------------------------------------ tables that fit -- */
+
+/**
+ * Marks the table wrappers that genuinely need to scroll sideways.
+ *
+ * A wrapper with overflow-x:auto is a scroll container, and a sticky heading
+ * inside a scroll container sticks to that container rather than to the window.
+ * Since these wrappers never scroll vertically, that meant every heading on the
+ * site scrolled away with the page while claiming `position: sticky`.
+ *
+ * There is no CSS for "only if it does not fit", so it is measured. A wrapper
+ * that fits gets nothing and its heading sticks; one that does not keeps the
+ * sideways scroll, because a table running off the side of the window takes the
+ * navigation with it and that is worse than a heading that scrolls.
+ *
+ * Cheap enough to run on every render: it reads two numbers per wrapper and
+ * touches the class only when the answer changes, so it does not itself cause
+ * the layout it is measuring.
+ */
+function markWideTables(within = document) {
+  for (const wrap of within.querySelectorAll(".panel > div")) {
+    /*
+     * A direct-child table, which is what the CSS rule matches.
+     *
+     * Not firstElementChild: renderTable puts a row of export buttons above
+     * the table and a "show more" below it, so the table is in the middle.
+     */
+    const table = wrap.querySelector(":scope > table");
+    if (!table) continue;
+
+    // A hidden wrapper measures zero and would be marked as overflowing.
+    if (wrap.clientWidth === 0) continue;
+
+    const wide = table.scrollWidth > wrap.clientWidth + 1;
+    if (wide !== wrap.classList.contains("scrolls-x")) {
+      wrap.classList.toggle("scrolls-x", wide);
+    }
+  }
+}
+
 /**
  * The one floating box every help mark shares.
  *
@@ -20715,14 +21228,32 @@ function hideHelp() {
  * content policy here has no style-src, so an inline attribute is blocked
  * outright while the CSSOM is not.
  */
-function showHelp(mark, text, pinned) {
+function showHelp(mark, content, pinned) {
   const bubble = ensureHelpBubble();
-  bubble.textContent = text;
+
+  /*
+   * Text or a built node, because some of these are tables.
+   *
+   * A date's bubble is a name-and-value table of every format it has; a
+   * header's is a sentence. Both belong in the one floating box - two floating
+   * boxes with different rules for dismissing them is two bugs waiting.
+   */
+  if (content instanceof Node) {
+    bubble.replaceChildren(content);
+    bubble.dataset.key = content.dataset?.helpKey ?? "";
+  } else {
+    bubble.textContent = content;
+    bubble.dataset.key = String(content);
+  }
+
   bubble.hidden = false;
   bubble.dataset.pinned = pinned ? "yes" : "";
 
   const box = mark.getBoundingClientRect();
-  const width = Math.min(340, window.innerWidth - 24);
+  const width = Math.min(
+    content instanceof Node ? 400 : 340,
+    window.innerWidth - 24
+  );
   bubble.style.setProperty("--w", `${width}px`);
 
   let left = box.left;
@@ -20775,7 +21306,7 @@ function helpIcon(header) {
   mark.addEventListener("click", event => {
     event.stopPropagation();
     const open = helpBubble && !helpBubble.hidden && helpBubble.dataset.pinned === "yes";
-    if (open && helpBubble.textContent === full) hideHelp();
+    if (open && helpBubble.dataset.key === full) hideHelp();
     else showHelp(mark, full, true);
   });
 
@@ -26458,6 +26989,9 @@ window.addEventListener("resize", () => {
   resizeTimer = setTimeout(() => {
     const section = document.querySelector(`[data-view="${state.view}"]`);
     redrawCharts(section || document);
+    // A table that fitted at 1440px may not fit at 900. Re-measured rather
+    // than left with the answer from whatever width it was first drawn at.
+    markWideTables(section || document);
   }, 200);
 });
 
