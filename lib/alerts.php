@@ -138,6 +138,7 @@ function evaluateAlerts(array $config, PDO $pdo): array
 
         if ($worthSending !== []) {
             sendAlertEmail($config, $pdo, $worthSending);
+            sendTelegramAlerts($config, $pdo, $worthSending);
         }
     }
 
@@ -1047,6 +1048,69 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
             count($raised),
             $failed === [] ? '' : ', ' . count($failed) . ' address(es) refused')
     );
+}
+
+/** Sends a compact duplicate of an alert batch to the configured Telegram chat. */
+function sendTelegramAlerts(array $config, PDO $pdo, array $raised): void
+{
+    $telegram = (array)($config['alerts']['telegram'] ?? []);
+    if (empty($telegram['enabled'])) {
+        return;
+    }
+
+    $lines = ['Hostscope on ' . php_uname('n')];
+    foreach ($raised as $alert) {
+        $lines[] = strtoupper((string)$alert['severity']) . ' — ' . (string)$alert['subject'];
+    }
+    $link = dashboardLink($config);
+    if ($link !== null) {
+        $lines[] = $link;
+    }
+    $result = sendTelegramMessage($telegram, implode("\n", $lines));
+    logAction($pdo, 'alert_telegram', (string)($telegram['chat_id'] ?? ''),
+        $result['sent'] ? 'ok' : 'failed', 0, 0, $result['error']);
+}
+
+/** @return array{sent: bool, error: ?string} */
+function sendTelegramMessage(array $telegram, string $text): array
+{
+    $token = trim((string)($telegram['bot_token'] ?? ''));
+    $chat = trim((string)($telegram['chat_id'] ?? ''));
+    if ($token === '' || $chat === '') {
+        return ['sent' => false, 'error' => 'Telegram needs both a bot token and chat ID.'];
+    }
+    if (!function_exists('curl_init')) {
+        return ['sent' => false, 'error' => 'PHP cURL is not available on this host.'];
+    }
+
+    $curl = curl_init('https://api.telegram.org/bot' . rawurlencode($token) . '/sendMessage');
+    curl_setopt_array($curl, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query([
+            'chat_id' => $chat,
+            'text' => mb_substr($text, 0, 4000),
+            'disable_web_page_preview' => 'true',
+        ]),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_CONNECTTIMEOUT => 5,
+    ]);
+    $body = curl_exec($curl);
+    $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+    $error = curl_error($curl);
+    curl_close($curl);
+    if ($body === false || $status < 200 || $status >= 300) {
+        return ['sent' => false, 'error' => $error !== '' ? $error : 'Telegram returned HTTP ' . $status . '.'];
+    }
+    return ['sent' => true, 'error' => null];
+}
+
+/** @return array{sent: bool, to: string, error: ?string} */
+function sendTestTelegram(array $config): array
+{
+    $telegram = (array)($config['alerts']['telegram'] ?? []);
+    $result = sendTelegramMessage($telegram, 'Hostscope test on ' . php_uname('n') . "\nNothing has tripped.");
+    return ['sent' => $result['sent'], 'to' => (string)($telegram['chat_id'] ?? ''), 'error' => $result['error']];
 }
 
 /**

@@ -58,6 +58,7 @@ const POLL_GRACE_SECONDS = 2;
 const state = {
   signedIn: false,
   csrf: null,
+  access: null,
   // Which account this runs as, so the process lists can mark its own rows.
   account: null,
   range: 86400,
@@ -933,38 +934,13 @@ function renderCpuCores(data) {
   } else {
     grid.replaceChildren(...cores.map(core => {
       const value = core.busy_percent == null ? null : Number(core.busy_percent);
-      const band = value == null ? null : bandOf(value, 75, 90);
-
-      const box = document.createElement("div");
-      box.className = "core" + (value == null ? " core-none" : "");
-
-      const head = document.createElement("div");
-      head.className = "core-head";
-      const name = document.createElement("span");
-      name.textContent = `core ${core.cpu}`;
-      const figure = document.createElement("span");
-      figure.className = "core-value";
-      figure.textContent = value == null ? "—" : `${value.toFixed(0)}%`;
-      head.append(name, figure);
-      box.appendChild(head);
-
-      const track = document.createElement("div");
-      track.className = "core-track";
-      const fill = document.createElement("div");
-      fill.className = "core-fill" + (band && band !== "ok" ? ` band-${band}` : "");
-      fill.style.width = `${Math.max(0, Math.min(100, value ?? 0))}%`;
-      track.appendChild(fill);
-      box.appendChild(track);
-
-      const sub = document.createElement("div");
-      sub.className = "core-sub";
-      // Said in words rather than drawn as an empty bar: a core with no
-      // measurement and an idle core look identical otherwise, and only one of
-      // those is a claim about the machine.
-      sub.textContent = value == null ? "not measured yet" : cpuCoreShare(core);
-      box.appendChild(sub);
-
-      return box;
+      return buildGauge({
+        label: `Core ${core.cpu}`,
+        value,
+        warn: 75,
+        crit: 90,
+        sub: value == null ? "not measured yet" : cpuCoreShare(core),
+      });
     }));
   }
 
@@ -3463,6 +3439,7 @@ async function refreshShared() {
 
   state.signedIn = overview.signed_in;
   state.csrf = overview.csrf;
+  state.access = overview.access || null;
   state.account = overview.account ?? state.account;
   state.deletable = overview.deletable || [];
   state.deletableScope = overview.deletable_scope || "account";
@@ -3484,6 +3461,8 @@ async function refreshShared() {
   state.scanRunning = Boolean(overview.scan_running);
 
   applySignedInChrome();
+  syncRangeAccess();
+  syncLiveAvailability();
   syncCategoryOptions();
   syncScanButton(overview);
 
@@ -3516,19 +3495,21 @@ async function refreshShared() {
    * announce itself wherever you happen to be standing when it lands.
    */
   const clock = overview.host_clock || {};
+  const showHostClock = benefitsFromCollector("host");
+  const showAccountClock = benefitsFromCollector("account");
   const arrived = hostClock.lastAt !== null
     && clock.last_at !== null
     && Number(clock.last_at) > hostClock.lastAt;
 
-  hostClock.lastAt = clock.last_at === null ? null : Number(clock.last_at);
-  hostClock.interval = clock.interval === null ? null : Number(clock.interval);
-  accountClock.lastAt = clock.account_last_at === null ? null : Number(clock.account_last_at);
-  accountClock.interval = clock.account_interval === null ? null : Number(clock.account_interval);
+  hostClock.lastAt = showHostClock && clock.last_at !== null ? Number(clock.last_at) : null;
+  hostClock.interval = showHostClock && clock.interval !== null ? Number(clock.interval) : null;
+  accountClock.lastAt = showAccountClock && clock.account_last_at !== null ? Number(clock.account_last_at) : null;
+  accountClock.interval = showAccountClock && clock.account_interval !== null ? Number(clock.account_interval) : null;
   drawPoll();
 
   // Announced before the list is replaced, so it can see what has just gone.
-  if (arrived) noticeHostArrival();
-  renderPending(clock.pending || []);
+  if (showHostClock && arrived) noticeHostArrival();
+  renderPending(showHostClock ? (clock.pending || []) : []);
 
   if (wasScanning && !state.scanRunning) {
     notice("Scan finished.", true);
@@ -5917,6 +5898,33 @@ function renderAiTools(data) {
 
   parts.push(tabs);
 
+  const presets = document.createElement("div");
+  presets.className = "panel-tools";
+  const presetPick = document.createElement("select");
+  for (const set of data.toolsets || []) {
+    const option = document.createElement("option");
+    option.value = set.name;
+    option.textContent = set.label + (set.builtin ? "" : " (saved)");
+    presetPick.appendChild(option);
+  }
+  const applyPreset = document.createElement("button");
+  applyPreset.type = "button";
+  applyPreset.textContent = "Apply toolset";
+  applyPreset.disabled = !data.writable;
+  applyPreset.addEventListener("click", () => {
+    const set = (data.toolsets || []).find(one => one.name === presetPick.value);
+    if (!set) return;
+    for (const [name, setting] of Object.entries(set.tools || {})) {
+      const enabled = body.querySelector(`.tool-on[data-tool="${name}"]`);
+      const ask = body.querySelector(`.tool-ask[data-tool="${name}"]`);
+      if (enabled) enabled.checked = Boolean(setting.enabled);
+      if (ask) ask.checked = Boolean(setting.permission);
+    }
+    notice(`Applied ${set.label}. Save these settings to make it active.`, true);
+  });
+  presets.append(presetPick, applyPreset);
+  parts.push(presets);
+
   const table = document.createElement("table");
   table.className = "retention";
 
@@ -6109,6 +6117,47 @@ function renderAiTools(data) {
   said.textContent = `Saves everything on all of ${data.who?.name ?? "the assistant"}'s `
     + "pages, including the tools on the other tabs.";
   actions.appendChild(said);
+
+  const savePreset = document.createElement("button");
+  savePreset.type = "button";
+  savePreset.textContent = "Save as toolset";
+  savePreset.disabled = !data.writable;
+  savePreset.addEventListener("click", async () => {
+    const name = prompt("Short preset name (lowercase letters, numbers, - or _):");
+    if (!name) return;
+    const label = prompt("Label for people reading this preset:", name);
+    if (label === null) return;
+    try {
+      const on = [...body.querySelectorAll("input.tool-on:checked")].map(box => box.dataset.tool).join(",");
+      const ask = [...body.querySelectorAll("input.tool-ask:checked")].map(box => box.dataset.tool).join(",");
+      renderAiSettings(await post("ai-toolset-save", { name, label, tools_on: on, tools_ask: ask }));
+      notice("Toolset saved.", true);
+    } catch (error) {
+      notice(String(error.message || error));
+    }
+  });
+  actions.appendChild(savePreset);
+
+  const removePreset = document.createElement("button");
+  removePreset.type = "button";
+  removePreset.className = "link danger";
+  removePreset.textContent = "Delete saved toolset";
+  removePreset.disabled = !data.writable;
+  removePreset.addEventListener("click", async () => {
+    const set = (data.toolsets || []).find(one => one.name === presetPick.value);
+    if (!set || set.builtin) {
+      notice("Built-in toolsets cannot be deleted.");
+      return;
+    }
+    if (!confirm(`Delete toolset “${set.label}”?`)) return;
+    try {
+      renderAiSettings(await post("ai-toolset-delete", { name: set.name }));
+      notice("Toolset deleted.", true);
+    } catch (error) {
+      notice(String(error.message || error));
+    }
+  });
+  actions.appendChild(removePreset);
 
   parts.push(actions);
   body.replaceChildren(...parts);
@@ -10833,6 +10882,7 @@ async function showNoteDialog(preset = {}) {
       chart: chartPick.chosen().join(","),
       link: link.value,
       broadcast: broadcast.checked,
+      audience: audience ? audience.chosen().join(",") : "",
       snapshot: snapshot.value,
     };
 
@@ -10895,6 +10945,15 @@ async function showNoteDialog(preset = {}) {
     "Shows this at the top of every page for anyone who opens the dashboard, until "
     + "somebody clears it. This is the difference between one person knowing about the "
     + "disk and three people finding out separately at two in the morning."));
+
+  const audience = tickList("noteAudience", (noteState.data.groups || []).map(group => [
+    group,
+    group,
+    (preset.audience || []).includes(group),
+  ]), []);
+  parts.push(fieldRow("Visible to groups", audience.node,
+    "Leave every group unticked to share with everyone who may read notes. Ticking one or "
+    + "more groups limits both this note and any broadcast made from it."));
 
   const link = document.createElement("input");
   link.type = "text";
@@ -10964,6 +11023,7 @@ async function showNoteDialog(preset = {}) {
         link: link.value.trim(),
         at: String(Math.floor(new Date(when.value).getTime() / 1000)),
         broadcast: broadcast.checked ? "1" : "0",
+        audience: audience.chosen().join(","),
         snapshot: snapshot.value,
       };
 
@@ -11128,6 +11188,136 @@ async function refreshNotes() {
   } catch (error) {
     body.replaceChildren(note(String(error.message || error)));
   }
+}
+
+/* -------------------------------------------------------- trusted peers -- */
+
+async function refreshPeers() {
+  const body = $("peersAdminBody");
+  if (!body) return;
+  if (!state.signedIn || !state.access?.write) {
+    body.replaceChildren(note("Only administrators can manage trusted servers."));
+    return;
+  }
+  try {
+    renderPeers(await api("peers"));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderPeers(data) {
+  const body = $("peersAdminBody");
+  const parts = [];
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "primary";
+  add.textContent = "Add trusted server";
+  add.disabled = !data.writable;
+  add.addEventListener("click", () => showPeerDialog());
+  parts.push(add);
+
+  if (!data.rows.length) {
+    parts.push(note("No trusted servers are configured yet."));
+  } else {
+    const holder = document.createElement("div");
+    holder.id = "peerTable";
+    parts.push(holder);
+    body.replaceChildren(...parts);
+    renderTable("peerTable", data.rows, [
+      { label: "Server", className: "name", render: row => row.label },
+      { label: "Issuer", className: "cmd", render: row => row.issuer },
+      { label: "Client", render: row => row.client_id },
+      { label: "Secret", render: row => row.has_secret ? "configured" : "missing" },
+      { label: "Connected", render: row => row.connected_as || "not connected" },
+      {
+        label: "",
+        className: "row-actions",
+        render: row => {
+          const wrap = document.createDocumentFragment();
+          const test = document.createElement("button");
+          test.className = "link";
+          test.textContent = "Test";
+          test.addEventListener("click", async () => {
+            try {
+              const result = await post("peer-test", { name: row.name });
+              notice(result.ok ? `Connected to ${result.issuer}.` : result.error, result.ok);
+            } catch (error) { notice(String(error.message || error)); }
+          });
+          const connect = document.createElement("a");
+          connect.className = "link";
+          connect.href = `peer-connect.php?peer=${encodeURIComponent(row.name)}`;
+          connect.textContent = row.connected_as ? "Reconnect" : "Connect";
+          const read = document.createElement("button");
+          read.className = "link";
+          read.textContent = "View data";
+          read.disabled = !row.connected_as;
+          read.addEventListener("click", async () => {
+            try {
+              const result = await post("peer-read", { name: row.name });
+              const vital = result.vitals || {};
+              showListDialog(`${result.host || row.label} overview`, [
+                factGrid([
+                  ["Collected", result.taken_at ? humanTime(result.taken_at) : "nothing collected"],
+                  ["Disk free", vital.disk_free_bytes == null ? "—" : humanBytes(vital.disk_free_bytes)],
+                  ["CPU", vital.cpu_percent == null ? "—" : `${Number(vital.cpu_percent).toFixed(1)}%`],
+                  ["Memory", vital.mem_used_percent == null ? "—" : `${Number(vital.mem_used_percent).toFixed(1)}%`],
+                  ["Load", vital.load1 == null ? "—" : String(vital.load1)],
+                ]),
+              ]);
+            } catch (error) { notice(String(error.message || error)); }
+          });
+          const edit = document.createElement("button");
+          edit.className = "link";
+          edit.textContent = "Edit";
+          edit.addEventListener("click", () => showPeerDialog(row));
+          const drop = document.createElement("button");
+          drop.className = "link danger";
+          drop.textContent = "Remove";
+          drop.addEventListener("click", async () => {
+            if (!confirm(`Remove trusted server “${row.label}”?`)) return;
+            try { renderPeers(await post("peer-delete", { name: row.name })); }
+            catch (error) { notice(String(error.message || error)); }
+          });
+          wrap.append(test, connect, read, edit, drop);
+          return wrap;
+        },
+      },
+    ], null, null, row => row.name);
+    return;
+  }
+  body.replaceChildren(...parts);
+}
+
+function showPeerDialog(row = null) {
+  const fields = [];
+  const input = (label, value, hint, type = "text") => {
+    const field = document.createElement("input");
+    field.type = type;
+    field.className = "wide";
+    field.value = value || "";
+    fields.push(fieldRow(label, field, hint));
+    return field;
+  };
+  const name = input("Short name", row?.name, "Lowercase letters, numbers, hyphens, and underscores.");
+  name.disabled = Boolean(row);
+  const label = input("Label", row?.label, "What people see in this dashboard.");
+  const base = input("Dashboard URL", row?.base_url, "HTTPS base address of the remote Hostscope.", "url");
+  const redirect = input("Registered callback URL", row?.redirect_uri,
+    "This Hostscope’s HTTPS peer-connect.php address, registered at the remote issuer.", "url");
+  const issuer = input("OpenID issuer", row?.issuer, "HTTPS issuer whose discovery document will be checked.", "url");
+  const client = input("Client ID", row?.client_id, "Registered by the remote OpenID provider.");
+  const secret = input("Client secret", "", row?.has_secret
+    ? "Leave blank to keep the existing secret."
+    : "Kept only in local config.php.", "password");
+  showFormDialog(row ? "Edit trusted server" : "Add trusted server", fields, async () => {
+    const result = await post("peer-save", {
+      name: name.value, label: label.value, base_url: base.value, redirect_uri: redirect.value,
+      issuer: issuer.value, client_id: client.value, client_secret: secret.value,
+    });
+    renderPeers(result);
+    notice("Trusted server saved. Test discovery before using it.", true);
+  });
 }
 
 function renderNotes(data) {
@@ -14273,8 +14463,11 @@ function tryFields(tool) {
        * too, and what gets tested is the shape the tool actually receives.
        */
       input = document.createElement("textarea");
-      input.rows = 5;
-      input.className = "wide-field";
+      // JSON is the only parameter shape where a single-line control turns a
+      // test into horizontal scrolling. Give it the full form width and twice
+      // the normal editing height so an example is readable before sending.
+      input.rows = 10;
+      input.className = "wide-field try-textarea";
       input.spellcheck = false;
       input.value = JSON.stringify(tryArrayExample(spec), null, 2);
     } else if (spec.type === "boolean") {
@@ -14288,15 +14481,14 @@ function tryFields(tool) {
       if (spec.minimum !== null) input.min = String(spec.minimum);
       if (spec.maximum !== null) input.max = String(spec.maximum);
       if (spec.type === "integer") input.step = "1";
-      if (spec.default !== null) input.value = String(spec.default);
+      const fallback = name === "hours" ? 24 : (spec.minimum ?? 1);
+      input.value = String(spec.default ?? fallback);
     } else {
       input = document.createElement("input");
       input.type = "text";
       input.className = "wide-field";
       if (spec.maxLength) input.maxLength = spec.maxLength;
-      if (spec.default !== null && spec.default !== undefined) {
-        input.value = String(spec.default);
-      }
+      input.value = String(spec.default ?? tryTextDefault(name));
     }
 
     input.dataset.param = name;
@@ -14312,6 +14504,14 @@ function tryFields(tool) {
 
     return fieldRow(name, input, `${spec.description} (${bounds})`);
   });
+}
+
+function tryTextDefault(name) {
+  if (name === "why" || name === "caption") return "Review this chart for notable changes.";
+  if (name === "view") return "overview";
+  if (name === "query" || name === "needle" || name === "contains") return "";
+  if (name === "path") return ".";
+  return "";
 }
 
 /**
@@ -20641,12 +20841,46 @@ function escapeHtml(text) {
 
 function applySignedInChrome() {
   $("signInOut").textContent = state.signedIn ? "Sign out" : "Sign in";
+  applyAccessChrome();
   renderViewGuide(state.view);
   renderEmptyButtons();
 }
 
-async function doSignIn(password) {
-  const body = new URLSearchParams({ action: "signin", password });
+function mayUsePage(view) {
+  const pages = state.access?.pages;
+  return !Array.isArray(pages) || pages.includes("*") || pages.includes(view);
+}
+
+function applyAccessChrome() {
+  for (const link of document.querySelectorAll("[data-nav]")) {
+    link.hidden = !mayUsePage(link.dataset.nav);
+  }
+
+  if (!mayUsePage(state.view)) {
+    state.view = DEFAULT_VIEW;
+    writeRoute(true);
+    for (const section of document.querySelectorAll("[data-view]")) {
+      section.hidden = section.dataset.view !== DEFAULT_VIEW;
+    }
+  }
+}
+
+function syncRangeAccess() {
+  const select = $("range");
+  const ranges = state.access?.ranges;
+  if (!select || !Array.isArray(ranges) || ranges.includes("*")) return;
+  for (const option of select.options) {
+    option.hidden = !ranges.includes(Number(option.value));
+  }
+  if (!ranges.includes(state.range)) {
+    state.range = Number(ranges[0] ?? LIVE_RANGE);
+    select.value = String(state.range);
+    state.rendered.clear();
+  }
+}
+
+async function doSignIn(password, username = "") {
+  const body = new URLSearchParams({ action: "signin", password, username });
   const response = await fetch(API, {
     method: "POST",
     body,
@@ -20659,6 +20893,7 @@ async function doSignIn(password) {
   }
   state.signedIn = true;
   state.csrf = parsed.csrf;
+  state.access = parsed.access || null;
 }
 
 /*
@@ -29405,6 +29640,12 @@ const VIEWS = {
     parent: "system",
     refresh: () => refreshNotes(),
   },
+  "sys-peers": {
+    manual: true,
+    label: "Trusted servers",
+    parent: "system",
+    refresh: () => refreshPeers(),
+  },
   "sys-changed": {
     /*
      * Two charts, one page.
@@ -29740,6 +29981,7 @@ function applyRoute() {
 
 function showView(view, push = true) {
   if (!VIEWS[view]) view = DEFAULT_VIEW;
+  if (!mayUsePage(view)) view = DEFAULT_VIEW;
 
   const changed = state.view !== view;
   const leavingChat = state.view === "sys-ai" && view !== "sys-ai";
@@ -29776,7 +30018,7 @@ function showView(view, push = true) {
     if (id === view) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
 
-    if (owner) link.hidden = owner !== parent;
+    link.hidden = !mayUsePage(id) || Boolean(owner && owner !== parent);
   }
 
   document.title = `${VIEWS[view].label} · Hostscope`;
@@ -29870,6 +30112,20 @@ const hostClock = { lastAt: null, interval: null, at: 0 };
 const accountClock = { lastAt: null, interval: null };
 let fetchFailed = false;
 
+function benefitsFromCollector(kind) {
+  const pages = state.access?.pages;
+  if (!Array.isArray(pages) || pages.includes("*")) return true;
+  const hostPages = new Set([
+    "storage-io", "host-disk", "disk-dirs", "disk-deleted", "disk-procs", "disk-rootfiles",
+    "host-layout", "cagefs", "cpu", "cpu-time", "cpu-cores", "cpu-procs", "cpu-queue",
+    "cpu-limits", "host", "mem-users", "mem-goes", "mem-services", "mem-procs", "mem-slab",
+    "processes", "services", "busy", "network", "net-ports", "net-peers", "net-capture",
+    "net-captures", "capabilities", "backups", "backups-actions", "backups-other", "backups-jetbackup",
+  ]);
+  if (kind === "host") return pages.some(page => hostPages.has(page));
+  return pages.some(page => !hostPages.has(page));
+}
+
 function setPollState(busy, every) {
   poll.busy = busy;
   if (!busy && every) {
@@ -29955,7 +30211,10 @@ function setPollTitle() {
   if (!button) return;
 
   const said = [];
-  for (const [name, clock] of [["This account", accountClock], ["The host collector", hostClock]]) {
+  const clocks = [];
+  if (benefitsFromCollector("account")) clocks.push(["This account", accountClock]);
+  if (benefitsFromCollector("host")) clocks.push(["The host collector", hostClock]);
+  for (const [name, clock] of clocks) {
     if (!clock.lastAt) {
       said.push(`${name}: nothing recorded.`);
       continue;
@@ -30179,10 +30438,14 @@ const LIVE_RANGE = 600;
 
 function syncLiveAvailability() {
   const button = $("live");
-  const allowed = state.range === LIVE_RANGE;
+  const mayUseLive = Boolean(state.access?.live);
+  const allowed = mayUseLive && state.range === LIVE_RANGE;
 
   button.disabled = !allowed;
-  button.title = allowed
+  button.hidden = !mayUseLive;
+  button.title = !mayUseLive
+    ? "Live readings are available to Staff and Administrators."
+    : allowed
     ? "Take a fresh reading every ten seconds."
     : "Live updates are only available on the last 10 minutes — at any longer range "
       + "a ten-second reading lands inside a bucket that hides it.";
@@ -30215,7 +30478,7 @@ window.addEventListener("resize", () => {
 });
 
 $("live").addEventListener("click", () => {
-  if (state.range !== LIVE_RANGE) return;
+  if (!state.access?.live || state.range !== LIVE_RANGE) return;
   state.live = !state.live;
   $("live").setAttribute("aria-pressed", String(state.live));
   schedule();
@@ -30947,6 +31210,21 @@ $("testEmail").addEventListener("click", async () => {
   }
 });
 
+$("testTelegram").addEventListener("click", async () => {
+  const button = $("testTelegram");
+  button.disabled = true;
+  try {
+    const result = await post("test-telegram");
+    notice(result.sent
+      ? `Test Telegram sent to ${result.to}.`
+      : (result.error || "Could not send the Telegram test."), result.sent);
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    button.disabled = false;
+  }
+});
+
 $("historyClose").addEventListener("click", () => {
   state.historyPathId = null;
   $("historyPanel").hidden = true;
@@ -31002,6 +31280,7 @@ $("signInOut").addEventListener("click", async () => {
     return;
   }
   $("signInError").hidden = true;
+  $("username").value = "";
   $("password").value = "";
   $("signInDialog").showModal();
   $("password").focus();
@@ -31014,7 +31293,7 @@ $("signInForm").addEventListener("submit", async event => {
   const error = $("signInError");
   error.hidden = true;
   try {
-    await doSignIn($("password").value);
+    await doSignIn($("password").value, $("username").value.trim());
     $("signInDialog").close();
     await refreshAll();
   } catch (failure) {

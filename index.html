@@ -442,6 +442,11 @@
       <span class="nav-label">Notes</span>
       <span class="nav-badge" data-badge="sys-notes" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/sys-peers" data-nav="sys-peers" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Trusted servers</span>
+      <span class="nav-badge" data-badge="sys-peers" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-problems" data-nav="sys-problems" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Recent problems</span>
@@ -2124,6 +2129,7 @@
   <div class="panel-head">
     <h2>Email alerts</h2>
     <button id="testEmail">Send a test email</button>
+    <button id="testTelegram">Send a test Telegram</button>
   </div>
   <p class="muted small sub-note">
     Mail goes out through PHP's <code>mail()</code>, which on a cPanel host
@@ -2524,6 +2530,14 @@
 </section>
 </section>
 
+<section class="view" data-view="sys-peers" hidden>
+<section class="panel">
+  <div class="panel-head"><h2>Trusted Hostscope servers</h2></div>
+  <p class="muted small sub-note">A trusted server is explicitly configured here and checked through HTTPS OpenID Connect discovery. Saving it does not share data or sign anyone in; those authorization-code steps are deliberately separate.</p>
+  <div id="peersAdminBody"></div>
+</section>
+</section>
+
 <section class="view" data-view="sys-problems" hidden>
 <section class="panel" id="problemPanel">
   <div class="panel-head">
@@ -2901,6 +2915,10 @@
   <form id="signInForm">
     <h2>Sign in</h2>
     <p class="muted small">Reveals real paths and enables deleting.</p>
+    <label>
+      Username <span class="muted small">(optional for the administrator password)</span>
+      <input type="text" id="username" autocomplete="username">
+    </label>
     <label>
       Password
       <input type="password" id="password" autocomplete="current-password" required>

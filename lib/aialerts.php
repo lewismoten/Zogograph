@@ -203,7 +203,7 @@ function aiJudgeAlert(
         foreach ($calls as $call) {
             $name = (string)$call['name'];
             $result = isset($tools[$name])
-                ? aiRunTool($name, (array)($call['arguments'] ?? []), $config, $pdo)
+                ? aiRunTool($name, (array)($call['arguments'] ?? []), $config, $pdo, null, 0, false)
                 : ['error' => 'That tool is not available for this.'];
 
             $transcript[] = [
@@ -239,7 +239,7 @@ function aiUnattendedTools(array $config): array
 {
     $out = [];
 
-    foreach (aiEnabledTools($config, aiViews()) as $name => $tool) {
+    foreach (aiEnabledTools($config, aiViews(), false) as $name => $tool) {
         if ($tool['where'] !== 'server' || $tool['permission']) {
             continue;
         }

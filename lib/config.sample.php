@@ -24,6 +24,17 @@ return [
     'password_hash' => '',
 
     /*
+     * People and their permissions. The legacy password above remains an
+     * Administrators login. Named users are optional and carry their own
+     * password hash and group membership. Public is always active; the other
+     * built-in groups are Staff and Administrators, both configurable here.
+     */
+    'access' => [
+        'groups' => [],
+        'users' => [],
+    ],
+
+    /*
      * Salts the pseudonyms shown to signed-out visitors.
      *
      * Without a secret the mask is just a hash of the path, and anybody who
@@ -37,6 +48,12 @@ return [
 
     'alerts' => [
         'enabled' => false,
+        // Optional Telegram delivery. Keep this token in config.php only.
+        'telegram' => [
+            'enabled' => false,
+            'bot_token' => '',
+            'chat_id' => '',
+        ],
         /*
          * Where to send it. Several addresses, separated by semicolons.
          *
@@ -311,6 +328,24 @@ return [
          * present and only one is the real one.
          */
         'package_manager' => 'auto',
+    ],
+
+    /* Named, explicitly trusted Hostscope installations. A peer is tested
+     * through OIDC discovery before it may be used. Leave it empty until the
+     * remote server exposes its HTTPS issuer and this host has a client ID. */
+    'peers' => [],
+
+    /* OpenID Connect provider. Registered trusted clients use the
+     * authorization-code flow with PKCE and receive a short-lived RS256 ID
+     * token containing the local username and groups. */
+    'openid' => [
+        'enabled' => false,
+        'issuer' => '',
+        /* Paste a PEM RSA private key. Its public part is published as JWKS;
+         * never reuse a TLS certificate key. Generate one with:
+         * openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 */
+        'signing_private_key' => '',
+        'clients' => [],
     ],
 
     'network' => [
@@ -664,6 +699,10 @@ return [
         'images' => [],
 
         'tools' => [],
+        // Named, reusable tool and permission configurations saved from the
+        // Tools page. Built-in Diagnostic and Operator approval sets need not
+        // be written here.
+        'toolsets' => [],
 
         // Defaults to ai.db beside the other two databases.
         'database' => null,

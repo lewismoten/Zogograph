@@ -38,6 +38,7 @@ define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
+require_once __DIR__ . '/lib/access.php';
 require_once __DIR__ . '/lib/mask.php';
 require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/incident.php';
@@ -87,6 +88,7 @@ require_once __DIR__ . '/lib/events.php';
 require_once __DIR__ . '/lib/whoami.php';
 require_once __DIR__ . '/lib/dnsrecords.php';
 require_once __DIR__ . '/lib/external.php';
+require_once __DIR__ . '/lib/peers.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
@@ -114,6 +116,7 @@ try {
 function route(array $config, PDO $pdo, string $action, bool $post): array
 {
     $signedIn = isSignedIn();
+    requireActionAccess($config, $action);
 
     return match ($action) {
         'overview' => overview($config, $pdo, $signedIn),
@@ -208,6 +211,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-personality-forget' => doAiPersonalityForget($config, $pdo, $post),
         'ai-portrait-clear' => doAiPortraitClear($config, $pdo, $post),
         'ai-settings-save' => doAiSettingsSave($config, $pdo, $post),
+        'ai-toolset-save' => doAiToolsetSave($config, $pdo, $post),
+        'ai-toolset-delete' => doAiToolsetDelete($config, $pdo, $post),
         'ai-price-save' => doAiPriceSave($config, $pdo, $post),
         'ai-price-forget' => doAiPriceForget($config, $pdo, $post),
         'ai-try' => doAiTry($config, $pdo, $post),
@@ -217,15 +222,15 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-test' => doAiTest($config, $pdo, $post),
         'ai-reaction' => doAiReaction($config, $pdo, $post),
         'ai-sessions' => aiSessionsView($config, $signedIn),
-        'charts' => chartCatalogueView($signedIn),
+        'charts' => chartCatalogueView($config, $signedIn),
         'scan-schedule' => scansView($config, $pdo, $signedIn),
         'scan-schedule-save' => doScansSave($config, $pdo, $post),
-        'chart-series' => chartSeriesView($pdo, $signedIn),
+        'chart-series' => chartSeriesView($config, $pdo, $signedIn),
         'rdns-ask' => doRdnsAsk($config, $pdo, $post),
         'rdns-cancel' => doRdnsCancel($config, $pdo, $post),
         'rdns-now' => doRdnsNow($config, $pdo, $post),
         'note-marks' => noteMarksView($pdo, $signedIn),
-        'note-snapshots' => noteSnapshotsView($pdo, $signedIn),
+        'note-snapshots' => noteSnapshotsView($config, $pdo, $signedIn),
         'note-save' => doNoteSave($config, $pdo, $post),
         'note-clear' => doNoteClear($pdo, $post),
         'note-delete' => doNoteDelete($pdo, $post),
@@ -249,6 +254,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'schedule-save' => doScheduleSave($post, $pdo),
         'scan-now' => doScanNow($pdo, $post),
         'test-email' => doTestEmail($config, $pdo, $post),
+        'test-telegram' => doTestTelegram($config, $pdo, $post),
         'email-save' => doEmailSave($config, $pdo, $post),
         'clear-problems' => doClearProblems($config, $pdo, $post),
         'alert-action' => doAlertAction($config, $pdo, $post),
@@ -272,6 +278,11 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'event-save' => doEventSave($pdo, $post),
         'event-delete' => doEventDelete($pdo, $post),
         'event-resolve' => doEventResolve($pdo, $post),
+        'peers' => peersView($config, $signedIn),
+        'peer-save' => doPeerSave($config, $pdo, $post),
+        'peer-delete' => doPeerDelete($config, $pdo, $post),
+        'peer-test' => doPeerTest($config, $pdo, $post),
+        'peer-read' => doPeerRead($config, $pdo, $post),
         'check-capabilities' => doCheckCapabilities($config, $pdo, $post),
         'request-host-task' => doRequestHostTask($config, $pdo, $post),
         'match-processes' => doMatchProcesses($config, $post),
@@ -280,6 +291,61 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'stop-matching' => doStopMatching($config, $pdo, $post),
         default => throw new ActionRefused('unknown action'),
     };
+}
+
+/** The endpoint has the same policy as the page or tool which uses it. */
+function requireActionAccess(array $config, string $action): void
+{
+    $pages = [
+        'vitals' => 'charts', 'scans' => 'storage', 'offenders' => 'storage-files',
+        'history' => 'storage-files', 'treemap' => 'storage-map', 'inspect' => 'storage-files',
+        'host-logs' => 'storage-files', 'host-disk' => 'host-disk', 'backups' => 'backups',
+        'mounts' => 'host-layout', 'processes' => 'processes', 'busy' => 'busy',
+        'network' => 'network', 'captures' => 'net-captures', 'dns' => 'net-dns',
+        'dns-records' => 'dns-records', 'urls' => 'net-urls', 'fetch' => 'net-fetch',
+        'whois' => 'whois', 'whoami' => 'whoami', 'rdns' => 'net-rdns',
+        'units' => 'units', 'calendar' => 'calendar', 'alerts' => 'alerts',
+        'uptime' => 'uptime', 'cpu' => 'cpu', 'host' => 'host', 'host-series' => 'host',
+        'host-io' => 'storage-io', 'capabilities' => 'capabilities', 'schedule' => 'schedule',
+        'email' => 'email', 'actions' => 'deletions', 'store' => 'sys-account',
+        'ai-store' => 'sys-ai-data', 'terminal' => 'sys-terminal',
+        'terminal-read' => 'sys-terminal', 'terminal-sessions' => 'sys-sessions',
+        'terminal-session' => 'sys-sessions', 'notes' => 'sys-notes',
+        'note-marks' => 'sys-notes', 'note-snapshots' => 'sys-notes',
+        'chart-series' => 'charts', 'charts' => 'charts',
+        'peers' => 'sys-peers',
+        'labels' => 'net-labels', 'descriptions' => 'sys-descriptions',
+        'changed' => 'sys-changed', 'capability-changes' => 'sys-changed',
+        'installed' => 'sys-installed', 'symlinks' => 'storage-links',
+        'tail' => 'log-stream', 'last-lines' => 'log-stream', 'log-stream' => 'log-stream',
+        'health' => 'system', 'self' => 'system', 'problems' => 'sys-problems',
+        'scan-schedule' => 'scans-account', 'host-setup' => 'scans-host',
+        'ai-memories' => 'sys-memory', 'ai-reports' => 'sys-reports',
+        'ai-sessions' => 'sys-ai-billing',
+    ];
+    if (isset($pages[$action]) && !accessAllows($config, 'pages', $pages[$action])) {
+        throw new ActionRefused('your group cannot open this page');
+    }
+
+    if ($action === 'chart-series') {
+        $chart = (string)($_GET['chart'] ?? $_POST['chart'] ?? '');
+        if ($chart === '' || !accessAllows($config, 'charts', $chart)) {
+            throw new ActionRefused('your group cannot view that chart');
+        }
+    }
+
+    $tool = str_starts_with($action, 'terminal') ? 'terminal'
+        : (in_array($action, ['fetch', 'whois', 'dns', 'rdns-ask', 'rdns-now'], true) ? 'navigation' : null);
+    if ($tool !== null && !accessAllows($config, 'tools', $tool)) {
+        throw new ActionRefused('your group cannot use this tool');
+    }
+    if (str_starts_with($action, 'ai') && !accessAllows($config, 'ai')) {
+        throw new ActionRefused('your group cannot use Mr. Radar');
+    }
+    $range = (int)($_GET['range'] ?? $_POST['range'] ?? 0);
+    if ($range > 0 && !accessAllows($config, 'ranges', $range)) {
+        throw new ActionRefused('your group cannot use that time range');
+    }
 }
 
 /* ------------------------------------------------------------------ read -- */
@@ -331,6 +397,7 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
     return [
         'signed_in' => $signedIn,
         'csrf' => $signedIn ? csrfToken() : null,
+        'access' => accessView($config),
         /*
          * Which account this dashboard is running as.
          *
@@ -358,7 +425,7 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
          * whole point is that somebody arriving at two in the morning sees
          * "I know about the disk" before they start investigating it again.
          */
-        'broadcasts' => $signedIn ? noteBroadcasts($pdo) : [],
+        'broadcasts' => $signedIn && accessAllows($config, 'notes') ? noteBroadcasts($pdo, $config) : [],
         /*
          * Two strings, carried on the call every page already makes.
          *
@@ -634,6 +701,9 @@ function trendWithWindow(array $rows, string $field): ?array
  */
 function liveSample(array $config, PDO $pdo): array
 {
+    if (!accessAllows($config, 'live')) {
+        throw new ActionRefused('Live readings are available to Staff and Administrators.');
+    }
     return ['vitals' => takeVitals($config, $pdo, 'live')];
 }
 
@@ -984,7 +1054,7 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
  */
 function alertEmailView(PDO $pdo, bool $signedIn): array
 {
-    if (!$signedIn) {
+    if (!$signedIn || !accessAllows($config, 'notes')) {
         throw new ActionRefused('sign in to read a sent message');
     }
 
@@ -4699,6 +4769,15 @@ function doTestEmail(array $config, PDO $pdo, bool $post): array
     return $result;
 }
 
+function doTestTelegram(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $result = sendTestTelegram($config);
+    logAction($pdo, 'test_telegram', $result['to'] ?? null,
+        ($result['sent'] ?? false) ? 'ok' : 'failed', 0, 0, $result['error'] ?? null);
+    return $result;
+}
+
 /**
  * What is wrong with this install, in the terms that actually break it.
  *
@@ -5372,6 +5451,7 @@ function sessionState(array $config): array
         'signed_in' => isSignedIn(),
         'csrf' => isSignedIn() ? csrfToken() : null,
         'configured' => ($config['password_hash'] ?? '') !== '',
+        'access' => accessView($config),
     ];
 }
 
@@ -5382,7 +5462,8 @@ function doSignIn(array $config, bool $post, PDO $pdo): array
     if (!$post) {
         throw new ActionRefused('sign in must be a POST');
     }
-    if (!signIn($config, (string)($_POST['password'] ?? ''))) {
+    $username = trim((string)($_POST['username'] ?? ''));
+    if (!signIn($config, (string)($_POST['password'] ?? ''), $username)) {
         /*
          * A failed attempt is recorded; the password is not.
          *
@@ -5399,8 +5480,8 @@ function doSignIn(array $config, bool $post, PDO $pdo): array
         return ['error' => 'Incorrect password.'];
     }
 
-    logAction($pdo, 'sign_in', null, 'ok', 0, 0, null);
-    return ['signed_in' => true, 'csrf' => csrfToken()];
+    logAction($pdo, 'sign_in', null, 'ok', 0, 0, $username === '' ? null : $username);
+    return ['signed_in' => true, 'csrf' => csrfToken(), 'access' => accessView($config)];
 }
 
 function doSignOut(PDO $pdo): array
@@ -5416,15 +5497,134 @@ function doSignOut(PDO $pdo): array
 /** Everything destructive shares these checks. */
 function requireWrite(bool $post): void
 {
+    global $config;
     if (!$post) {
         throw new ActionRefused('that must be a POST');
     }
     if (!isSignedIn()) {
         throw new ActionRefused('sign in first');
     }
+    if (!accessAllows($config, 'write')) {
+        throw new ActionRefused('your group cannot make administrative changes');
+    }
     if (!csrfValid($_POST['csrf'] ?? null)) {
         throw new ActionRefused('stale form token; reload and try again');
     }
+}
+
+/** Notes are collaborative content, not administrative configuration. */
+function requireNoteWrite(array $config, bool $post): void
+{
+    if (!$post) {
+        throw new ActionRefused('that must be a POST');
+    }
+    if (!isSignedIn() || !accessAllows($config, 'notes')) {
+        throw new ActionRefused('your group cannot write notes');
+    }
+    if (!csrfValid($_POST['csrf'] ?? null)) {
+        throw new ActionRefused('stale form token; reload and try again');
+    }
+}
+
+/** Conversation state belongs to an AI-enabled member, not only an administrator. */
+function requireAiUse(array $config, bool $post): void
+{
+    if (!$post) {
+        throw new ActionRefused('that must be a POST');
+    }
+    if (!isSignedIn() || !accessAllows($config, 'ai')) {
+        throw new ActionRefused('your group cannot use Mr. Radar');
+    }
+    if (!csrfValid($_POST['csrf'] ?? null)) {
+        throw new ActionRefused('stale form token; reload and try again');
+    }
+}
+
+/* ----------------------------------------------------------- peer access -- */
+
+function peersView(array $config, bool $signedIn): array
+{
+    if (!$signedIn || !accessAllows($config, 'write')) {
+        throw new ActionRefused('administrators manage trusted servers');
+    }
+    $rows = peerDefinitions($config);
+    foreach ($rows as &$row) {
+        $token = $_SESSION['peer_tokens'][$row['name']] ?? null;
+        $row['connected_as'] = is_array($token) && (int)($token['expires_at'] ?? 0) >= time()
+            ? (string)($token['subject'] ?? '') : null;
+    }
+    unset($row);
+    return ['rows' => $rows, 'writable' => is_writable(__DIR__ . '/lib/config.php')];
+}
+
+function peerName(string $name): string
+{
+    $name = strtolower(trim($name));
+    if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,40}$/', $name)) {
+        throw new ActionRefused('use a short lowercase server name');
+    }
+    return $name;
+}
+
+function doPeerSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $name = peerName((string)($_POST['name'] ?? ''));
+    $current = require __DIR__ . '/lib/config.php';
+    $prior = (array)($current['peers'][$name] ?? []);
+    $secret = trim((string)($_POST['client_secret'] ?? ''));
+    $peer = [
+        'label' => mb_substr(trim((string)($_POST['label'] ?? $name)), 0, 80),
+        'base_url' => peerUrl((string)($_POST['base_url'] ?? '')),
+        'redirect_uri' => peerUrl((string)($_POST['redirect_uri'] ?? '')),
+        'issuer' => peerUrl((string)($_POST['issuer'] ?? '')),
+        'client_id' => mb_substr(trim((string)($_POST['client_id'] ?? '')), 0, 255),
+        'client_secret' => $secret !== '' ? $secret : (string)($prior['client_secret'] ?? ''),
+    ];
+    if ($peer['label'] === '' || $peer['client_id'] === '' || $peer['client_secret'] === '') {
+        throw new ActionRefused('a peer needs a label, client ID, and client secret');
+    }
+    $current['peers'][$name] = $peer;
+    writeConfigFile($current);
+    logAction($pdo, 'peer_save', $name, 'ok', 0, 0, $peer['issuer']);
+    return ['ok' => true] + peersView($current, true);
+}
+
+function doPeerDelete(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $name = peerName((string)($_POST['name'] ?? ''));
+    if (!isset($config['peers'][$name])) {
+        throw new ActionRefused('that trusted server does not exist');
+    }
+    $current = require __DIR__ . '/lib/config.php';
+    unset($current['peers'][$name]);
+    writeConfigFile($current);
+    logAction($pdo, 'peer_delete', $name, 'ok', 0, 0, null);
+    return ['ok' => true] + peersView($current, true);
+}
+
+function doPeerTest(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $name = peerName((string)($_POST['name'] ?? ''));
+    $peer = $config['peers'][$name] ?? null;
+    if (!is_array($peer)) {
+        throw new ActionRefused('save this trusted server before testing it');
+    }
+    $result = peerTest($peer);
+    logAction($pdo, 'peer_test', $name, $result['ok'] ? 'ok' : 'failed', 0, 0,
+        $result['error'] ?? $result['issuer'] ?? null);
+    return $result;
+}
+
+function doPeerRead(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $name = peerName((string)($_POST['name'] ?? ''));
+    $snapshot = peerRemoteSnapshot($config, $name);
+    logAction($pdo, 'peer_read', $name, 'ok', 0, 0, (string)($snapshot['host'] ?? ''));
+    return $snapshot;
 }
 
 /**
@@ -5860,12 +6060,13 @@ function doLdconfig(array $config, PDO $pdo, bool $post): array
 /** Every note, and every database copy on disk. */
 function notesView(array $config, PDO $pdo, bool $signedIn): array
 {
-    if (!$signedIn) {
+    if (!$signedIn || !accessAllows($config, 'notes')) {
         throw new ActionRefused('sign in to see the notes');
     }
 
     return noteList($pdo, $config) + [
         'views' => array_keys(noteViewLabels()),
+        'groups' => array_keys(accessGroups($config)),
         'me' => currentAccountName(),
     ];
 }
@@ -5927,9 +6128,9 @@ function noteViewLabels(): array
  */
 function doNoteSave(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireNoteWrite($config, $post);
 
-    $saved = noteSave($pdo, [
+    $saved = noteSave($pdo, $config, [
         'body' => $_POST['body'] ?? '',
         'scope' => $_POST['scope'] ?? 'page',
         'view' => $_POST['view'] ?? '',
@@ -5937,6 +6138,7 @@ function doNoteSave(array $config, PDO $pdo, bool $post): array
         'link' => $_POST['link'] ?? '',
         'at' => $_POST['at'] ?? time(),
         'broadcast' => ($_POST['broadcast'] ?? '0') === '1',
+        'audience' => array_values(array_filter(explode(',', (string)($_POST['audience'] ?? '')), 'strlen')),
     ], currentAccountName());
 
     $kind = (string)($_POST['snapshot'] ?? 'none');
@@ -6184,7 +6386,8 @@ function doSnapshotDelete(array $config, PDO $pdo, bool $post): array
  */
 function noteMarksView(PDO $pdo, bool $signedIn): array
 {
-    if (!$signedIn) {
+    global $config;
+    if (!$signedIn || !accessAllows($config, 'notes')) {
         return ['marks' => []];
     }
 
@@ -6197,18 +6400,18 @@ function noteMarksView(PDO $pdo, bool $signedIn): array
         $from = $to - SPAN_DAY;
     }
 
-    return ['marks' => noteMarks($pdo, $view, $from, $to)];
+    return ['marks' => noteMarks($pdo, $config, $view, $from, $to)];
 }
 
 /** What one note captured, listed without the payloads. */
-function noteSnapshotsView(PDO $pdo, bool $signedIn): array
+function noteSnapshotsView(array $config, PDO $pdo, bool $signedIn): array
 {
-    if (!$signedIn) {
+    if (!$signedIn || !accessAllows($config, 'notes')) {
         throw new ActionRefused('sign in to see this');
     }
 
     $id = clampInt($_GET['id'] ?? 0, 1, PHP_INT_MAX);
-    return ['rows' => noteSnapshotList($pdo, $id)];
+    return ['rows' => noteSnapshotList($pdo, $config, $id)];
 }
 
 /**
@@ -6662,7 +6865,7 @@ function aiView(array $config, PDO $pdo, bool $signedIn): array
 /** Opens a conversation, ending any that was still running. */
 function doAiStart(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ready = aiReady($config);
     if (!$ready['ok']) {
@@ -6727,7 +6930,7 @@ function aiTranscriptView(array $config, bool $signedIn): array
  */
 function doAiPin(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ai = aiDb($config);
     if ($ai === null) {
@@ -6757,7 +6960,7 @@ function doAiPin(array $config, PDO $pdo, bool $post): array
  */
 function doAiExtend(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ai = aiDb($config);
     if ($ai === null) {
@@ -6823,7 +7026,7 @@ function doAiExtend(array $config, PDO $pdo, bool $post): array
  */
 function doAiResume(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ready = aiReady($config);
     if (!$ready['ok']) {
@@ -6934,7 +7137,7 @@ function aiConversationSummary(PDO $ai, int $session): string
 /** Adds what the user said and readies a step. */
 function doAiSay(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ai = aiDb($config);
     if ($ai === null) {
@@ -7014,7 +7217,7 @@ function doAiSay(array $config, PDO $pdo, bool $post): array
  */
 function doAiStep(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ai = aiDb($config);
     if ($ai === null) {
@@ -7065,7 +7268,7 @@ function aiPollView(array $config, PDO $pdo, bool $signedIn): array
 /** Allows or refuses a tool the model asked permission for. */
 function doAiPermit(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ai = aiDb($config);
     if ($ai === null) {
@@ -7085,6 +7288,11 @@ function doAiPermit(array $config, PDO $pdo, bool $post): array
 
     $session = (int)$run['session_id'];
     $who = currentAccountName() ?: 'account';
+
+    $tool = aiTools(aiViews())[(string)$run['tool']] ?? null;
+    if ($tool === null || !aiToolAllowedForCurrentIdentity($config, $tool)) {
+        throw new ActionRefused('your group is not allowed to use that assistant tool');
+    }
 
     if (!$allow) {
         $ai->prepare(
@@ -7126,8 +7334,7 @@ function doAiPermit(array $config, PDO $pdo, bool $post): array
      * aiRunTool and got back "that tool does not run on the server" - a
      * refusal produced by saying yes.
      */
-    $tools = aiTools(aiViews());
-    $group = $tools[(string)$run['tool']]['group'] ?? '';
+    $group = (string)$tool['group'];
 
     if ($group === 'pictures') {
         aiRunPicture(
@@ -7197,7 +7404,7 @@ function doHostRequest(array $config, PDO $pdo, bool $post): array
  */
 function doAiToolResult(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ai = aiDb($config);
     if ($ai === null) {
@@ -7214,6 +7421,11 @@ function doAiToolResult(array $config, PDO $pdo, bool $post): array
 
     if ($run === false) {
         throw new ActionRefused('that is not something the browser is being asked for');
+    }
+
+    $tool = aiTools(aiViews())[(string)$run['tool']] ?? null;
+    if ($tool === null || !aiToolAllowedForCurrentIdentity($config, $tool)) {
+        throw new ActionRefused('your group is not allowed to use that assistant tool');
     }
 
     $session = (int)$run['session_id'];
@@ -7415,7 +7627,7 @@ function aiBrowserResult(PDO $ai, int $session, array $run): array
 /** Sets how hard to think for this conversation, up to the configured ceiling. */
 function doAiEffort(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ai = aiDb($config);
     if ($ai === null) {
@@ -7447,7 +7659,7 @@ function doAiEffort(array $config, PDO $pdo, bool $post): array
 /** Summarises the older part of a conversation to make room. */
 function doAiCompactSession(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ai = aiDb($config);
     if ($ai === null) {
@@ -7510,7 +7722,7 @@ function aiAssetView(array $config, bool $signedIn): array
 /** Halts whatever is in flight, leaving the conversation open. */
 function doAiInterrupt(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ai = aiDb($config);
     if ($ai === null) {
@@ -7536,7 +7748,7 @@ function doAiInterrupt(array $config, PDO $pdo, bool $post): array
 /** Stops the conversation without deleting it. */
 function doAiStop(array $config, PDO $pdo, bool $post): array
 {
-    requireWrite($post);
+    requireAiUse($config, $post);
 
     $ai = aiDb($config);
     if ($ai === null) {
@@ -7778,12 +7990,88 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         'alerts' => aiAlertSettings($config),
         'effort_levels' => aiEffortLevels(),
         'tools' => $tools,
+        'toolsets' => aiToolsets($config),
         'ready' => $ready['ok'],
         'why' => $ready['why'],
         'writable' => is_writable(__DIR__ . '/lib/config.php'),
         'database' => aiDatabaseFacts($config),
         'views' => $views,
     ];
+}
+
+/** Built-ins provide two deliberate permission configurations; saved sets add to them. */
+function aiToolsets(array $config): array
+{
+    $catalogue = aiTools(aiViews());
+    $diagnostic = [];
+    $operator = [];
+    foreach ($catalogue as $name => $tool) {
+        $diagnostic[$name] = [
+            'enabled' => aiToolDefaultEnabled($tool),
+            'permission' => (bool)$tool['permission'],
+        ];
+        $operator[$name] = ['enabled' => true, 'permission' => true];
+    }
+    $sets = [
+        ['name' => 'diagnostic', 'label' => 'Diagnostic only', 'builtin' => true, 'tools' => $diagnostic],
+        ['name' => 'operator', 'label' => 'Operator approval', 'builtin' => true, 'tools' => $operator],
+    ];
+    foreach ((array)($config['ai']['toolsets'] ?? []) as $name => $set) {
+        if (!is_string($name) || !preg_match('/^[a-z0-9][a-z0-9_-]{0,40}$/', $name)
+            || !is_array($set) || !is_array($set['tools'] ?? null)) {
+            continue;
+        }
+        $sets[] = [
+            'name' => $name,
+            'label' => trim((string)($set['label'] ?? $name)),
+            'builtin' => false,
+            'tools' => $set['tools'],
+        ];
+    }
+    return $sets;
+}
+
+function toolsetFromRequest(): array
+{
+    $on = array_filter(explode(',', (string)($_POST['tools_on'] ?? '')));
+    $ask = array_filter(explode(',', (string)($_POST['tools_ask'] ?? '')));
+    $tools = [];
+    foreach (aiTools(aiViews()) as $name => $_tool) {
+        $tools[$name] = ['enabled' => in_array($name, $on, true), 'permission' => in_array($name, $ask, true)];
+    }
+    return $tools;
+}
+
+function doAiToolsetSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $name = strtolower(trim((string)($_POST['name'] ?? '')));
+    $label = trim((string)($_POST['label'] ?? $name));
+    if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,40}$/', $name) || $name === 'diagnostic' || $name === 'operator') {
+        throw new ActionRefused('use a short lowercase preset name; built-in presets cannot be replaced');
+    }
+    if ($label === '' || mb_strlen($label) > 80) {
+        throw new ActionRefused('a preset needs a label of at most 80 characters');
+    }
+    $current = require __DIR__ . '/lib/config.php';
+    $current['ai']['toolsets'][$name] = ['label' => $label, 'tools' => toolsetFromRequest()];
+    writeConfigFile($current);
+    logAction($pdo, 'ai_toolset_save', $name, 'ok', 0, 0, $label);
+    return ['ok' => true] + aiSettingsView($current, $pdo, true);
+}
+
+function doAiToolsetDelete(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $name = strtolower(trim((string)($_POST['name'] ?? '')));
+    if ($name === 'diagnostic' || $name === 'operator' || !isset($config['ai']['toolsets'][$name])) {
+        throw new ActionRefused('that saved toolset does not exist');
+    }
+    $current = require __DIR__ . '/lib/config.php';
+    unset($current['ai']['toolsets'][$name]);
+    writeConfigFile($current);
+    logAction($pdo, 'ai_toolset_delete', $name, 'ok', 0, 0, null);
+    return ['ok' => true] + aiSettingsView($current, $pdo, true);
 }
 
 /**
@@ -7894,6 +8182,10 @@ function doAiTry(array $config, PDO $pdo, bool $post): array
     }
 
     $tool = $all[$name];
+
+    if (!aiToolAllowedForCurrentIdentity($config, $tool)) {
+        throw new ActionRefused('your group is not allowed to use that assistant tool');
+    }
 
     if ($tool['where'] !== 'server') {
         throw new ActionRefused(
@@ -8437,7 +8729,7 @@ function aiSessionsView(array $config, bool $signedIn): array
  * somebody reads off a chart and the id the model accepts are the same string
  * by construction rather than by discipline.
  */
-function chartCatalogueView(bool $signedIn): array
+function chartCatalogueView(array $config, bool $signedIn): array
 {
     if (!$signedIn) {
         return ['charts' => []];
@@ -8445,6 +8737,9 @@ function chartCatalogueView(bool $signedIn): array
 
     $out = [];
     foreach (aiChartCatalogue() as $id => $chart) {
+        if (!accessAllows($config, 'charts', $id)) {
+            continue;
+        }
         $out[$id] = [
             'name' => $chart['name'],
             'view' => $chart['view'],
@@ -8460,15 +8755,20 @@ function chartCatalogueView(bool $signedIn): array
 }
 
 /** One chart's numbers, for drawing it somewhere other than its own page. */
-function chartSeriesView(PDO $pdo, bool $signedIn): array
+function chartSeriesView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
         throw new ActionRefused('sign in to see this');
     }
 
+    $chart = (string)($_GET['chart'] ?? '');
+    if (!accessAllows($config, 'charts', $chart)) {
+        throw new ActionRefused('your group cannot view that chart');
+    }
+
     return aiChartData(
         $pdo,
-        (string)($_GET['chart'] ?? ''),
+        $chart,
         clampInt($_GET['hours'] ?? 24, 1, 8760)
     );
 }

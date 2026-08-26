@@ -519,6 +519,23 @@ function generatedFields(array $sample, string $samplePath): array
             $dotted = implode('.', $here);
 
             /*
+             * A few settings are maps whose keys are chosen by the operator:
+             * alert-rule overrides, scan schedules, image settings and AI
+             * tools. Walking them works only after keys already exist, which
+             * makes an empty sample impossible to configure. One validated
+             * JSON editor keeps the complete map editable without pretending
+             * that a comma-separated line can express nested permissions.
+             */
+            if (in_array($dotted, structuredConfigPaths(), true)) {
+                if (!isset($covered[$dotted])) {
+                    $fields[] = generatedStructuredField(
+                        $dotted, $here, $value, $notes['help'][$dotted] ?? ''
+                    );
+                }
+                continue;
+            }
+
+            /*
              * A map of settings is walked into; a list is one answer.
              *
              * `['a', 'b']` is a value somebody edits as a whole. `['enabled' =>
@@ -560,14 +577,13 @@ function hiddenConfigPaths(): array
         // Generated. Editing it renames every masked path on the dashboard,
         // and there is a checkbox that does that deliberately.
         'mask_secret',
-        // Written from scan_root, and wrong if they disagree.
-        'database',
-        // Edited by the schedule page, which knows what each scan costs.
-        'scans',
-        // Ticked on the Images and Tools pages, which list what exists.
-        'ai.images',
-        'ai.tools',
     ];
+}
+
+/** Maps whose dynamic keys need a structured editor in setup.php. */
+function structuredConfigPaths(): array
+{
+    return ['access.groups', 'access.users', 'alerts.rules', 'ai.images', 'ai.tools', 'ai.toolsets', 'openid.clients', 'peers', 'scans'];
 }
 
 /** One generated field, with its type guessed from what the sample holds. */
@@ -618,7 +634,26 @@ function generatedField(string $dotted, array $path, mixed $value, string $help)
         return $field + ['type' => 'number', 'default' => $value];
     }
 
+    if (str_ends_with($key, '_private_key') || str_ends_with($key, '_certificate')) {
+        return $field + ['type' => 'textarea', 'default' => (string)$value, 'optional' => true];
+    }
+
     return $field + ['type' => 'text', 'default' => (string)$value, 'optional' => true];
+}
+
+/** A JSON field for a configuration map with operator-defined keys. */
+function generatedStructuredField(string $dotted, array $path, mixed $value, string $help): array
+{
+    return [
+        'key' => 'cfg_' . str_replace('.', '__', $dotted),
+        'path' => $path,
+        'label' => $dotted,
+        'help' => trim($help . ' Enter a JSON object; its keys and nested values are preserved exactly.'),
+        'section' => count($path) > 1 ? $path[0] : 'general',
+        'generated' => true,
+        'type' => 'json',
+        'default' => $value,
+    ];
 }
 
 /**
@@ -681,6 +716,14 @@ function parseField(array $field, mixed $raw): array
             }
         }
         return [$clean, null];
+    }
+
+    if ($type === 'json') {
+        $decoded = json_decode((string)$raw, true);
+        if (!is_array($decoded) || json_last_error() !== JSON_ERROR_NONE) {
+            return [$field['default'], 'Enter a valid JSON object or array.'];
+        }
+        return [$decoded, null];
     }
 
     if ($type === 'categories') {
@@ -747,11 +790,17 @@ function parseField(array $field, mixed $raw): array
  * was asked about - the category rules, the excluded paths, the thresholds that
  * are fine as they are - comes from the sample at whatever it says today.
  */
-function buildConfig(array $sample, array $values, string $passwordHash, string $maskSecret): array
+function buildConfig(
+    array $sample,
+    array $values,
+    string $passwordHash,
+    string $maskSecret,
+    ?string $samplePath = null
+): array
 {
     $config = $sample;
 
-    foreach (allConfigFields($sample) as $field) {
+    foreach (allConfigFields($sample, $samplePath) as $field) {
         if ($field['type'] === 'password' || !fieldApplies($field, $values)) {
             continue;
         }
@@ -882,6 +931,7 @@ function displayValue(array $field, mixed $value): string
         'bool' => $value ? 'y' : 'n',
         'categories' => implode(', ', (array)$value),
         'lines' => implode("\n", (array)$value),
+        'json' => json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '{}',
         // Blank, so that leaving it blank means what it already meant. Showing
         // the word "null" in a text box invites somebody to type it.
         'nullable' => $value === null ? '' : (string)$value,

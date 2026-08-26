@@ -56,8 +56,21 @@ function aiRunTool(
     array $config,
     PDO $pdo,
     ?PDO $ai = null,
-    int $session = 0
+    int $session = 0,
+    bool $respectAccess = true
 ): array {
+    $tool = aiTools(aiViews())[$name] ?? null;
+    if ($tool === null) {
+        return ['error' => 'That tool does not exist.'];
+    }
+    if ($respectAccess && !aiToolAllowedForCurrentIdentity($config, $tool)) {
+        return ['error' => 'Your group is not allowed to use that assistant tool.'];
+    }
+    if ($respectAccess && in_array($name, ['get_chart_data', 'show_chart', 'get_chart_image'], true)
+        && !aiChartAllowedForCurrentIdentity($config, (string)($values['chart'] ?? ''))) {
+        return ['error' => 'Your group is not allowed to view that chart.'];
+    }
+
     try {
         $result = match ($name) {
             'get_current_status' => aiCurrentStatus($config, $pdo),
@@ -1012,6 +1025,13 @@ function aiListCharts(array $config): array
     $byPage = [];
 
     foreach (aiEveryChart() as $chart) {
+        if (!aiChartAllowedForCurrentIdentity($config, (string)$chart['id'])) {
+            continue;
+        }
+        if ($chart['page'] !== null && function_exists('accessAllows')
+            && !accessAllows($config, 'pages', (string)$chart['page'])) {
+            continue;
+        }
         $page = $chart['page'];
         $key = $page === null ? '(not on any page)' : $page;
 

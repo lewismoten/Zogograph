@@ -55,9 +55,22 @@ function isSignedIn(): bool
  * password is configured", "wrong password" and "right password" is measurable,
  * and password_verify against an empty hash returns instantly.
  */
-function signIn(array $config, string $password): bool
+function signIn(array $config, string $password, string $username = ''): bool
 {
-    $hash = (string)($config['password_hash'] ?? '');
+    $users = (array)($config['access']['users'] ?? []);
+    $named = null;
+    if ($username !== '') {
+        // A named attempt must never fall back to the legacy administrator
+        // password: a misspelt account name must not gain administrator access.
+        if (!isset($users[$username]) || !is_array($users[$username])) {
+            usleep(random_int(150000, 350000));
+            return false;
+        }
+        $named = $users[$username];
+    }
+    $hash = is_array($named)
+        ? (string)($named['password_hash'] ?? '')
+        : (string)($config['password_hash'] ?? '');
     if ($hash === '' || $password === '') {
         usleep(random_int(150000, 350000));
         return false;
@@ -89,6 +102,10 @@ function signIn(array $config, string $password): bool
      */
     session_regenerate_id(false);
     $_SESSION['signed_in'] = true;
+    $_SESSION['username'] = is_array($named) ? $username : 'administrator';
+    $_SESSION['groups'] = is_array($named)
+        ? array_values(array_filter((array)($named['groups'] ?? []), 'is_string'))
+        : ['Administrators'];
     $_SESSION['seen'] = time();
     $_SESSION['csrf'] = bin2hex(random_bytes(32));
     return true;

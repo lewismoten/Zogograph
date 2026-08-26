@@ -51,6 +51,21 @@
  */
 [hidden] { display: none !important; }
 
+.try-textarea { width: 100%; min-height: 12rem; }
+
+/* A report should remain useful off-screen: controls and navigation do not. */
+@media print {
+  :root { color-scheme: light; }
+  body { max-width: none; padding: 0; background: #fff; color: #111; }
+  .topbar, .sidebar, .topbar-actions, .panel-tools, button, dialog,
+  #notice, #broadcastBanner, #fetchState { display: none !important; }
+  main { margin: 0 !important; padding: 0 !important; }
+  .view[hidden] { display: none !important; }
+  .panel, .card, .gauge { break-inside: avoid; box-shadow: none; border-color: #aaa; }
+  canvas { max-width: 100%; }
+  a { color: #111; text-decoration: underline; }
+}
+
 /* Visible to screen readers and document outlines without adding a second
    visual heading to every data-dense view. */
 .sr-only {

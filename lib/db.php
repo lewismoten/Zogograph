@@ -117,6 +117,29 @@ function columnExists(PDO $pdo, string $table, string $column): bool
 function migrations(): array
 {
     return [
+        35 => [
+            /* One-time OIDC authorization codes. Tokens are never stored: the
+             * code carries only the minimum session snapshot needed to sign an
+             * ID token after PKCE and client authentication succeed. */
+            "CREATE TABLE openid_codes (
+                code_hash TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                redirect_uri TEXT NOT NULL,
+                code_challenge TEXT NOT NULL,
+                username TEXT NOT NULL,
+                groups_json TEXT NOT NULL,
+                nonce TEXT,
+                auth_time INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                used_at INTEGER
+            )",
+            'CREATE INDEX openid_codes_expiry ON openid_codes (expires_at)',
+        ],
+        34 => [
+            // Empty means every group which may read notes; otherwise the note
+            // is visible only to one of these named groups.
+            "ALTER TABLE notes ADD COLUMN audience TEXT NOT NULL DEFAULT '[]'",
+        ],
         1 => [
             /*
              * Every path in the system, once.

@@ -332,7 +332,7 @@ function runWeb(
                 ? $existing['mask_secret']
                 : bin2hex(random_bytes(32));
 
-            $config = buildConfig($sample, $values, (string)$hash, $mask);
+            $config = buildConfig($sample, $values, (string)$hash, $mask, $samplePath);
             $rendered = renderConfig($config, $root . '/lib');
 
             if ($authorised) {
@@ -683,6 +683,20 @@ function renderField(array $field, array $values, array $errors, bool $configure
             . $help . $bad . '</label>';
     }
 
+    if ($field['type'] === 'json') {
+        return '<label>' . $label
+            . '<textarea class="structured" name="' . h($key) . '" rows="12" spellcheck="false">'
+            . h(displayValue($field, $values[$key])) . '</textarea>'
+            . $help . $bad . '</label>';
+    }
+
+    if ($field['type'] === 'textarea') {
+        return '<label>' . $label
+            . '<textarea class="structured" name="' . h($key) . '" rows="12" spellcheck="false">'
+            . h(displayValue($field, $values[$key])) . '</textarea>'
+            . $help . $bad . '</label>';
+    }
+
     $type = $field['type'] === 'email' ? 'email' : 'text';
 
     return '<label>' . $label
@@ -774,7 +788,7 @@ function runCli(
         ? '  Mask secret: kept, so masked names do not all change.'
         : '  Mask secret: generated (32 random bytes).');
 
-    $config = buildConfig($sample, $values, $hash, $mask);
+    $config = buildConfig($sample, $values, $hash, $mask, $samplePath);
     $text = renderConfig($config, $root . '/lib');
 
     say('');

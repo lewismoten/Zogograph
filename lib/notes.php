@@ -33,6 +33,7 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/spans.php';
 require_once __DIR__ . '/alerts.php';
+require_once __DIR__ . '/access.php';
 
 /** How much text one note holds. Generous; this is prose, not a log line. */
 const NOTE_MAX_BODY = 8000;
@@ -112,7 +113,7 @@ function snapshotKinds(): array
  *
  * @return array{id: int, at: int}
  */
-function noteSave(PDO $pdo, array $input, string $who): array
+function noteSave(PDO $pdo, array $config, array $input, string $who): array
 {
     $body = trim((string)($input['body'] ?? ''));
     if ($body === '') {
@@ -154,9 +155,17 @@ function noteSave(PDO $pdo, array $input, string $who): array
         throw new ActionRefused('that is as many notes as this will hold');
     }
 
+    $audience = array_values(array_unique(array_filter(
+        is_array($input['audience'] ?? null) ? $input['audience'] : [],
+        fn(mixed $group): bool => is_string($group) && isset(accessGroups($config)[$group])
+    )));
+    if (is_array($input['audience'] ?? null) && count($audience) !== count($input['audience'])) {
+        throw new ActionRefused('one of the selected note groups does not exist');
+    }
+
     $pdo->prepare(
-        'INSERT INTO notes (at, written_at, body, scope, view, chart, link, broadcast, who)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO notes (at, written_at, body, scope, view, chart, link, broadcast, who, audience)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )->execute([
         $at,
         time(),
@@ -167,6 +176,7 @@ function noteSave(PDO $pdo, array $input, string $who): array
         trim((string)($input['link'] ?? '')) ?: null,
         empty($input['broadcast']) ? 0 : 1,
         $who,
+        json_encode($audience, JSON_UNESCAPED_SLASHES),
     ]);
 
     return ['id' => (int)$pdo->lastInsertId(), 'at' => $at];
@@ -180,11 +190,20 @@ function noteSave(PDO $pdo, array $input, string $who): array
  *
  * @return list<array<string, mixed>>
  */
-function noteMarks(PDO $pdo, string $view, int $from, int $to): array
+function noteVisibleTo(array $row, array $config): bool
+{
+    $audience = json_decode((string)($row['audience'] ?? '[]'), true);
+    if (!is_array($audience) || $audience === []) {
+        return true;
+    }
+    return array_intersect($audience, accessIdentity($config)['groups']) !== [];
+}
+
+function noteMarks(PDO $pdo, array $config, string $view, int $from, int $to): array
 {
     try {
         $stmt = $pdo->prepare(
-            "SELECT id, at, body, scope, chart FROM notes
+            "SELECT id, at, body, scope, chart, audience FROM notes
               WHERE at >= ? AND at <= ?
                 AND (scope = 'site' OR ((scope = 'page' OR scope = 'chart') AND view = ?))
               ORDER BY at"
@@ -202,7 +221,7 @@ function noteMarks(PDO $pdo, string $view, int $from, int $to): array
         'body' => mb_substr((string)$row['body'], 0, 200),
         'scope' => (string)$row['scope'],
         'chart' => $row['chart'],
-    ], $rows);
+    ], array_values(array_filter($rows, fn(array $row): bool => noteVisibleTo($row, $config))));
 }
 
 /**
@@ -214,14 +233,15 @@ function noteMarks(PDO $pdo, string $view, int $from, int $to): array
  *
  * @return list<array<string, mixed>>
  */
-function noteBroadcasts(PDO $pdo): array
+function noteBroadcasts(PDO $pdo, array $config): array
 {
     try {
-        return $pdo->query(
-            'SELECT id, at, body, who, link FROM notes
+        $rows = $pdo->query(
+            'SELECT id, at, body, who, link, audience FROM notes
               WHERE broadcast = 1 AND cleared_at IS NULL
               ORDER BY at DESC LIMIT 10'
         )->fetchAll();
+        return array_values(array_filter($rows, fn(array $row): bool => noteVisibleTo($row, $config)));
     } catch (Throwable) {
         return [];
     }
@@ -247,6 +267,7 @@ function noteList(PDO $pdo, array $config, int $limit = 300): array
         return ['rows' => [], 'scopes' => noteScopes(), 'kinds' => snapshotKinds()];
     }
 
+    $rows = array_values(array_filter($rows, fn(array $row): bool => noteVisibleTo($row, $config)));
     foreach ($rows as &$row) {
         $row['broadcast'] = (bool)$row['broadcast'];
         $row['snapshots'] = (int)$row['snapshots'];
@@ -270,8 +291,14 @@ function noteList(PDO $pdo, array $config, int $limit = 300): array
  *
  * @return list<array<string, mixed>>
  */
-function noteSnapshotList(PDO $pdo, int $noteId): array
+function noteSnapshotList(PDO $pdo, array $config, int $noteId): array
 {
+    $visible = $pdo->prepare('SELECT audience FROM notes WHERE id = ?');
+    $visible->execute([$noteId]);
+    $note = $visible->fetch();
+    if (!is_array($note) || !noteVisibleTo($note, $config)) {
+        return [];
+    }
     $stmt = $pdo->prepare(
         'SELECT id, kind, label, bytes, at FROM note_snapshots WHERE note_id = ? ORDER BY id'
     );

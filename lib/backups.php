@@ -270,9 +270,9 @@ function jetBackupInventory(?PDO $host = null): array
         // names it has had, and left null rather than guessed.
         $rows[] = [
             'account' => firstOf($entry, ['account', 'owner', 'username', '_account']),
-            'created' => firstOf($entry, ['created', 'created_on', 'time', 'timestamp', 'date']),
+            'created_at' => jetBackupTimestamp(firstOf($entry, ['created', 'created_on', 'time', 'timestamp', 'date'])),
             'type' => firstOf($entry, ['type', 'backup_type', 'schedule_type']),
-            'size' => firstOf($entry, ['size', 'total_size', 'used', 'disk_usage']),
+            'bytes' => jetBackupBytes(firstOf($entry, ['size', 'total_size', 'used', 'disk_usage'])),
             'destination' => firstOf($entry, ['destination', 'destination_name', 'dest']),
             'path' => firstOf($entry, ['path', 'location', 'directory']),
             'id' => firstOf($entry, ['_id', 'id', 'uniq_id']),
@@ -285,6 +285,30 @@ function jetBackupInventory(?PDO $host = null): array
         'backups' => $rows,
         'destinations' => $destinations ?? [],
     ];
+}
+
+function jetBackupTimestamp(mixed $value): ?int
+{
+    if (is_numeric($value)) {
+        $time = (int)$value;
+        return $time > 20000000000 ? (int)floor($time / 1000) : $time;
+    }
+    $time = is_string($value) ? strtotime($value) : false;
+    return $time === false ? null : $time;
+}
+
+function jetBackupBytes(mixed $value): ?int
+{
+    if (is_int($value) || is_float($value) || (is_string($value) && ctype_digit($value))) {
+        return max(0, (int)$value);
+    }
+    if (!is_string($value) || !preg_match('/^\s*([0-9]+(?:\.[0-9]+)?)\s*([kmgtpe]?i?b?)?\s*$/i', $value, $m)) {
+        return null;
+    }
+    $unit = strtolower($m[2] ?: 'b');
+    $power = array_search($unit, ['b', 'k', 'kb', 'kib', 'm', 'mb', 'mib', 'g', 'gb', 'gib', 't', 'tb', 'tib', 'p', 'pb', 'pib'], true);
+    $steps = $power === false ? 0 : (int)floor(($power + 2) / 3);
+    return (int)round((float)$m[1] * (1024 ** $steps));
 }
 
 /** The first key present, or null. Values are never invented. */

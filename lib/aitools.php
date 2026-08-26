@@ -1814,13 +1814,53 @@ function aiToolDefaultEnabled(array $tool): bool
     return $tool['where'] !== 'ask' && $tool['group'] === 'diagnostic';
 }
 
-function aiEnabledTools(array $config, array $views): array
+/**
+ * Whether the active dashboard identity may use this tool category.
+ *
+ * The catalogue is also used by unattended alert triage, where no dashboard
+ * identity exists.  `access.php` is intentionally optional there; an API
+ * request always has it loaded and is therefore subject to the group policy.
+ */
+function aiToolAllowedForCurrentIdentity(array $config, array $tool): bool
+{
+    return !function_exists('accessAllows')
+        || accessAllows($config, 'tools', (string)$tool['group']);
+}
+
+/** Chart grants may be narrower than the permission to open the containing page. */
+function aiChartAllowedForCurrentIdentity(array $config, string $chartId): bool
+{
+    return !function_exists('accessAllows') || accessAllows($config, 'charts', $chartId);
+}
+
+/** @return list<string> */
+function aiAllowedChartIds(array $config): array
+{
+    return array_values(array_filter(
+        array_keys(aiChartCatalogue()),
+        fn(string $id): bool => aiChartAllowedForCurrentIdentity($config, $id)
+    ));
+}
+
+function aiEnabledTools(array $config, array $views, bool $respectAccess = true): array
 {
     $settings = $config['ai']['tools'] ?? [];
     $pictures = aiImageSettings($config);
     $out = [];
 
     foreach (aiTools($views) as $name => $tool) {
+        if ($respectAccess && !aiToolAllowedForCurrentIdentity($config, $tool)) {
+            continue;
+        }
+
+        if (in_array($name, ['get_chart_data', 'show_chart', 'get_chart_image'], true)) {
+            $charts = $respectAccess ? aiAllowedChartIds($config) : array_keys(aiChartCatalogue());
+            if ($charts === []) {
+                continue;
+            }
+            $tool['parameters']['chart']['enum'] = $charts;
+        }
+
         /*
          * The picture tools describe themselves from this install's settings.
          *
@@ -2111,6 +2151,7 @@ function aiViews(): array
         'overview' => 'gauges for disk, inodes, CPU, memory and load, plus what the '
             . 'dashboard currently thinks is wrong',
         'charts' => 'those same five measurements plotted over the selected period',
+        'services' => 'the services discovered on the host, their state, memory use, and recent changes',
         'storage' => 'disk use by category, the last scan, and a Scan now button',
         'storage-files' => 'the largest files and directories, and what has grown',
         'storage-links' => 'symlinks that are broken, looping, or leave the account',
@@ -2167,6 +2208,8 @@ function aiViews(): array
             . 'confirmation and a check that it actually went. This is the right place '
             . 'to send somebody who needs to stop something; do not write out kill '
             . 'commands for a terminal instead',
+        'units' => 'system services and units, their recent state, and the process or service behind each one',
+        'busy' => 'the busiest processes and services right now, sorted by the resource they are consuming',
         'network' => 'listening ports, connections, and packet captures',
         'net-urls' => 'checks that fetch addresses from outside and record the answer',
         'net-rdns' => 'names for addresses seen in captures and logs',
@@ -2174,14 +2217,59 @@ function aiViews(): array
         'uptime' => 'when the machine was up and when each collector was reporting',
         'alerts' => 'every alert raised, with the evidence captured at the time',
         'capabilities' => 'which programs are installed and usable from this account',
+        'cagefs' => 'what the account can see through CageFS and the boundaries that affect monitoring',
         'sys-changed' => 'software that changed underneath - kernel, PHP, OpenSSL',
         'sys-account' => 'what the dashboard is storing and what it will grow to',
+        'system' => 'the dashboard’s own system status, configuration health, and maintenance information',
         'sys-retention' => 'how long each kind of record is kept',
         'sys-problems' => "the dashboard's own error log",
         'sys-notes' => 'notes people have written against pages and charts',
+        'deletions' => 'the audited record of files and directories removed through the dashboard',
         'schedule' => 'when the collectors run and what they collect',
         'email' => 'alert email settings, severities and thresholds',
+        'whoami' => 'the current account identity, server name, and environment facts used by the dashboard',
+        'whois' => 'domain registration and expiry lookup results',
         'backups' => 'backups found on the machine and how old each is',
         'calendar' => 'renewals, expiries and events that are coming up',
+        'backups-actions' => 'safe next actions for backup storage, with warnings before any destructive work',
+        'backups-other' => 'probable non-JetBackup archives discovered on the machine',
+        'backups-jetbackup' => 'JetBackup metadata, destinations, dates and reported sizes',
+        'disk-deleted' => 'deleted files that are still held open by a process',
+        'disk-dirs' => 'the largest directories on the host filesystem',
+        'disk-procs' => 'which processes currently have files open on disk',
+        'disk-rootfiles' => 'files visible only to the host collector',
+        'host-layout' => 'mount points and filesystem layout on the host',
+        'mem-users' => 'memory grouped by account user',
+        'mem-procs' => 'the processes using the most memory',
+        'mem-slab' => 'kernel slab caches and their memory use',
+        'net-ports' => 'listening network ports and the processes behind them',
+        'net-peers' => 'remote addresses currently connected to the host',
+        'net-capture' => 'a safe, bounded packet capture request',
+        'net-captures' => 'the saved results of previous packet captures',
+        'net-dns' => 'interactive DNS lookups and their answers',
+        'net-fetch' => 'an explicit, bounded HTTP request made from this host',
+        'net-labels' => 'operator-defined names for addresses and services',
+        'dns-records' => 'published DNS records and changes over time',
+        'sys-descriptions' => 'operator-maintained explanations for local processes and caches',
+        'sys-host-data' => 'what the host collector stores and retains',
+        'sys-memory' => 'facts Mr. Radar has retained for later conversations',
+        'sys-reports' => 'Mr. Radar’s scheduled written summaries',
+        'sys-terminal' => 'a guarded terminal session running as the dashboard account',
+        'sys-ai-model' => 'Mr. Radar provider and model configuration',
+        'sys-ai-prices' => 'model price and budget settings',
+        'sys-ai-limits' => 'Mr. Radar time, token and threshold limits',
+        'sys-ai-images' => 'image-generation and reaction settings',
+        'sys-ai-tools' => 'which Mr. Radar tools are enabled and need confirmation',
+        'sys-ai-try' => 'a form for testing each available Mr. Radar tool',
+        'sys-ai-billing' => 'Mr. Radar usage and cost history',
+        'sys-ai-data' => 'data and retained material owned by Mr. Radar',
+        'sys-peers' => 'trusted Hostscope servers and their OpenID discovery health',
+        'scans-account' => 'the account collector schedule and its configured jobs',
+        'scans-host' => 'the host collector schedule and its configured jobs',
+        'sys-ai' => 'the current Mr. Radar conversation',
+        'sys-ai-identity' => 'Mr. Radar’s displayed identity and personality',
+        'sys-ai-past' => 'past Mr. Radar conversations',
+        'sys-installed' => 'the current inventory of installed host software',
+        'sys-sessions' => 'guarded terminal sessions and their state',
     ];
 }
