@@ -7584,8 +7584,41 @@ function openChatFull() {
   // Hiding it while it IS the page would leave an empty page and no way back.
   $("chatClose").hidden = true;
 
+  sizeChatFull();
+
   refreshChat().catch(error => notice(String(error.message || error)));
   renderChat();
+}
+
+/**
+ * Sizes the docked chat to what is actually left of the window.
+ *
+ * A calc() cannot know how much is above the view - the range controls, the
+ * alert strip, the toast area - and on a short window that guess put the
+ * message box below the fold. This reads where the panel starts and gives it
+ * the rest, minus the room the corner button occupies, so the two never sit on
+ * top of each other.
+ */
+function sizeChatFull() {
+  const panel = $("chatPanel");
+  if (!panel || !panel.classList.contains("chat-wide")) return;
+
+  // Measured before the height is applied, or it measures its own last answer.
+  panel.style.setProperty("--chat-full-height", "auto");
+  const top = panel.getBoundingClientRect().top;
+
+  /*
+   * The corner button's own footprint.
+   *
+   * It is fixed to the bottom right and is not going anywhere, so the panel
+   * stops short of it rather than being drawn underneath. Read from the button
+   * rather than hard-coded, because it has a size the stylesheet decides.
+   */
+  const corner = $("noteButton")?.getBoundingClientRect();
+  const gap = corner ? Math.round(window.innerHeight - corner.top) + 12 : 24;
+
+  const height = Math.max(320, Math.round(window.innerHeight - top - gap));
+  panel.style.setProperty("--chat-full-height", `${height}px`);
 }
 
 /**
@@ -7602,6 +7635,7 @@ function undockChat(wasOpen) {
 
   home.appendChild(panel);
   panel.classList.remove("chat-wide");
+  panel.style.removeProperty("--chat-full-height");
   $("chatClose").hidden = false;
 
   panel.hidden = !wasOpen;
@@ -10934,6 +10968,18 @@ function renderTerminal(data) {
     ));
   }
 
+  /*
+   * Where the next command will run.
+   *
+   * Shown rather than remembered silently. `cd` carrying over is only honest if
+   * the directory it carried to is somewhere you can see - otherwise a command
+   * that behaves differently from the last one has no visible reason to.
+   */
+  const where = document.createElement("div");
+  where.className = "term-cwd";
+  where.id = "terminalCwd";
+  parts.push(where);
+
   const form = document.createElement("form");
   form.className = "term-form";
   form.id = "terminalForm";
@@ -11007,6 +11053,32 @@ function renderTerminal(data) {
   });
   parts.push(off);
 
+  /*
+   * A second Stop, beside the output.
+   *
+   * The one in the panel header is three hundred pixels above the line
+   * somebody watching a command is actually reading, which on a long command
+   * means scrolling up to find out that it exists. A command you cannot stop
+   * without hunting for the button is one you cannot stop.
+   */
+  const running = document.createElement("div");
+  running.className = "term-running";
+  running.id = "terminalRunning";
+  running.hidden = true;
+
+  const runningSaid = document.createElement("span");
+  runningSaid.id = "terminalRunningSaid";
+  running.appendChild(runningSaid);
+
+  const breakIt = document.createElement("button");
+  breakIt.type = "button";
+  breakIt.className = "link danger";
+  breakIt.textContent = "Stop it";
+  breakIt.addEventListener("click", () => stopTerminal());
+  running.appendChild(breakIt);
+
+  parts.push(running);
+
   const out = document.createElement("pre");
   out.className = "term-out";
   out.id = "terminalOut";
@@ -11026,12 +11098,19 @@ function renderTerminal(data) {
 
   body.replaceChildren(...parts);
   renderTerminalActions();
+  if (data.cwd) showTerminalCwd(data.cwd);
 
   if (data.history.length) {
     renderTable("terminalHistory", data.history, [
       { label: "Command", className: "cmd", render: row => row.command },
       { label: "When", render: row => ago(row.started_at) },
-      { label: "Output", className: "size", render: row => humanBytes(row.bytes) },
+      {
+        label: "Output",
+        className: "size",
+        // "0 B" is a size; "nothing" is what actually happened, and the two
+        // read differently when you are scanning a column for the odd one out.
+        render: row => (row.bytes > 0 ? humanBytes(row.bytes) : "nothing"),
+      },
       {
         label: "",
         render: row => {
@@ -11047,11 +11126,20 @@ function renderTerminal(data) {
         render: row => {
           const wrap = document.createDocumentFragment();
 
-          const open = document.createElement("button");
-          open.className = "link";
-          open.textContent = "Show it";
-          open.addEventListener("click", () => watchTerminal(row.id, true));
-          wrap.appendChild(open);
+          /*
+           * Only when there is something to show.
+           *
+           * A command that printed nothing has an empty file behind it, and
+           * "Show it" on that row opens a blank box - which reads as a broken
+           * button rather than as an accurate report of nothing.
+           */
+          if (row.bytes > 0 || row.running) {
+            const open = document.createElement("button");
+            open.className = "link";
+            open.textContent = "Show it";
+            open.addEventListener("click", () => watchTerminal(row.id, true));
+            wrap.appendChild(open);
+          }
 
           const again = document.createElement("button");
           again.className = "link";
@@ -11373,6 +11461,21 @@ async function pollTerminal() {
   }
 
   $("terminalStop").hidden = !data.running;
+
+  const strip = $("terminalRunning");
+  if (strip) {
+    strip.hidden = !data.running;
+    const line = $("terminalRunningSaid");
+    if (line) {
+      line.textContent = data.running
+        ? `Running${data.ran_for >= 2 ? ` for ${humanSpan(data.ran_for, true)}` : ""} — `
+          + `${humanBytes(data.size)} so far.`
+        : "";
+    }
+  }
+
+  // Where a `cd` inside the command left things, once it has finished.
+  if (data.cwd) showTerminalCwd(data.cwd);
 
   if (data.running) {
     /*
@@ -16526,8 +16629,8 @@ function renderUptime() {
           return span;
         },
       },
-      { label: "From", render: row => humanTime(row.from) },
-      { label: "Until", render: row => humanTime(row.to) },
+      { label: "From", render: row => whenSpan(row.from) },
+      { label: "Until", render: row => whenSpan(row.to) },
       {
         label: "For",
         className: "size",
@@ -16564,7 +16667,7 @@ function renderBootHistory(history) {
   }
 
   renderTable("bootHistory", history.boots, [
-    { label: "Came up", render: row => humanTime(row.booted_at) },
+    { label: "Came up", render: row => whenSpan(row.booted_at) },
     {
       label: "Kernel",
       render: row => row.kernel || "—",
@@ -18404,7 +18507,7 @@ async function refreshActionLog() {
   renderActionSummary(rows);
 
   renderTable("actionLog", rows, [
-    { label: "When", render: row => humanTime(row.at) },
+    { label: "When", render: row => whenSpan(row.at) },
     { label: "What", render: row => ACTION_WORDS[row.action] || row.action },
     { label: "Target", className: "name", render: row => row.target ?? "" },
     { label: "Outcome", render: row => row.outcome + (row.detail ? ` \u2014 ${row.detail}` : "") },
@@ -19678,10 +19781,28 @@ function renderPending(rows) {
     return;
   }
 
+  /*
+   * Only the requests this page is about.
+   *
+   * The banner used to show every outstanding request on every page, so a disk
+   * walk queued an hour ago sat above the email settings and the log stream and
+   * everything else, saying nothing any of them could act on. Site-wide
+   * awareness is the job of the ring's centre dot, which pulses wherever you
+   * are; this strip is for "the thing this page shows is being fetched".
+   */
+  const here = pendingState.rows.filter(row => relatedViews(row.view).includes(state.view));
+
+  if (!here.length) {
+    banner.hidden = true;
+    banner.replaceChildren();
+    cancelAnimationFrame(pendingState.raf);
+    return;
+  }
+
   banner.hidden = false;
 
   const frag = document.createDocumentFragment();
-  for (const row of pendingState.rows) {
+  for (const row of here) {
     const item = document.createElement("div");
     item.className = "pending-item";
     item.dataset.task = row.task;
@@ -19712,6 +19833,23 @@ function renderPending(rows) {
 
   cancelAnimationFrame(pendingState.raf);
   tickPending();
+}
+
+/**
+ * Which pages a pending request is worth showing on.
+ *
+ * One request feeds several pages: a capability check fills in what is
+ * installed and what changed as well as the capabilities list, and a disk walk
+ * feeds both the filesystem page and the biggest-directories one. Showing it
+ * only on the page named in the request would hide it from the page somebody is
+ * most likely waiting on.
+ */
+function relatedViews(view) {
+  return {
+    capabilities: ["capabilities", "sys-installed", "sys-changed"],
+    "host-disk": ["host-disk", "disk-dirs", "disk-deleted"],
+    "net-capture": ["net-capture", "net-captures"],
+  }[view] ?? [view];
 }
 
 function tickPending() {
@@ -20647,7 +20785,7 @@ async function refreshCaptures() {
   body.replaceChildren(wrap);
 
   renderTable("captureList", data.rows, [
-    { label: "Taken", render: row => humanTime(row.taken_at) },
+    { label: "Taken", render: row => whenSpan(row.taken_at) },
     { label: "Interface", render: row => row.interface },
     { label: "Filter", render: row => row.filter_label },
     { label: "Over", className: "size", render: row => `${row.seconds}s` },
@@ -22158,7 +22296,10 @@ function renderFetchHeaders(data) {
  * the layout it is measuring.
  */
 function markWideTables(within = document) {
-  for (const wrap of within.querySelectorAll(".panel > div")) {
+  // Both wrappers: the one renderTable builds inside a panel, and the .scroll-x
+  // that simpleTable puts around its own. They had the same fault for the same
+  // reason and fixing one of them fixed half the site.
+  for (const wrap of within.querySelectorAll(".panel > div, .scroll-x")) {
     /*
      * A direct-child table, which is what the CSS rule matches.
      *
@@ -23329,7 +23470,7 @@ function renderDnsChanges(data) {
   body.replaceChildren(holder);
 
   renderTable("dnsChangeTable", data.changes, [
-    { label: "When", render: row => humanTime(row.at) },
+    { label: "When", render: row => whenSpan(row.at) },
     {
       label: "What",
       render: row => {
@@ -27015,15 +27156,12 @@ const VIEWS = {
   capabilities: {
     label: "What the host allows",
     parent: "sys-terminal",
-    refresh: async () => {
-      await refreshCapabilities();
-      await refreshCapabilityChanges();
-    },
+    refresh: () => refreshCapabilities(),
   },
 
-  alerts: { label: "Alerts", refresh: () => refreshAlerts() },
-  uptime: { label: "Uptime", refresh: () => refreshUptime() },
-  deletions: { label: "Actions", refresh: () => refreshActionLog() },
+  alerts: { label: "Alerts", parent: "overview", refresh: () => refreshAlerts() },
+  uptime: { label: "Uptime", parent: "overview", refresh: () => refreshUptime() },
+  deletions: { label: "Actions", parent: "system", refresh: () => refreshActionLog() },
   email: {
     // Rebuilds its form from the server's answer, so it must not be polled -
     // see the note on sys-ai.
@@ -27132,9 +27270,20 @@ const VIEWS = {
     refresh: () => refreshNotes(),
   },
   "sys-changed": {
+    /*
+     * Two charts, one page.
+     *
+     * The capability-changes chart used to live on "what the host allows",
+     * which is a page about what is available now - a history of changes was
+     * the odd thing on it, and the page that is entirely about changes did not
+     * have it.
+     */
     label: "What changed",
     parent: "sys-terminal",
-    refresh: () => refreshChanged(),
+    refresh: async () => {
+      await refreshChanged();
+      await refreshCapabilityChanges();
+    },
   },
   "sys-installed": {
     label: "What is installed now",
@@ -27317,6 +27466,14 @@ function showView(view, push = true) {
   }
 
   document.title = `${VIEWS[view].label} · Hostscope`;
+
+  /*
+   * The pending strip is per-page, so changing page changes what belongs in it.
+   *
+   * Without this it would keep whatever the previous page's answer was until
+   * the next poll landed, which is a banner about a page you have left.
+   */
+  if (changed) renderPending(pendingState.rows);
 
   // Opening a page is looking at it, which is what the marker was waiting for.
   if (pendingState.unseen.has(view)) {
@@ -27986,7 +28143,50 @@ $("aiSessionsRefresh").addEventListener("click", () => {
   refreshAiSessions().catch(error => notice(String(error.message || error)));
 });
 
-$("terminalStop").addEventListener("click", async () => {
+/**
+ * Draws the directory the next command will run in.
+ *
+ * With a way back to where it started, because `cd` into somewhere deep and
+ * then wanting the original directory is the commonest thing that happens next,
+ * and typing the path back out is the tax this feature would otherwise charge.
+ */
+function showTerminalCwd(cwd) {
+  const where = $("terminalCwd");
+  if (!where) return;
+
+  where.replaceChildren();
+
+  const label = document.createElement("span");
+  label.className = "muted small";
+  label.textContent = "Running in ";
+  where.appendChild(label);
+
+  const path = document.createElement("code");
+  path.textContent = cwd;
+  where.appendChild(path);
+
+  const home = termState.data?.home;
+  if (home && home !== cwd) {
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "link";
+    back.textContent = "back to the top";
+    back.title = `Return to ${home}`;
+    back.addEventListener("click", () => {
+      runTerminal(`cd ${home}`).catch(error => notice(String(error.message || error)));
+    });
+    where.appendChild(back);
+  }
+}
+
+/**
+ * Breaks whatever is running.
+ *
+ * A function rather than a click handler, because there are two buttons that do
+ * it - one in the panel header and one beside the output - and there should not
+ * be two ways of stopping a command that could ever behave differently.
+ */
+async function stopTerminal() {
   if (!termState.running) return;
   try {
     const result = await post("terminal-stop", { id: termState.running });
@@ -27995,7 +28195,9 @@ $("terminalStop").addEventListener("click", async () => {
   } catch (error) {
     notice(String(error.message || error));
   }
-});
+}
+
+$("terminalStop").addEventListener("click", () => stopTerminal());
 
 $("memoryAdd").addEventListener("click", () => {
   if (!memoryState.data) {
@@ -28417,6 +28619,7 @@ window.addEventListener("resize", () => {
     // A table that fitted at 1440px may not fit at 900. Re-measured rather
     // than left with the answer from whatever width it was first drawn at.
     markWideTables(section || document);
+    sizeChatFull();
   }, 200);
 });
 

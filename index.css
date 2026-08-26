@@ -1065,7 +1065,25 @@ tr.clickable:hover { background: var(--panel-hover); }
 }
 /* Inside that box the top bar is not overhead, so the heading sits at its top. */
 .panel > div:has(> table).scrolls-x th { top: 0; }
+
+/*
+ * The same rule for the other table wrapper.
+ *
+ * simpleTable() and the mount table wrap themselves in .scroll-x, which was
+ * unconditional overflow-x - and therefore a scroll container, and therefore
+ * the same broken sticky heading, on every page built that way. "What is
+ * installed now" and the capture tables were both this one.
+ *
+ * A .scroll-x that holds something other than a table - the process tree - is
+ * left alone: it has no heading to keep and it genuinely does need to scroll.
+ */
 .scroll-x { overflow-x: auto; }
+.scroll-x:has(> table) { overflow-x: visible; }
+.scroll-x:has(> table).scrolls-x {
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+}
+.scroll-x:has(> table).scrolls-x th { top: 0; }
 
 @media (max-width: 620px) {
   .cards { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
@@ -2847,7 +2865,19 @@ tr.muted-row { opacity: .7; }
   width: 100%;
   max-height: none;
   min-height: 0;
-  height: calc(100vh - var(--topbar-height) - 48px);
+  /*
+   * Measured, not guessed.
+   *
+   * It was `100vh - topbar - 48px`, which assumed the page starts under the top
+   * bar. It does not: the range controls, the alert strip and the toast area
+   * all sit above the view, and on a 900px window that put the bottom of the
+   * panel 193px below the fold - taking the message box with it and leaving the
+   * corner button sitting on top of the conversation.
+   *
+   * showChatFullHeight() sets this from where the panel actually is, and again
+   * on resize. The fallback is only for the frame before it runs.
+   */
+  height: var(--chat-full-height, calc(100vh - var(--topbar-height) - 48px));
   box-shadow: none;
 }
 
@@ -2918,3 +2948,30 @@ tr.muted-row { opacity: .7; }
  */
 .chat-countdown { margin-left: auto; font-variant-numeric: tabular-nums; }
 .chat-countdown.soon { color: var(--warn); }
+
+/* ------------------------------------------------------ where it runs -- */
+
+/*
+ * The working directory, above the box.
+ *
+ * `cd` carrying between commands is only honest if where it carried to is
+ * visible - otherwise a command that behaves differently from the last one has
+ * no reason on screen.
+ */
+.term-cwd {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 6px; font-size: .82rem;
+}
+.term-cwd code { background: #111; padding: 2px 6px; border-radius: 4px; word-break: break-all; }
+
+/*
+ * Stop, beside the output rather than only in the header.
+ *
+ * Somebody watching a command run is looking at the output, and the header
+ * button is a few hundred pixels above it.
+ */
+.term-running {
+  display: flex; align-items: center; gap: 12px;
+  margin: 6px 0; font-size: .85rem; color: var(--muted);
+}
+.term-running[hidden] { display: none; }

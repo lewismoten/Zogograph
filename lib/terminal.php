@@ -275,11 +275,37 @@ function terminalStart(array $config, PDO $pdo, string $command, string $who): a
      */
     $runner = shellRead('command -v setsid 2>/dev/null') !== null ? 'setsid ' : '';
 
+    /*
+     * The working directory carries over, because people expect it to.
+     *
+     * Each command really is its own process - that has not changed and cannot,
+     * short of keeping a shell alive between requests on a web server. What
+     * changed is that `cd` used to be silently useless: you typed `cd /var/log`,
+     * got no error, typed `ls`, and were shown the directory you started in. It
+     * was documented as "cd does not carry over", which is a true sentence and
+     * no help at all to somebody who has just been shown the wrong files.
+     *
+     * So the directory is remembered and each command starts there, and where
+     * the command finishes is written to a sidecar file and remembered in turn.
+     * `pwd` runs in the same shell as the command, so it sees any `cd` the
+     * command did - including one buried in a script.
+     *
+     * The page shows the directory beside the box. That is what makes this
+     * honest rather than magic: the state is somewhere you can see it.
+     */
+    $cwd = terminalCwd($config, $pdo);
+    $where = $directory . '/' . $id . '.cwd';
+
     $script = sprintf(
         '%snohup %s -c %s > %s 2>&1 & echo $!',
         $runner,
         escapeshellarg($settings['shell']),
-        escapeshellarg($command),
+        escapeshellarg(sprintf(
+            'cd %s 2>/dev/null; %s; __st=$?; pwd > %s 2>/dev/null; exit $__st',
+            escapeshellarg($cwd),
+            $command,
+            escapeshellarg($where)
+        )),
         escapeshellarg($out)
     );
 
@@ -297,9 +323,63 @@ function terminalStart(array $config, PDO $pdo, string $command, string $who): a
         'started_at' => time(),
         'who' => $who,
         'max_seconds' => $settings['max_seconds'],
+        'started_in' => $cwd,
     ], JSON_PRETTY_PRINT));
 
     return ['id' => $id, 'pid' => $pid];
+}
+
+/**
+ * Where the next command will run.
+ *
+ * Remembered between commands, and validated every time it is read: a directory
+ * that has been deleted since would otherwise make every subsequent command
+ * fail with a message about the wrong thing.
+ *
+ * The default is the directory being watched, which is where somebody
+ * troubleshooting this dashboard almost always wants to be.
+ */
+function terminalCwd(array $config, ?PDO $pdo): string
+{
+    $home = (string)($config['scan_root'] ?? '');
+    if ($home === '' || !is_dir($home)) {
+        $home = getcwd() ?: '/';
+    }
+
+    if ($pdo === null) {
+        return $home;
+    }
+
+    $stored = (string)(recallSetting($pdo, 'terminal_cwd') ?? '');
+
+    return $stored !== '' && is_dir($stored) ? $stored : $home;
+}
+
+/**
+ * Takes the directory a finished command left behind.
+ *
+ * Called on read rather than on finish, because nothing else runs: the request
+ * that started the command is long gone by the time it ends.
+ */
+function terminalTakeCwd(array $config, PDO $pdo, string $id): void
+{
+    $file = terminalDirectory($config) . '/' . $id . '.cwd';
+    if (!is_file($file)) {
+        return;
+    }
+
+    $where = trim((string)@file_get_contents($file));
+    @unlink($file);
+
+    /*
+     * Only a directory that exists, and only an absolute path.
+     *
+     * `pwd` gives an absolute path, so anything else means the file was not
+     * written by pwd - and this value goes into the next command line.
+     */
+    if ($where !== '' && str_starts_with($where, '/') && is_dir($where)) {
+        rememberSetting($pdo, 'terminal_cwd', $where);
+    }
 }
 
 /** What a command has printed since a given offset, and whether it is still going. */

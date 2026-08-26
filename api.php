@@ -145,7 +145,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-store' => aiStoreView($config, $signedIn),
         'terminal' => terminalView($config, $pdo, $signedIn),
         'terminal-run' => doTerminalRun($config, $pdo, $post),
-        'terminal-read' => terminalReadView($config, $signedIn),
+        'terminal-read' => terminalReadView($config, $pdo, $signedIn),
         'terminal-stop' => doTerminalStop($config, $pdo, $post),
         'terminal-unlock' => doTerminalUnlock($config, $pdo, $post),
         'terminal-lock' => doTerminalLock($config, $pdo, $post),
@@ -8056,6 +8056,10 @@ function terminalView(array $config, PDO $pdo, bool $signedIn): array
         'spans' => $settings['spans'],
         'max_seconds' => $settings['max_seconds'],
         'shell' => $settings['shell'],
+        // Where the next command will run, so the page can show it rather than
+        // leaving somebody to type pwd to find out.
+        'cwd' => $settings['enabled'] ? terminalCwd($config, $pdo) : null,
+        'home' => (string)($config['scan_root'] ?? ''),
         'history' => $settings['enabled'] ? terminalHistory($config) : [],
         'suggestions' => aiSuggestedCommands($config),
         'who' => aiPersona($config),
@@ -8155,17 +8159,33 @@ function doTerminalLock(array $config, PDO $pdo, bool $post): array
 }
 
 /** What one command has printed since an offset. */
-function terminalReadView(array $config, bool $signedIn): array
+function terminalReadView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
         throw new ActionRefused('sign in to use the terminal');
     }
 
-    return terminalRead(
+    $id = (string)($_GET['id'] ?? '');
+    $read = terminalRead(
         $config,
-        (string)($_GET['id'] ?? ''),
+        $id,
         clampInt($_GET['from'] ?? 0, 0, PHP_INT_MAX)
     );
+
+    /*
+     * A finished command hands over where it ended up.
+     *
+     * Here rather than anywhere else because nothing else runs: the request
+     * that started the command returned long before it finished, and this poll
+     * is the first moment any code is alive to notice.
+     */
+    if (empty($read['running'])) {
+        terminalTakeCwd($config, $pdo, $id);
+    }
+
+    $read['cwd'] = terminalCwd($config, $pdo);
+
+    return $read;
 }
 
 /** Kills a running command. */

@@ -91,6 +91,16 @@
       <span class="nav-label">Over time</span>
       <span class="nav-badge" data-badge="charts" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/alerts" data-parent="overview" data-nav="alerts">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Alerts</span>
+      <span class="nav-badge" data-badge="alerts" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/uptime" data-parent="overview" data-nav="uptime">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Uptime</span>
+      <span class="nav-badge" data-badge="uptime" hidden></span>
+    </a>
     <a class="nav-item" href="#/calendar" data-nav="calendar">
       <span class="nav-icon" aria-hidden="true">▦</span>
       <span class="nav-label">Calendar</span>
@@ -301,21 +311,6 @@
       <span class="nav-label">Address names</span>
       <span class="nav-badge" data-badge="net-rdns" hidden></span>
     </a>
-    <a class="nav-item" href="#/alerts" data-nav="alerts">
-      <span class="nav-icon" aria-hidden="true">⚠</span>
-      <span class="nav-label">Alerts</span>
-      <span class="nav-badge" data-badge="alerts" hidden></span>
-    </a>
-    <a class="nav-item" href="#/uptime" data-nav="uptime">
-      <span class="nav-icon" aria-hidden="true">◷</span>
-      <span class="nav-label">Uptime</span>
-      <span class="nav-badge" data-badge="uptime" hidden></span>
-    </a>
-    <a class="nav-item" href="#/deletions" data-nav="deletions">
-      <span class="nav-icon" aria-hidden="true">⌫</span>
-      <span class="nav-label">Actions</span>
-      <span class="nav-badge" data-badge="deletions" hidden></span>
-    </a>
     <a class="nav-item" href="#/sys-ai" data-nav="sys-ai">
       <span class="nav-icon" aria-hidden="true">📡</span>
       <span class="nav-label">Mr. Radar</span>
@@ -443,6 +438,11 @@
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Your own names</span>
       <span class="nav-badge" data-badge="net-labels" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/deletions" data-parent="system" data-nav="deletions">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Actions</span>
+      <span class="nav-badge" data-badge="deletions" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/sys-descriptions" data-nav="sys-descriptions" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
@@ -1796,16 +1796,6 @@
     here — see below.
   </p>
   <div id="capSummary"></div>
-  <h3 class="sub-head">What has changed</h3>
-  <p class="muted small sub-note">
-    Each bar counts the programs whose availability or version moved, coloured
-    by group. Click one to see exactly what. Times are when a check
-    <em>noticed</em> the change, not when it happened — a weekly check turns a
-    Tuesday upgrade into a Sunday event.
-  </p>
-  <canvas id="capChanges"></canvas>
-  <div id="capChangeLegend" class="legend"></div>
-  <p class="muted small chart-note" id="capChangeNote"></p>
   <div id="capBody"></div>
 </section>
 </section>
@@ -2220,6 +2210,18 @@
   <canvas id="changedChart"></canvas>
   <p class="muted small chart-note" id="changedChartNote"></p>
   <div id="changedBody"></div>
+
+  <h3 class="sub-head">What changed, by group</h3>
+  <p class="muted small sub-note">
+    Each bar counts the programs whose availability or version moved, coloured
+    by group. Click one to see exactly what. This was on
+    <a href="#/capabilities">what the host allows</a>, which is a page about
+    what is available <em>now</em>; a history of changes belongs beside the rest
+    of the history.
+  </p>
+  <canvas id="capChanges"></canvas>
+  <div id="capChangeLegend" class="legend"></div>
+  <p class="muted small chart-note" id="capChangeNote"></p>
 </section>
 
 </section>
