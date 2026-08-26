@@ -2324,9 +2324,19 @@
     This runs what you type, as the user the web server runs as, and shows the
     output. Be clear-eyed about what that means: anybody who has the dashboard
     password has this, so it stays off until somebody switches it on here, and
-    every command is written to the action log before it runs. Each command is its own process &mdash; <code>cd</code> does
-    not carry over to the next one, because pretending it did would be a lie
-    about what actually ran.
+    every command is written to the action log before it runs. Each command is
+    its own process; the directory it runs in carries over between them and is
+    shown above the box, so <code>cd</code> works and you can see where you are.
+    What does not carry over is anything else a shell remembers &mdash;
+    variables, functions, background jobs &mdash; because there is no shell
+    sitting between requests to remember them.
+  </p>
+  <p class="muted small sub-note">
+    It is a transcript, not a screen. Colour, bold, tabs and progress lines that
+    rewrite themselves all render; programs that want to take over the display
+    and read the keyboard &mdash; <code>vi</code>, <code>top</code>,
+    <code>ssh</code>, anything asking for a password &mdash; cannot be driven
+    from here, because there is nothing typing at them.
   </p>
   <div id="terminalBody"></div>
 </section>
