@@ -40,8 +40,16 @@ require_once __DIR__ . '/collect.php';
 const PROGRAM_NAME_PATTERN = '/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/';
 
 /** Where a program may be found when it is not on PATH. */
+/*
+ * Where the fallback `find` looks for a program that is not on PATH.
+ *
+ * /usr/local/jetapps is here because JetBackup installs its CLI several levels
+ * down inside it and puts nothing on PATH - so "is jetbackup5api installed" was
+ * unanswerable by every mechanism this file has, and the backups page reported
+ * the CLI as missing on machines that had it.
+ */
 const CAPABILITY_SEARCH_ROOTS = ['/usr/bin', '/usr/sbin', '/usr/local/bin', '/usr/local/sbin',
-                                 '/bin', '/sbin', '/opt'];
+                                 '/bin', '/sbin', '/opt', '/usr/local/jetapps'];
 
 /**
  * The programs worth knowing about, and what each one buys you.
@@ -144,6 +152,20 @@ function capabilityCatalogue(): array
             ['name' => 'node', 'does' => 'Run JavaScript', 'version_arg' => '-v'],
             ['name' => 'wp', 'does' => 'WordPress administration from the shell'],
             ['name' => 'rsync', 'does' => 'Efficient copies and backups', 'package' => 'rsync', 'key' => true],
+            /*
+             * The backup CLIs, which are the difference between a backup page
+             * that knows what is in a backup and one that describes directories.
+             *
+             * Not on PATH on any install seen so far - JetBackup lives several
+             * levels inside /usr/local/jetapps - so these are found by the
+             * fallback search rather than by `command -v`, and reported as
+             * "under another path" rather than missing. `key` because the
+             * backups page is unable to say anything useful without one.
+             */
+            ['name' => 'jetbackup5api', 'does' => 'What JetBackup 5 has backed up, and when',
+             'package' => 'jetbackup5', 'key' => true, 'version_arg' => '--version'],
+            ['name' => 'jetbackupapi', 'does' => 'What JetBackup 4 has backed up, and when',
+             'package' => 'jetbackup', 'version_arg' => '--version'],
         ]),
 
         $g('diagnostics', [

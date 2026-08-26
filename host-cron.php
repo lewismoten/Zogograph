@@ -340,7 +340,19 @@ try {
      * decide for themselves whether their turn has come - which is what makes
      * "daily" expressible without a second crontab entry per scan.
      */
-    if (!$doCapabilities && $capabilityRequests === []) {
+    /*
+     * Both reasons are consulted, always.
+     *
+     * These used to be an either/or: the schedule was only checked when there
+     * were no request rows at all. Request rows are permanent - nothing deletes
+     * them but somebody pressing cancel - so a single "expose:whois" from weeks
+     * ago meant the scheduled sweep was skipped on that install for ever. The
+     * collector ran every five minutes, said nothing, and the capability list
+     * silently froze at whatever it said the day that request was made. That is
+     * how a machine ends up reporting `ss` as absent months after it was
+     * installed.
+     */
+    if (!$doCapabilities) {
         $when = hostScanDue($config, $pdo, 'host-capabilities');
         if ($when['due']) {
             $say('A capability probe is due.');

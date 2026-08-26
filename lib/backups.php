@@ -94,8 +94,19 @@ function looksLikeBackup(string $path): ?string
  * JetBackup
  * ------------------------------------------------------------------ */
 
-/** The JetBackup CLI, if this machine has one. */
-function jetBackupCli(): ?string
+/**
+ * The JetBackup CLI, if this machine has one.
+ *
+ * Three known paths, then whatever the capability sweep found. The known list
+ * is not enough on its own: JetBackup's own installer has moved the binary
+ * between versions, and inside CageFS the account cannot stat /usr/local/jetapps
+ * at all - so a machine with JetBackup installed reported the CLI as missing,
+ * which is the wrong answer to the wrong question. The sweep runs as root and
+ * searches, so where it has an answer, that answer is better than this list.
+ *
+ * @param array<string, string> $found name => path, from the capability sweep
+ */
+function jetBackupCli(array $found = []): ?string
 {
     foreach ([
         '/usr/local/jetapps/usr/jetbackup5/bin/jetbackup5api',
@@ -107,7 +118,55 @@ function jetBackupCli(): ?string
         }
     }
 
+    foreach (['jetbackup5api', 'jetbackupapi'] as $name) {
+        $path = trim((string)($found[$name] ?? ''));
+        if ($path !== '' && is_executable($path)) {
+            return $path;
+        }
+    }
+
     return null;
+}
+
+/**
+ * Where the capability sweep found each backup CLI, as far as the host knows.
+ *
+ * Read from the host database rather than probed here, because probing is the
+ * thing this account cannot do: the binary lives somewhere CageFS hides.
+ *
+ * @return array<string, string>
+ */
+function backupToolsFromHost(?PDO $host): array
+{
+    if ($host === null) {
+        return [];
+    }
+
+    try {
+        $rows = $host->query(
+            "SELECT name, path, account_path FROM host_capabilities
+              WHERE name IN ('jetbackup5api', 'jetbackupapi')"
+        )->fetchAll();
+    } catch (Throwable) {
+        return [];
+    }
+
+    $found = [];
+    foreach ($rows as $row) {
+        /*
+         * The account's own path first where there is one.
+         *
+         * host_capabilities records both what root sees and what the account
+         * sees. Running a binary root can see and the account cannot produces
+         * "not found" from a shell, which is a confusing way to fail.
+         */
+        $path = trim((string)($row['account_path'] ?? '')) ?: trim((string)($row['path'] ?? ''));
+        if ($path !== '') {
+            $found[(string)$row['name']] = $path;
+        }
+    }
+
+    return $found;
 }
 
 /**
@@ -170,15 +229,23 @@ function jetBackupQuery(string $cli, string $function, array $arguments = []): ?
  *
  * @return array{available: bool, reason: ?string, backups: list<array>, destinations: list<array>}
  */
-function jetBackupInventory(): array
+function jetBackupInventory(?PDO $host = null): array
 {
-    $cli = jetBackupCli();
+    $found = backupToolsFromHost($host);
+    $cli = jetBackupCli($found);
+
     if ($cli === null) {
         return [
             'available' => false,
             'reason' => 'JetBackup\'s command line tool was not found, so the directories '
                 . 'under the backup root can be measured but not explained - a name like '
-                . 'files0000000005 says nothing about which account or date it holds.',
+                . 'files0000000005 says nothing about which account or date it holds.'
+                . ($host === null
+                    ? ' The host collector\'s capability sweep has not been read, so this '
+                      . 'is only what THIS account can see - and inside CageFS it cannot '
+                      . 'see /usr/local/jetapps at all.'
+                    : ' The host\'s own capability sweep did not find it either, so it is '
+                      . 'not installed rather than merely out of reach.'),
             'backups' => [],
             'destinations' => [],
         ];
@@ -292,7 +359,9 @@ function analyseBackups(PDO $host, array $config): array
         $total += $bytes;
     }
 
-    $jet = jetBackupInventory();
+    // The host database is right here, and it is where the capability sweep
+    // recorded the path this account cannot find for itself.
+    $jet = jetBackupInventory($host);
     $accounts = backupsByAccount($byPath, $jet, $roots, $total);
     $other = otherProbableBackups($byPath, backupRoots($config));
 
