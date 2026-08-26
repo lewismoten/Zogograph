@@ -4959,6 +4959,91 @@ function renderAiSettings(data) {
     + "of advice you get."));
 
   pages.limits.push(section("How much it can hold", room));
+
+  /* ---- what it does without being asked ---- */
+
+  const unattended = document.createElement("div");
+  unattended.className = "settings";
+
+  const mode = document.createElement("select");
+  mode.id = "aiAlertMode";
+  for (const [value, label] of [
+    ["off", "nothing — alerts behave exactly as they always have"],
+    ["comment", "read each alert and write a note on it"],
+    ["look", "…and look things up first, so the note is informed"],
+    ["decide", "…and may conclude one did not warrant sending"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = (data.alerts?.mode ?? "off") === value;
+    mode.appendChild(option);
+  }
+  unattended.appendChild(fieldRow("When an alert fires", mode,
+    "This runs from cron with nobody watching, so it only ever gets the read-only tools "
+    + "that need no permission. Anything it cannot do — reach the model, parse an answer "
+    + "— leaves the alert exactly as it would have been, because a thing standing between "
+    + "a machine noticing a problem and you being told has one acceptable failure mode."));
+
+  const floor = document.createElement("select");
+  floor.id = "aiAlertFloor";
+  for (const [value, label] of [
+    ["error", "never for error or critical"],
+    ["warning", "never for warning and above"],
+    ["critical", "never for critical"],
+    ["none", "any of them, including critical"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    option.selected = (data.alerts?.never_above ?? "error") === value;
+    floor.appendChild(option);
+  }
+  unattended.appendChild(fieldRow("Except", floor,
+    "A critical alert is the one case where a delay and a model's opinion are both worse "
+    + "than a plain fast message. Left at the default it never touches those."));
+
+  const perRun = document.createElement("input");
+  perRun.type = "number";
+  perRun.id = "aiAlertPerRun";
+  perRun.min = "1";
+  perRun.max = "20";
+  perRun.className = "days";
+  perRun.value = String(data.alerts?.per_run ?? 5);
+  unattended.appendChild(fieldRow("At most, per run", perRun,
+    "A disk filling up trips several rules at once. This is what stops a storm becoming "
+    + "a bill."));
+
+  for (const [id, key, label] of [
+    ["aiDaily", "daily", "Write a daily summary"],
+    ["aiWeekly", "weekly", "…a weekly one"],
+    ["aiMonthly", "monthly", "…a monthly one"],
+  ]) {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = id;
+    box.checked = data.alerts?.[key] === true;
+    unattended.appendChild(fieldRow(label, box, ""));
+  }
+
+  const reportTo = document.createElement("input");
+  reportTo.type = "text";
+  reportTo.id = "aiReportTo";
+  reportTo.className = "wide-field";
+  reportTo.value = data.alerts?.report_to ?? "";
+  reportTo.placeholder = "leave blank to use the alert addresses";
+  unattended.appendChild(fieldRow("Send summaries to", reportTo,
+    "Semicolon-separated. A summary and an alert are different kinds of message and may "
+    + "reasonably go to different places — but requiring a second address before the "
+    + "feature works at all would be a needless step, so blank means the alert "
+    + "addresses."));
+
+  pages.limits.push(section("What it does without being asked", unattended));
+  pages.limits.push(note(
+    "Everything in this section costs money on a schedule, with nobody watching. The "
+    + "per-conversation limits above do not apply to it — those are about one "
+    + "conversation, and this is not one."
+  ));
   pages.images.push(pictureFields(data));
 
   /*
@@ -5673,6 +5758,89 @@ function chatReactionCard(message) {
   }
 
   return card;
+}
+
+/**
+ * The line in the conversation where its older half was summarised.
+ *
+ * Not a message - neither party said it - so it is drawn as a rule across the
+ * log rather than as a bubble. Everything above it is still there and still
+ * readable; what changed is that the model no longer receives those messages,
+ * it receives the summary. Saying which is the whole job of this marker,
+ * because a conversation that quietly loses its first half is one somebody
+ * stops trusting.
+ */
+function chatSummaryCard(message, session) {
+  const wrap = document.createElement("div");
+  wrap.className = "chat-summary";
+
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "chat-summary-head";
+
+  const covers = message.covers ?? {};
+  head.textContent = covers.messages
+    ? `— everything above here was summarised (${count(covers.messages, "message")}) —`
+    : "— everything above here was summarised —";
+  head.title = "Still yours to read. From here on the model receives the summary "
+    + "instead. Click to see it.";
+
+  head.addEventListener("click", () => showCompaction(message, session));
+  wrap.appendChild(head);
+
+  return wrap;
+}
+
+/** The summary itself, and what it stands in for. */
+function showCompaction(message, session) {
+  const covers = message.covers ?? {};
+  const nodes = [];
+
+  const what = document.createElement("p");
+  what.className = "muted small";
+  what.textContent = covers.messages
+    ? `${count(covers.messages, "message")} from earlier in this conversation `
+      + `${covers.messages === 1 ? "was" : "were"} replaced with the summary below, `
+      + `${whenLabel(message.at)}. `
+    : `The older part of this conversation was replaced with the summary below, `
+      + `${whenLabel(message.at)}. `;
+  what.textContent +=
+    "They are all still above this point in the panel and still in the database — "
+    + "nothing was deleted. What changed is what the model is sent: from here on it gets "
+    + "this summary instead of those messages.";
+  nodes.push(what);
+
+  const body = document.createElement("div");
+  body.className = "day-entry";
+  const title = document.createElement("strong");
+  title.textContent = "The summary the model now receives";
+  body.appendChild(title);
+  const text = document.createElement("div");
+  text.appendChild(renderMarkdown(message.content));
+  body.appendChild(text);
+  nodes.push(body);
+
+  /*
+   * The messages it stands for, by id range.
+   *
+   * Enough to find them in the panel above, and enough to check the summary
+   * against them - which is the point of being able to open this at all.
+   */
+  if (covers.from_message && covers.to_message) {
+    const which = document.createElement("p");
+    which.className = "muted small";
+    which.textContent = `It covers messages ${covers.from_message} to `
+      + `${covers.to_message} in this conversation.`;
+    nodes.push(which);
+  }
+
+  showListDialog(
+    "What was summarised",
+    nodes,
+    "Written by the model, from the messages it replaced. If it says something the "
+    + "conversation above does not, that is worth knowing — and is the reason this can "
+    + "be opened."
+  );
 }
 
 /** A generated picture, with what was asked for underneath it. */
@@ -7231,8 +7399,17 @@ function renderChatIdentity() {
     title.appendChild(name);
   }
 
+  /*
+   * The icon carries the mark, the label carries the name.
+   *
+   * Both were carrying the emoji, so the menu read "📡 📡 Mr. Radar" - and once
+   * it had drawn itself a portrait, a thumbnail and an emoji as well.
+   */
+  const navIcon = document.querySelector('[data-nav="sys-ai"] .nav-icon');
+  if (navIcon) navIcon.textContent = who.emoji;
+
   const nav = document.querySelector('[data-nav="sys-ai"] .nav-label');
-  if (nav) nav.textContent = `${who.emoji} ${who.name}`;
+  if (nav) nav.textContent = who.name;
 
   const ask = $("cornerChat");
   if (ask) ask.textContent = `${who.emoji} Ask ${who.name}`;
@@ -7267,6 +7444,23 @@ function renderChat() {
   const session = chatState.session;
   const log = $("chatLog");
 
+  /*
+   * Scrolling back to the bottom releases the hold, once.
+   *
+   * Bound here rather than at startup because the log element exists from the
+   * beginning but this is the only code that cares.
+   */
+  if (!log.dataset.watching) {
+    log.dataset.watching = "1";
+    log.addEventListener("scroll", () => {
+      if (log.scrollHeight - log.scrollTop - log.clientHeight < 60) {
+        chatState.pinnedUp = false;
+        const button = $("chatCatchUp");
+        if (button) button.hidden = true;
+      }
+    });
+  }
+
   if (!session?.exists) {
     log.replaceChildren(note(
       `Describe what is going wrong and ${chatState.who.name} will look into it. `
@@ -7284,6 +7478,11 @@ function renderChat() {
   const parts = [];
 
   for (const message of session.messages) {
+    if (message.role === "summary") {
+      parts.push(chatSummaryCard(message, session));
+      continue;
+    }
+
     if (message.role === "picture") {
       parts.push(chatPictureCard(message));
       continue;
@@ -7331,7 +7530,7 @@ function renderChat() {
      * can be talked into producing anything, and nothing it produces becomes
      * markup. Only elements this code decided to create exist.
      */
-    if (message.role === "assistant" || message.role === "summary") {
+    if (message.role === "assistant") {
       bubble.appendChild(renderMarkdown(message.content));
     } else {
       bubble.textContent = message.content;
@@ -7339,8 +7538,38 @@ function renderChat() {
     parts.push(bubble);
   }
 
+  /*
+   * Only follow the conversation if the reader is already at the end of it.
+   *
+   * renderChat runs on every poll - several times a second while a turn is in
+   * flight - and scrolling to the bottom unconditionally meant scrolling up to
+   * read something was impossible: the next poll dragged you straight back
+   * down, every time, within about a second.
+   *
+   * Measured before the redraw, because replaceChildren resets scrollTop to
+   * zero and the answer afterwards is always "no".
+   */
+  const wasAtEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+  const wasAt = log.scrollTop;
+
   log.replaceChildren(...parts);
-  log.scrollTop = log.scrollHeight;
+
+  if (wasAtEnd) {
+    log.scrollTop = log.scrollHeight;
+    chatState.pinnedUp = false;
+  } else {
+    /*
+     * Put back where they were, not where the content now is.
+     *
+     * Close enough: the content above them has not changed, so the same offset
+     * shows the same words. New content is appended below, which is exactly
+     * what should not move them.
+     */
+    log.scrollTop = wasAt;
+    chatState.pinnedUp = true;
+  }
+
+  renderChatCatchUp(log, session);
 
   renderChatStatus(session);
 
@@ -7432,24 +7661,59 @@ function renderChatRoom(session) {
   }
   spot.appendChild(svg);
 
-  spot.title = `About ${humanCount(room.tokens)} of ${humanCount(room.window)} tokens used `
-    + `— an estimate from the length of the conversation, not a figure from the provider.\n`
-    + (room.full
-      ? room.automatic
-        ? "Past the point where the older part gets summarised; that happens on the next turn."
-        : "Past the point where it would normally be summarised, and automatic summarising "
-          + "is switched off. Click to do it now."
-      : `The older part is summarised at about ${humanCount(room.soft)}.`)
-    + "\nClick to summarise it now.";
+  /*
+   * What it means, on contact rather than after a second of nothing.
+   *
+   * A small ring with no label is a control nobody can guess at, and a native
+   * `title` arrives about a second late - long enough for somebody to click it
+   * to find out what it does, which on this particular control is the one thing
+   * they should not do by accident.
+   */
+  const left = Math.max(0, room.soft - room.tokens);
+  const towards = room.soft > 0
+    ? Math.round((room.tokens / room.soft) * 100)
+    : 0;
+
+  const explains = room.full
+    ? (room.automatic
+      ? `Full. The older half gets summarised on the next turn, automatically.\n\n`
+        + `Click to do it now instead.`
+      : `Full, and automatic summarising is switched off — so this conversation will `
+        + `eventually be refused by the provider.\n\nClick to summarise it now.`)
+    : `About ${towards}% of the way to the point where the older half is summarised — `
+      + `roughly ${humanCount(left)} more tokens.\n\nClick to summarise it now instead `
+      + `of waiting.`;
+
+  const full = `${explains}\n\nNothing is deleted: the messages stay in the panel and in `
+    + `the record, and a marker shows where the model's view begins. `
+    + `About ${humanCount(room.tokens)} of ${humanCount(room.window)} tokens are in use, `
+    + `estimated from the length of the conversation rather than reported by the provider.`;
+
+  spot.setAttribute("aria-label", full);
+  spot.tabIndex = 0;
+  spot.onpointerenter = () => showHelp(spot, full, false);
+  spot.onpointerleave = () => { if (helpBubble?.dataset.pinned !== "yes") hideHelp(); };
+  spot.onfocus = () => showHelp(spot, full, false);
+  spot.onblur = () => { if (helpBubble?.dataset.pinned !== "yes") hideHelp(); };
 
   spot.onclick = async () => {
     if (!chatState.session?.exists) return;
     try {
-      const result = await post("ai-compact", { session: chatState.session.id });
+      hideHelp();
+      const result = await post("ai-compact-chat", { session: chatState.session.id });
       chatState.session = result.session;
+
+      /*
+       * Say what happened, in terms of what is still there.
+       *
+       * "28 messages replaced" reads as a loss. They are all still on screen -
+       * what changed is what gets sent - and the marker in the log is the thing
+       * to look at, so the message points at it.
+       */
       notice(
-        `${count(result.compacted, "message")} replaced with a summary. `
-        + "The whole transcript is still on the conversations page.",
+        `${count(result.compacted, "message")} summarised. They are still in the `
+        + "conversation — the dashed line shows where the model's view now begins, and "
+        + "opens onto the summary.",
         true
       );
       renderChat();
@@ -7497,6 +7761,44 @@ function renderChatEffort(session) {
   picker.value = session.effort || ceiling;
   picker.title = `Thinking: ${picker.value}. The setting allows up to ${ceiling}; `
     + "this turns it down for this conversation only.";
+}
+
+
+/**
+ * A way back down, when somebody has scrolled up during a live turn.
+ *
+ * The panel stops following the conversation the moment they scroll away from
+ * the bottom, which is right - but then new messages arrive out of sight and
+ * nothing says so. A button that appears only while they are held back, and
+ * says how much they have missed.
+ */
+function renderChatCatchUp(log, session) {
+  let button = $("chatCatchUp");
+
+  if (!button) {
+    button = document.createElement("button");
+    button.id = "chatCatchUp";
+    button.className = "chat-catchup";
+    button.type = "button";
+    button.addEventListener("click", () => {
+      log.scrollTop = log.scrollHeight;
+      chatState.pinnedUp = false;
+      button.hidden = true;
+    });
+    log.parentElement.insertBefore(button, log.nextSibling);
+  }
+
+  const behind = chatState.pinnedUp
+    && log.scrollHeight - log.scrollTop - log.clientHeight > 60;
+
+  button.hidden = !behind;
+  if (behind) {
+    const busy = ["thinking", "waiting_permission", "waiting_browser"]
+      .includes(session.state);
+    button.textContent = busy
+      ? `${chatState.who.name} is still going — jump to the end ↓`
+      : "Jump to the end ↓";
+  }
 }
 
 
@@ -10312,24 +10614,44 @@ function renderAiTry(data) {
   const body = $("aiTryBody");
   if (!body) return;
 
-  const runnable = (data.tools || []).filter(tool => tool.where === "server");
+  /*
+   * Every tool, including the ones that cannot be run from here.
+   *
+   * Offering only the runnable ones made the list look like the whole set,
+   * which invited the reasonable conclusion that the missing ones did not
+   * exist. They are all here; the ones that cannot be tried say why.
+   */
+  const tools = data.tools || [];
   const parts = [];
 
-  if (!runnable.length) {
-    body.replaceChildren(note("There are no server-side tools to try."));
+  if (!tools.length) {
+    body.replaceChildren(note("There are no tools."));
     return;
   }
 
   const pick = document.createElement("select");
   pick.id = "aiTryTool";
-  for (const tool of runnable) {
-    const option = document.createElement("option");
-    option.value = tool.name;
-    option.textContent = `${tool.name} — ${tool.summary}`;
-    option.selected = tryState.tool === tool.name;
-    pick.appendChild(option);
+
+  const byGroup = new Map();
+  for (const tool of tools) {
+    if (!byGroup.has(tool.group)) byGroup.set(tool.group, []);
+    byGroup.get(tool.group).push(tool);
   }
-  parts.push(fieldRow("Tool", pick, ""));
+
+  for (const [group, list] of byGroup) {
+    const holder = document.createElement("optgroup");
+    holder.label = group;
+    for (const tool of list) {
+      const option = document.createElement("option");
+      option.value = tool.name;
+      option.textContent = `${tool.name}${tool.why_not ? " (cannot be run here)" : ""}`;
+      option.selected = tryState.tool === tool.name;
+      holder.appendChild(option);
+    }
+    pick.appendChild(holder);
+  }
+
+  parts.push(fieldRow("Tool", pick, `${tools.length} in the catalogue.`));
 
   const what = document.createElement("p");
   what.className = "muted small";
@@ -10364,20 +10686,39 @@ function renderAiTry(data) {
   body.replaceChildren(...parts);
 
   const sync = () => {
-    const tool = runnable.find(t => t.name === pick.value);
+    const tool = tools.find(t => t.name === pick.value);
     tryState.tool = pick.value;
-    what.textContent = tool ? tool.description.split("\n\n")[0] : "";
+
+    what.replaceChildren();
+    if (tool) {
+      const summary = document.createElement("div");
+      summary.textContent = tool.description.split("\n\n")[0];
+      what.appendChild(summary);
+
+      if (tool.why_not) {
+        what.appendChild(note(tool.why_not));
+      } else if (tool.group === "pictures") {
+        what.appendChild(note(
+          "This one really generates a picture, which really costs whatever one costs "
+          + "and counts against the hourly limit. It is not a dry run."
+        ));
+      }
+    }
+
     fields.replaceChildren(...tryFields(tool));
+    $("aiTryRun").disabled = Boolean(tool?.why_not);
+    $("aiTryRun").textContent = tool?.group === "pictures" ? "Run it (this costs)" : "Run it";
   };
 
   pick.addEventListener("change", sync);
-  go.addEventListener("click", () => runAiTry(runnable.find(t => t.name === pick.value)));
+  go.addEventListener("click", () => runAiTry(tools.find(t => t.name === pick.value)));
   sync();
 }
 
 /** One input per declared parameter, typed the way the parameter is. */
 function tryFields(tool) {
   if (!tool) return [];
+  if (tool.why_not) return [];
 
   const entries = Object.entries(tool.parameters || {});
   if (!entries.length) {
@@ -10501,27 +10842,25 @@ async function runAiTry(tool) {
      * was not what somebody thought it was - a default filled in, a number
      * clamped - and that is invisible if only the result is shown.
      */
-    parts.push(section("What it was given", (() => {
-      const pre = document.createElement("pre");
-      pre.className = "md-code";
-      const code = document.createElement("code");
-      code.textContent = JSON.stringify(result.arguments, null, 2);
-      pre.appendChild(code);
-      return pre;
-    })()));
+    /*
+     * The renderer that was already here.
+     *
+     * It numbers and colours JSON and is used by the linked-data view too. I
+     * wrote a second one without looking, which quietly replaced this one for
+     * every caller - the duplicate-function check in the harness caught it and
+     * I read past the failure. Twice.
+     */
+    parts.push(section("What it was given",
+      jsonBlock(JSON.stringify(result.arguments, null, 2))));
+    parts.push(section("What came back",
+      jsonBlock(JSON.stringify(result.result, null, 2))));
 
-    parts.push(section("What came back", (() => {
-      const pre = document.createElement("pre");
-      pre.className = "md-code try-result";
-      const code = document.createElement("code");
-      code.textContent = JSON.stringify(result.result, null, 2);
-      pre.appendChild(code);
-      return pre;
-    })()));
+    if (result.note) parts.push(note(result.note));
 
     parts.push(note(
       "This is exactly what the model would receive, in the same shape. If an answer "
-      + "looked wrong, this is what it was based on."
+      + "looked wrong, this is what it was based on. The line numbers are drawn rather "
+      + "than written, so copying this gives you the JSON and nothing else."
     ));
 
     out.replaceChildren(...parts);
@@ -17424,7 +17763,11 @@ async function refreshDiagnosis() {
     worst === "critical" ? "crit" : worst === "warning" ? "warn" : "ok"
   );
   headline.textContent = worst === "critical"
-    ? `${count(data.findings.filter(f => f.level === "critical").length, "thing")} needs attention now.`
+    ? (() => {
+      // "4 things needs attention" - the verb has to agree with the count.
+      const urgent = data.findings.filter(f => f.level === "critical").length;
+      return `${count(urgent, "thing")} ${urgent === 1 ? "needs" : "need"} attention now.`;
+    })()
     : worst === "warning"
       ? `${count(data.findings.filter(f => f.level === "warning").length, "thing")} worth looking at.`
       : "Nothing urgent.";
@@ -20345,9 +20688,18 @@ function jsonBlock(source) {
     const row = document.createElement("div");
     row.className = "json-line";
 
+    /*
+     * The line number is drawn, not written.
+     *
+     * As text it goes into the clipboard, and JSON pasted with "1 2 3" down the
+     * left-hand side fails to parse on the first character - which is exactly
+     * what somebody copying a tool's response wants to do with it. As a
+     * `content: attr()` it is painted by the stylesheet and is not part of the
+     * document's text at all.
+     */
     const gutter = document.createElement("span");
     gutter.className = "json-gutter";
-    gutter.textContent = String(line.n);
+    gutter.dataset.n = String(line.n);
     row.appendChild(gutter);
 
     const text = document.createElement("span");
@@ -24374,29 +24726,29 @@ const VIEWS = {
    * they are all drawn from the same answer.
    */
   "sys-ai-model": {
-    manual: true, label: "Model", parent: "system", refresh: () => refreshAiSettings(),
+    manual: true, label: "Model", parent: "sys-ai", refresh: () => refreshAiSettings(),
   },
   "sys-ai-prices": {
-    manual: true, label: "Prices", parent: "system", refresh: () => refreshAiSettings(),
+    manual: true, label: "Prices", parent: "sys-ai", refresh: () => refreshAiSettings(),
   },
   "sys-ai-limits": {
-    manual: true, label: "Thresholds", parent: "system", refresh: () => refreshAiSettings(),
+    manual: true, label: "Thresholds", parent: "sys-ai", refresh: () => refreshAiSettings(),
   },
   "sys-ai-images": {
-    manual: true, label: "Images", parent: "system", refresh: () => refreshAiSettings(),
+    manual: true, label: "Images", parent: "sys-ai", refresh: () => refreshAiSettings(),
   },
   "sys-ai-tools": {
-    manual: true, label: "Tools", parent: "system", refresh: () => refreshAiSettings(),
+    manual: true, label: "Tools", parent: "sys-ai", refresh: () => refreshAiSettings(),
   },
   "sys-ai-try": {
-    manual: true, label: "Try a tool", parent: "system", refresh: () => refreshAiSettings(),
+    manual: true, label: "Try a tool", parent: "sys-ai", refresh: () => refreshAiSettings(),
   },
   "sys-ai-billing": {
-    manual: true, label: "Billing", parent: "system", refresh: () => refreshAiSessions(),
+    manual: true, label: "Billing", parent: "sys-ai", refresh: () => refreshAiSessions(),
   },
   "sys-reports": {
     label: "Summaries",
-    parent: "system",
+    parent: "sys-ai",
     refresh: () => refreshReports(),
   },
   "sys-terminal": {
@@ -24415,13 +24767,13 @@ const VIEWS = {
   "sys-memory": {
     manual: true,
     label: "What it remembers",
-    parent: "system",
+    parent: "sys-ai",
     refresh: () => refreshMemories(),
   },
   "sys-ai-data": {
     // Renamed by renderChatIdentity along with everything else that says it.
     label: "Mr. Radar's data",
-    parent: "system",
+    parent: "sys-ai",
     refresh: () => refreshAiStore(),
   },
   "sys-retention": {
@@ -24460,7 +24812,7 @@ const VIEWS = {
     // Replaced by renderChatIdentity once the persona has loaded, because the
     // operator can rename it and a menu that keeps the old name is a bug.
     label: "Mr. Radar",
-    parent: "system",
+    parent: null,
     refresh: () => refreshAiSettings(),
   },
   "scans-account": {

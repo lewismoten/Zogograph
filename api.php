@@ -187,7 +187,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-stop' => doAiStop($config, $pdo, $post),
         'ai-interrupt' => doAiInterrupt($config, $pdo, $post),
         'ai-effort' => doAiEffort($config, $pdo, $post),
-        'ai-compact' => doAiCompactSession($config, $pdo, $post),
+        'ai-compact-chat' => doAiCompactSession($config, $pdo, $post),
         'ai-asset' => aiAssetView($config, $signedIn),
         'ai-settings' => aiSettingsView($config, $pdo, $signedIn),
         'ai-settings-save' => doAiSettingsSave($config, $pdo, $post),
@@ -6832,6 +6832,17 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
     $catalogue = aiTools($views);
     $chosen = $config['ai']['tools'] ?? [];
 
+    /*
+     * The shape the model is actually offered, where there is one.
+     *
+     * aiEnabledTools fills in the parts that depend on this install - which
+     * picture styles are allowed, for one - and the raw catalogue does not.
+     * Building the "try a tool" form from the catalogue therefore produced a
+     * style dropdown with nothing in it, for a parameter that is required.
+     * A tool that is switched off is not in here at all, so it falls back.
+     */
+    $live = aiEnabledTools($config, $views);
+
     $tools = [];
     foreach ($catalogue as $name => $tool) {
         $mine = $chosen[$name] ?? [];
@@ -6865,7 +6876,15 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
                 'maximum' => $spec['maximum'] ?? null,
                 'maxLength' => $spec['maxLength'] ?? null,
                 'default' => $spec['default'] ?? null,
-            ], $tool['parameters'] ?? []),
+            ], ($live[$name]['parameters'] ?? $tool['parameters']) ?? []),
+            'group' => $tool['group'],
+            /*
+             * Why a tool cannot be tried, when it cannot.
+             *
+             * A page that silently omits half the tools invites the reasonable
+             * conclusion that they do not exist.
+             */
+            'why_not' => aiWhyNotTryable($tool, isset($live[$name])),
         ];
     }
 
@@ -6935,6 +6954,28 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
 }
 
 /**
+ * Why one tool cannot be run from the try page, or null if it can.
+ *
+ * Browser tools genuinely cannot: they draw something, move somebody, or ask
+ * for a screenshot, and none of that has any meaning in a form. Saying so is
+ * better than leaving them off the list, which reads as "these do not exist".
+ */
+function aiWhyNotTryable(array $tool, bool $enabled): ?string
+{
+    if ($tool['where'] === 'browser') {
+        return 'This one happens in the browser during a conversation - it draws '
+            . 'something, or moves you to a page. There is nothing to run here.';
+    }
+
+    if ($tool['group'] === 'pictures' && !$enabled) {
+        return 'Picture generation is switched off, or has no key, so this tool is not '
+            . 'offered to the model either.';
+    }
+
+    return null;
+}
+
+/**
  * Runs one tool with parameters typed by hand, and shows what comes back.
  *
  * Two things this is for. Seeing whether a tool actually works on this install
@@ -6975,12 +7016,29 @@ function doAiTry(array $config, PDO $pdo, bool $post): array
         );
     }
 
+    /*
+     * The picture tools take a different road, and it is the same road the
+     * assistant's own calls take.
+     *
+     * They are the only server tools that do not go through aiRunTool - they
+     * reach outside this machine, they cost money and they write to the
+     * assistant's database rather than the account's. Testing them through
+     * aiRunTool got the dispatcher's default answer, "That tool does not run on
+     * the server", about a tool that plainly does.
+     */
+    if ($tool['group'] === 'pictures') {
+        return aiTryPicture($config, $pdo, $name, $tool, $_POST['arguments'] ?? '{}');
+    }
+
     $given = json_decode((string)($_POST['arguments'] ?? '{}'), true);
     if (!is_array($given)) {
         throw new ActionRefused('the parameters did not arrive as an object');
     }
 
-    $checked = aiCheckArguments($tool, $given);
+    // The same shape the model is offered, so what is accepted here is what
+    // would be accepted there.
+    $live = aiEnabledTools($config, $views);
+    $checked = aiCheckArguments($live[$name] ?? $tool, $given);
     if (!$checked['ok']) {
         return [
             'ok' => false,
@@ -7003,6 +7061,123 @@ function doAiTry(array $config, PDO $pdo, bool $post): array
         'ms' => $ms,
         'result' => $result,
         'bytes' => strlen(json_encode($result, JSON_PARTIAL_OUTPUT_ON_ERROR)),
+    ];
+}
+
+/**
+ * The one session that hand-run tools are recorded against.
+ *
+ * Made once and reused, so pressing "Run it" forty times produces forty runs
+ * under one heading rather than forty conversations nobody had. It is marked
+ * ended, because it is not a conversation and nothing will ever be said in it.
+ */
+function aiBenchSession(PDO $ai, array $config): int
+{
+    $found = $ai->query(
+        "SELECT id FROM ai_sessions WHERE opened_from = 'tool-bench' ORDER BY id LIMIT 1"
+    )->fetchColumn();
+
+    if ($found !== false) {
+        return (int)$found;
+    }
+
+    $ai->prepare(
+        "INSERT INTO ai_sessions
+            (started_at, last_at, ended_at, title, state, model, started_by, opened_from,
+             max_seconds, max_millicents, max_turns)
+         VALUES (?, ?, ?, ?, 'ended', ?, ?, 'tool-bench', 0, 0, 0)"
+    )->execute([
+        time(), time(), time(),
+        'Tools run by hand from the Try a tool page',
+        aiSettings($config)['model'],
+        currentAccountName(),
+    ]);
+
+    return (int)$ai->lastInsertId();
+}
+
+/**
+ * Runs one picture tool from the try page.
+ *
+ * Through aiRunPicture, which is what a real call goes through - so the hourly
+ * budget, the cost accounting and the kept bytes all behave exactly as they
+ * would in a conversation. That matters: the point of trying a tool is finding
+ * out what it really does, and a test that took a shortcut would be testing the
+ * shortcut.
+ *
+ * It costs money. The page says so before the button is pressed.
+ */
+function aiTryPicture(
+    array $config,
+    PDO $pdo,
+    string $name,
+    array $tool,
+    string $rawArguments
+): array {
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('there is no assistant database to record this in');
+    }
+
+    $given = json_decode($rawArguments, true);
+    if (!is_array($given)) {
+        throw new ActionRefused('the parameters did not arrive as an object');
+    }
+
+    $live = aiEnabledTools($config, aiViews());
+    $checked = aiCheckArguments($live[$name] ?? $tool, $given);
+
+    if (!$checked['ok']) {
+        return [
+            'ok' => false,
+            'refused' => $checked['why'],
+            'note' => 'The model would have been told this and asked to try again.',
+        ];
+    }
+
+    /*
+     * A real session to hang it on, shared by every hand-run tool.
+     *
+     * Session zero was the obvious choice and is not available: ai_tool_runs
+     * has a foreign key to ai_sessions and it is enforced, so the insert failed
+     * outright. Inventing a fresh conversation per press would litter the
+     * billing page instead.
+     *
+     * One long-lived session is also the honest answer. These runs happened,
+     * they cost whatever they cost, and they belong somewhere a person can find
+     * them - collected under one heading that says what they were.
+     */
+    $session = aiBenchSession($ai, $config);
+
+    $ai->prepare(
+        "INSERT INTO ai_tool_runs
+            (session_id, call_id, at, tool, tool_id, arguments, runs_where, state,
+             needs_permission)
+         VALUES (?, NULL, ?, ?, ?, ?, 'server', 'allowed', 0)"
+    )->execute([$session, time(), $name, 'try-' . bin2hex(random_bytes(4)),
+                json_encode($checked['values'])]);
+    $runId = (int)$ai->lastInsertId();
+
+    $started = microtime(true);
+    aiRunPicture($config, $ai, $session, $runId, $name, $checked['values'], 'try');
+    $ms = (int)round((microtime(true) - $started) * 1000);
+
+    $row = $ai->prepare('SELECT state, result, error FROM ai_tool_runs WHERE id = ?');
+    $row->execute([$runId]);
+    $found = $row->fetch() ?: [];
+
+    logAction($pdo, 'ai_try', $name, 'ok', 0, 0, 'a picture was generated');
+
+    return [
+        'ok' => true,
+        'tool' => $name,
+        'arguments' => $checked['values'],
+        'ms' => $ms,
+        'result' => json_decode((string)($found['result'] ?? 'null'), true)
+            ?? ['error' => $found['error'] ?? 'nothing came back'],
+        'bytes' => strlen((string)($found['result'] ?? '')),
+        'note' => 'This really generated a picture, so it really cost whatever one costs. '
+            . 'It is on the Images page with the rest of them.',
     ];
 }
 

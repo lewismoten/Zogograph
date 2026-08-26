@@ -184,7 +184,7 @@ function aiCompact(array $config, PDO $ai, int $session, ?callable $ask = null):
     }
 
     $stmt = $ai->prepare(
-        'SELECT role, content, tool_name, tool_args FROM ai_messages
+        'SELECT id, role, content, tool_name, tool_args FROM ai_messages
           WHERE session_id = ? AND id > (
                 SELECT COALESCE(compacted_to, 0) FROM ai_sessions WHERE id = ?)
             AND id <= ?
@@ -240,10 +240,24 @@ function aiCompact(array $config, PDO $ai, int $session, ?callable $ask = null):
         ];
     }
 
+    /*
+     * The summary is a visible message, with what it replaced recorded on it.
+     *
+     * Visible because a conversation that silently loses its first half is a
+     * conversation somebody stops trusting - the originals are all still here
+     * and still shown; this is a marker saying where the model's view now
+     * begins. The range goes on it so the marker can be opened and checked
+     * against what it claims to summarise.
+     */
     $ai->prepare(
-        "INSERT INTO ai_messages (session_id, at, role, content, visible)
-         VALUES (?, ?, 'summary', ?, 1)"
-    )->execute([$session, time(), $summary]);
+        "INSERT INTO ai_messages (session_id, at, role, content, tool_args, visible)
+         VALUES (?, ?, 'summary', ?, ?, 1)"
+    )->execute([$session, time(), $summary, json_encode([
+        'from_message' => (int)($rows[0]['id'] ?? 0),
+        'to_message' => $cut,
+        'messages' => count($rows),
+        'tokens_before' => aiContextSize($ai, $session)['tokens'],
+    ])]);
 
     $ai->prepare('UPDATE ai_sessions SET compacted_to = ? WHERE id = ?')
         ->execute([$cut, $session]);

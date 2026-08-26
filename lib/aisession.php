@@ -944,6 +944,25 @@ function aiSessionView(array $config, PDO $ai, int $id, array $views): array
             continue;
         }
 
+        /*
+         * The compaction marker, with the range it stands for.
+         *
+         * It is drawn differently from an ordinary message - it is not
+         * something either party said - and it can be opened to see what it
+         * replaced, so a summary can be checked against the messages it claims
+         * to cover rather than taken on trust.
+         */
+        if ($role === 'summary') {
+            $shown[] = [
+                'id' => (int)$row['id'],
+                'at' => (int)$row['at'],
+                'role' => 'summary',
+                'content' => (string)($row['content'] ?? ''),
+                'covers' => json_decode((string)($row['tool_args'] ?? '{}'), true) ?: [],
+            ];
+            continue;
+        }
+
         if ($role === 'tool_call' || $role === 'picture' || $role === 'reaction') {
             $shown[] = [
                 'id' => (int)$row['id'],
