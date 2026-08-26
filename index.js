@@ -6135,7 +6135,7 @@ async function refreshAiSessions() {
  */
 function chatProgressCard(message) {
   const args = message.arguments || {};
-  const percent = Math.max(0, Math.min(100, Number(args.percent) || 0));
+  const kind = ["time", "count", "working"].includes(args.kind) ? args.kind : "time";
 
   const card = document.createElement("div");
   card.className = "chat-progress";
@@ -6149,25 +6149,52 @@ function chatProgressCard(message) {
   track.className = "chat-progress-track";
   const fill = document.createElement("div");
   fill.className = "chat-progress-fill";
-  fill.style.setProperty("--fill", `${percent}%`);
   track.appendChild(fill);
   card.appendChild(track);
 
   const said = document.createElement("div");
   said.className = "muted small";
-  const left = Number(args.seconds_left);
-  said.textContent = `${percent}%`
-    + (Number.isFinite(left) && left > 0
-      ? ` · about ${humanSpan(left, true)} left`
-      : "");
+
+  if (kind === "working") {
+    /*
+     * No number at all, because there is not one.
+     *
+     * A bar that sweeps says "something is happening and I cannot tell you how
+     * much is left", which is a true statement and the whole reason this mode
+     * exists. Filling it to some invented fraction would be a lie with a
+     * picture attached.
+     */
+    track.classList.add("indeterminate");
+    said.textContent = "Working — the size of this job is not known.";
+  } else if (kind === "count") {
+    const total = Math.max(1, Number(args.total) || 1);
+    const done = Math.max(0, Math.min(total, Number(args.done) || 0));
+    const unit = String(args.unit || "steps");
+
+    fill.style.setProperty("--fill", `${Math.round((done / total) * 100)}%`);
+    said.textContent = `${done} of ${total} ${unit} done`;
+  } else {
+    const percent = Math.max(0, Math.min(100, Number(args.percent) || 0));
+    const left = Number(args.seconds_left);
+
+    fill.style.setProperty("--fill", `${percent}%`);
+    said.textContent = `${percent}%`
+      + (Number.isFinite(left) && left > 0
+        ? ` · about ${humanSpan(left, true)} left`
+        : "");
+  }
+
   /*
    * A drawn bar is a moment, not a live thing.
    *
    * It does not animate and the model has to call the tool again to move it,
    * so the time it was drawn is worth saying - otherwise a bar from four
-   * minutes ago reads as current.
+   * minutes ago reads as current. The sweeping one is exempt: it is honestly
+   * saying nothing about how far along anything is.
    */
-  said.title = `Drawn ${humanTime(message.at)}. It does not move on its own.`;
+  said.title = kind === "working"
+    ? `Started ${humanTime(message.at)}. The sweep is decoration; it does not track anything.`
+    : `Drawn ${humanTime(message.at)}. It does not move on its own.`;
   card.appendChild(said);
 
   return card;
@@ -7496,6 +7523,12 @@ const chatState = {
   // Chart cards by the message that asked for them, so a poll does not redraw
   // every chart in the conversation several times a second.
   charts: new Map(),
+  // A question this page is putting to the user for a tool, if there is one.
+  prompt: null,
+  // When each permission question runs out, by tool-run id. Kept outside the
+  // prompt because the prompt is rebuilt on every poll and the clock must not
+  // restart with it.
+  deadlines: new Map(),
   // Name, emoji and portrait, refreshed with the session.
   who: { name: "Mr. Radar", emoji: "\u{1F4E1}", portrait: null },
 };
@@ -7826,6 +7859,16 @@ async function runBrowserTool(run) {
        */
       location.hash = `#/${page}?range=${range}`;
       result = {};
+    } else if (run.tool === "offer_choices") {
+      result = await runOfferChoices(run.arguments);
+    } else if (run.tool === "ask_the_user") {
+      result = await runAskTheUser(run.arguments);
+    } else if (run.tool === "highlight_on_page") {
+      result = highlightOnPage(run.arguments);
+    } else if (run.tool === "request_from_host") {
+      result = await runRequestFromHost(run.arguments);
+    } else if (run.tool === "wait_for_new_readings") {
+      result = await runWaitForReadings(run.arguments);
     } else if (run.tool === "take_screenshot") {
       /*
        * Through an editor, never straight out.
@@ -8309,12 +8352,23 @@ function renderChatStatus(session) {
   if (session.permission) {
     ask.replaceChildren(chatPermissionPrompt(session.permission));
     ask.hidden = false;
+  } else if (chatState.prompt) {
+    /*
+     * A question the page is asking on a tool's behalf.
+     *
+     * Put back rather than rebuilt, because it owns a running countdown and a
+     * half-filled answer box - rebuilding it every poll would reset both, which
+     * is to say it would be unanswerable on any question that took longer than
+     * a second to answer.
+     */
+    if (ask.firstElementChild !== chatState.prompt) ask.replaceChildren(chatState.prompt);
+    ask.hidden = false;
   } else {
     ask.replaceChildren();
     ask.hidden = true;
   }
 
-  if (session.permission) return;
+  if (session.permission || chatState.prompt) return;
 
   const said = {
     idle: "",
@@ -8341,6 +8395,496 @@ function renderChatStatus(session) {
     again.addEventListener("click", () => startChat());
     status.appendChild(again);
   }
+}
+
+/* ------------------------------------------- what the new tools actually do -- */
+
+/**
+ * A fork in the conversation, put to the user.
+ *
+ * The default is named on the button strip before it is taken, not announced
+ * afterwards. Somebody who sees "leaving it alone in 40s" and disagrees has
+ * forty seconds to say so; somebody who is told afterwards has a decision they
+ * did not make.
+ */
+async function runOfferChoices(args) {
+  const choices = (args.choices || []).filter(c => c && c.key && c.label);
+
+  if (!choices.length) {
+    return { error: "no choices were given, so there was nothing to ask" };
+  }
+
+  const fallback = choices.find(c => c.key === args.default_key) ?? choices[0];
+
+  const answer = await chatAsk({
+    title: String(args.question || "Which way?"),
+    seconds: args.seconds ?? 120,
+    defaultLabel: `“${fallback.label}”`,
+    confirmLabel: "Go with this",
+    build: holder => chatChoiceForm(choices, holder),
+  });
+
+  if (!answer.answered) {
+    return {
+      chose: fallback.key,
+      answered: false,
+      note: "Nobody answered, so the default was taken. Say which way you are going and "
+        + "why, so they can redirect you if they come back and disagree.",
+    };
+  }
+
+  return { chose: answer.value, answered: true };
+}
+
+/** One typed question, and what came back. */
+async function runAskTheUser(args) {
+  const shape = ["choice", "checklist", "number", "text"].includes(args.answer)
+    ? args.answer
+    : "text";
+  const options = (args.options || []).filter(o => o && o.key && o.label);
+
+  if ((shape === "choice" || shape === "checklist") && !options.length) {
+    return { error: `answer="${shape}" needs options, and none were given` };
+  }
+
+  const answer = await chatAsk({
+    title: String(args.question || "A question"),
+    seconds: args.seconds ?? 180,
+    defaultLabel: "Carrying on without an answer",
+    build: holder => buildAnswerField(shape, options, args, holder),
+  });
+
+  if (!answer.answered) {
+    return {
+      answered: false,
+      note: "No answer. Carry on with what you can work out, say what you assumed, and "
+        + "do not ask again.",
+    };
+  }
+
+  return { answered: true, answer: answer.value };
+}
+
+/** The four shapes of answer, as form controls. */
+function buildAnswerField(shape, options, args, holder) {
+  if (shape === "choice") {
+    return chatChoiceForm(
+      options.map(o => ({ key: o.key, label: o.label, what_happens: "" })),
+      holder
+    );
+  }
+
+  if (shape === "checklist") {
+    for (const option of options) {
+      const line = document.createElement("label");
+      line.className = "scan-toggle";
+
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = option.key;
+      line.appendChild(box);
+
+      const text = document.createElement("span");
+      text.textContent = ` ${option.label}`;
+      line.appendChild(text);
+
+      holder.appendChild(line);
+    }
+
+    /*
+     * An empty checklist is a real answer.
+     *
+     * "None of these" is exactly what a checklist is for, and treating it as
+     * "you have not answered yet" would make it impossible to say. So it
+     * returns a list, and an empty list is a list.
+     */
+    return () => [...holder.querySelectorAll("input:checked")].map(box => box.value);
+  }
+
+  if (shape === "number") {
+    const row = document.createElement("div");
+    row.className = "pattern-row";
+
+    const box = document.createElement("input");
+    box.type = "number";
+    box.className = "days";
+    if (args.minimum !== null && args.minimum !== undefined) box.min = String(args.minimum);
+    if (args.maximum !== null && args.maximum !== undefined) box.max = String(args.maximum);
+    row.appendChild(box);
+
+    if (args.unit) {
+      const unit = document.createElement("span");
+      unit.className = "muted small";
+      unit.textContent = String(args.unit);
+      row.appendChild(unit);
+    }
+
+    holder.appendChild(row);
+    box.focus();
+
+    return () => (box.value.trim() === "" ? null : Number(box.value));
+  }
+
+  const box = document.createElement("textarea");
+  box.rows = 3;
+  box.className = "wide-field";
+  box.spellcheck = true;
+  holder.appendChild(box);
+  box.focus();
+
+  return () => box.value.trim() || null;
+}
+
+/**
+ * Puts the user's eye on one thing.
+ *
+ * Searches the visible page only. Searching hidden views would find a match on
+ * a page nobody is looking at and report success for a highlight that appeared
+ * nowhere, which is worse than saying it was not found.
+ *
+ * Text nodes rather than elements, so that the smallest thing containing the
+ * text is what gets outlined - matching on elements finds the whole table
+ * first, and outlining a table to point at one row points at nothing.
+ */
+function highlightOnPage(args) {
+  const find = String(args.find || "").trim().toLowerCase();
+  if (!find) return { found: false, note: "nothing to look for" };
+
+  const view = document.querySelector(".view:not([hidden])");
+  if (!view) return { found: false, note: "no page is open" };
+
+  const walker = document.createTreeWalker(view, NodeFilter.SHOW_TEXT, {
+    acceptNode: node => (node.textContent || "").toLowerCase().includes(find)
+      && node.parentElement
+      && !node.parentElement.closest("[hidden]")
+      ? NodeFilter.FILTER_ACCEPT
+      : NodeFilter.FILTER_REJECT,
+  });
+
+  const node = walker.nextNode();
+  if (!node) {
+    return {
+      found: false,
+      page: state.view,
+      note: `Nothing on the ${VIEWS[state.view]?.label ?? state.view} page contains that `
+        + "text, so nothing was highlighted. The user may be on a different page — "
+        + "open_page first — or it may not be shown there at all. Do not describe a "
+        + "highlight that did not happen.",
+    };
+  }
+
+  /*
+   * The row, where there is one.
+   *
+   * A process name lives in a cell, and pointing at the cell leaves the figure
+   * that makes it interesting outside the outline. The row is the unit somebody
+   * reads.
+   */
+  const target = node.parentElement.closest("tr, li, .cap-list > div, .settings > div")
+    ?? node.parentElement;
+
+  target.classList.remove("pointed-at");
+  // Reading offsetWidth restarts the animation; without it a second highlight
+  // on the same element does nothing at all.
+  void target.offsetWidth;
+  target.classList.add("pointed-at");
+
+  target.scrollIntoView({ block: "center", behavior: "smooth" });
+
+  if (args.why) {
+    notice(`${chatState.who.name}: ${args.why}`, true);
+  }
+
+  setTimeout(() => target.classList.remove("pointed-at"), 6000);
+
+  return {
+    found: true,
+    page: state.view,
+    showed: (target.textContent || "").replace(/\s+/g, " ").trim().slice(0, 160),
+    note: "It is outlined and pulsing for a few seconds. Say what you are pointing at in "
+      + "the same message; a highlight with no sentence is a poke.",
+  };
+}
+
+/**
+ * Asks the user to approve a job for root's collector, then queues it.
+ *
+ * Approval is per request, every time. These run as root on a machine that may
+ * be shared and some of them cost minutes of I/O, so it is not the kind of
+ * permission worth remembering - the right answer today is not the right answer
+ * during a busy hour.
+ */
+async function runRequestFromHost(args) {
+  const jobs = {
+    "capabilities": {
+      label: "Re-check what is installed on the host",
+      cost: "Quick. Runs a handful of version checks.",
+      task: "capabilities",
+    },
+    "disk-walk": {
+      label: "Walk the whole filesystem as root",
+      cost: "Expensive — minutes on a large disk, and it reads the whole time.",
+      task: "disk-walk",
+    },
+  };
+
+  const job = jobs[String(args.job || "")];
+  if (!job) return { queued: false, error: `there is no host job called "${args.job}"` };
+
+  const answer = await chatAsk({
+    title: `${chatState.who.name} wants to ask root's collector: ${job.label}`,
+    why: `${args.why ? `“${args.why}” — ` : ""}${job.cost} It runs on the collector's next `
+      + "pass, not now.",
+    seconds: args.seconds ?? 120,
+    defaultLabel: "Treated as no",
+    confirmLabel: "Ask the host",
+    build: holder => {
+      const said = document.createElement("div");
+      said.className = "muted small";
+      said.textContent = "This queues a job for the process running as root. Nothing runs "
+        + "in this window and nothing runs now.";
+      holder.appendChild(said);
+      // Nothing to fill in: pressing the button is the answer.
+      return () => "yes";
+    },
+  });
+
+  if (!answer.answered) {
+    return {
+      queued: false,
+      note: "Not approved — either declined or nobody answered. Treat it as a no, carry "
+        + "on with what you can see from this account, and say what you cannot answer "
+        + "because of it.",
+    };
+  }
+
+  try {
+    const queued = await post("host-request", { job: job.task, why: String(args.why || "") });
+    return {
+      queued: true,
+      job: job.task,
+      note: queued.note
+        || "Queued. It runs on the collector's next pass — use get_pending_host_requests "
+           + "to see whether it has landed, or wait_for_new_readings to wait for it. Do "
+           + "not assume the answer is available yet.",
+    };
+  } catch (error) {
+    return { queued: false, error: String(error.message || error) };
+  }
+}
+
+/**
+ * Waits for a collector to bring something new in.
+ *
+ * Polled from here rather than held open on the server: a request left hanging
+ * for five minutes ties up a PHP worker, and on shared hosting there are not
+ * many of those. The page already knows when readings land.
+ */
+async function runWaitForReadings(args) {
+  const which = args.which === "host" ? "host" : "account";
+  const seconds = Math.max(30, Math.min(1800, Number(args.seconds) || 300));
+
+  const at = async () => {
+    try {
+      const health = await api("health");
+      return Number(which === "host" ? health.host_at : health.account_at) || 0;
+    } catch {
+      return 0;
+    }
+  };
+
+  const before = await at();
+  const until = Date.now() + seconds * 1000;
+
+  const waiting = document.createElement("div");
+  waiting.className = "chat-question";
+  waiting.textContent = `Waiting for the ${which} collector…`;
+  chatState.prompt = waiting;
+  $("chatAsk").replaceChildren(waiting);
+  $("chatAsk").hidden = false;
+
+  try {
+    while (Date.now() < until) {
+      const left = Math.round((until - Date.now()) / 1000);
+      waiting.textContent = `${chatState.who.name} is waiting for the ${which} collector `
+        + `— up to ${humanSpan(left)} more.`;
+
+      await new Promise(resolve => setTimeout(resolve, 5000));
+
+      const now = await at();
+      if (now > before) {
+        return {
+          arrived: true,
+          which,
+          waited: humanSpan(Math.round(seconds - (until - Date.now()) / 1000)),
+          note: "New readings have landed. Anything you read before this is from before "
+            + "them — call the tools again rather than reasoning from the old answers.",
+        };
+      }
+    }
+
+    return {
+      arrived: false,
+      which,
+      waited: humanSpan(seconds),
+      note: `Nothing new arrived from the ${which} collector in that time. That is a `
+        + "finding: it is not running as often as it should, or at all. Say so rather "
+        + "than waiting again.",
+    };
+  } finally {
+    chatState.prompt = null;
+    $("chatAsk").replaceChildren();
+    $("chatAsk").hidden = true;
+  }
+}
+
+/* ------------------------------------------------- questions with a clock -- */
+
+/**
+ * Puts a question to the user, with a countdown and a default.
+ *
+ * Every question a tool asks has to be answerable and has to be survivable.
+ * Answerable means it sits above the log where it cannot scroll away.
+ * Survivable means that if nobody answers - because they walked off, or the
+ * page is on a second monitor nobody is looking at - the conversation carries
+ * on rather than stopping dead in the middle of a diagnosis.
+ *
+ * So there is always a timeout and always a stated default, and the countdown
+ * is visible from the first second: a question that silently expires is worse
+ * than one that never got asked, because the user finds out afterwards that
+ * something was decided without them.
+ *
+ * `build` gets a container to fill and returns a function that reads the answer
+ * out of it. Resolves {answered, value} - answered false meaning nobody did.
+ */
+function chatAsk({ title, why, seconds, defaultLabel, build, confirmLabel = "Send" }) {
+  const wrap = document.createElement("div");
+  wrap.className = "chat-question";
+
+  const head = document.createElement("div");
+  head.className = "chat-question-head";
+  head.textContent = title;
+  wrap.appendChild(head);
+
+  if (why) {
+    const said = document.createElement("div");
+    said.className = "muted small";
+    said.textContent = why;
+    wrap.appendChild(said);
+  }
+
+  const holder = document.createElement("div");
+  holder.className = "chat-question-body";
+  wrap.appendChild(holder);
+
+  const read = build(holder);
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const clock = document.createElement("span");
+  clock.className = "muted small chat-countdown";
+  actions.appendChild(clock);
+
+  wrap.appendChild(actions);
+
+  return new Promise(resolve => {
+    let done = false;
+    let left = Math.max(5, Number(seconds) || 120);
+
+    const finish = answer => {
+      if (done) return;
+      done = true;
+      clearInterval(timer);
+      chatState.prompt = null;
+      $("chatAsk").replaceChildren();
+      $("chatAsk").hidden = true;
+      resolve(answer);
+    };
+
+    const send = document.createElement("button");
+    send.type = "button";
+    send.textContent = confirmLabel;
+    send.addEventListener("click", () => {
+      const value = read();
+      // A question with nothing filled in is not an answer; the countdown
+      // carries on rather than sending an empty one as if it were.
+      if (value === null || value === undefined || value === "") {
+        notice("Nothing chosen yet.");
+        return;
+      }
+      finish({ answered: true, value });
+    });
+    actions.insertBefore(send, clock);
+
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.className = "link";
+    skip.textContent = "Skip";
+    skip.title = "Carry on without answering — the same as letting the clock run out";
+    skip.addEventListener("click", () => finish({ answered: false, value: null }));
+    actions.insertBefore(skip, clock);
+
+    const tick = () => {
+      // The label names the default; this adds the clock. Keeping the two
+      // apart is what stops "… in in 25s", which is what happened when the
+      // caller supplied its own preposition.
+      clock.textContent = left > 0
+        ? `${defaultLabel} in ${humanSpan(left)}`
+        : `${defaultLabel} — no answer`;
+      // Under fifteen seconds it stops being background information.
+      clock.classList.toggle("soon", left <= 15);
+      if (left <= 0) finish({ answered: false, value: null });
+      left -= 1;
+    };
+
+    const timer = setInterval(tick, 1000);
+    tick();
+
+    chatState.prompt = wrap;
+    const ask = $("chatAsk");
+    ask.replaceChildren(wrap);
+    ask.hidden = false;
+
+    // If the panel is hidden the question cannot be seen, and a countdown
+    // running behind a closed panel is a decision made in secret.
+    if (!chatState.open) openChat();
+  });
+}
+
+/** The choices form: one of a small set of directions. */
+function chatChoiceForm(choices, holder) {
+  let chosen = null;
+
+  for (const choice of choices) {
+    const line = document.createElement("button");
+    line.type = "button";
+    line.className = "chat-choice";
+    line.dataset.key = choice.key;
+
+    const label = document.createElement("span");
+    label.className = "chat-choice-label";
+    label.textContent = choice.label;
+    line.appendChild(label);
+
+    if (choice.what_happens) {
+      const what = document.createElement("span");
+      what.className = "muted small";
+      what.textContent = choice.what_happens;
+      line.appendChild(what);
+    }
+
+    line.addEventListener("click", () => {
+      chosen = choice.key;
+      for (const other of holder.querySelectorAll(".chat-choice")) {
+        other.classList.toggle("on", other.dataset.key === chosen);
+      }
+    });
+
+    holder.appendChild(line);
+  }
+
+  return () => chosen;
 }
 
 /**
@@ -8390,9 +8934,82 @@ function chatPermissionPrompt(run) {
     actions.appendChild(button);
   }
 
+  /*
+   * A permission question that nobody answers is a refusal, eventually.
+   *
+   * Not immediately, and not silently: the countdown is visible from the first
+   * second so that somebody who is reading it knows how long they have. But it
+   * has to end, because a turn stuck waiting for a person who left is a
+   * conversation that has to be started again from nothing - and every tool
+   * that asks first is one the model can do without.
+   *
+   * Refuse rather than allow, always. The tools behind this question take
+   * screenshots and spend money; the safe direction when nobody is there is
+   * the one that does neither.
+   */
+  const clock = document.createElement("span");
+  clock.className = "muted small chat-countdown";
+  actions.appendChild(clock);
+
+  /*
+   * A deadline, not a counter.
+   *
+   * This prompt is rebuilt on every poll - several times a second while a turn
+   * is in flight - so a countdown that started at 180 each time would never
+   * reach zero. The deadline is set once, the first time this question is seen,
+   * and every rebuild reads the same clock.
+   */
+  if (!chatState.deadlines.has(run.id)) {
+    chatState.deadlines.set(run.id, Date.now() + PERMISSION_SECONDS * 1000);
+  }
+  const deadline = chatState.deadlines.get(run.id);
+
+  const tick = async () => {
+    // Answered by hand, replaced by a later render, or the question moved on.
+    if (!wrap.isConnected || chatState.session?.permission?.id !== run.id) {
+      clearInterval(timer);
+      return;
+    }
+
+    const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+
+    clock.textContent = left > 0
+      ? `Treated as no in ${humanSpan(left)}`
+      : "No answer — carrying on without it";
+    clock.classList.toggle("soon", left <= 15);
+
+    if (left <= 0) {
+      clearInterval(timer);
+      for (const other of actions.querySelectorAll("button")) other.disabled = true;
+      try {
+        chatState.session = (await post("ai-permit", { run: run.id, allow: "0" })).session;
+        notice(`Nobody answered, so ${chatState.who.name} was told no. It carries on `
+          + "without whatever that would have told it.", true);
+        renderChat();
+        await driveChat();
+        scheduleChatPoll();
+      } catch (error) {
+        notice(String(error.message || error));
+      }
+      chatState.deadlines.delete(run.id);
+    }
+  };
+
+  const timer = setInterval(tick, 1000);
+  tick();
+
   wrap.appendChild(actions);
   return wrap;
 }
+
+/**
+ * How long a permission question waits.
+ *
+ * Long enough to read the reason and think about it, short enough that a
+ * conversation left alone does not sit on one question until the session's own
+ * time limit kills it.
+ */
+const PERMISSION_SECONDS = 180;
 
 /** A tool call as a sentence rather than a function signature. */
 function chatToolPhrase(tool, args) {
@@ -11420,6 +12037,46 @@ async function tryBrowserTool(tool, args) {
     }
   }
 
+  /*
+   * The ones that put a question in the chat panel.
+   *
+   * Run through the same code the conversation uses, so the countdown, the
+   * default and the shape of the answer are the real ones - a test that mocked
+   * the question would be testing the mock.
+   */
+  if (["offer_choices", "ask_the_user", "request_from_host"].includes(name)) {
+    const result = await {
+      offer_choices: runOfferChoices,
+      ask_the_user: runAskTheUser,
+      request_from_host: runRequestFromHost,
+    }[name](args);
+
+    return {
+      result,
+      shown: note(
+        "The question appeared in the chat panel, above the log — that is where it "
+        + "appears mid-conversation too, and it carried the same countdown and the same "
+        + "default. What came back is below."
+      ),
+    };
+  }
+
+  if (name === "highlight_on_page") {
+    const result = highlightOnPage(args);
+    return {
+      result,
+      shown: note(result.found
+        ? "It is outlined and pulsing on the page behind this one. Open the page it is "
+          + "on to watch it happen."
+        : "Nothing on the open page matched, which is exactly what the model is told."),
+    };
+  }
+
+  if (name === "wait_for_new_readings") {
+    const result = await runWaitForReadings(args);
+    return { result, shown: null };
+  }
+
   if (name === "show_progress") {
     // The same card the chat draws, from the same arguments.
     return {
@@ -11606,6 +12263,28 @@ async function tryBrowserTool(tool, args) {
   throw new Error(`this page does not know how to try ${name}`);
 }
 
+/**
+ * A worked example for a list parameter, built from what its items declare.
+ *
+ * An empty box is a puzzle: somebody trying a tool out has to work out the
+ * shape from the description before they can press anything. One filled-in row
+ * with each field named makes the shape obvious and is quicker to edit than to
+ * write.
+ */
+function tryArrayExample(spec) {
+  const fields = spec.items || {};
+  if (!Object.keys(fields).length) return [];
+
+  const row = {};
+  for (const [name, about] of Object.entries(fields)) {
+    row[name] = about.description
+      ? String(about.description).split(".")[0].slice(0, 40)
+      : "";
+  }
+
+  return [row, { ...row }];
+}
+
 /** One input per declared parameter, typed the way the parameter is. */
 function tryFields(tool) {
   if (!tool) return [];
@@ -11641,6 +12320,20 @@ function tryFields(tool) {
         option.selected = spec.default !== null && String(spec.default) === String(value);
         input.appendChild(option);
       }
+    } else if (spec.type === "array") {
+      /*
+       * A list of objects, as JSON.
+       *
+       * There is no honest small control for "two to five choices, each with a
+       * key, a label and a line about what happens" - a form that built that
+       * would be a form builder. The model sends JSON, so this page sends JSON
+       * too, and what gets tested is the shape the tool actually receives.
+       */
+      input = document.createElement("textarea");
+      input.rows = 5;
+      input.className = "wide-field";
+      input.spellcheck = false;
+      input.value = JSON.stringify(tryArrayExample(spec), null, 2);
     } else if (spec.type === "boolean") {
       input = document.createElement("input");
       input.type = "checkbox";
@@ -11707,6 +12400,18 @@ async function runAiTry(tool) {
     const raw = input.value.trim();
     if (raw === "") {
       // Left out rather than sent empty; the two mean different things.
+      continue;
+    }
+
+    if (input.dataset.kind === "array") {
+      try {
+        args[name] = JSON.parse(raw);
+      } catch (error) {
+        // Said here rather than sent as a string, because a tool given a string
+        // where it expects a list fails somewhere far less legible.
+        notice(`${name}: that is not valid JSON — ${error.message}`);
+        return;
+      }
       continue;
     }
 

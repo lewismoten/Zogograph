@@ -835,17 +835,26 @@ function aiToolCatalogue(): array
             'group' => 'host',
             'where' => 'server',
             'permission' => false,
-            'summary' => 'see what the host has been asked for and when it will be done.',
+            'summary' => 'see what the host has been asked for, and whether it ran.',
             'description' =>
-                "What is already queued for root's collector, when each was asked for, and "
-                . "when the next collector run is due.\n\n"
-                . "USE THIS when the operator has pressed one of those buttons and is "
-                . "waiting, or before suggesting they press one - a request that is already "
-                . "queued does not need pressing again, and saying so is more useful than "
-                . "sending them to press it a second time.\n\n"
+                "Everything asked of root's collector: what is still waiting, what has "
+                . "already been answered, when the collector last ran, and when the next "
+                . "run is due.\n\n"
+                . "USE THIS BEFORE request_from_host, so you do not queue a job that is "
+                . "already waiting or ask again for something answered five minutes ago. "
+                . "USE IT AFTER, to find out whether the answer has landed.\n\n"
+                . "READ `last_run` BEFORE READING THE QUEUE. Pending jobs mean one thing "
+                . "when the collector ran two minutes ago and something completely "
+                . "different when it says \"never\": in that case nothing in the queue is "
+                . "ever going to happen, because the job was never installed in root's "
+                . "crontab, and no amount of waiting will change it. Say so rather than "
+                . "telling somebody to wait for a run that is not coming.\n\n"
+                . "`collector_has_run_since` on a pending job is the other thing worth "
+                . "reading. True means the collector has been past without answering it, "
+                . "which usually means it cannot do what was asked rather than that it has "
+                . "not got to it yet.\n\n"
                 . "The wait is an estimate from the collector's recent behaviour, not a "
-                . "promise. If the collector has stopped, the wait is not long - it is "
-                . "never, and this says which.",
+                . "promise.",
             'parameters' => [],
         ],
 
@@ -1052,34 +1061,397 @@ function aiToolCatalogue(): array
             'group' => 'navigation',
             'where' => 'browser',
             'permission' => false,
-            'summary' => 'show a progress bar with a time on it.',
+            'summary' => 'show progress on something that is running.',
             'description' =>
-                "Draws a labelled progress bar in the conversation, with a finishing time.\n\n"
-                . "USE THIS when something is running that the user is waiting on and you "
-                . "know roughly how long it has left - a disk scan, a capture, a queue "
-                . "draining. A bar with a real time attached answers the question people "
-                . "actually ask; a percentage on its own does not.\n\n"
-                . "DO NOT use it decoratively, and DO NOT invent a duration. If you do not "
-                . "know how long something will take, say so in words - a made-up clock is "
-                . "worse than no clock, because people plan around it.\n\n"
-                . "It draws once and does not animate itself. Call it again to move it.",
+                "Draws a labelled progress indicator in the conversation.\n\n"
+                . "USE THIS when something is running that the user is waiting on. Three "
+                . "kinds, and picking the right one matters more than any other choice "
+                . "here, because each one makes a different promise:\n\n"
+                . "  kind=\"time\"    a bar and a clock. Requires percent, and "
+                . "seconds_left is what makes it worth drawing. Use it ONLY when you "
+                . "genuinely know roughly how long is left - a scan whose usual duration "
+                . "you have looked up, a capture with a fixed length.\n\n"
+                . "  kind=\"count\"   a bar and a tally: \"7 of 12 checks done\". "
+                . "Requires done and total. Use it when the work is a known number of "
+                . "steps and you are working through them. This is the honest answer far "
+                . "more often than a clock is, because you usually know how many things "
+                . "are left and not how long each takes.\n\n"
+                . "  kind=\"working\" a moving indicator with no end point, for work "
+                . "whose size you do not know. Takes neither a percent nor a total. Use it "
+                . "rather than inventing either.\n\n"
+                . "NEVER invent a duration, a percentage or a total. A made-up clock is "
+                . "worse than no clock, because people plan around it - and \"working\" "
+                . "is always available and always true. If you do not know how far through "
+                . "something is, that is what kind=\"working\" is for.\n\n"
+                . "DO NOT use any of them decoratively. This is for work the user is "
+                . "waiting on, not for narrating your own thinking.\n\n"
+                . "It draws once and does not animate its own value. Call it again to move "
+                . "it; each call replaces the last one for the same `what`.",
             'parameters' => [
                 'what' => [
                     'type' => 'string', 'maxLength' => 80, 'required' => true,
                     'description' => 'What is running, in a few words. "Walking the disk", '
-                        . '"Resolving addresses".',
+                        . '"Resolving addresses". Calling again with the same text moves '
+                        . 'that bar rather than drawing a second one.',
+                ],
+                'kind' => [
+                    'type' => 'string',
+                    'enum' => ['time', 'count', 'working'],
+                    'required' => true,
+                    'description' => '"time" for a clock (needs percent, and should have '
+                        . 'seconds_left), "count" for a tally (needs done and total), '
+                        . '"working" when the size of the job is unknown.',
                 ],
                 'percent' => [
                     'type' => 'integer', 'minimum' => 0, 'maximum' => 100,
-                    'required' => true,
-                    'description' => 'How far through it is. Use your best estimate from '
-                        . 'what the tools told you, not a guess.',
+                    'required' => false,
+                    'description' => 'For kind="time" only. How far through it is, from '
+                        . 'what the tools told you rather than a guess. Ignored otherwise, '
+                        . 'since "count" works it out from done and total.',
                 ],
                 'seconds_left' => [
                     'type' => 'integer', 'minimum' => 0, 'maximum' => 604800,
                     'required' => false,
-                    'description' => 'Roughly how many seconds remain. Leave it out rather '
-                        . 'than inventing one.',
+                    'description' => 'For kind="time". Roughly how many seconds remain. '
+                        . 'Leave it out rather than inventing one - a bar with no clock is '
+                        . 'still honest.',
+                ],
+                'done' => [
+                    'type' => 'integer', 'minimum' => 0, 'maximum' => 1000000,
+                    'required' => false,
+                    'description' => 'For kind="count". How many steps are finished.',
+                ],
+                'total' => [
+                    'type' => 'integer', 'minimum' => 1, 'maximum' => 1000000,
+                    'required' => false,
+                    'description' => 'For kind="count". How many there are altogether. Only '
+                        . 'give this if you actually know it.',
+                ],
+                'unit' => [
+                    'type' => 'string', 'maxLength' => 24, 'required' => false,
+                    'description' => 'For kind="count". What is being counted, plural: '
+                        . '"checks", "files", "domains". Defaults to "steps".',
+                ],
+            ],
+        ],
+
+        /* ------------------------------------------- asking the user -- */
+
+        'offer_choices' => [
+            'group' => 'navigation',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'ask the user which way to go next.',
+            'description' =>
+                "Shows the user a small set of directions and waits for them to pick one. "
+                . "Returns which they chose.\n\n"
+                . "USE THIS AT A FORK, not for confirmation. The moment for it is when you "
+                . "have found something and there are two or three genuinely different "
+                . "things to do about it, and which one is right depends on what they want "
+                . "rather than on what the data says: investigate further, leave it alone, "
+                . "explain what it means, fix it. Guessing wastes a turn and sometimes "
+                . "takes the conversation somewhere they did not want to go.\n\n"
+                . "DO NOT use it to ask permission - the tools that need permission ask on "
+                . "their own. DO NOT use it to ask a factual question; that is "
+                . "ask_the_user. DO NOT offer a choice where one option is obviously "
+                . "correct: make the obvious move and say you made it.\n\n"
+                . "Each choice needs a short label and a line saying what happens if it is "
+                . "picked, written so somebody can decide between them without asking you "
+                . "first.\n\n"
+                . "IF THEY DO NOT ANSWER, this returns after the timeout with "
+                . "answered=false and the default you named. Nobody is obliged to answer a "
+                . "question, and a conversation that stops dead because somebody walked "
+                . "away is worse than one that carries on sensibly. Pick a default that is "
+                . "safe to do unattended - which almost always means the one that only "
+                . "looks and never changes anything.",
+            'parameters' => [
+                'question' => [
+                    'type' => 'string', 'maxLength' => 200, 'required' => true,
+                    'description' => 'What you are asking, in one line. "The disk is '
+                        . 'filling from /var/log - what would you like to do?"',
+                ],
+                'choices' => [
+                    'type' => 'array', 'maxItems' => 5, 'required' => true,
+                    'items' => [
+                        'key' => ['type' => 'string', 'maxLength' => 32,
+                            'description' => 'A short identifier you get back, like '
+                                . '"investigate".'],
+                        'label' => ['type' => 'string', 'maxLength' => 60,
+                            'description' => 'What the button says.'],
+                        'what_happens' => ['type' => 'string', 'maxLength' => 160,
+                            'description' => 'One line saying what you will do if they '
+                                . 'pick it. Not a restatement of the label.'],
+                    ],
+                    'description' => 'Two to five directions. Fewer is better; five is a '
+                        . 'menu, and a menu is what you offer when you have not thought '
+                        . 'about it.',
+                ],
+                'default_key' => [
+                    'type' => 'string', 'maxLength' => 32, 'required' => true,
+                    'description' => 'Which choice to take if nobody answers. Must be one '
+                        . 'of the keys above, and must be safe to do unattended.',
+                ],
+                'seconds' => [
+                    'type' => 'integer', 'minimum' => 15, 'maximum' => 900,
+                    'required' => false, 'default' => 120,
+                    'description' => 'How long to wait before taking the default. The user '
+                        . 'sees the countdown and can always answer during it.',
+                ],
+            ],
+        ],
+
+        'ask_the_user' => [
+            'group' => 'navigation',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'ask the user for something only they know.',
+            'description' =>
+                "Puts one question to the user with a typed answer box and waits for it.\n\n"
+                . "USE THIS ONLY FOR WHAT THE TOOLS CANNOT TELL YOU. What changed on "
+                . "Tuesday, which of these sites matters, what the application is supposed "
+                . "to be doing, how much downtime is acceptable. These are facts about "
+                . "intent and history that are not in any database on this machine.\n\n"
+                . "CHECK THE TOOLS FIRST, ALWAYS. Asking the user something you could have "
+                . "looked up is the fastest way to make this tool feel useless - they came "
+                . "here so they would not have to know. If a tool can answer it, call the "
+                . "tool.\n\n"
+                . "ONE QUESTION. Not a form, not a survey. If you need three things, ask "
+                . "for the one that changes what you do next and work out the rest.\n\n"
+                . "Four shapes of answer:\n"
+                . "  choice     one of a list. Give options.\n"
+                . "  checklist  any number from a list. Give options.\n"
+                . "  number     a figure, with min and max if they mean something.\n"
+                . "  text       free text, for anything that is not one of the above.\n\n"
+                . "Prefer choice and checklist where the answers are knowable, because "
+                . "picking is faster than typing and the answer comes back in a shape you "
+                . "can rely on.\n\n"
+                . "IF THEY DO NOT ANSWER, this returns after the timeout with "
+                . "answered=false and no value. Carry on without it and say what you "
+                . "assumed - do not ask again.",
+            'parameters' => [
+                'question' => [
+                    'type' => 'string', 'maxLength' => 300, 'required' => true,
+                    'description' => 'The question, in one line. Say why you are asking if '
+                        . 'it is not obvious - people answer a question they understand '
+                        . 'the point of.',
+                ],
+                'answer' => [
+                    'type' => 'string',
+                    'enum' => ['choice', 'checklist', 'number', 'text'],
+                    'required' => true,
+                    'description' => 'What shape the answer takes.',
+                ],
+                'options' => [
+                    'type' => 'array', 'maxItems' => 12, 'required' => false,
+                    'items' => [
+                        'key' => ['type' => 'string', 'maxLength' => 32,
+                            'description' => 'What you get back.'],
+                        'label' => ['type' => 'string', 'maxLength' => 80,
+                            'description' => 'What is shown.'],
+                    ],
+                    'description' => 'Required for choice and checklist, ignored '
+                        . 'otherwise. Include an option for "none of these" where that is '
+                        . 'a real possibility, or you will get a wrong answer rather than '
+                        . 'no answer.',
+                ],
+                'minimum' => [
+                    'type' => 'integer', 'minimum' => -1000000, 'maximum' => 1000000,
+                    'required' => false,
+                    'description' => 'For answer="number". The lowest sensible value.',
+                ],
+                'maximum' => [
+                    'type' => 'integer', 'minimum' => -1000000, 'maximum' => 1000000,
+                    'required' => false,
+                    'description' => 'For answer="number". The highest sensible value.',
+                ],
+                'unit' => [
+                    'type' => 'string', 'maxLength' => 24, 'required' => false,
+                    'description' => 'For answer="number". What the figure is in, shown '
+                        . 'beside the box: "GB", "days", "requests a second".',
+                ],
+                'seconds' => [
+                    'type' => 'integer', 'minimum' => 15, 'maximum' => 900,
+                    'required' => false, 'default' => 180,
+                    'description' => 'How long to wait before giving up on an answer.',
+                ],
+            ],
+        ],
+
+        /* --------------------------------------------- pointing at things -- */
+
+        'highlight_on_page' => [
+            'group' => 'navigation',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'point at something on the page.',
+            'description' =>
+                "Briefly outlines and pulses one thing on the page the user is looking at, "
+                . "and scrolls it into view.\n\n"
+                . "USE THIS WITH A SENTENCE ABOUT WHAT YOU ARE POINTING AT. \"The row for "
+                . "clamd\" in prose is something the user then has to find in ninety rows; "
+                . "this puts their eye on it. It is at its best straight after open_page, "
+                . "which gets them to the right page but not to the right line.\n\n"
+                . "It highlights and fades. It does not select, change or open anything, "
+                . "and it never leaves a mark behind.\n\n"
+                . "IF NOTHING MATCHES, that is what comes back - `found: false` - and you "
+                . "should say so rather than describing a highlight that did not happen. "
+                . "The user may be on a different page, or the thing may not be on screen.\n\n"
+                . "DO NOT use it repeatedly. Pointing at six things in a row is pointing "
+                . "at nothing.",
+            'parameters' => [
+                'find' => [
+                    'type' => 'string', 'maxLength' => 120, 'required' => true,
+                    'description' => 'The text to look for on the page - a process name, a '
+                        . 'path, a setting label, a chart title. Matched inside the page '
+                        . 'the user currently has open, ignoring case. Use the exact text '
+                        . 'you saw in a tool result rather than a description of it.',
+                ],
+                'why' => [
+                    'type' => 'string', 'maxLength' => 160, 'required' => true,
+                    'description' => 'What you want them to notice about it. Shown beside '
+                        . 'the highlight, so it reads as a caption rather than a label.',
+                ],
+            ],
+        ],
+
+        /* --------------------------------------------- asking the host -- */
+
+        'request_from_host' => [
+            'group' => 'host',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'ask root\'s collector to do something on its next run.',
+            'description' =>
+                "Asks the user to approve a job for root's collector, and queues it if they "
+                . "agree.\n\n"
+                . "USE THIS WHEN A TOOL SAID SOMETHING IS NOT AVAILABLE TO THIS ACCOUNT. "
+                . "That is the whole point: this account is inside a cage and cannot see "
+                . "the process table, run whois, or walk /var - but root's collector can, "
+                . "and it will leave the answer where the next tool call can read it.\n\n"
+                . "IT DOES NOT RETURN THE ANSWER. It queues a job. The collector runs on "
+                . "its own schedule - often every five minutes, sometimes not at all if it "
+                . "was never installed - and the answer appears afterwards. Say that "
+                . "plainly, and use get_pending_host_requests to find out whether it has landed rather "
+                . "than assuming it has. wait_for_new_readings is how you wait for it "
+                . "without ending the conversation.\n\n"
+                . "THE USER IS ASKED FIRST, EVERY TIME. These jobs run as root on a machine "
+                . "that may be shared, and some of them are expensive - a disk walk on a "
+                . "large filesystem takes minutes and costs I/O the whole time. If they do "
+                . "not answer within the timeout, nothing is queued and this returns "
+                . "queued=false. Treat that as a no and carry on.\n\n"
+                . "CHECK get_pending_host_requests FIRST. Asking for a job that is already waiting "
+                . "does not make it happen sooner, and it does put the same question in "
+                . "front of the user twice.",
+            'parameters' => [
+                'job' => [
+                    'type' => 'string',
+                    /*
+                     * A fixed list, not a command.
+                     *
+                     * This is the one tool that reaches something running as root, so
+                     * what it can ask for is enumerated here and validated again by the
+                     * collector before it acts. There is no free-text path through it.
+                     */
+                    'enum' => ['capabilities', 'disk-walk'],
+                    'required' => true,
+                    'description' => '"capabilities" re-checks which programs exist on the '
+                        . 'host and their versions, which is what answers "is that '
+                        . 'installed on the machine even though this account cannot see '
+                        . 'it". "disk-walk" walks the whole filesystem as root, reaching '
+                        . 'other accounts and /var - expensive, minutes on a large disk, '
+                        . 'and the only thing that finds space the account cannot. These '
+                        . 'two and no others: the process list and the service list are '
+                        . 'taken on every run already, so asking for them would queue '
+                        . 'something nothing acts on.',
+                ],
+                'why' => [
+                    'type' => 'string', 'maxLength' => 200, 'required' => true,
+                    'description' => 'What you are trying to find out, shown to the user '
+                        . 'when they are asked. It has to be a real reason they can judge '
+                        . '- "the account cannot see other users\' processes and the '
+                        . 'memory does not add up" rather than "to gather information".',
+                ],
+                'seconds' => [
+                    'type' => 'integer', 'minimum' => 15, 'maximum' => 900,
+                    'required' => false, 'default' => 120,
+                    'description' => 'How long to wait for them to decide before treating '
+                        . 'it as a no.',
+                ],
+            ],
+        ],
+
+        'wait_for_new_readings' => [
+            'group' => 'diagnostic',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'wait until fresh measurements arrive.',
+            'description' =>
+                "Waits for the next collector run to land, then returns. Use it when the "
+                . "answer you need does not exist yet.\n\n"
+                . "USE THIS AFTER request_from_host, or when a reading is a few minutes old "
+                . "and the question is about right now, or when you have asked somebody to "
+                . "change something and want to see the effect. It is the difference "
+                . "between \\\"try again in five minutes\\\" and staying in the conversation "
+                . "until the data arrives.\n\n"
+                . "which=\\\"account\\\" is this dashboard's own collector, which runs "
+                . "frequently. which=\\\"host\\\" is root's, which runs less often and may "
+                . "not be installed at all - check get_collector_health or "
+                . "get_pending_host_requests "
+                . "first, because waiting for a collector that has never run wastes the "
+                . "whole timeout.\n\n"
+                . "RETURNS EITHER WAY. `arrived: true` means new data landed and you should "
+                . "re-read whatever you were waiting on - the tool results you already have "
+                . "are from before it. `arrived: false` means the timeout passed with "
+                . "nothing new, which is itself a finding worth reporting: the collector is "
+                . "not running.\n\n"
+                . "DO NOT use it to pad a conversation, and do not wait twice in a row for "
+                . "the same thing.",
+            'parameters' => [
+                'which' => [
+                    'type' => 'string',
+                    'enum' => ['account', 'host'],
+                    'required' => true,
+                    'description' => '"account" for this dashboard\'s own collector, '
+                        . '"host" for root\'s.',
+                ],
+                'seconds' => [
+                    'type' => 'integer', 'minimum' => 30, 'maximum' => 1800,
+                    'required' => false, 'default' => 300,
+                    'description' => 'How long to wait before giving up. Pick it from how '
+                        . 'often that collector actually runs, which get_collection_'
+                        . 'schedule will tell you.',
+                ],
+            ],
+        ],
+
+        /* ------------------------------------------ naming the session -- */
+
+        'set_session_topic' => [
+            'group' => 'memory',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'give this conversation a title.',
+            'description' =>
+                "Names the conversation, so that a list of past sessions reads as a list of "
+                . "subjects rather than of timestamps.\n\n"
+                . "USE THIS ONCE, EARLY, as soon as you know what the conversation is "
+                . "actually about - which is usually after the first tool result rather "
+                . "than after the first message, since what somebody opens with is often "
+                . "not what turns out to be wrong.\n\n"
+                . "WRITE THE SUBJECT, NOT THE ACTIVITY. \\\"/var/log/exim filling at 2 GB a "
+                . "day\\\" is a title. \\\"Disk investigation\\\" is what every session "
+                . "would be called, and a list of those is no better than a list of dates. "
+                . "Name the thing: the path, the service, the symptom.\n\n"
+                . "IT WILL NOT OVERWRITE A TITLE THE USER SET. If they have named it, "
+                . "yours is ignored and the reply says so - what they called it is what "
+                . "they will look for.\n\n"
+                . "Change it later only if the conversation genuinely turned out to be "
+                . "about something else, not to refine the wording.",
+            'parameters' => [
+                'topic' => [
+                    'type' => 'string', 'maxLength' => 80, 'required' => true,
+                    'description' => 'The subject, in a few words. Specific enough to pick '
+                        . 'out of a list of thirty.',
                 ],
             ],
         ],

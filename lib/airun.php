@@ -31,6 +31,7 @@ require_once __DIR__ . '/aicharts.php';
 require_once __DIR__ . '/aimemory.php';
 require_once __DIR__ . '/terminal.php';
 require_once __DIR__ . '/hostdb.php';
+require_once __DIR__ . '/hostdisk.php';
 require_once __DIR__ . '/symlinks.php';
 require_once __DIR__ . '/backups.php';
 require_once __DIR__ . '/uptime.php';
@@ -96,6 +97,7 @@ function aiRunTool(
             'remember' => aiToolRemember($ai, $session, $values),
             'recall' => aiToolRecall($ai, $values),
             'recommend_command' => aiToolRecommend($values),
+            'set_session_topic' => aiSetSessionTopic($ai, $session, $values),
             default => ['error' => 'That tool does not run on the server.'],
         };
     } catch (Throwable $e) {
@@ -1695,6 +1697,63 @@ function aiHostJobs(array $config, PDO $pdo): array
 }
 
 /**
+ * Names the conversation, unless a person already has.
+ *
+ * The whole value of a title is that the list of past sessions reads as a list
+ * of subjects. A model that renames what somebody else named would take that
+ * away from the one person whose title was chosen deliberately, so a title set
+ * by a person is final and this says so rather than silently doing nothing.
+ */
+function aiSetSessionTopic(?PDO $ai, int $session, array $values): array
+{
+    if ($ai === null || $session <= 0) {
+        return ['error' => 'There is no conversation to name.'];
+    }
+
+    $topic = trim((string)($values['topic'] ?? ''));
+    if ($topic === '') {
+        return ['error' => 'A title with no words in it is not one.'];
+    }
+
+    /*
+     * Newlines out, because this ends up in a list.
+     *
+     * A title with a line break in it breaks the row it is drawn in, and there
+     * is no reason a subject needs one.
+     */
+    $topic = trim(preg_replace('/\s+/u', ' ', $topic) ?? $topic);
+    $topic = mb_substr($topic, 0, 80);
+
+    $row = $ai->prepare('SELECT title, title_by FROM ai_sessions WHERE id = ?');
+    $row->execute([$session]);
+    $current = $row->fetch();
+
+    if ($current !== false
+        && trim((string)($current['title'] ?? '')) !== ''
+        && (string)($current['title_by'] ?? '') !== 'assistant'
+    ) {
+        return [
+            'set' => false,
+            'title' => (string)$current['title'],
+            'note' => 'This conversation already has a title somebody else chose, so it '
+                . 'has been left alone. Do not ask them to change it; it is what they '
+                . 'will look for.',
+        ];
+    }
+
+    $ai->prepare(
+        "UPDATE ai_sessions SET title = ?, title_by = 'assistant' WHERE id = ?"
+    )->execute([$topic, $session]);
+
+    return [
+        'set' => true,
+        'title' => $topic,
+        'note' => 'The conversation is called that now. Change it later only if it turns '
+            . 'out to be about something else, not to improve the wording.',
+    ];
+}
+
+/**
  * What is already queued, and when it will be picked up.
  *
  * @return array<string, mixed>
@@ -1717,25 +1776,90 @@ function aiPendingHostRequests(array $config, PDO $pdo): array
     $rhythm = aiCronRhythm($config, $pdo);
     $host = $rhythm['host'];
 
-    $pending = array_map(fn(array $row): array => [
-        'job' => (string)$row['task'],
-        'asked_for' => aiWhen((int)$row['requested_at']),
-        'waiting_for' => plainSpan(time() - (int)$row['requested_at'], true),
-        'asked_by' => (string)($row['requested_by'] ?? 'somebody'),
-    ], $rows);
+    /*
+     * Whether each one is still outstanding, not merely that it was asked for.
+     *
+     * A row stays in this table after it has been answered - the collector
+     * overwrites the reading rather than deleting the request - so a list of
+     * rows alone cannot tell "waiting" from "done last Tuesday". That is the
+     * whole question, and pendingHostTasks compares each request against the
+     * run that would have answered it.
+     */
+    try {
+        $hostDb = hostDb($config, false);
+    } catch (Throwable) {
+        $hostDb = null;
+    }
+
+    $state = [];
+    foreach (pendingHostTasks($config, $pdo, $hostDb) as $task) {
+        $state[(string)$task['task']] = (bool)$task['pending'];
+    }
+
+    $lastRun = null;
+    if ($hostDb !== null) {
+        try {
+            $lastRun = (int)$hostDb->query(
+                'SELECT MAX(taken_at) FROM host_samples'
+            )->fetchColumn() ?: null;
+        } catch (Throwable) {
+            $lastRun = null;
+        }
+    }
+
+    $pending = [];
+    $answered = [];
+
+    foreach ($rows as $row) {
+        $at = (int)$row['requested_at'];
+        $one = [
+            'job' => (string)$row['task'],
+            'asked_for' => aiWhen($at),
+            'waiting_for' => plainSpan(time() - $at, true),
+            'asked_by' => (string)($row['requested_by'] ?? 'somebody'),
+        ];
+
+        if ($state[(string)$row['task']] ?? true) {
+            /*
+             * Pending, and whether the collector has been past since.
+             *
+             * "Still waiting after three runs" is a different fault from "asked
+             * for a minute ago" and they are indistinguishable from the queue
+             * alone. The first means the collector cannot do it.
+             */
+            $one['collector_has_run_since'] = $lastRun !== null && $lastRun > $at;
+            $pending[] = $one;
+        } else {
+            $answered[] = $one;
+        }
+    }
+
+    $note = $pending === []
+        ? 'Nothing is waiting. A request would be picked up on the next collector run.'
+        : ($host['running'] ?? true
+            ? 'These are waiting for the next collector run. A job already queued does '
+              . 'not need asking for again - saying it is already on its way is more '
+              . 'use than sending somebody to press the button twice.'
+            : 'These are queued and the collector has STOPPED, so nothing is going to '
+              . 'pick them up. That is the finding, not the queue.');
+
+    if ($lastRun === null && $pending !== []) {
+        $note = 'These are queued and root\'s collector has NEVER run on this machine, so '
+            . 'nothing is going to pick them up - not now and not later. It has to be '
+            . 'installed in root\'s crontab, which this account cannot do. Say that '
+            . 'rather than telling somebody to wait.';
+    }
 
     return [
         'host_collector' => true,
         'pending' => $pending,
+        // Asked for at some point and since answered. Worth having: it says
+        // what has already been looked at, so the same job is not asked for
+        // again five minutes after it ran.
+        'already_answered' => $answered,
+        'last_run' => $lastRun === null ? 'never' : aiWhen($lastRun),
         'next_run' => $host,
-        'note' => $pending === []
-            ? 'Nothing is queued. A request would be picked up on the next collector run.'
-            : ($host['running'] ?? true
-                ? 'These are waiting for the next collector run. A job already queued does '
-                  . 'not need asking for again - saying it is already on its way is more '
-                  . 'use than sending somebody to press the button twice.'
-                : 'These are queued and the collector has STOPPED, so nothing is going to '
-                  . 'pick them up. That is the finding, not the queue.'),
+        'note' => $note,
     ];
 }
 

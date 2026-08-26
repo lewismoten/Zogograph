@@ -362,6 +362,22 @@ function aiMigrations(): array
              */
             "ALTER TABLE ai_images ADD COLUMN quality TEXT NOT NULL DEFAULT 'standard'",
         ],
+
+        7 => [
+            /*
+             * Who named the conversation.
+             *
+             * The assistant can title a session so that a list of past ones
+             * reads as a list of subjects rather than of timestamps. It must
+             * not overwrite a title a person chose: what they called it is what
+             * they will look for, and a model deciding it knows better is a
+             * model quietly losing somebody's bookmark.
+             *
+             * A column rather than a convention, because "is this title mine"
+             * cannot be answered by looking at the text.
+             */
+            "ALTER TABLE ai_sessions ADD COLUMN title_by TEXT",
+        ],
     ];
 }
 

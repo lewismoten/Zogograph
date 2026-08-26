@@ -188,6 +188,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-step' => doAiStep($config, $pdo, $post),
         'ai-permit' => doAiPermit($config, $pdo, $post),
         'ai-tool-result' => doAiToolResult($config, $pdo, $post),
+        'host-request' => doHostRequest($config, $pdo, $post),
         'ai-stop' => doAiStop($config, $pdo, $post),
         'ai-interrupt' => doAiInterrupt($config, $pdo, $post),
         'ai-effort' => doAiEffort($config, $pdo, $post),
@@ -6644,6 +6645,45 @@ function doAiPermit(array $config, PDO $pdo, bool $post): array
 }
 
 /**
+ * Queues one job for root's collector, on the assistant's behalf.
+ *
+ * The user has already approved it in the browser - that is where the question
+ * has to be asked, because that is where the person is. This is the half that
+ * writes it down, and it re-checks the job name rather than trusting the one
+ * that arrived: the browser is not a place to enforce anything.
+ *
+ * Only the jobs the collector actually acts on. Queueing a name nothing
+ * consumes produces a row that waits for ever and a page that says it is
+ * waiting for the next run, which is the exact confusion this queue has caused
+ * before.
+ */
+function doHostRequest(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    if (empty($config['host']['enabled'])) {
+        throw new ActionRefused('the host collector is not set up on this install');
+    }
+
+    $job = (string)($_POST['job'] ?? '');
+    if (!in_array($job, ['capabilities', HOSTDISK_TASK], true)) {
+        throw new ActionRefused('there is no host job by that name');
+    }
+
+    $at = requestHostTask($pdo, $job, currentAccountName());
+
+    logAction($pdo, 'host_request', $job, 'ok', 0, 0,
+        mb_substr((string)($_POST['why'] ?? ''), 0, 200));
+
+    return [
+        'ok' => true,
+        'job' => $job,
+        'requested_at' => $at,
+        'note' => 'Queued. It runs on the collector\'s next pass.',
+    ];
+}
+
+/**
  * The browser's answer to a tool only it could run.
  *
  * A screenshot arrives here as a data URL and a navigation as a confirmation
@@ -7124,6 +7164,10 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
                 'maximum' => $spec['maximum'] ?? null,
                 'maxLength' => $spec['maxLength'] ?? null,
                 'default' => $spec['default'] ?? null,
+                // What each entry of a list parameter holds, so the test page
+                // can show the shape rather than an empty box.
+                'items' => $spec['items'] ?? null,
+                'maxItems' => $spec['maxItems'] ?? null,
             ], ($live[$name]['parameters'] ?? $tool['parameters']) ?? []),
             'group' => $tool['group'],
             /*

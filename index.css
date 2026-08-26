@@ -877,21 +877,25 @@ main {
 /*
  * The centre dot carries what has been asked of the host.
  *
- * Two blinks then a steady dull red: the blinks catch the eye when a request is
- * first made, and the steady state says "still waiting" without pulsing at
- * somebody for the twenty minutes it may take. Grey again once nothing is
- * outstanding.
+ * The same yellow as an overdue ring, pulsing at the same rate, because it is
+ * the same kind of fact: something is outstanding and time is passing. It was
+ * red and it blinked twice - red said "a fault", which a queued request is not,
+ * and two blinks meant that anybody who looked away for four seconds saw a
+ * still dot and no reason to think anything was waiting.
+ *
+ * It keeps pulsing until the request is answered. That is deliberate: the wait
+ * can be twenty minutes, and a dot that goes quiet after a moment is how a
+ * request sits unanswered for seventeen hours without anybody noticing.
  */
 .poll.has-pending .poll-dot {
-  background: var(--crit);
-  animation: dotAsked 2.4s ease-in-out 2;
+  background: var(--warn);
+  animation: dotAsked 1.6s ease-in-out infinite;
   cursor: pointer;
 }
 .poll.has-pending:hover .poll-dot { filter: brightness(1.5); }
 @keyframes dotAsked {
-  0%, 100% { opacity: .45; }
-  15%, 45% { opacity: 1; }
-  30%, 60% { opacity: .2; }
+  0%, 100% { opacity: 1; }
+  50% { opacity: .25; }
 }
 @media (prefers-reduced-motion: reduce) {
   .poll.has-pending .poll-dot { animation: none; opacity: .8; }
@@ -2157,6 +2161,32 @@ canvas.chat-chart-canvas { width: 100%; height: 150px; display: block; }
   .chat-progress-fill { transition: none; }
 }
 
+/*
+ * Work whose size is not known.
+ *
+ * A short bar travelling across the track, rather than a filled one - the
+ * difference has to be visible at a glance, because a partly filled bar is a
+ * claim about how much is left and this mode exists precisely because there is
+ * no such claim to make.
+ *
+ * Reduced motion gets a still, dim, full-width bar: it still reads as "in
+ * progress" and it does not pretend to a position.
+ */
+.chat-progress-track.indeterminate .chat-progress-fill {
+  width: 34%;
+  transition: none;
+  animation: chatSweep 1.5s ease-in-out infinite;
+}
+@keyframes chatSweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(320%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-progress-track.indeterminate .chat-progress-fill {
+    width: 100%; animation: none; opacity: .35;
+  }
+}
+
 .chat-reaction img, .chat-picture img {
   display: block;
   width: 100%;
@@ -2823,3 +2853,68 @@ tr.muted-row { opacity: .7; }
 
 /* The log is the part that should grow, so it takes what the rest does not. */
 .chat-panel.chat-wide .chat-log { flex: 1; min-height: 0; }
+
+/* ------------------------------------------------ being pointed at -- */
+
+/*
+ * The assistant putting your eye on one row.
+ *
+ * An outline plus a pulse rather than a colour change: a colour on its own
+ * competes with the colours already meaning something on these pages - warn,
+ * crit, this-account - and a row briefly turning amber would read as a
+ * warning about that row.
+ *
+ * outline rather than border, so nothing moves. A border on a table row
+ * reflows the whole table, which is a poor way to help somebody find their
+ * place in it.
+ */
+.pointed-at {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 6px;
+  animation: pointAt 1.1s ease-in-out 4;
+}
+@keyframes pointAt {
+  0%, 100% { background: transparent; }
+  50% { background: var(--accent-soft); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pointed-at { animation: none; background: var(--accent-soft); }
+}
+
+/* -------------------------------------------- questions with a clock -- */
+
+/*
+ * Above the log, where it cannot scroll away.
+ *
+ * Shares the strip the permission prompt uses, for the same reason: a question
+ * that scrolls off under the message box is a question nobody can answer, and
+ * that already happened once here.
+ */
+.chat-question {
+  display: flex; flex-direction: column; gap: 8px;
+  font-size: .88rem; line-height: 1.55;
+}
+.chat-question-head { font-weight: 600; color: var(--text); }
+.chat-question-body { display: flex; flex-direction: column; gap: 6px; }
+.chat-question-body textarea { width: 100%; }
+
+.chat-choice {
+  display: flex; flex-direction: column; gap: 2px;
+  text-align: left; padding: 8px 10px;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 8px;
+  cursor: pointer; font: inherit; color: var(--muted);
+}
+.chat-choice:hover { border-color: var(--dim); color: var(--text); }
+.chat-choice.on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.chat-choice-label { font-weight: 600; color: var(--text); }
+
+/*
+ * The countdown is quiet until it is not.
+ *
+ * It has to be visible from the first second - a question that expires without
+ * having said it would is a decision made behind somebody's back - but it
+ * should not be shouting for the two minutes when there is plenty of time.
+ */
+.chat-countdown { margin-left: auto; font-variant-numeric: tabular-nums; }
+.chat-countdown.soon { color: var(--warn); }
