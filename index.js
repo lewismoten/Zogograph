@@ -225,6 +225,33 @@ function whenLabel(epoch) {
 }
 
 /**
+ * Two moments, written with the same granularity.
+ *
+ * whenLabel drops whatever is obvious from context, which is right for a single
+ * moment in a column and wrong for the two ends of a range: "Aug 19 12:38 AM to
+ * 12:38 AM" is what happens when one end is old enough to need a date and the
+ * other is not. Both ends take the longer of the two forms.
+ */
+function whenRange(from, to) {
+  const a = whenLabel(from);
+  const b = whenLabel(to);
+
+  // A rough proxy for "carries more of the date": the longer label does.
+  if (a.length === b.length) return `${a} to ${b}`;
+
+  const wordy = at => {
+    const when = new Date(at * 1000);
+    const day = when.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    const clock = when.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    return when.getFullYear() === new Date().getFullYear()
+      ? `${day} ${clock}`
+      : `${day} ${when.getFullYear()} ${clock}`;
+  };
+
+  return `${wordy(from)} to ${wordy(to)}`;
+}
+
+/**
  * Everything about a moment, for a tooltip.
  *
  * Three forms, because the three are wanted by three different people: the
@@ -2673,6 +2700,15 @@ async function refreshShared() {
   state.viewable = overview.viewable || [];
   state.categories = overview.categories ?? [];
 
+  /*
+   * The newest summary, on the front page.
+   *
+   * Drawn from the shared refresh so it is there whichever page somebody
+   * opens on - and hidden entirely when there is none, rather than leaving an
+   * empty panel to explain.
+   */
+  renderLatestReport(overview.report ?? null);
+
   const wasScanning = state.scanRunning;
   state.scanRunning = Boolean(overview.scan_running);
 
@@ -2753,9 +2789,25 @@ async function refreshBadges() {
      * ignore the number, which is the one thing a badge must not do.
      */
     const unread = alerts.rows.filter(r => !r.acknowledged_at);
-    const critical = unread.filter(r => r.severity === "critical").length;
+    const critical = unread.filter(r => r.severity === "critical" && !r.silenced).length;
+    const silenced = unread.filter(r => r.silenced).length;
 
+    /*
+     * Silenced alerts are still unread and still counted.
+     *
+     * Deliberately: something the assistant held back is still something that
+     * happened, and a count that quietly excluded them would make the badge
+     * lie about how much there is to look at. What changes is the colour - a
+     * badge made red by alerts nobody was woken for is a badge that cries wolf.
+     */
     setBadge("alerts", unread.length, critical ? "crit" : "warn");
+
+    const badge = document.querySelector('[data-badge="alerts"]');
+    if (badge && silenced) {
+      badge.title = `${count(unread.length, "unread alert")}, `
+        + `${silenced} of which ${silenced === 1 ? "was" : "were"} held back by `
+        + `${chatState.who.name}.`;
+    }
     renderAlertBanner(unread);
   } catch {
     setBadge("alerts", 0);
@@ -5431,6 +5483,13 @@ async function saveAiSettings(extra = {}) {
       compact_automatically: $("aiCompactAuto").checked ? "1" : "0",
       explain_commands: $("aiExplain").checked ? "1" : "0",
       host_commands: $("aiHostCommands").checked ? "1" : "0",
+      alert_mode: $("aiAlertMode").value,
+      alert_floor: $("aiAlertFloor").value,
+      alert_per_run: $("aiAlertPerRun").value,
+      report_daily: $("aiDaily").checked ? "1" : "0",
+      report_weekly: $("aiWeekly").checked ? "1" : "0",
+      report_monthly: $("aiMonthly").checked ? "1" : "0",
+      report_to: $("aiReportTo").value.trim(),
       tools_on: on,
       tools_ask: ask,
       ...extra,
@@ -10033,6 +10092,169 @@ function showFormDialog(title, parts, save) {
   };
 
   $("noteDialog").showModal();
+}
+
+/* ---------------------------------------------------------- the summaries -- */
+
+const reportState = { data: null };
+
+async function refreshReports() {
+  const body = $("reportsBody");
+  if (!body) return;
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to read the summaries."));
+    return;
+  }
+
+  try {
+    renderReports(await api("ai-reports"));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderReports(data) {
+  reportState.data = data;
+  const body = $("reportsBody");
+  const parts = [];
+
+  if (!data.ready) {
+    parts.push(note(
+      `${data.who.name} is not set up, so nothing can be written: ${data.why}`
+    ));
+  }
+
+  /*
+   * Which schedules are on, said here as well as in the settings.
+   *
+   * This is the page somebody lands on wondering why there are no summaries,
+   * and "none of the three are switched on" is the answer far more often than
+   * anything else.
+   */
+  const on = Object.entries(data.on).filter(([, yes]) => yes).map(([key]) => key);
+  const said = document.createElement("p");
+  said.className = "muted small";
+  said.textContent = on.length
+    ? `Writing ${on.join(", ")}. Each one is emailed when it is written.`
+    : "None of the three schedules are switched on, so none are written automatically. "
+      + "Turn them on under Thresholds, or write one now to see what they look like.";
+  parts.push(said);
+
+  if (!data.reports.length) {
+    parts.push(note("Nothing written yet."));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  for (const report of data.reports) {
+    const card = document.createElement("div");
+    card.className = "report";
+
+    const head = document.createElement("div");
+    head.className = "report-head";
+
+    const title = document.createElement("strong");
+    title.textContent = `${data.periods[report.period]?.label ?? report.period} summary`;
+    head.appendChild(title);
+
+    const covers = document.createElement("span");
+    covers.className = "muted small";
+    covers.textContent = whenRange(report.covers_from, report.covers_to);
+    covers.title = `${whenTitle(report.covers_from)}\n\nto\n\n${whenTitle(report.covers_to)}`;
+    head.appendChild(covers);
+
+    const sent = document.createElement("span");
+    sent.className = "muted small";
+    sent.textContent = report.emailed_at
+      ? `emailed ${whenLabel(report.emailed_at)}`
+      : "not emailed";
+    if (report.emailed_at) sent.title = whenTitle(report.emailed_at);
+    head.appendChild(sent);
+
+    if (report.cost && report.cost !== "—") {
+      const cost = document.createElement("span");
+      cost.className = "muted small";
+      cost.textContent = report.cost;
+      cost.title = "What writing it cost.";
+      head.appendChild(cost);
+    }
+
+    const drop = document.createElement("button");
+    drop.className = "link danger small";
+    drop.textContent = "Delete";
+    drop.addEventListener("click", async () => {
+      if (!confirm("Delete this summary?")) return;
+      try {
+        renderReports(await post("ai-report-forget", { id: report.id }));
+      } catch (error) {
+        notice(String(error.message || error));
+      }
+    });
+    head.appendChild(drop);
+
+    card.appendChild(head);
+
+    const text = document.createElement("div");
+    text.className = "report-body";
+    text.appendChild(renderMarkdown(report.body));
+    card.appendChild(text);
+
+    parts.push(card);
+  }
+
+  parts.push(note(
+    `Written by ${data.who.name}, which is a language model reading the figures. The `
+    + "figures themselves are on the dashboard, and are what to check if a summary says "
+    + "something surprising."
+  ));
+
+  body.replaceChildren(...parts);
+}
+
+/**
+ * The newest summary, on the dashboard.
+ *
+ * Because a summary nobody opens is a summary nobody reads, and the front page
+ * is where somebody already is.
+ */
+function renderLatestReport(report) {
+  const spot = $("overviewReport");
+  if (!spot) return;
+
+  if (!report) {
+    spot.hidden = true;
+    return;
+  }
+
+  spot.hidden = false;
+  spot.replaceChildren();
+
+  const head = document.createElement("div");
+  head.className = "report-head";
+
+  const title = document.createElement("strong");
+  title.textContent = `${chatState.who.name}'s latest summary`;
+  head.appendChild(title);
+
+  const when = document.createElement("span");
+  when.className = "muted small when";
+  when.textContent = whenLabel(report.at);
+  when.title = whenTitle(report.at);
+  head.appendChild(when);
+
+  const all = document.createElement("button");
+  all.className = "link small";
+  all.textContent = "All of them";
+  all.addEventListener("click", () => { location.hash = "#/sys-reports"; });
+  head.appendChild(all);
+
+  spot.appendChild(head);
+
+  const text = document.createElement("div");
+  text.className = "report-body";
+  text.appendChild(renderMarkdown(report.body));
+  spot.appendChild(text);
 }
 
 /* ------------------------------------------------------------ trying one -- */
@@ -15198,14 +15420,31 @@ async function refreshAlerts() {
 
   drawAlertTimeline(data.rows);
 
-  renderTable("alerts", rows, [
+  const columns = [
     { label: "", render: alertPicker },
-    { label: "When", render: row => humanTime(row.raised_at) },
+    { label: "When", render: row => whenSpan(row.raised_at) },
     { label: "Severity", render: alertSeverity },
     { label: "What", className: "name", render: alertWhat },
-    { label: "Emailed", render: row => (row.emailed_at ? "yes" : "no") },
-    { label: "", render: alertRowActions },
-  ], null, row => (row.acknowledged_at ? "read" : "unread"));
+    { label: "Emailed", render: alertEmailed },
+  ];
+
+  /*
+   * The assistant's column only exists when it has said something.
+   *
+   * An empty column on every row of an install that has never turned this on
+   * is a column that has to be explained, and there is nothing to explain.
+   */
+  if (rows.some(row => row.ai_summary)) {
+    columns.push({ label: `${chatState.who.name} says`, className: "cmd",
+                   render: alertOpinion });
+  }
+
+  columns.push({ label: "", render: alertRowActions });
+
+  renderTable("alerts", rows, columns, null, row => {
+    if (row.silenced) return "row-silenced";
+    return row.acknowledged_at ? "read" : "unread";
+  });
 
   syncAlertTools();
 }
@@ -15224,12 +15463,145 @@ function alertPicker(row) {
 
 function alertSeverity(row) {
   const span = document.createElement("span");
+
+  /*
+   * A silenced alert says so where its severity would be.
+   *
+   * That is the column somebody scans, and "warning" on a row nobody was told
+   * about is the wrong answer to the question they are asking. The severity the
+   * rule assigned is still there, on hover, because the rule's opinion is part
+   * of the record.
+   */
+  if (row.silenced) {
+    const icon = document.createElement("span");
+    icon.className = "sev";
+    icon.textContent = "🔇";
+    span.appendChild(icon);
+    span.appendChild(document.createTextNode("ignored"));
+    span.title = `The rule called this ${row.severity}. `
+      + `${chatState.who.name} concluded it did not warrant sending.`;
+    return span;
+  }
+
   const icon = document.createElement("span");
   icon.className = "sev";
   icon.textContent = severityIcon(row.severity);
   span.appendChild(icon);
   span.appendChild(document.createTextNode(row.severity));
   return span;
+}
+
+/**
+ * Whether it went out, and if not, why not.
+ *
+ * "no" on its own invites the question this column exists to answer, and the
+ * answer is one click away rather than nowhere.
+ */
+function alertEmailed(row) {
+  if (row.emailed_at) {
+    const span = document.createElement("span");
+    span.textContent = "yes";
+    span.className = "when";
+    span.title = `Sent ${whenTitle(row.emailed_at)}`;
+    return span;
+  }
+
+  const wrap = document.createDocumentFragment();
+  wrap.appendChild(document.createTextNode("no"));
+
+  if (row.silenced && row.ai_reason) {
+    const why = document.createElement("button");
+    why.className = "link small";
+    why.textContent = "why not";
+    why.addEventListener("click", () => showAlertVerdict(row));
+    wrap.appendChild(why);
+  } else if (row.email_error) {
+    const why = document.createElement("button");
+    why.className = "link small danger";
+    why.textContent = "it failed";
+    why.title = row.email_error;
+    why.addEventListener("click", () => notice(row.email_error));
+    wrap.appendChild(why);
+  }
+
+  return wrap;
+}
+
+/** The assistant's note, rendered as the markdown it was written as. */
+function alertOpinion(row) {
+  if (!row.ai_summary) return "—";
+
+  const wrap = document.createElement("div");
+  wrap.className = "alert-opinion";
+  wrap.appendChild(renderMarkdown(row.ai_summary));
+
+  const more = document.createElement("button");
+  more.className = "link small";
+  more.textContent = "details";
+  more.addEventListener("click", () => showAlertVerdict(row));
+  wrap.appendChild(more);
+
+  return wrap;
+}
+
+/**
+ * Everything the assistant thought about one alert.
+ *
+ * Including what it wanted changed about the rule, which is the part that makes
+ * this a temporary arrangement rather than a permanent tax: a silencer that
+ * never improves the rules is one you pay for for ever.
+ */
+function showAlertVerdict(row) {
+  const nodes = [];
+
+  const said = document.createElement("div");
+  said.className = "day-entry";
+  const head = document.createElement("strong");
+  head.textContent = row.silenced ? "It held this back" : "What it made of it";
+  said.appendChild(head);
+  const body = document.createElement("div");
+  body.appendChild(renderMarkdown(row.ai_summary || ""));
+  said.appendChild(body);
+  nodes.push(said);
+
+  if (row.ai_reason) {
+    const why = document.createElement("div");
+    why.className = "day-entry";
+    const title = document.createElement("strong");
+    title.textContent = row.silenced ? "Why it was not sent" : "Why it said that";
+    why.appendChild(title);
+    const text = document.createElement("div");
+    text.appendChild(renderMarkdown(row.ai_reason));
+    why.appendChild(text);
+    nodes.push(why);
+  }
+
+  if (row.ai_advice) {
+    const better = document.createElement("div");
+    better.className = "day-entry";
+    const title = document.createElement("strong");
+    title.textContent = "What would let the rule decide this itself";
+    better.appendChild(title);
+    const text = document.createElement("div");
+    text.appendChild(renderMarkdown(row.ai_advice));
+    better.appendChild(text);
+    nodes.push(better);
+  }
+
+  const when = document.createElement("p");
+  when.className = "muted small";
+  when.textContent = `The rule called this ${row.severity} and raised it `
+    + `${whenLabel(row.raised_at)}. `
+    + (row.ai_at ? `${chatState.who.name} looked at it ${whenLabel(row.ai_at)}.` : "");
+  nodes.push(when);
+
+  showListDialog(
+    row.silenced ? "Held back" : `What ${chatState.who.name} said`,
+    nodes,
+    "This is a language model's opinion of a machine-generated alert. The alert itself is "
+    + "still here, still unread, and can be marked read or deleted like any other — "
+    + "nothing was thrown away."
+  );
 }
 
 function alertRowActions(row) {
@@ -15432,8 +15804,21 @@ function drawAlertTimeline(rows) {
     legend.appendChild(span);
   }
   $("alertLegend").replaceChildren(legend);
+  /*
+   * How many of those nobody was told about.
+   *
+   * On the chart's own caption rather than only in the table, because the
+   * chart is what somebody looks at to judge whether a week was noisy - and a
+   * week that looks noisy here but produced four emails is a different fact
+   * from one that produced forty.
+   */
+  const silenced = rows.filter(row => row.silenced).length;
+
   $("alertRange").textContent =
-    `${count(rows.length, "alert")}, one bar per ${bucket === 86400 ? "day" : "hour"}`;
+    `${count(rows.length, "alert")}, one bar per ${bucket === 86400 ? "day" : "hour"}`
+    + (silenced
+      ? ` — ${silenced} held back by ${chatState.who.name}, still counted here`
+      : "");
 }
 
 /*
@@ -23763,6 +24148,11 @@ const VIEWS = {
   "sys-ai-billing": {
     manual: true, label: "Billing", parent: "system", refresh: () => refreshAiSessions(),
   },
+  "sys-reports": {
+    label: "Summaries",
+    parent: "system",
+    refresh: () => refreshReports(),
+  },
   "sys-terminal": {
     /*
      * Never on the timer.
@@ -24599,6 +24989,23 @@ document.addEventListener("click", async event => {
   } finally {
     button.disabled = false;
     button.textContent = "Test the connection";
+  }
+});
+
+$("reportNow").addEventListener("click", async () => {
+  const which = prompt(
+    "Write a summary now, covering which period?\n\ndaily, weekly or monthly",
+    "daily"
+  );
+  if (!which) return;
+
+  notice("Writing it — this asks the model, so it takes a few seconds.");
+
+  try {
+    renderReports(await post("ai-report-now", { period: which.trim().toLowerCase() }));
+    notice("Written.", true);
+  } catch (error) {
+    notice(String(error.message || error));
   }
 });
 

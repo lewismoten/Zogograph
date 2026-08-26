@@ -243,12 +243,122 @@ try {
     if ($wants('--prune')) {
         $say('prune   ' . prune($config, $pdo));
     }
+
+    /*
+     * The scheduled summaries, on whichever run happens to be first past due.
+     *
+     * Not on its own cron line: another line is another thing to set up
+     * correctly, and this already runs every few minutes. Due-ness is measured
+     * from the last report rather than from a clock, so a machine that was off
+     * overnight writes one when it comes back rather than skipping the day.
+     */
+    if ($wants('--collect') || $wants('--report')) {
+        $say('report  ' . aiReports($config, $pdo));
+    }
 } catch (Throwable $e) {
     // To the log as well as to stderr: cron's stderr goes to whatever the
     // crontab line redirects to, which is often nowhere.
     logProblem('error', 'cron: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
     fwrite(STDERR, 'error: ' . $e->getMessage() . "\n");
     exit(1);
+}
+
+/**
+ * Writes and sends whichever summaries are due.
+ *
+ * Silent about the ones that are switched off, because most installs will have
+ * all three off and a line saying so on every cron run is noise in a log
+ * somebody redirects to a file.
+ */
+function aiReports(array $config, PDO $pdo): string
+{
+    $settings = aiAlertSettings($config);
+    $done = [];
+
+    foreach (['daily', 'weekly', 'monthly'] as $period) {
+        if (!$settings[$period] || !aiReportDue($pdo, $period)) {
+            continue;
+        }
+
+        $report = aiWriteReport($config, $pdo, $period);
+        if ($report === null) {
+            $done[] = $period . ' could not be written';
+            continue;
+        }
+
+        $sent = sendReportEmail($config, $pdo, $period, $report);
+        $done[] = $period . ($sent ? ' written and sent' : ' written');
+    }
+
+    return $done === [] ? 'nothing due' : implode('; ', $done);
+}
+
+/**
+ * Emails one summary.
+ *
+ * To its own recipients where they are set, and otherwise to whoever gets the
+ * alerts - a summary and an alert are different kinds of message and somebody
+ * may reasonably want them in different places, but requiring a second address
+ * before the feature works at all would be a needless step.
+ */
+function sendReportEmail(array $config, PDO $pdo, string $period, array $report): bool
+{
+    $settings = aiAlertSettings($config);
+    $to = trim($settings['report_to']) !== ''
+        ? $settings['report_to']
+        : (string)($config['alerts']['to'] ?? '');
+
+    $recipients = alertRecipients($to);
+
+    if ($recipients === [] || !function_exists('mail')) {
+        return false;
+    }
+
+    $host = php_uname('n');
+    $label = aiReportPeriods()[$period]['label'] ?? ucfirst($period);
+
+    $body = [
+        'Hostscope on ' . $host,
+        '',
+        $report['body'],
+        '',
+    ];
+
+    $link = dashboardLink($config, 'sys-reports');
+    if ($link !== null) {
+        $body[] = 'Every summary: ' . $link;
+    }
+
+    $body[] = '';
+    $body[] = 'Written by ' . aiPersona($config)['name'] . ', which is a language model '
+        . 'reading the figures. The figures themselves are on the dashboard.';
+
+    $headers = ['Auto-Submitted: auto-generated'];
+    $from = trim((string)($config['alerts']['from'] ?? ''));
+    if ($from !== '') {
+        $headers[] = 'From: ' . $from;
+    }
+
+    /*
+     * One message per recipient, the same as the alert mail does it.
+     *
+     * A single mail() with several addresses fails as a unit - one bad mailbox
+     * and nobody hears - and it also shows everybody the whole list.
+     */
+    $sent = false;
+    foreach ($recipients as $who) {
+        $sent = @mail(
+            $who,
+            sprintf('[%s] %s summary', $host, $label),
+            implode("\n", $body),
+            implode("\r\n", $headers)
+        ) || $sent;
+    }
+
+    $pdo->prepare('UPDATE ai_reports SET emailed_at = ?, email_error = ? WHERE id = ?')
+        ->execute([$sent ? time() : null, $sent ? null : 'mail() refused it', $report['id']]);
+
+    return (bool)$sent;
 }
 
 /**

@@ -595,6 +595,53 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        30 => [
+            /*
+             * The assistant's verdict on an alert, where it has one.
+             *
+             * Separate columns rather than a table, because there is at most one
+             * per alert and it is always read with the alert - and a join for a
+             * one-to-one relationship is a join nobody needed.
+             *
+             * `silenced` is the one that changes behaviour: it means the
+             * assistant looked at the alert with more context than the rule had
+             * and concluded it did not warrant waking anybody. It is still an
+             * alert, still unread, still in the list; it simply did not go out
+             * by email, and the reason is recorded beside it. An alert that
+             * disappeared would be worse than a noisy one.
+             */
+            'ALTER TABLE alerts ADD COLUMN ai_summary TEXT',
+            'ALTER TABLE alerts ADD COLUMN ai_verdict TEXT',
+            'ALTER TABLE alerts ADD COLUMN ai_reason TEXT',
+            'ALTER TABLE alerts ADD COLUMN ai_advice TEXT',
+            'ALTER TABLE alerts ADD COLUMN ai_at INTEGER',
+            'ALTER TABLE alerts ADD COLUMN silenced INTEGER NOT NULL DEFAULT 0',
+
+            /*
+             * Summaries the assistant writes on a schedule.
+             *
+             * Kept in the account database rather than the assistant's own,
+             * because this is a report about the machine that happens to have
+             * been written by a model - it belongs with the readings it
+             * describes, and it has to survive somebody clearing out the
+             * conversations.
+             */
+            "CREATE TABLE ai_reports (
+                id        INTEGER PRIMARY KEY,
+                at        INTEGER NOT NULL,
+                period    TEXT NOT NULL,
+                covers_from INTEGER NOT NULL,
+                covers_to INTEGER NOT NULL,
+                body      TEXT NOT NULL,
+                emailed_at INTEGER,
+                email_error TEXT,
+                tokens_in INTEGER NOT NULL DEFAULT 0,
+                tokens_out INTEGER NOT NULL DEFAULT 0,
+                millicents INTEGER NOT NULL DEFAULT 0
+            )",
+            'CREATE INDEX ai_reports_at ON ai_reports (period, at)',
+        ],
+
         29 => [
             /*
              * Small facts the app needs to remember between requests.

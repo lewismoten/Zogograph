@@ -2464,3 +2464,37 @@ canvas.chart-empty {
 
 /* A tool's answer, which can be long. It scrolls rather than the page. */
 .try-result { max-height: 460px; overflow: auto; }
+
+/*
+ * An alert the assistant held back.
+ *
+ * Dimmed rather than hidden: it is still an alert, still unread, and still
+ * something that happened. It simply did not wake anybody.
+ */
+tr.row-silenced { opacity: .62; }
+tr.row-silenced:hover { opacity: 1; }
+
+/* Its note, which is markdown in a table cell. */
+.alert-opinion { max-width: 46em; font-size: .92em; }
+.alert-opinion .md-p { margin-bottom: .3em; }
+
+/* --------------------------------------------------------- the summaries -- */
+
+.report {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-hover);
+}
+
+.report-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+/* Prose, so it gets a readable measure rather than the panel's full width. */
+.report-body { max-width: 62em; }

@@ -76,6 +76,7 @@ require_once __DIR__ . '/lib/scans.php';
 require_once __DIR__ . '/lib/aisession.php';
 require_once __DIR__ . '/lib/aimemory.php';
 require_once __DIR__ . '/lib/terminal.php';
+require_once __DIR__ . '/lib/aialerts.php';
 require_once __DIR__ . '/lib/headers.php';
 require_once __DIR__ . '/lib/pagebits.php';
 require_once __DIR__ . '/lib/domains.php';
@@ -193,6 +194,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-price-save' => doAiPriceSave($config, $pdo, $post),
         'ai-price-forget' => doAiPriceForget($config, $pdo, $post),
         'ai-try' => doAiTry($config, $pdo, $post),
+        'ai-reports' => aiReportsView($config, $pdo, $signedIn),
+        'ai-report-now' => doAiReportNow($config, $pdo, $post),
+        'ai-report-forget' => doAiReportForget($config, $pdo, $post),
         'ai-test' => doAiTest($config, $pdo, $post),
         'ai-reaction' => doAiReaction($config, $pdo, $post),
         'ai-sessions' => aiSessionsView($config, $signedIn),
@@ -307,6 +311,14 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
     return [
         'signed_in' => $signedIn,
         'csrf' => $signedIn ? csrfToken() : null,
+        /*
+         * The newest summary, for the front page.
+         *
+         * Signed-in only: it is prose about this machine, written from tool
+         * results that name paths and processes, and no amount of redacting a
+         * paragraph afterwards makes that safe for the open internet.
+         */
+        'report' => $signedIn ? aiLatestReport($pdo) : null,
         /*
          * Messages one person left for whoever else opens this.
          *
@@ -912,7 +924,9 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
     $limit = clampInt($_GET['limit'] ?? 50, 1, 500);
     $stmt = $pdo->prepare(
         'SELECT a.id, a.raised_at, a.rule, a.severity, a.subject, a.detail,
-                a.emailed_at, a.path_id, a.incident_id, a.acknowledged_at, p.path, p.kind
+                a.emailed_at, a.email_error, a.path_id, a.incident_id, a.acknowledged_at,
+                a.ai_summary, a.ai_verdict, a.ai_reason, a.ai_advice, a.ai_at, a.silenced,
+                p.path, p.kind
          FROM alerts a LEFT JOIN paths p ON p.id = a.path_id
          ORDER BY a.raised_at DESC LIMIT :limit'
     );
@@ -6767,6 +6781,7 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         'compact_automatically' => $settings['compact_automatically'],
         'explain_commands' => $settings['explain_commands'],
         'host_commands' => $settings['host_commands'],
+        'alerts' => aiAlertSettings($config),
         'effort_levels' => aiEffortLevels(),
         'tools' => $tools,
         'ready' => $ready['ok'],
@@ -6960,6 +6975,27 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
         ($_POST['compact_automatically'] ?? '0') === '1';
     $current['ai']['explain_commands'] = ($_POST['explain_commands'] ?? '0') === '1';
     $current['ai']['host_commands'] = ($_POST['host_commands'] ?? '0') === '1';
+
+    /*
+     * What it does with nobody watching.
+     *
+     * Merged over whatever is there rather than replacing it, so a key set by
+     * hand in the config file is not dropped the first time somebody saves an
+     * unrelated checkbox.
+     */
+    $current['ai']['alerts'] = array_merge($current['ai']['alerts'] ?? [], [
+        'mode' => in_array($_POST['alert_mode'] ?? 'off',
+            ['off', 'comment', 'look', 'decide'], true)
+            ? (string)$_POST['alert_mode'] : 'off',
+        'never_above' => in_array($_POST['alert_floor'] ?? 'error',
+            ['none', 'critical', 'error', 'warning'], true)
+            ? (string)$_POST['alert_floor'] : 'error',
+        'per_run' => clampInt($_POST['alert_per_run'] ?? 5, 1, 20),
+        'daily' => ($_POST['report_daily'] ?? '0') === '1',
+        'weekly' => ($_POST['report_weekly'] ?? '0') === '1',
+        'monthly' => ($_POST['report_monthly'] ?? '0') === '1',
+        'report_to' => trim((string)($_POST['report_to'] ?? '')),
+    ]);
 
     /*
      * Who it is, which is the operator's to decide.
@@ -7224,6 +7260,88 @@ function aiNoteBrowsing(PDO $pdo): bool
 {
     noteBrowsing($pdo);
     return true;
+}
+
+/* ---------------------------------------------------------- the summaries -- */
+
+/** Every summary written so far. */
+function aiReportsView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to read the summaries');
+    }
+
+    $settings = aiAlertSettings($config);
+
+    return [
+        'reports' => array_map(fn(array $row): array => [
+            'id' => (int)$row['id'],
+            'at' => (int)$row['at'],
+            'period' => (string)$row['period'],
+            'covers_from' => (int)$row['covers_from'],
+            'covers_to' => (int)$row['covers_to'],
+            'body' => (string)$row['body'],
+            'emailed_at' => $row['emailed_at'] === null ? null : (int)$row['emailed_at'],
+            'cost' => aiMoney((int)$row['millicents']),
+        ], aiReportList($pdo)),
+        'periods' => aiReportPeriods(),
+        'on' => [
+            'daily' => $settings['daily'],
+            'weekly' => $settings['weekly'],
+            'monthly' => $settings['monthly'],
+        ],
+        'ready' => aiReady($config)['ok'],
+        'why' => aiReady($config)['why'],
+        'who' => aiPersona($config),
+    ];
+}
+
+/**
+ * Writes one now, whether or not it is due.
+ *
+ * For trying it once before turning the schedule on - a summary is the sort of
+ * thing whose usefulness cannot be judged from a description, and finding out
+ * a week later that it is not what you wanted is a slow way to learn it.
+ */
+function doAiReportNow(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $period = (string)($_POST['period'] ?? 'daily');
+    if (!isset(aiReportPeriods()[$period])) {
+        throw new ActionRefused('that is not one of the periods');
+    }
+
+    $ready = aiReady($config);
+    if (!$ready['ok']) {
+        throw new ActionRefused((string)$ready['why']);
+    }
+
+    $report = aiWriteReport($config, $pdo, $period);
+    if ($report === null) {
+        throw new ActionRefused(
+            'the summary could not be written. The problem log will say why.'
+        );
+    }
+
+    logAction($pdo, 'ai_report', $period, 'ok', 0, 0, 'written by hand');
+
+    return ['ok' => true] + aiReportsView($config, $pdo, true);
+}
+
+/** Removes one. */
+function doAiReportForget(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $stmt = $pdo->prepare('DELETE FROM ai_reports WHERE id = ?');
+    $stmt->execute([clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX)]);
+
+    if ($stmt->rowCount() === 0) {
+        throw new ActionRefused('no such summary');
+    }
+
+    return ['ok' => true] + aiReportsView($config, $pdo, true);
 }
 
 /* --------------------------------------------------------------- terminal -- */

@@ -20,6 +20,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/notify.php';
+require_once __DIR__ . '/aialerts.php';
 require_once __DIR__ . '/domains.php';
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/anomalies.php';
@@ -116,7 +117,81 @@ function evaluateAlerts(array $config, PDO $pdo): array
             );
         }
 
-        sendAlertEmail($config, $pdo, $raised);
+        /*
+         * The assistant's turn, before anything is sent.
+         *
+         * It may add a note, and - if configured to - conclude that one of
+         * these did not warrant waking anybody. A silenced alert is still
+         * raised, still unread and still listed; it simply does not go in the
+         * message, and its reasoning is stored beside it.
+         *
+         * Failing here never stops an alert. Every path through aiTriageAlerts
+         * that cannot reach a model, cannot parse an answer, or runs out of
+         * budget leaves the alert exactly as it was.
+         */
+        $raised = aiTriageAlerts($config, $pdo, $raised);
+
+        $worthSending = array_values(array_filter(
+            $raised,
+            fn(array $alert): bool => empty($alert['silenced'])
+        ));
+
+        if ($worthSending !== []) {
+            sendAlertEmail($config, $pdo, $worthSending);
+        }
+    }
+
+    return $raised;
+}
+
+/**
+ * Lets the assistant comment on, and possibly hold back, what was just raised.
+ *
+ * Returns the same alerts with `ai_summary` and `silenced` filled in where it
+ * had something to say. On any failure it returns them untouched: a feature
+ * that sits between a machine noticing a problem and a person being told about
+ * it has exactly one acceptable failure mode, which is to get out of the way.
+ */
+function aiTriageAlerts(
+    array $config,
+    PDO $pdo,
+    array $raised,
+    ?callable $ask = null
+): array {
+    $settings = aiAlertSettings($config);
+
+    if ($settings['mode'] === 'off') {
+        return $raised;
+    }
+
+    $looked = 0;
+
+    foreach ($raised as $i => $alert) {
+        if ($looked >= $settings['per_run']) {
+            break;
+        }
+        if (!aiMayJudge($config, (string)$alert['severity'])) {
+            continue;
+        }
+
+        $looked++;
+
+        try {
+            $verdict = aiJudgeAlert($config, $pdo, $alert, $ask);
+        } catch (Throwable $e) {
+            logProblem('warning', 'alert triage failed: ' . $e->getMessage());
+            continue;
+        }
+
+        if ($verdict === null) {
+            continue;
+        }
+
+        aiSaveVerdict($pdo, (int)$alert['id'], $verdict);
+
+        $raised[$i]['ai_summary'] = $verdict['summary'];
+        $raised[$i]['ai_reason'] = $verdict['reason'];
+        $raised[$i]['silenced'] = $verdict['verdict'] === 'silence' ? 1 : 0;
     }
 
     return $raised;
@@ -854,6 +929,21 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
         if ($page !== null) {
             $lines[] = '  ' . $page;
         }
+
+        /*
+         * What the assistant made of it, attributed.
+         *
+         * Attributed because it matters who said it: everything else in this
+         * message is a measurement, and this is an opinion formed by a language
+         * model. Somebody reading it at three in the morning should not have to
+         * work out which is which.
+         */
+        if (trim((string)($alert['ai_summary'] ?? '')) !== '') {
+            $lines[] = '';
+            $lines[] = '  ' . aiPersona($config)['name'] . ' says:';
+            $lines[] = '  ' . str_replace("\n", "\n  ", trim((string)$alert['ai_summary']));
+        }
+
         $lines[] = '';
     }
 

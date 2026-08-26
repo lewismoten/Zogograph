@@ -46,7 +46,7 @@ $required = [
     'lib/notify.php', 'lib/rdns.php', 'lib/ai.php', 'lib/aidb.php',
     'lib/aitools.php', 'lib/airun.php', 'lib/aisession.php', 'lib/aicharts.php',
     'lib/scans.php', 'lib/aivoice.php', 'lib/aiimages.php',
-    'lib/aimemory.php', 'lib/aicompact.php', 'lib/terminal.php',
+    'lib/aimemory.php', 'lib/aicompact.php', 'lib/terminal.php', 'lib/aialerts.php',
 ];
 
 $files = [];

@@ -341,6 +341,11 @@
       <span class="nav-label">Mr. Radar</span>
       <span class="nav-badge" data-badge="sys-ai" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/sys-reports" data-nav="sys-reports" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Summaries</span>
+      <span class="nav-badge" data-badge="sys-reports" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-terminal" data-nav="sys-terminal" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Terminal</span>
@@ -458,6 +463,14 @@
 
 <section class="view" data-view="overview" hidden>
 <div class="gauges" id="gauges"></div>
+
+<!--
+  The newest summary, where somebody already is.
+
+  A summary nobody opens is a summary nobody reads, and an email arriving at
+  06:00 is one more thing to open. This is the front page.
+-->
+<section class="panel report-panel" id="overviewReport" hidden></section>
 
 <section class="panel" id="diagnosePanel">
   <div class="panel-head">
@@ -2195,6 +2208,22 @@
     poll calls the API, and one broken function becomes forty lines in a minute.
   </p>
   <div id="problemBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="sys-reports" hidden>
+<section class="panel" id="reportsPanel">
+  <div class="panel-head">
+    <h2>Summaries</h2>
+    <button id="reportNow" class="link">Write one now</button>
+  </div>
+  <p class="muted small sub-note">
+    Written on a schedule by <span class="ai-name">Mr. Radar</span> from a fixed set of
+    figures for the period — the same questions every time, so two summaries can be
+    compared. What varies is what it makes of them. Each one is emailed when it is
+    written; this is where they are kept.
+  </p>
+  <div id="reportsBody"></div>
 </section>
 </section>
 

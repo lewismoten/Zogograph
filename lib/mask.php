@@ -103,6 +103,21 @@ function presentAlert(array $config, array $row, bool $signedIn): array
      * it, so there is no reason to send it.
      */
     unset($row['path'], $row['incident_id']);
+
+    /*
+     * The assistant's note is free text about this machine.
+     *
+     * It is written from tool results that name paths, processes and log lines,
+     * and no amount of redacting a sentence afterwards makes that safe to hand
+     * to the open internet. A signed-out visitor sees that something was said
+     * and not what.
+     */
+    foreach (['ai_summary', 'ai_reason', 'ai_advice'] as $field) {
+        if (($row[$field] ?? null) !== null) {
+            $row[$field] = '[hidden]';
+        }
+    }
+
     $row['masked'] = true;
     return $row;
 }
