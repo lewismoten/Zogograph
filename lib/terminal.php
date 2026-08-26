@@ -117,6 +117,51 @@ function terminalSettings(array $config, ?PDO $pdo = null): array
 }
 
 /**
+ * What TERM the command is told it has.
+ *
+ * xterm-256color rather than dumb, because dumb is what was making `clear`,
+ * `tput` and everything curses-based refuse to start. It is a claim about
+ * capability rather than a lie: the page renders colour, bold, and the cursor
+ * controls that matter for progress lines. It is NOT a full terminal - there is
+ * no keyboard attached to the running process - and programs that need one still
+ * cannot be driven from here.
+ */
+const TERMINAL_TERM = 'xterm-256color';
+
+/**
+ * How much output one command may leave behind.
+ *
+ * `yes test` wrote 4.8 GB before anybody noticed, because nothing runs between
+ * requests to notice. Eight megabytes is more scrollback than anybody reads and
+ * small enough that a runaway costs a moment rather than a disk.
+ */
+function terminalMaxBytes(array $config): int
+{
+    $set = (int)($config['terminal']['max_output_bytes'] ?? 0);
+
+    return $set > 0 ? max(64 * 1024, min(256 * 1024 * 1024, $set)) : 8 * 1024 * 1024;
+}
+
+/**
+ * The exit status a command left behind, if it has finished.
+ *
+ * Written by the epilogue rather than read from the process, because by the
+ * time anything here is alive to ask, the process is gone - it was detached on
+ * purpose so that a slow command does not hold a request open.
+ */
+function terminalExitCode(array $config, string $id): ?int
+{
+    $file = terminalDirectory($config) . '/' . $id . '.st';
+    if (!is_file($file)) {
+        return null;
+    }
+
+    $said = trim((string)@file_get_contents($file));
+
+    return $said === '' || !ctype_digit($said) ? null : (int)$said;
+}
+
+/**
  * Allows, or stops allowing, a shell in a web page.
  *
  * Stored rather than written into the config file. Rewriting PHP that the
@@ -295,21 +340,88 @@ function terminalStart(array $config, PDO $pdo, string $command, string $who): a
      */
     $cwd = terminalCwd($config, $pdo);
     $where = $directory . '/' . $id . '.cwd';
+    $status = $directory . '/' . $id . '.st';
 
-    $script = sprintf(
-        '%snohup %s -c %s > %s 2>&1 & echo $!',
-        $runner,
-        escapeshellarg($settings['shell']),
-        escapeshellarg(sprintf(
-            'cd %s 2>/dev/null; %s; __st=$?; pwd > %s 2>/dev/null; exit $__st',
-            escapeshellarg($cwd),
-            $command,
-            escapeshellarg($where)
-        )),
-        escapeshellarg($out)
-    );
+    /*
+     * The command goes in a file, and the shell runs the file.
+     *
+     * It used to be spliced into a one-line `sh -c 'cd X; <command>; pwd > Y'`,
+     * which works for `ls -la` and breaks the moment the command has structure
+     * of its own. A here-document was the report: everything after the first
+     * line ended up inside it, so the shell swallowed the bookkeeping as data
+     * and then complained that the delimiter never arrived. The user saw their
+     * own `pwd > .../e1dc9c8d.cwd` printed back at them.
+     *
+     * A file has no such problem. What is typed is written verbatim, on its own
+     * lines, with the prologue above it and the epilogue below - so a
+     * here-document, a `for` loop, a function definition and a comment all
+     * behave exactly as they would in a file you ran yourself.
+     */
+    $script = $directory . '/' . $id . '.sh';
 
-    $said = shellRead($script);
+    $prologue = implode("\n", [
+        '#!/bin/sh',
+        /*
+         * TERM, because half the things people type need one.
+         *
+         * `clear`, `tput`, `top`, `watch` and anything using curses refuse to
+         * start without it, and what they say is "TERM environment variable not
+         * set" - which reads as a fault in this terminal rather than a missing
+         * variable. Setting it also turns colour on in every tool that checks:
+         * ls, grep, git and systemctl all colour their own output when TERM
+         * says the terminal can take it.
+         */
+        'TERM=' . escapeshellarg(TERMINAL_TERM) . '; export TERM',
+        'COLUMNS=120; export COLUMNS',
+        'LINES=40; export LINES',
+        // Where the last command left off. Absent or deleted falls back to the
+        // shell's own default rather than failing the whole command.
+        /*
+         * The bookkeeping runs on the way out, however the way out happens.
+         *
+         * It was a few lines appended after the command, which works right up
+         * until the command ends the shell itself - `exit 42`, or a script that
+         * calls exit, or anything fatal. Then those lines never run, and the
+         * exit status and the working directory are simply lost: `exit 42`
+         * reported no status at all.
+         *
+         * A trap on EXIT fires in every one of those cases, and `$?` inside it
+         * is the status the shell is leaving with.
+         */
+        '__done() { __st=$?; pwd > ' . escapeshellarg($where) . ' 2>/dev/null; '
+            . 'printf %s "$__st" > ' . escapeshellarg($status) . ' 2>/dev/null; }',
+        'trap __done EXIT',
+        'cd ' . escapeshellarg($cwd) . ' 2>/dev/null',
+        '',
+    ]);
+
+    if (@file_put_contents($script, $prologue . $command . "\n") === false) {
+        throw new ActionRefused('could not write the command down to run it');
+    }
+    @chmod($script, 0700);
+
+    /*
+     * A ceiling on the output, enforced by the pipe rather than by watching.
+     *
+     * `yes test` produced a 4.8 GB file and a browser that stopped responding.
+     * Nothing was watching, because nothing runs between requests - so the only
+     * thing that can stop it is something in the pipeline itself. `head -c`
+     * closes the pipe at the limit, the writer gets SIGPIPE, and the command
+     * dies of its own accord. That is the runaway brake, and it costs nothing
+     * on every command that never reaches it.
+     */
+    $cap = terminalMaxBytes($config);
+    $limiter = shellRead('command -v head 2>/dev/null') !== null
+        ? ' | head -c ' . (int)$cap
+        : '';
+
+    $shell = escapeshellarg($settings['shell']);
+    $inner = sprintf('%s %s < /dev/null 2>&1%s > %s',
+        $shell, escapeshellarg($script), $limiter, escapeshellarg($out));
+
+    $said = shellRead(sprintf('%snohup %s -c %s > /dev/null 2>&1 & echo $!',
+        $runner, $shell, escapeshellarg($inner)));
+
     $pid = (int)trim((string)$said);
 
     if ($pid <= 0) {
@@ -428,10 +540,23 @@ function terminalRead(array $config, string $id, int $from = 0): array
         'timed_out' => (bool)($meta['timed_out'] ?? false),
         'stopped_by' => $meta['stopped_by'] ?? null,
         'ran_for' => $ran,
+        // How long it took, once it is over. Live, `ran_for` is the same thing
+        // still counting.
+        'took' => $running ? null : $ran,
         'text' => $text,
         'from' => $from,
         'to' => $from + strlen($text),
         'size' => $size,
+        /*
+         * Whether the pipeline cut it off.
+         *
+         * Within a few bytes of the ceiling means head closed the pipe, which
+         * means the command was killed by SIGPIPE rather than finishing - and
+         * saying "finished" about that would be wrong.
+         */
+        'capped' => $size >= terminalMaxBytes($config),
+        'cap' => terminalMaxBytes($config),
+        'exit_code' => terminalExitCode($config, $id),
         'truncated' => $size > TERMINAL_MAX_BYTES,
     ];
 }
@@ -541,13 +666,31 @@ function terminalHistory(array $config, int $limit = 20): array
             continue;
         }
         $outFile = $directory . '/' . $meta['id'] . '.out';
+        $running = terminalRunning($meta);
+        $bytes = is_file($outFile) ? (int)filesize($outFile) : 0;
+
+        /*
+         * How long it took, from the file rather than from a clock.
+         *
+         * Nothing is alive when a command finishes, so the finish time is when
+         * its output last changed - which is exact for anything that prints and
+         * a lower bound for anything that does not. A command still running has
+         * no duration yet; it has an age.
+         */
+        $ended = !$running && is_file($outFile) ? (int)filemtime($outFile) : null;
+
         $out[] = [
             'id' => (string)$meta['id'],
             'command' => (string)$meta['command'],
             'started_at' => (int)$meta['started_at'],
             'who' => (string)($meta['who'] ?? ''),
-            'running' => terminalRunning($meta),
-            'bytes' => is_file($outFile) ? (int)filesize($outFile) : 0,
+            'running' => $running,
+            'bytes' => $bytes,
+            'took' => $ended === null ? null : max(0, $ended - (int)$meta['started_at']),
+            'exit_code' => terminalExitCode($config, (string)$meta['id']),
+            'timed_out' => (bool)($meta['timed_out'] ?? false),
+            'stopped_by' => $meta['stopped_by'] ?? null,
+            'capped' => $bytes >= terminalMaxBytes($config),
         ];
     }
 
@@ -598,7 +741,12 @@ function terminalSweep(array $config): int
             continue;
         }
         @unlink($file);
-        @unlink(substr($file, 0, -5) . '.out');
+        $stem = substr($file, 0, -5);
+        // Every sidecar, or the directory fills with .st and .sh files that
+        // nothing reads and nothing removes.
+        foreach (['.out', '.st', '.sh', '.cwd'] as $part) {
+            @unlink($stem . $part);
+        }
         $gone++;
     }
 
@@ -616,7 +764,9 @@ function terminalForget(array $config, string $id): bool
 
     $directory = terminalDirectory($config);
     @unlink($directory . '/' . $id . '.json');
-    @unlink($directory . '/' . $id . '.out');
+    foreach (['.out', '.st', '.sh', '.cwd'] as $part) {
+        @unlink($directory . '/' . $id . $part);
+    }
 
     return true;
 }

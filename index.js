@@ -10895,6 +10895,9 @@ const termState = {
   from: 0,
   timer: null,
   text: "",
+  // Consecutive polls that brought nothing, so the interval can back off
+  // gradually rather than the instant one read comes back empty.
+  quiet: 0,
 };
 
 async function refreshTerminal() {
@@ -11479,12 +11482,20 @@ async function pollTerminal() {
 
   if (data.running) {
     /*
-     * Faster while something is arriving, slower when it is quiet.
+     * Faster while something is arriving, and slow to give up on quiet.
      *
-     * A command that prints steadily should feel live; one sitting on a lock
-     * for four minutes should not cost two hundred requests to watch.
+     * It backed off to two seconds the moment one poll came back empty, which
+     * a `for i in 1 2 3; do echo $i; sleep 1; done` triggers every other poll -
+     * so a loop printing once a second appeared to stall and then produce
+     * several numbers at once. Backing off is for a command that is genuinely
+     * silent, so it takes several empty reads to earn it, and it never gets
+     * slower than a second and a half.
      */
-    termState.timer = setTimeout(() => pollTerminal(), data.text ? 700 : 2000);
+    termState.quiet = data.text ? 0 : (termState.quiet || 0) + 1;
+    termState.timer = setTimeout(
+      () => pollTerminal(),
+      termState.quiet === 0 ? 400 : (termState.quiet < 6 ? 700 : 1500)
+    );
   } else {
     /*
      * Redrawn once it has finished, for the history list and the suggestions -
