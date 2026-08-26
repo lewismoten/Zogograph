@@ -396,7 +396,13 @@ function aiFetchBytes(string $url): array
     $body = curl_exec($handle);
     $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
     $error = curl_error($handle);
-    curl_close($handle);
+    /*
+     * No curl_close: it has done nothing since PHP 8.0 and is deprecated from
+     * 8.5, where it writes a notice to the problem log on every call. The
+     * handle is released when it goes out of scope. lib/urlwatch.php learned
+     * this first; these three did not get the message until somebody's 8.5
+     * host filled its log with it.
+     */
 
     if (!is_string($body) || $body === '') {
         return ['ok' => false, 'why' => $error !== '' ? $error : 'nothing came back'];
@@ -487,7 +493,7 @@ function aiPostForm(string $url, array $fields, array $headers, int $timeout = 3
     $raw = curl_exec($handle);
     $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
     $problem = curl_error($handle);
-    curl_close($handle);
+    // No curl_close; see the note above.
 
     if ($raw === false) {
         return ['ok' => false, 'error' => $problem !== '' ? $problem : 'the request failed'];
@@ -651,7 +657,7 @@ function aiFindReaction(array $settings, string $mood, ?callable $ask = null): a
         CURLOPT_SSL_VERIFYHOST => 2,
     ]);
     $raw = curl_exec($handle);
-    curl_close($handle);
+    // No curl_close; see the note above.
 
     $decoded = is_string($raw) ? json_decode($raw, true) : null;
     if (!is_array($decoded)) {

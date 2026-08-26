@@ -318,7 +318,13 @@ function aiAsk(
     $raw = curl_exec($handle);
     $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
     $problem = curl_error($handle);
-    curl_close($handle);
+    /*
+     * No curl_close: it has done nothing since PHP 8.0 and is deprecated from
+     * 8.5, where it writes a notice to the problem log on every call. The
+     * handle is released when it goes out of scope. lib/urlwatch.php learned
+     * this first; these three did not get the message until somebody's 8.5
+     * host filled its log with it.
+     */
 
     $ms = (int)round((microtime(true) - $started) * 1000);
 

@@ -178,6 +178,86 @@ function humanTime(epoch) {
   return new Date(epoch * 1000).toLocaleString();
 }
 
+/**
+ * A moment, written with only the parts that are not obvious.
+ *
+ * Four forms, because the year is noise on something that happened this morning
+ * and essential on something from two years ago:
+ *
+ *   today            14:23
+ *   within a week    Tue 14:23
+ *   within a year    25 Aug 14:23
+ *   older            25 Aug 2024 14:23
+ *
+ * No seconds anywhere. A second is never the thing being decided on when
+ * looking down a column of events, and six extra characters on every row is
+ * what pushes a table into overlapping its neighbour - which is how this got
+ * reported.
+ *
+ * Boundaries are calendar boundaries, not multiples of 86400: something at
+ * 23:58 last night is yesterday, not "today, twenty minutes ago".
+ */
+function whenLabel(epoch) {
+  if (!epoch) return "—";
+
+  const at = new Date(epoch * 1000);
+  const now = new Date();
+
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+
+  const clock = at.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+  if (at >= midnight) return clock;
+
+  const weekAgo = new Date(midnight);
+  weekAgo.setDate(weekAgo.getDate() - 6);
+
+  if (at >= weekAgo) {
+    return `${at.toLocaleDateString(undefined, { weekday: "short" })} ${clock}`;
+  }
+
+  const day = at.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+
+  return at.getFullYear() === now.getFullYear()
+    ? `${day} ${clock}`
+    : `${day} ${at.getFullYear()} ${clock}`;
+}
+
+/**
+ * Everything about a moment, for a tooltip.
+ *
+ * Three forms, because the three are wanted by three different people: the
+ * local string for a human, the ISO string for pasting into anything else, and
+ * the epoch second for a query. Having to convert between them by hand is a
+ * small tax paid over and over.
+ */
+function whenTitle(epoch) {
+  if (!epoch) return "";
+
+  const at = new Date(epoch * 1000);
+
+  return [
+    at.toLocaleString(),
+    at.toISOString(),
+    `${epoch}`,
+  ].join("\n");
+}
+
+/**
+ * A span of text showing a moment, with the full detail on hover.
+ *
+ * Returns an element rather than a string, because the tooltip is half the
+ * point and a string cannot carry one.
+ */
+function whenSpan(epoch) {
+  const span = document.createElement("span");
+  span.className = "when";
+  span.textContent = whenLabel(epoch);
+  span.title = whenTitle(epoch);
+  return span;
+}
+
 function ago(epoch) {
   if (!epoch) return "";
   return `${humanDuration(Date.now() / 1000 - epoch)} ago`;
@@ -1473,9 +1553,20 @@ function drawLineChart(canvas, rows, series, options = {}) {
 
   const usable = rows.filter(r => series.some(s => Number.isFinite(Number(r[s.key]))));
   if (!usable.length) {
+    /*
+     * An empty chart shrinks rather than reserving its full height.
+     *
+     * A 440-pixel canvas holding one line of grey text is most of a screen of
+     * nothing, and a page of those reads as broken rather than as quiet - which
+     * is exactly how it was reported. The class takes the height down to the
+     * message; removing it again on the next draw is what puts it back.
+     */
+    canvas.classList.add("chart-empty");
     ctx.fillText(options.empty || "Nothing collected for this range yet", pad.left, pad.top + 20);
     return;
   }
+
+  canvas.classList.remove("chart-empty");
 
   /*
    * One scale per axis.
@@ -1590,6 +1681,8 @@ function drawLineChart(canvas, rows, series, options = {}) {
   }
 
   if (!scales.left && !scales.right) {
+    // Shrunk to the message; see the note in drawLineChart.
+    canvas.classList.add("chart-empty");
     ctx.fillText(options.empty || "Nothing collected for this range yet", pad.left, pad.top + 20);
     return;
   }
@@ -2675,9 +2768,27 @@ async function refreshBadges() {
 
   try {
     const problems = await api("problems", { limit: 1 });
-    setBadge("system", Number(problems.total || 0), "warn");
+    const total = Number(problems.total || 0);
+    const [tone, icon, meaning] = PROBLEM_MARKS[problems.worst] ?? ["warn", "", ""];
+
+    setBadge("system", total, tone, icon);
+    // And on the page itself, which is where somebody goes to act on it.
+    setBadge("sys-problems", total, tone, icon);
+
+    for (const view of ["system", "sys-problems"]) {
+      const el = document.querySelector(`[data-badge="${view}"]`);
+      if (el && total) {
+        el.title = `${count(total, "kind of problem", "kinds of problem")} in the log`
+          + (meaning ? `, the worst being ${meaning}` : "")
+          + (problems.by_level
+            ? `.\n${Object.entries(problems.by_level)
+                .map(([name, n]) => `${n} ${name}`).join(", ")}`
+            : ".");
+      }
+    }
   } catch {
     setBadge("system", 0);
+    setBadge("sys-problems", 0);
   }
 }
 
@@ -5827,7 +5938,16 @@ function cropInto(canvas, box) {
  */
 const scanState = { data: null };
 
-async function refreshScans(side) {
+/*
+ * Named for the page it draws, not for what it is about.
+ *
+ * It was called refreshScans, which is also the name of the function that draws
+ * the whole Storage page - and in JavaScript the second declaration simply
+ * replaces the first. So Storage called this one, which writes into two panels
+ * that are not on Storage, and every panel there came up empty while the API
+ * was returning perfectly good data. Nothing errored; the page was just blank.
+ */
+async function refreshScanSchedule(side) {
   const body = $(side === "host" ? "hostScansBody" : "accountScansBody");
 
   if (!state.signedIn) {
@@ -5996,7 +6116,7 @@ function scanTable(rows, data) {
         try {
           await post("cancel-task", { task: scan.pending.task });
           notice("Withdrawn. The collector will not run it.", true);
-          await refreshScans(scan.side);
+          await refreshScanSchedule(scan.side);
         } catch (error) {
           notice(String(error.message || error));
           cancel.disabled = false;
@@ -6032,7 +6152,7 @@ function scanTable(rows, data) {
           const [action, argument] = String(scan.task).split(":");
           await post(action, argument ? { task: argument } : {});
           notice("Asked. It runs on the host collector's next pass.", true);
-          await refreshScans(scan.side);
+          await refreshScanSchedule(scan.side);
         } catch (error) {
           notice(String(error.message || error));
         } finally {
@@ -9816,8 +9936,8 @@ async function checkSymlinks() {
   holder.replaceChildren(spinner("Walking the tree…"));
 
   try {
-    linkState.data = await api("symlinks", { budget: 15 });
-    linkState.at = Math.floor(Date.now() / 1000);
+    linkState.data = await api("symlinks", { budget: 15, fresh: "1" });
+    linkState.at = linkState.data.at ?? Math.floor(Date.now() / 1000);
     renderSymlinks();
   } catch (error) {
     holder.replaceChildren(note(String(error.message || error)));
@@ -9850,7 +9970,8 @@ function renderSymlinks() {
     + (data.complete
       ? "The whole tree was checked."
       : "Stopped before the end of the tree — there may be more.")
-    + (linkState.at ? ` Checked ${ago(linkState.at)}.` : "");
+    + (linkState.at ? ` Checked ${ago(linkState.at)}.` : "")
+    + (data.stored ? " This is the stored result of that check, not a new one." : "");
   parts.push(summary);
 
   if (linkState.at && Date.now() / 1000 - linkState.at > 900) {
@@ -10217,9 +10338,15 @@ async function sweepLinks(pattern, confirmed = false) {
   }
 
   const said = document.createElement("p");
-  said.className = confirmed ? "band-ok" : "muted small";
+  const failed = result.failed ?? [];
+  said.className = confirmed
+    ? (failed.length ? "band-crit" : "band-ok")
+    : "muted small";
   said.textContent = confirmed
     ? `${count(result.deleted.length, "link")} removed.`
+      + (failed.length
+        ? ` ${count(failed.length, "could not be removed", "could not be removed")}.`
+        : "")
       + (result.skipped ? ` ${count(result.skipped, "link")} left alone.` : "")
     /*
      * "Matched" means matched among the problems, not among all links.
@@ -10243,6 +10370,29 @@ async function sweepLinks(pattern, confirmed = false) {
       "Working links are not considered at all, whatever the pattern says. Only links this "
       + "check found dangling can be removed here."
     ));
+  }
+
+  /*
+   * Why a delete did not happen, in the words of the thing that refused it.
+   *
+   * This used to be counted with the links that were never candidates and
+   * reported as "left alone" - so five failures on a read-only directory read
+   * as a considered decision. The reasons were already known and were being
+   * thrown away one line after being caught.
+   */
+  if (failed.length) {
+    const why = new Map();
+    for (const one of failed) {
+      why.set(one.why, (why.get(one.why) ?? 0) + 1);
+    }
+
+    for (const [reason, howMany] of why) {
+      parts.push(note(`${count(howMany, "link")} could not be removed: ${reason}.`));
+    }
+
+    const holder = document.createElement("div");
+    holder.id = "linkFailedList";
+    parts.push(holder);
   }
 
   if (!result.complete) {
@@ -10297,6 +10447,13 @@ async function sweepLinks(pattern, confirmed = false) {
 
   body.replaceChildren(...parts);
 
+  if (failed.length) {
+    renderTable("linkFailedList", failed.slice(0, 100), [
+      { label: "Link", className: "name", render: row => dimmedPath(row.path, root) },
+      { label: "Why not", className: "muted", render: row => row.why },
+    ], null, () => "row-bad", row => row.path);
+  }
+
   if (result.deleted.length) {
     renderTable("linkSweepList", result.deleted.slice(0, 200), [
       { label: "Link", className: "name", render: row => dimmedPath(row.path, root) },
@@ -10310,6 +10467,27 @@ async function refreshLinks() {
     $("symlinkBody").replaceChildren(note("Sign in to check symlinks."));
     $("linkSweepPanel").hidden = true;
     return;
+  }
+
+  /*
+   * The last walk comes from the server, not from this tab's memory.
+   *
+   * It was held in a module variable, which survives navigation and does not
+   * survive a reload - so a fifteen-second walk of the whole tree was forgotten
+   * by pressing F5, and the page said "nothing has been checked yet". The
+   * problems were in the database the whole time, being used for the "what is
+   * new" comparison; they simply were not being read back.
+   */
+  if (!linkState.data) {
+    try {
+      const stored = await api("symlinks", { budget: 1 });
+      if (stored.problems) {
+        linkState.data = stored;
+        linkState.at = stored.at ?? null;
+      }
+    } catch {
+      // No stored walk is not an error; the page says so and offers the button.
+    }
   }
 
   /*
@@ -19036,44 +19214,6 @@ async function refreshWhoAmI() {
   body.replaceChildren(...parts);
 }
 
-/* -------------------------------------------------------------- settings -- */
-
-/*
- * A landing page for the handful of things that are choices rather than
- * measurements. Built from the registry so a page added later cannot be
- * forgotten here.
- */
-function renderSettings() {
-  const body = $("settingsBody");
-  const wrap = document.createElement("div");
-  wrap.className = "upcoming";
-
-  for (const [view, what] of [
-    ["net-labels", "Your own names for addresses and ports, used across every network page."],
-    ["email", "Where alerts are sent, and which conditions send them."],
-    ["schedule", "When the collectors run, and how to set up the host one."],
-    ["system", "What this install can do, and what it is costing."],
-  ]) {
-    if (!VIEWS[view]) continue;
-
-    const row = document.createElement("div");
-    row.className = "upcoming-row level-info";
-
-    const go = document.createElement("button");
-    go.className = "link";
-    go.textContent = VIEWS[view].label;
-    go.addEventListener("click", () => showView(view));
-    row.appendChild(go);
-
-    const said = document.createElement("span");
-    said.textContent = what;
-    row.appendChild(said);
-
-    wrap.appendChild(row);
-  }
-
-  body.replaceChildren(wrap);
-}
 
 /* --------------------------------------------------------------- domains -- */
 
@@ -19969,6 +20109,30 @@ function renderLogStream(data) {
   const list = document.createElement("div");
   list.className = "stream";
 
+  /*
+   * Column headings, which this did not have.
+   *
+   * Six columns of terse text with nothing saying what any of them is - the
+   * file name and the thing that wrote the line look alike at a glance, and
+   * "which column is which" was left to be inferred.
+   */
+  const head = document.createElement("div");
+  head.className = "stream-line stream-head";
+  for (const [label, hint] of [
+    ["", "How bad the line says it is"],
+    ["When", "When the line says it happened"],
+    ["Log", "Which file it came from"],
+    ["Wrote it", "Whatever the line names as its source"],
+    ["Message", "The line itself, cut to fit — click any row for all of it"],
+    ["", ""],
+  ]) {
+    const cell = document.createElement("span");
+    cell.textContent = label;
+    if (hint) cell.title = hint;
+    head.appendChild(cell);
+  }
+  list.appendChild(head);
+
   data.rows.forEach((row, index) => {
     const parsed = row.parsed || { kind: "", where: "", message: row.text };
 
@@ -19994,7 +20158,16 @@ function renderLogStream(data) {
 
     const when = document.createElement("span");
     when.className = "stream-when muted";
-    when.textContent = row.at ? humanTime(row.at) : "—";
+    /*
+     * The short form, because the column is fifteen characters wide.
+     *
+     * It was a full locale string - "8/25/2026, 2:23:45 PM", twenty-one
+     * characters - in a fifteen-character column with no overflow rule, so it
+     * simply ran over the top of the file name beside it. The seconds were the
+     * least useful six of those characters.
+     */
+    when.textContent = row.at ? whenLabel(row.at) : "—";
+    when.title = row.at ? whenTitle(row.at) : "";
     /*
      * A line with no timestamp says so rather than borrowing one.
      *
@@ -20209,14 +20382,44 @@ function renderRepeats(data) {
     },
     { label: "In", render: row => (row.files || []).join(", ") },
     {
-      label: "The line",
+      label: "Last one",
+      render: row => (row.last_at ? whenSpan(row.last_at) : "—"),
+    },
+    {
+      label: "What it says",
       className: "cmd",
       render: row => {
+        const wrap = document.createDocumentFragment();
+
+        /*
+         * The level and the source, as their own small marks.
+         *
+         * They were part of the text being truncated, which meant a column of
+         * "[25-Aug-2026 11:40:20 Am" and nothing else. They are short, they
+         * are worth having, and they are not the message.
+         */
+        if (row.kind) {
+          const [icon, meaning] = LOG_MARKS[row.kind] || ["▫️", ""];
+          const mark = document.createElement("span");
+          mark.textContent = `${icon} `;
+          mark.title = meaning;
+          wrap.appendChild(mark);
+        }
+
+        if (row.where) {
+          const who = document.createElement("span");
+          who.className = "muted";
+          who.textContent = `${row.where}: `;
+          wrap.appendChild(who);
+        }
+
         const span = document.createElement("span");
-        span.className = "lastline";
-        span.textContent = row.example;
-        span.title = `Grouped as: ${row.shape}`;
-        return span;
+        span.className = "repeat-line";
+        span.textContent = row.message || row.example;
+        span.title = `${row.example}\n\nGrouped as: ${row.shape}`;
+        wrap.appendChild(span);
+
+        return wrap;
       },
     },
   ], null, null, row => row.shape);
@@ -22317,7 +22520,6 @@ const VIEWS = {
     refresh: () => refreshUrls(),
   },
   "net-labels": { label: "Your own names", parent: "system", refresh: () => refreshLabels() },
-  settings: { label: "Settings", parent: "system", refresh: () => renderSettings() },
   whoami: { label: "Who am I?", parent: "network", refresh: () => refreshWhoAmI() },
   "dns-records": {
     label: "What a domain publishes",
@@ -22456,7 +22658,7 @@ const VIEWS = {
     manual: true,
     label: "Account scans",
     parent: "system",
-    refresh: () => refreshScans("account"),
+    refresh: () => refreshScanSchedule("account"),
   },
   "scans-host": {
     /*
@@ -22471,7 +22673,7 @@ const VIEWS = {
     manual: true,
     label: "Host scans",
     parent: "system",
-    refresh: () => refreshScans("host"),
+    refresh: () => refreshScanSchedule("host"),
   },
   "net-rdns": {
     label: "Address names",
@@ -22863,7 +23065,7 @@ function closeNav() {
  * be on. The counts come from the shared refresh, so they stay current
  * wherever you are.
  */
-function setBadge(view, count, level = "warn") {
+function setBadge(view, count, level = "warn", icon = "") {
   const el = document.querySelector(`[data-badge="${view}"]`);
   if (!el) return;
 
@@ -22872,13 +23074,30 @@ function setBadge(view, count, level = "warn") {
     // the next unhide before the new one is written.
     el.hidden = true;
     el.textContent = "";
+    el.title = "";
     return;
   }
 
   el.hidden = false;
-  el.textContent = count > 99 ? "99+" : String(count);
+  /*
+   * The icon says how bad, the number says how many.
+   *
+   * Two different decisions, and a count alone answers only one of them: forty
+   * deprecation notices are worth reading eventually and one fatal is worth
+   * reading now, and both are just a number in the corner of a menu.
+   */
+  el.textContent = (icon ? `${icon} ` : "") + (count > 99 ? "99+" : String(count));
   el.className = `nav-badge badge-${level}`;
 }
+
+/** The colour and mark for a problem level. */
+const PROBLEM_MARKS = {
+  critical: ["crit", "🔴", "something failed outright"],
+  error: ["crit", "🔴", "an error"],
+  warning: ["warn", "🟡", "a warning"],
+  notice: ["warn", "🔵", "a notice"],
+  info: ["warn", "🔵", "a note"],
+};
 
 /* ----------------------------------------------------------------- polling -- */
 

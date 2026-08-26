@@ -591,6 +591,17 @@ function deleteBrokenMatching(
     $broken = 0;
     $skipped = 0;
 
+    /*
+     * Tried and could not, kept separately from chose not to.
+     *
+     * These were one number, and that was wrong in a way that made a real
+     * failure indistinguishable from correct behaviour: a read-only directory
+     * produced "0 links removed, 5 links left alone", which reads as a decision
+     * rather than as five failures. The reason was already known - deleteLink
+     * says exactly what went wrong - and was being discarded one line later.
+     */
+    $failed = [];
+
     foreach ($found['problems'] as $problem) {
         if (!symlinkPatternMatch($pattern, $problem['path'])) {
             continue;
@@ -617,21 +628,129 @@ function deleteBrokenMatching(
         try {
             $deleted[] = deleteLink($config, $problem['path']);
         } catch (ActionRefused $e) {
-            $skipped++;
+            $failed[] = ['path' => $problem['path'], 'why' => $e->getMessage()];
         }
     }
 
     return [
         'deleted' => $deleted,
+        // Matched the path but is not broken, so was never a candidate.
         'skipped' => $skipped,
+        // Was a candidate, was attempted, and did not go. With the reason.
+        'failed' => $failed,
         'matched' => $matched,
         'broken' => $broken,
-        'remaining' => max(0, $broken - count($deleted)),
+        'remaining' => max(0, $broken - count($deleted) - count($failed)),
         // The walk itself may have run out of time, in which case there may be
         // matching links it never reached.
         'complete' => $found['complete'] && $found['full'],
         'dry_run' => $dryRun,
     ];
+}
+
+/**
+ * Two lines around the `settings` table, so nothing has to know its shape.
+ *
+ * Kept here rather than in db.php because these are the only two callers and
+ * putting a general-purpose key-value API in front of a two-column table
+ * invites it to become a place things get hidden.
+ */
+function rememberSetting(PDO $pdo, string $key, string $value): void
+{
+    try {
+        $pdo->prepare(
+            'INSERT INTO settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+        )->execute([$key, $value]);
+    } catch (Throwable) {
+        // A missing table means an install that has not migrated yet. Losing
+        // the summary is untidy; failing the walk over it would not be.
+    }
+}
+
+function recallSetting(PDO $pdo, string $key): ?string
+{
+    try {
+        $stmt = $pdo->prepare('SELECT value FROM settings WHERE key = ?');
+        $stmt->execute([$key]);
+        $found = $stmt->fetchColumn();
+    } catch (Throwable) {
+        return null;
+    }
+
+    return $found === false ? null : (string)$found;
+}
+
+/**
+ * The last completed walk, rebuilt from what was stored.
+ *
+ * Returns null when there has never been one. Everything here was already being
+ * written down for the "what is new since last time" comparison; it simply was
+ * not being read back, so the page forgot a fifteen-second walk the moment
+ * somebody reloaded.
+ *
+ * The notes are regenerated rather than stored. A note is a fixed sentence per
+ * kind - keeping four copies of it on every row would be a column that could
+ * drift out of step with the one in inspectLink.
+ */
+function lastSymlinkCheck(PDO $pdo): ?array
+{
+    $raw = recallSetting($pdo, 'symlink_walk');
+    if ($raw === null) {
+        return null;
+    }
+
+    $walk = json_decode($raw, true);
+    if (!is_array($walk)) {
+        return null;
+    }
+
+    try {
+        $rows = $pdo->query(
+            'SELECT path, kind, target FROM symlink_problems ORDER BY kind, path'
+        )->fetchAll();
+    } catch (Throwable) {
+        return null;
+    }
+
+    $rank = ['loop' => 0, 'ancestor' => 1, 'outside' => 2, 'broken' => 3];
+    $problems = array_map(fn(array $row): array => [
+        'kind' => (string)$row['kind'],
+        'path' => (string)$row['path'],
+        'target' => (string)($row['target'] ?? ''),
+        'hops' => 0,
+        'note' => symlinkNoteFor((string)$row['kind']),
+    ], $rows);
+
+    usort(
+        $problems,
+        fn(array $a, array $b): int => ($rank[$a['kind']] ?? 9) <=> ($rank[$b['kind']] ?? 9)
+    );
+
+    return [
+        'problems' => $problems,
+        'links' => (int)($walk['links'] ?? 0),
+        'dirs' => (int)($walk['dirs'] ?? 0),
+        'kinds' => $walk['kinds'] ?? [],
+        'seconds' => (float)($walk['seconds'] ?? 0),
+        'complete' => true,
+        'full' => (bool)($walk['full'] ?? true),
+        'at' => (int)($walk['at'] ?? 0),
+    ];
+}
+
+/** The fixed sentence for each kind, so it is written once. */
+function symlinkNoteFor(string $kind): string
+{
+    return match ($kind) {
+        'loop' => 'The links point at each other in a circle.',
+        'ancestor' => 'Points at a directory that contains the link itself, so anything '
+            . 'following symlinks will descend for ever.',
+        'outside' => 'Leaves the watched directory, so sizes measured here are not the '
+            . 'sizes something following it would see.',
+        'broken' => 'Points at something that is not there.',
+        default => '',
+    };
 }
 
 /**
@@ -679,6 +798,27 @@ function recordSymlinkState(PDO $pdo, array $found): array
      * state would mark everything it did not reach as "gone", and then report
      * all of it as newly appeared on the next complete run.
      */
+    /*
+     * The walk's own summary, so a reload does not lose it.
+     *
+     * The last check lived only in the browser's memory, so opening the page
+     * again showed "nothing has been checked yet" after a walk that had taken
+     * fifteen seconds - and the natural response to that is to run it again.
+     * The problems themselves are already in the table below; this is the
+     * handful of numbers around them.
+     */
+    if ($found['complete']) {
+        rememberSetting($pdo, 'symlink_walk', json_encode([
+            'at' => $now,
+            'links' => $found['links'],
+            'dirs' => $found['dirs'],
+            'seconds' => $found['seconds'],
+            'kinds' => $found['kinds'],
+            'total' => count($found['problems']),
+            'full' => $found['full'],
+        ]));
+    }
+
     if ($found['complete']) {
         $pdo->beginTransaction();
         $pdo->exec('DELETE FROM symlink_problems');

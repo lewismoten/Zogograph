@@ -2918,6 +2918,34 @@ function symlinkCheck(array $config, PDO $pdo, bool $signedIn): array
         throw new ActionRefused('sign in to check symlinks');
     }
 
+    /*
+     * The stored one, unless a fresh walk was asked for.
+     *
+     * Opening the page ran a full walk of the tree every time - fifteen seconds
+     * of disk before anything appeared - and then forgot it on reload. The
+     * button asks for a new one; arriving at the page shows the last one, with
+     * its age.
+     */
+    if (($_GET['fresh'] ?? '0') !== '1') {
+        $last = lastSymlinkCheck($pdo);
+        if ($last !== null) {
+            $total = count($last['problems']);
+            $last['problems'] = array_slice($last['problems'], 0, SYMLINK_SHOW_MAX);
+
+            return $last + [
+                'total' => $total,
+                'shown' => count($last['problems']),
+                'stored' => true,
+                'new' => [],
+                'gone' => 0,
+                'first_walk' => false,
+                'root' => (string)$config['scan_root'],
+                'bulk_max' => SYMLINK_BULK_MAX,
+                'host_enabled' => (bool)($config['host']['enabled'] ?? false),
+            ];
+        }
+    }
+
     $found = findSymlinkProblems($config, (float)clampInt($_GET['budget'] ?? 10, 1, 60));
 
     /*
@@ -2945,6 +2973,8 @@ function symlinkCheck(array $config, PDO $pdo, bool $signedIn): array
     return $found + [
         'total' => $total,
         'shown' => count($found['problems']),
+        'stored' => false,
+        'at' => time(),
         'new' => $change['added'],
         'gone' => $change['gone'],
         'first_walk' => $change['first'],
@@ -4371,12 +4401,35 @@ function problemLog(array $config, bool $signedIn): array
 
     $grouped = groupedProblems(problemLogPath($config));
 
+    /*
+     * The worst level present, for the badge.
+     *
+     * A count on its own says how many and not how bad, and those are different
+     * decisions: forty deprecation notices are worth reading eventually, one
+     * fatal is worth reading now.
+     */
+    $rank = ['critical' => 0, 'error' => 1, 'warning' => 2, 'notice' => 3, 'info' => 4];
+    $worst = null;
+    $counts = [];
+
+    foreach ($grouped['rows'] as $row) {
+        $level = (string)($row['level'] ?? 'notice');
+        $counts[$level] = ($counts[$level] ?? 0) + (int)($row['count'] ?? 1);
+
+        if ($worst === null || ($rank[$level] ?? 9) < ($rank[$worst] ?? 9)) {
+            $worst = $level;
+        }
+    }
+
     return [
         // realpath, so it is not shown once as data/error.log and again as
         // lib/../data/error.log and read as two different files.
         'path' => realpath(problemLogPath($config)) ?: problemLogPath($config),
         'rows' => $grouped['rows'],
         'lines' => $grouped['lines'],
+        'total' => count($grouped['rows']),
+        'worst' => $worst,
+        'by_level' => $counts,
     ];
 }
 

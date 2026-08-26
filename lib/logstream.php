@@ -271,10 +271,25 @@ function repeatedLines(array $rows, int $keep = 15): array
 
         $shape = normaliseLogLine($text);
         if (!isset($groups[$shape])) {
+            /*
+             * The message, not the raw line.
+             *
+             * Every one of these begins with a timestamp and a level - forty
+             * characters that are identical down the whole column and are
+             * exactly what the group has already factored out. Showing the raw
+             * line meant the cell was full before it reached the part that
+             * differs, so the column read as a list of dates. The raw line is
+             * still one click away.
+             */
+            $parsed = $row['parsed'] ?? parseLogLine($text);
+
             $groups[$shape] = [
                 'shape' => $shape,
                 'count' => 0,
                 'example' => $text,
+                'message' => trim((string)($parsed['message'] ?? $text)),
+                'kind' => (string)($parsed['kind'] ?? ''),
+                'where' => (string)($parsed['where'] ?? ''),
                 'files' => [],
                 'first_at' => null,
                 'last_at' => null,

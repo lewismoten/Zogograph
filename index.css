@@ -1331,7 +1331,34 @@ ol.steps .step.done strong { color: var(--ok); }
 .stream-line.is-error:hover { background: rgba(242, 97, 107, .13); }
 
 .stream-mark { font-size: .8em; }
-.stream-when { font-variant-numeric: tabular-nums; }
+
+/*
+ * Every column clips rather than overlapping its neighbour.
+ *
+ * The when column had no overflow rule and held a full locale string in a
+ * fifteen-character box, so it ran straight over the file name. A column that
+ * can overflow will, on somebody's data.
+ */
+.stream-when {
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The headings, which sit on the same grid as the rows. */
+.stream-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  cursor: default;
+  color: var(--muted);
+  font-size: .9em;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.stream-head:hover { background: var(--panel); }
 .stream-from { color: var(--accent); overflow: hidden; text-overflow: ellipsis; }
 .stream-who { overflow: hidden; text-overflow: ellipsis; }
 .stream-text { overflow: hidden; text-overflow: ellipsis; }
@@ -2305,4 +2332,33 @@ img.portrait {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+/*
+ * A chart with nothing in it takes the height of its message.
+ *
+ * The full canvas height is right for a chart and absurd for one line of grey
+ * text: a page of empty charts is most of a screen of nothing, which reads as
+ * a page that failed to load rather than as a page with nothing to report.
+ */
+canvas.chart-empty {
+  height: 56px !important;
+  min-height: 56px;
+}
+
+/* A moment written short, with the whole of it on hover. */
+.when { cursor: help; white-space: nowrap; }
+
+/*
+ * A repeated line's message, given the width of the cell.
+ *
+ * `.lastline` caps at 46 characters, which is right where it is used for a
+ * one-line preview beside other columns and wrong here: this is the only
+ * column that carries content, and it was filling half the space available
+ * and truncating anyway.
+ */
+.repeat-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .76rem;
+  overflow-wrap: anywhere;
 }
