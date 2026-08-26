@@ -258,6 +258,40 @@ function terminalDirectory(array $config): string
     return dirname((string)$config['database']) . '/terminal';
 }
 
+/**
+ * The command records on disk, and nothing else that happens to end in .json.
+ *
+ * Three separate loops used to reach for `*.json` in this directory and assume
+ * every answer was a command. Then sessions arrived, and `sessions.json` was
+ * written beside them - a *list* of sessions, which decodes to an array and so
+ * passes the `is_array($meta)` check every one of those loops relies on.
+ * Indexing it produced "Undefined array key" for id, command and started_at on
+ * every history load, a blank row in the transcript list, and - in the sweep -
+ * made the session index itself a deletable file. It survived only because it
+ * is rewritten whenever a command starts, so its timestamp is usually young.
+ *
+ * Filtered on the name rather than on the contents, and on exactly the pattern
+ * terminalMeta() already refuses to look up anything else by: a command id is
+ * sixteen hex characters. That makes the guarantee "this file is a command
+ * record" a property of the list rather than something each caller has to
+ * re-check, and it holds for any sidecar added here later.
+ *
+ * @return list<string> absolute paths, in whatever order glob gave them
+ */
+function terminalMetaFiles(array $config): array
+{
+    $directory = terminalDirectory($config);
+    if (!is_dir($directory)) {
+        return [];
+    }
+
+    return array_values(array_filter(
+        glob($directory . '/*.json') ?: [],
+        static fn(string $file): bool
+            => (bool)preg_match('/^[0-9a-f]{16}\.json$/', basename($file))
+    ));
+}
+
 /* ------------------------------------------------------------------ *
  * Sessions
  * ------------------------------------------------------------------ */
@@ -412,7 +446,7 @@ function terminalNameSession(array $config, string $id, string $topic): bool
 function terminalSessionLog(array $config, string $id, bool $withOutput, int $bytes = 65536): array
 {
     $directory = terminalDirectory($config);
-    $files = glob($directory . '/*.json') ?: [];
+    $files = terminalMetaFiles($config);
     $rows = [];
 
     foreach ($files as $file) {
@@ -1007,11 +1041,7 @@ function terminalStop(array $config, string $id, string $who = 'the operator'): 
 function terminalHistory(array $config, int $limit = 20): array
 {
     $directory = terminalDirectory($config);
-    if (!is_dir($directory)) {
-        return [];
-    }
-
-    $files = glob($directory . '/*.json') ?: [];
+    $files = terminalMetaFiles($config);
     usort($files, fn(string $a, string $b): int => filemtime($b) <=> filemtime($a));
 
     $out = [];
@@ -1080,8 +1110,7 @@ function terminalWriteMeta(array $config, string $id, array $meta): void
 /** Drops the oldest transcripts, so this cannot quietly fill the disk. */
 function terminalSweep(array $config): int
 {
-    $directory = terminalDirectory($config);
-    $files = glob($directory . '/*.json') ?: [];
+    $files = terminalMetaFiles($config);
 
     if (count($files) <= TERMINAL_KEEP) {
         return 0;
