@@ -2086,7 +2086,22 @@ function aiViews(): array
         'host-disk' => 'every filesystem on the machine and how full each is',
         'cpu' => 'processor use, for the account and for the machine',
         'host' => 'memory: what is using it and where it goes',
-        'processes' => 'what is running, and what it is using',
+        /*
+         * The stopping is the part worth saying.
+         *
+         * "What is running" reads as a read-only list, so an assistant that
+         * decides something should be stopped writes out kill commands for
+         * somebody to paste into a terminal - which is slower, riskier and
+         * asks the user to do work the page already does with a button and a
+         * confirmation. It happened with awstats.pl, and the description is
+         * why: it never mentioned that this page can act.
+         */
+        'processes' => 'what is running and what it is using, WITH A BUTTON BESIDE EACH '
+            . 'ONE TO STOP IT - either asking it to exit (SIGTERM) or forcing it '
+            . '(SIGKILL), one process or a whole group of the same name, with a '
+            . 'confirmation and a check that it actually went. This is the right place '
+            . 'to send somebody who needs to stop something; do not write out kill '
+            . 'commands for a terminal instead',
         'network' => 'listening ports, connections, and packet captures',
         'net-urls' => 'checks that fetch addresses from outside and record the answer',
         'net-rdns' => 'names for addresses seen in captures and logs',

@@ -321,6 +321,11 @@
       <span class="nav-label">Identity</span>
       <span class="nav-badge" data-badge="sys-ai-identity" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/sys-ai-past" data-nav="sys-ai-past" data-parent="sys-ai">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Past conversations</span>
+      <span class="nav-badge" data-badge="sys-ai-past" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-reports" data-nav="sys-reports" data-parent="sys-ai">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Summaries</span>
@@ -2055,6 +2060,37 @@
 -->
 <section class="view" data-view="sys-ai" hidden>
 <div id="chatFull" class="chat-full"></div>
+</section>
+
+<section class="view" data-view="sys-ai-past" hidden>
+<section class="panel" id="pastChatsPanel">
+  <div class="panel-head">
+    <h2>Past conversations</h2>
+  </div>
+  <p class="muted small sub-note">
+    Every conversation, newest first. Open one to read it, or pick it up where
+    it left off — that starts a fresh conversation carrying what was said, so
+    the limits it ran into do not come with it.
+  </p>
+  <p class="muted small sub-note">
+    Pinning one keeps it past the retention rule. That rule deletes by age,
+    which is right for the ninety-nine nobody will read again and wrong for the
+    one that explained an outage.
+  </p>
+  <div id="pastChatsBody"></div>
+</section>
+
+<section class="panel" id="pastChatPanel" hidden>
+  <div class="panel-head">
+    <h2 id="pastChatTitle">The conversation</h2>
+    <div class="panel-controls">
+      <button id="pastChatResume" class="link">Pick it up</button>
+      <button id="pastChatPin" class="link">Pin it</button>
+      <button id="pastChatClose" class="link">Close</button>
+    </div>
+  </div>
+  <div id="pastChatBody"></div>
+</section>
 </section>
 
 <section class="view" data-view="sys-ai-identity" hidden>

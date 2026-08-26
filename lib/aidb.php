@@ -378,6 +378,26 @@ function aiMigrations(): array
              */
             "ALTER TABLE ai_sessions ADD COLUMN title_by TEXT",
         ],
+
+        8 => [
+            /*
+             * Conversations somebody wants to keep.
+             *
+             * Retention deletes by age, which is right for the hundred sessions
+             * nobody will read again and wrong for the one that diagnosed the
+             * outage. Without a way to say so, the only way to keep that one is
+             * to turn retention off for all of them.
+             */
+            'ALTER TABLE ai_sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0',
+            /*
+             * Which limit stopped it, so the page can offer to raise that one.
+             *
+             * Named rather than inferred from the message: the message is prose
+             * written for a person, and reading a decision back out of prose is
+             * how a feature breaks when somebody improves the wording.
+             */
+            'ALTER TABLE ai_sessions ADD COLUMN limit_hit TEXT',
+        ],
     ];
 }
 
@@ -553,7 +573,16 @@ function aiForget(PDO $pdo, int $olderThanDays): array
 
     $before = time() - ($olderThanDays * 86400);
 
-    $stmt = $pdo->prepare('SELECT id FROM ai_sessions WHERE last_at < ?');
+    /*
+     * Pinned conversations are never swept.
+     *
+     * The whole point of pinning one is that it outlives the rule, so the rule
+     * has to know. A pin that the sweep ignored would be worse than no pin at
+     * all: somebody would rely on it and lose the thing anyway.
+     */
+    $stmt = $pdo->prepare(
+        'SELECT id FROM ai_sessions WHERE last_at < ? AND COALESCE(pinned, 0) = 0'
+    );
     $stmt->execute([$before]);
     $ids = $stmt->fetchAll(PDO::FETCH_COLUMN);
 

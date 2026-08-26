@@ -3076,3 +3076,32 @@ button.working { opacity: .75; cursor: progress; }
  */
 .rank-first { color: #ff9a9a; }
 .rank-second { color: #ffc98a; }
+
+/* ------------------------------------------------ copying a code block -- */
+
+/*
+ * The button sits on the block, top right.
+ *
+ * Inside rather than beside: a code block in a chat panel is often the widest
+ * thing there, and a button in the margin would push it narrower still. It is
+ * dim until the block is pointed at, so a conversation full of blocks is not
+ * also full of buttons.
+ */
+.md-code-wrap { position: relative; }
+.md-copy {
+  position: absolute; top: 6px; right: 6px;
+  padding: 2px 8px; font-size: .72rem;
+  background: var(--bg-raised); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 6px;
+  opacity: 0; transition: opacity .12s ease;
+}
+.md-code-wrap:hover .md-copy,
+.md-copy:focus { opacity: 1; }
+.md-copy:hover { color: var(--text); border-color: var(--dim); }
+
+/* Touch has no hover, so there the button is simply always there. */
+@media (hover: none) { .md-copy { opacity: 1; } }
+
+/* A finished conversation reads rather than follows, so it grows with its
+   content instead of being a fixed window with its own scrollbar. */
+.chat-log.past-chat { height: auto; max-height: 70vh; overflow: auto; }

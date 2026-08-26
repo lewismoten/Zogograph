@@ -212,6 +212,23 @@ function aiSystemPrompt(
             . "choose to run it, so never speak as though it has run.";
         $lines[] = "  Use it only for what your tools cannot reach. If a tool answers it, "
             . "use the tool.";
+        /*
+         * The page beats the command line for the things a page can do.
+         *
+         * Asked how to stop awstats.pl, the assistant wrote out `ps`, `grep`
+         * and `kill` for somebody to paste into a terminal - while the
+         * Processes page has a button beside that exact row which asks it to
+         * stop, confirms first, and then checks it went. Slower, riskier, and
+         * it made the user do work the dashboard was already doing.
+         */
+        $lines[] = "  NEVER write out kill, pkill or killall for somebody to paste. The "
+            . "Processes page has a Stop beside every row - it asks first, sends SIGTERM "
+            . "or SIGKILL, and then checks the process actually went. Send them there "
+            . "with open_page and highlight_on_page, and say which row.";
+        $lines[] = "  The same goes for anything else a page here already does. A command "
+            . "somebody has to read, understand and type correctly is a worse answer than "
+            . "a button, every time - `list_charts` and the page list tell you what is "
+            . "already built.";
 
         if (!empty($context['explain_commands'])) {
             $lines[] = "  Every command you recommend must be written to be READ first:";
@@ -397,6 +414,22 @@ function aiAddMessage(
 }
 
 /**
+ * Which limit ended a session, stored where the page can read it.
+ *
+ * On the session row rather than parsed back out of the message, because the
+ * message is prose and prose is what changes.
+ */
+function aiRememberLimitHit(PDO $ai, int $id, string $which): void
+{
+    try {
+        $ai->prepare('UPDATE ai_sessions SET limit_hit = ? WHERE id = ?')
+            ->execute([$which !== '' ? $which : null, $id]);
+    } catch (Throwable) {
+        // An older database without the column. Not worth failing a turn over.
+    }
+}
+
+/**
  * Whether this session may keep going.
  *
  * Checked before every step rather than after, so a limit stops the next call
@@ -409,7 +442,7 @@ function aiWithinLimits(array $session): array
     $ran = time() - (int)$session['started_at'];
 
     if ((int)$session['max_seconds'] > 0 && $ran > (int)$session['max_seconds']) {
-        return ['ok' => false, 'why' => sprintf(
+        return ['ok' => false, 'which' => 'time', 'why' => sprintf(
             'This session has been running for %s, which is the limit set in Settings.',
             plainSpan($ran, true)
         )];
@@ -417,20 +450,20 @@ function aiWithinLimits(array $session): array
 
     if ((int)$session['max_millicents'] > 0
         && (int)$session['spent_millicents'] >= (int)$session['max_millicents']) {
-        return ['ok' => false, 'why' => sprintf(
+        return ['ok' => false, 'which' => 'spend', 'why' => sprintf(
             'This session has spent about %s, which is the limit set in Settings.',
             aiMoney((int)$session['spent_millicents'])
         )];
     }
 
     if ((int)$session['max_turns'] > 0 && (int)$session['turns'] >= (int)$session['max_turns']) {
-        return ['ok' => false, 'why' => sprintf(
+        return ['ok' => false, 'which' => 'turns', 'why' => sprintf(
             'This session has taken %d turns, which is the limit set in Settings.',
             (int)$session['turns']
         )];
     }
 
-    return ['ok' => true, 'why' => ''];
+    return ['ok' => true, 'which' => null, 'why' => ''];
 }
 
 /**
@@ -679,8 +712,17 @@ function aiStep(
 
     $limits = aiWithinLimits($session);
     if (!$limits['ok']) {
-        aiAddMessage($ai, $id, 'assistant', $limits['why'] . ' Start a new one to carry on.');
+        /*
+         * Which limit, kept with the reason.
+         *
+         * "Start a new one" was the only way out, and it throws away the
+         * conversation. Naming the limit is what lets the page offer to raise
+         * that one - for this conversation, not for every future one, which is
+         * a different decision and belongs on the settings page.
+         */
+        aiAddMessage($ai, $id, 'assistant', $limits['why']);
         aiSetState($ai, $id, 'ended', $limits['why']);
+        aiRememberLimitHit($ai, $id, (string)($limits['which'] ?? ''));
         return aiSessionView($config, $ai, $id, $views);
     }
 
@@ -1047,6 +1089,14 @@ function aiSessionView(array $config, PDO $ai, int $id, array $views): array
         'id' => (int)$session['id'],
         'state' => (string)$session['state'],
         'stop_reason' => $session['stop_reason'],
+        // Which limit ended it, so the panel can offer to raise that one rather
+        // than offering to raise all three or none.
+        'limit_hit' => $session['limit_hit'] ?? null,
+        'limits' => [
+            'max_seconds' => (int)$session['max_seconds'],
+            'max_millicents' => (int)$session['max_millicents'],
+            'max_turns' => (int)$session['max_turns'],
+        ],
         'started_at' => (int)$session['started_at'],
         'model' => (string)$session['model'],
         'turns' => (int)$session['turns'],

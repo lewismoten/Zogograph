@@ -187,6 +187,10 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai' => aiView($config, $pdo, $signedIn),
         'ai-poll' => aiPollView($config, $pdo, $signedIn),
         'ai-start' => doAiStart($config, $pdo, $post),
+        'ai-pin' => doAiPin($config, $pdo, $post),
+        'ai-transcript' => aiTranscriptView($config, $signedIn),
+        'ai-resume' => doAiResume($config, $pdo, $post),
+        'ai-extend' => doAiExtend($config, $pdo, $post),
         'ai-say' => doAiSay($config, $pdo, $post),
         'ai-step' => doAiStep($config, $pdo, $post),
         'ai-permit' => doAiPermit($config, $pdo, $post),
@@ -6451,6 +6455,241 @@ function doAiStart(array $config, PDO $pdo, bool $post): array
     return ['ok' => true, 'session' => aiSessionView($config, $ai, $id, aiViews())];
 }
 
+/**
+ * One past conversation, to read.
+ *
+ * The same shape the live panel renders, so the reader is the same code and a
+ * conversation looks the same whether it is happening or finished.
+ */
+function aiTranscriptView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to read past conversations');
+    }
+
+    $ai = aiDb($config, false);
+    if ($ai === null) {
+        throw new ActionRefused(aiPersona($config)['name'] . ' has no database');
+    }
+
+    $id = clampInt($_GET['session'] ?? 0, 1, PHP_INT_MAX);
+
+    return ['session' => aiSessionView($config, $ai, $id, aiViews())];
+}
+
+/**
+ * Keeps a conversation past the retention rule, or stops keeping it.
+ *
+ * Retention deletes by age, which is right for the ninety-nine nobody will read
+ * again and wrong for the one that diagnosed an outage. Without this the only
+ * way to keep that one is to stop deleting any of them.
+ */
+function doAiPin(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
+    }
+
+    $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
+    $pinned = ($_POST['pinned'] ?? '1') === '1';
+
+    $ai->prepare('UPDATE ai_sessions SET pinned = ? WHERE id = ?')
+        ->execute([$pinned ? 1 : 0, $id]);
+
+    logAction($pdo, $pinned ? 'ai_pin' : 'ai_unpin', (string)$id, 'ok', 0, 0, null);
+
+    return ['ok' => true] + aiSessionsView($config, true);
+}
+
+/**
+ * Raises one limit, for this conversation only.
+ *
+ * The limits are columns on the session row rather than settings read live, so
+ * raising one here changes this conversation and nothing else - which is the
+ * distinction worth keeping. Somebody in the middle of a diagnosis that has run
+ * long is answering "let this one finish", not "let every future one run twice
+ * as long", and making them answer the second question to get the first is how
+ * a limit ends up switched off permanently.
+ */
+function doAiExtend(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
+    }
+
+    $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
+    $which = (string)($_POST['which'] ?? '');
+
+    $session = aiSession($ai, $id);
+    if ($session === null) {
+        throw new ActionRefused('there is no conversation with that number');
+    }
+
+    /*
+     * Doubling, with a ceiling.
+     *
+     * A fixed step is wrong at both ends - a minute is nothing on an hour's
+     * budget and enormous on a two-minute one - and asking for a number is a
+     * form standing between somebody and the thing they already decided. The
+     * ceiling is what stops "extend" being an unlimited button pressed four
+     * times without thinking.
+     */
+    [$column, $ceiling, $said] = match ($which) {
+        'time' => ['max_seconds', 6 * 3600, 'how long it may run'],
+        'spend' => ['max_millicents', 500 * 1000, 'what it may spend'],
+        'turns' => ['max_turns', 200, 'how many turns it may take'],
+        default => throw new ActionRefused('that is not a limit this can raise'),
+    };
+
+    $was = (int)$session[$column];
+    if ($was <= 0) {
+        throw new ActionRefused('that limit is not set on this conversation');
+    }
+    if ($was >= $ceiling) {
+        throw new ActionRefused(sprintf(
+            'This conversation is already at the ceiling for %s. Start a new one, or pick '
+            . 'this one up from Past conversations - that carries what was said and starts '
+            . 'the limits fresh.',
+            $said
+        ));
+    }
+
+    $now = min($ceiling, $was * 2);
+
+    $ai->prepare("UPDATE ai_sessions SET {$column} = ?, limit_hit = NULL, state = 'idle', "
+        . 'stop_reason = NULL WHERE id = ?')->execute([$now, $id]);
+
+    logAction($pdo, 'ai_extend', $which, 'ok', 0, 0,
+        sprintf('%s: %d to %d', $column, $was, $now));
+
+    return ['ok' => true, 'session' => aiSessionView($config, $ai, $id, aiViews())];
+}
+
+/**
+ * Picks an old conversation back up.
+ *
+ * A new session with the old one's messages carried into it, rather than
+ * reopening the old row. The limits - turns, spend, wall clock - are per
+ * session and are the reason it ended; reopening it would put somebody back
+ * into a conversation that is already over its budget and stop again
+ * immediately. A fresh session with the history is what "continue" means.
+ */
+function doAiResume(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ready = aiReady($config);
+    if (!$ready['ok']) {
+        throw new ActionRefused($ready['why']);
+    }
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
+    }
+
+    $from = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
+
+    $was = $ai->prepare('SELECT * FROM ai_sessions WHERE id = ?');
+    $was->execute([$from]);
+    $old = $was->fetch();
+
+    if ($old === false) {
+        throw new ActionRefused('there is no conversation with that number');
+    }
+
+    // The one that is open, if any, is stopped first - same rule as starting.
+    $open = aiOpenSession($ai);
+    if ($open !== null && (int)$open['id'] !== $from) {
+        aiSetState($ai, (int)$open['id'], 'stopped', 'an older conversation was picked up');
+    }
+
+    $id = aiSessionStart($config, $ai, currentAccountName() ?: 'account', 'resumed');
+
+    /*
+     * The old conversation is carried in as one message, not replayed.
+     *
+     * Copying the rows would copy the tool calls too, and a tool result from
+     * three days ago is a measurement presented as current - which is the one
+     * thing this assistant is told never to do. A summary says plainly that it
+     * is history, and anything still true can be measured again.
+     */
+    $summary = aiConversationSummary($ai, $from);
+
+    $ai->prepare(
+        "INSERT INTO ai_messages (session_id, at, role, content)
+         VALUES (?, ?, 'user', ?)"
+    )->execute([$id, time(), $summary]);
+
+    $ai->prepare(
+        'UPDATE ai_sessions SET title = ?, title_by = ? WHERE id = ?'
+    )->execute([
+        (string)($old['title'] ?? '') !== '' ? $old['title'] : null,
+        (string)($old['title_by'] ?? '') ?: null,
+        $id,
+    ]);
+
+    logAction($pdo, 'ai_resume', (string)$from, 'ok', 0, 0, 'continued as ' . $id);
+
+    return ['ok' => true, 'session' => aiSessionView($config, $ai, $id, aiViews())];
+}
+
+/**
+ * What an earlier conversation was about, as something to hand to the model.
+ *
+ * Written as a note from the user rather than as replayed history, because that
+ * is what it honestly is: a person saying "we were talking about this". Passing
+ * the old turns off as the current conversation would let a tool result from
+ * last week be read as a reading from now.
+ */
+function aiConversationSummary(PDO $ai, int $session): string
+{
+    $stmt = $ai->prepare(
+        "SELECT role, content FROM ai_messages
+          WHERE session_id = ? AND role IN ('user', 'assistant')
+          ORDER BY id"
+    );
+    $stmt->execute([$session]);
+
+    $said = [];
+    foreach ($stmt->fetchAll() as $row) {
+        $text = trim((string)$row['content']);
+        if ($text === '') {
+            continue;
+        }
+        $said[] = sprintf(
+            '%s: %s',
+            $row['role'] === 'user' ? 'I said' : 'You said',
+            mb_substr($text, 0, 600)
+        );
+    }
+
+    if ($said === []) {
+        return 'We were talking earlier but nothing was said that is worth carrying over. '
+            . 'Start from here.';
+    }
+
+    /*
+     * The end of it, not the beginning.
+     *
+     * Where a conversation got to is what somebody picking it up wants
+     * continued; how it opened is usually the least useful part by then.
+     */
+    $said = array_slice($said, -24);
+
+    return "This continues an earlier conversation. Here is what was said in it, for "
+        . "context only - it is HISTORY, not a reading from now, and anything about the "
+        . "state of the machine must be measured again before you rely on it:\n\n"
+        . implode("\n\n", $said)
+        . "\n\nCarry on from there. Do not summarise it back to me; I was there.";
+}
+
 /** Adds what the user said and readies a step. */
 function doAiSay(array $config, PDO $pdo, bool $post): array
 {
@@ -7887,9 +8126,10 @@ function aiSessionsView(array $config, bool $signedIn): array
     }
 
     $rows = $ai->query(
-        'SELECT id, started_at, ended_at, state, model, turns, tokens_in, tokens_out,
-                tokens_cached, spent_millicents, stop_reason, started_by
-           FROM ai_sessions ORDER BY id DESC LIMIT 40'
+        'SELECT id, started_at, last_at, ended_at, state, model, turns, tokens_in,
+                tokens_out, tokens_cached, spent_millicents, stop_reason, started_by,
+                title, title_by, COALESCE(pinned, 0) AS pinned
+           FROM ai_sessions ORDER BY id DESC LIMIT 100'
     )->fetchAll();
 
     $totals = $ai->query(
@@ -7914,6 +8154,20 @@ function aiSessionsView(array $config, bool $signedIn): array
             'tokens' => (int)$row['tokens_in'] + (int)$row['tokens_out'],
             'spent' => aiMoney((int)$row['spent_millicents']),
             'by' => $row['started_by'],
+            'last_at' => (int)($row['last_at'] ?? $row['started_at']),
+            'title' => (string)($row['title'] ?? ''),
+            'title_by' => (string)($row['title_by'] ?? ''),
+            'pinned' => (bool)$row['pinned'],
+            /*
+             * Whether it can be picked up again.
+             *
+             * A session that ended because it hit its own limits can be
+             * continued - the limits are per session and a new one starts
+             * fresh - but a session still running cannot be "continued", it is
+             * simply the one you are in.
+             */
+            'can_continue' => !in_array((string)$row['state'], ['thinking', 'waiting_browser',
+                'waiting_permission'], true),
         ], $rows),
         'totals' => [
             'sessions' => (int)($totals['sessions'] ?? 0),

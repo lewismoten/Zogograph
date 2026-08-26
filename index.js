@@ -8109,64 +8109,8 @@ function renderChat() {
   const parts = [];
 
   for (const message of session.messages) {
-    if (message.role === "summary") {
-      parts.push(chatSummaryCard(message, session));
-      continue;
-    }
-
-    if (message.role === "picture") {
-      parts.push(chatPictureCard(message));
-      continue;
-    }
-
-    if (message.role === "reaction") {
-      parts.push(chatReactionCard(message));
-      continue;
-    }
-
-    if (message.role === "tool_call") {
-      // A thing the model asked to show is the thing, not a line about it.
-      if (message.tool === "show_chart") {
-        parts.push(chatChartCard(message));
-        continue;
-      }
-      if (message.tool === "show_progress") {
-        parts.push(chatProgressCard(message));
-        continue;
-      }
-      // The image arrives as its own message; the call itself says nothing.
-      if (message.tool === "show_reaction") continue;
-
-      const line = document.createElement("div");
-      line.className = "chat-tool";
-      line.textContent = `⚙ ${chatToolPhrase(message.tool, message.arguments)}`;
-      line.title = JSON.stringify(message.arguments, null, 2);
-      parts.push(line);
-      continue;
-    }
-
-    const bubble = document.createElement("div");
-    bubble.className = `chat-line chat-${message.role}`;
-
-    /*
-     * Rendered as markdown, and still never as markup.
-     *
-     * Models write markdown whether or not you ask them to, so a plain-text
-     * bubble showed literal asterisks and backticks around everything it meant
-     * to emphasise - and a command it wanted somebody to run came out
-     * indistinguishable from the prose around it.
-     *
-     * renderMarkdown builds nodes and never touches innerHTML, so the original
-     * reasoning here still holds exactly: this is text from a model, a model
-     * can be talked into producing anything, and nothing it produces becomes
-     * markup. Only elements this code decided to create exist.
-     */
-    if (message.role === "assistant") {
-      bubble.appendChild(renderMarkdown(message.content));
-    } else {
-      bubble.textContent = message.content;
-    }
-    parts.push(bubble);
+    const node = chatMessageNode(message, session);
+    if (node) parts.push(node);
   }
 
   /*
@@ -8180,13 +8124,41 @@ function renderChat() {
    * Measured before the redraw, because replaceChildren resets scrollTop to
    * zero and the answer afterwards is always "no".
    */
-  const wasAtEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+  /*
+   * An empty log is not somebody sitting at the top of the conversation.
+   *
+   * Coming back to this page rebuilds it, and a rebuilt log starts empty with
+   * scrollTop at zero - which looked like "they were at the top, leave them
+   * there", so returning to a conversation showed its opening message rather
+   * than the last thing that was said.
+   */
+  const wasEmpty = log.childElementCount === 0;
+  const wasAtEnd = wasEmpty || log.scrollHeight - log.scrollTop - log.clientHeight < 60;
   const wasAt = log.scrollTop;
+
+  const newest = parts.length ? parts[parts.length - 1] : null;
 
   log.replaceChildren(...parts);
 
   if (wasAtEnd) {
-    log.scrollTop = log.scrollHeight;
+    /*
+     * A long answer is put at the TOP of the view, not the bottom.
+     *
+     * Scrolling to the end of a reply that is taller than the window lands you
+     * on its last paragraph, and reading it means scrolling back up to find
+     * where it started - every single time. Putting its first line just below
+     * the top means the answer begins where the eye already is, and reading is
+     * scrolling down, which is the direction reading goes.
+     *
+     * Only when it does not fit. A short answer read from the bottom is fine,
+     * and moving it would leave a gap under it for no reason.
+     */
+    const tall = newest && newest.offsetHeight > log.clientHeight - 80;
+
+    log.scrollTop = tall
+      ? Math.max(0, newest.offsetTop - 24)
+      : log.scrollHeight;
+
     chatState.pinnedUp = false;
   } else {
     /*
@@ -8483,6 +8455,46 @@ function renderChatStatus(session) {
       : "chat-thinking";
     line.textContent = said;
     status.appendChild(line);
+  }
+
+  /*
+   * The way out that keeps the conversation.
+   *
+   * A session that hit a limit offered exactly one button: start a new one,
+   * which throws away everything said so far. Somebody in the middle of a
+   * diagnosis is answering "let this one finish", and making them choose
+   * between that and losing the thread is not a choice anybody should be given.
+   *
+   * Only the limit that was actually hit. Offering all three would be asking
+   * somebody to work out which one stopped it, which the page already knows.
+   */
+  if (session.limit_hit) {
+    const more = document.createElement("button");
+    more.className = "link";
+    more.textContent = {
+      time: "Give it longer",
+      spend: "Let it spend more",
+      turns: "Give it more turns",
+    }[session.limit_hit] ?? "Raise the limit";
+
+    more.title = "Doubles that one limit for THIS conversation only. The settings for "
+      + "every future conversation are not touched.";
+
+    more.addEventListener("click", async () => {
+      try {
+        const fresh = await post("ai-extend", {
+          session: session.id,
+          which: session.limit_hit,
+        });
+        chatState.session = fresh.session;
+        notice("Raised, for this conversation. Carry on.", true);
+        renderChat();
+      } catch (error) {
+        notice(String(error.message || error));
+      }
+    });
+
+    status.appendChild(more);
   }
 
   if (["stopped", "ended", "failed"].includes(session.state)) {
@@ -8846,6 +8858,130 @@ async function runWaitForReadings(args) {
   }
 }
 
+/* ------------------------------------------------- past conversations -- */
+
+const pastChats = { list: [], open: null, session: null };
+
+async function refreshPastChats() {
+  const body = $("pastChatsBody");
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see past conversations."));
+    return;
+  }
+
+  try {
+    const data = await api("ai-sessions");
+    pastChats.list = data.sessions || [];
+    renderPastChats();
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderPastChats() {
+  const body = $("pastChatsBody");
+
+  if (!pastChats.list.length) {
+    body.replaceChildren(note("There have been no conversations yet."));
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.id = "pastChatsTable";
+  body.replaceChildren(holder);
+
+  renderTable("pastChatsTable", pastChats.list, [
+    {
+      label: "What it was about",
+      className: "name",
+      render: row => {
+        if (row.title) {
+          const said = document.createElement("span");
+          said.textContent = row.title;
+          if (row.title_by === "assistant") {
+            said.title = `${chatState.who.name} named this one.`;
+          }
+          return said;
+        }
+        const said = document.createElement("span");
+        said.className = "muted";
+        said.textContent = "no topic";
+        return said;
+      },
+    },
+    { label: "Started", render: row => whenSpan(row.started_at) },
+    { label: "Turns", className: "size", render: row => row.turns },
+    { label: "Cost", className: "size", render: row => row.spent?.said ?? "" },
+    {
+      label: "How it ended",
+      render: row => row.state === "ended" || row.state === "stopped"
+        ? (row.why_stopped || row.state)
+        : row.state,
+    },
+    {
+      label: "Kept",
+      render: row => {
+        if (!row.pinned) return "";
+        const said = document.createElement("span");
+        said.textContent = "pinned";
+        said.className = "own-label";
+        said.title = "Retention will not delete this one.";
+        return said;
+      },
+    },
+  ], row => openPastChat(row.id), null, row => String(row.id));
+}
+
+/** Opens one to read. */
+async function openPastChat(id) {
+  pastChats.open = id;
+
+  try {
+    const data = await api("ai-transcript", { session: id });
+    pastChats.session = data.session;
+    renderPastChat();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+}
+
+function renderPastChat() {
+  const panel = $("pastChatPanel");
+  const session = pastChats.session;
+  if (!session) { panel.hidden = true; return; }
+
+  panel.hidden = false;
+
+  const row = pastChats.list.find(one => one.id === pastChats.open);
+
+  $("pastChatTitle").textContent = row?.title
+    || `Conversation of ${whenLabel(session.started_at ?? row?.started_at ?? 0)}`;
+
+  $("pastChatPin").textContent = row?.pinned ? "Unpin it" : "Pin it";
+  $("pastChatResume").hidden = row ? !row.can_continue : false;
+
+  /*
+   * Read with the same code the live panel uses.
+   *
+   * A conversation that looks different when it is finished is a second
+   * renderer to keep in step with the first, and the differences would be
+   * exactly the details - a tool call, a chart card - that make it worth
+   * reading at all.
+   */
+  const body = $("pastChatBody");
+  const parts = [];
+
+  for (const message of session.messages || []) {
+    const node = chatMessageNode(message);
+    if (node) parts.push(node);
+  }
+
+  const wrap = document.createElement("div");
+  wrap.className = "chat-log past-chat";
+  wrap.replaceChildren(...parts);
+  body.replaceChildren(wrap);
+}
+
 /* ------------------------------------------------- questions with a clock -- */
 
 /**
@@ -8993,6 +9129,71 @@ function chatChoiceForm(choices, holder) {
   }
 
   return () => chosen;
+}
+
+/**
+ * One message, as the node that shows it.
+ *
+ * Pulled out of renderChat so that reading a finished conversation and watching
+ * a live one use the same code. Two renderers would drift, and the differences
+ * would be exactly the details worth reading - the tool calls, the chart cards,
+ * the compaction markers.
+ *
+ * Returns null for a message with nothing to draw.
+ */
+function chatMessageNode(message, session) {
+    if (message.role === "summary") {
+      return chatSummaryCard(message, session);
+    }
+
+    if (message.role === "picture") {
+      return chatPictureCard(message);
+    }
+
+    if (message.role === "reaction") {
+      return chatReactionCard(message);
+    }
+
+    if (message.role === "tool_call") {
+      // A thing the model asked to show is the thing, not a line about it.
+      if (message.tool === "show_chart") {
+        return chatChartCard(message);
+      }
+      if (message.tool === "show_progress") {
+        return chatProgressCard(message);
+      }
+      // The image arrives as its own message; the call itself says nothing.
+      if (message.tool === "show_reaction") return null;
+
+      const line = document.createElement("div");
+      line.className = "chat-tool";
+      line.textContent = `⚙ ${chatToolPhrase(message.tool, message.arguments)}`;
+      line.title = JSON.stringify(message.arguments, null, 2);
+      return line;
+    }
+
+    const bubble = document.createElement("div");
+    bubble.className = `chat-line chat-${message.role}`;
+
+    /*
+     * Rendered as markdown, and still never as markup.
+     *
+     * Models write markdown whether or not you ask them to, so a plain-text
+     * bubble showed literal asterisks and backticks around everything it meant
+     * to emphasise - and a command it wanted somebody to run came out
+     * indistinguishable from the prose around it.
+     *
+     * renderMarkdown builds nodes and never touches innerHTML, so the original
+     * reasoning here still holds exactly: this is text from a model, a model
+     * can be talked into producing anything, and nothing it produces becomes
+     * markup. Only elements this code decided to create exist.
+     */
+    if (message.role === "assistant") {
+      bubble.appendChild(renderMarkdown(message.content));
+    } else {
+      bubble.textContent = message.content;
+    }
+    return bubble;
 }
 
 /**
@@ -14031,16 +14232,43 @@ function renderMarkdown(text) {
       }
       i++;   // the closing fence
 
+      /*
+       * A code block, with a way to take it.
+       *
+       * Blocks in an answer are almost always something to run or paste
+       * somewhere, and selecting one by hand out of a scrolling chat panel is
+       * fiddly enough that people retype short ones and get them wrong. The
+       * button copies exactly what is in the block and nothing around it.
+       */
+      const wrap = document.createElement("div");
+      wrap.className = "md-code-wrap";
+
       const pre = document.createElement("pre");
       pre.className = "md-code";
       const code = document.createElement("code");
-      code.textContent = body.join("\n");
+      const text = body.join("\n");
+      code.textContent = text;
       if (language) {
         // The language is a label, not a promise: nothing here highlights.
         pre.dataset.language = language;
       }
       pre.appendChild(code);
-      out.appendChild(pre);
+      wrap.appendChild(pre);
+
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "md-copy";
+      copy.textContent = "Copy";
+      copy.title = language ? `Copy this ${language} block` : "Copy this block";
+      copy.addEventListener("click", async event => {
+        // The block may be inside something clickable; taking a copy of it is
+        // not asking to open whatever that is.
+        event.stopPropagation();
+        await copyText(text);
+      });
+      wrap.appendChild(copy);
+
+      out.appendChild(wrap);
       continue;
     }
 
@@ -28523,6 +28751,12 @@ const VIEWS = {
     parent: null,
     refresh: () => openChatFull(),
   },
+  "sys-ai-past": {
+    manual: true,
+    label: "Past conversations",
+    parent: "sys-ai",
+    refresh: () => refreshPastChats(),
+  },
   "sys-ai-identity": {
     /*
      * Never on the timer.
@@ -29417,6 +29651,56 @@ async function stopTerminal() {
 }
 
 $("terminalStop").addEventListener("click", () => stopTerminal());
+
+$("pastChatClose").addEventListener("click", () => {
+  pastChats.open = null;
+  pastChats.session = null;
+  $("pastChatPanel").hidden = true;
+});
+
+$("pastChatPin").addEventListener("click", async () => {
+  if (!pastChats.open) return;
+
+  const row = pastChats.list.find(one => one.id === pastChats.open);
+  const pinned = !row?.pinned;
+
+  try {
+    const fresh = await post("ai-pin", { session: pastChats.open, pinned: pinned ? "1" : "0" });
+    pastChats.list = fresh.sessions || [];
+    renderPastChats();
+    renderPastChat();
+    notice(pinned
+      ? "Pinned. Retention will leave this one alone."
+      : "Unpinned. It is subject to the retention rule again.", true);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
+$("pastChatResume").addEventListener("click", async () => {
+  if (!pastChats.open) return;
+
+  const yes = await askFirst("Pick this conversation up?", [
+    "A new conversation starts, carrying what was said in this one as background.",
+    "It is carried as history rather than replayed, and the assistant is told so: "
+    + "anything about the state of the machine has to be measured again before it is "
+    + "relied on. A tool result from last week read as a reading from now is the one "
+    + "thing it is told never to do.",
+    "The limits that ended the old one - turns, spend, time - do not come with it. "
+    + "A conversation still open will be stopped.",
+  ], "Pick it up");
+
+  if (!yes) return;
+
+  try {
+    const fresh = await post("ai-resume", { session: pastChats.open });
+    chatState.session = fresh.session;
+    notice("Picked up. It is the open conversation now.", true);
+    showView("sys-ai");
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
 
 $("sessionShowOutput").addEventListener("change", event => {
   sessionState.withOutput = event.target.checked;
