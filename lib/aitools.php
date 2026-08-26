@@ -1330,12 +1330,24 @@ function aiEnabledTools(array $config, array $views): array
                 continue;
             }
             if (isset($tool['parameters']['style'])) {
+                /*
+                 * The enum is exactly what this install allows, with the
+                 * provider's own name for each.
+                 *
+                 * There are over a hundred styles and the operator ticks the
+                 * few they want; a model offered one that is not ticked will
+                 * use it, have the call refused, and explain the refusal to the
+                 * user as a fault.
+                 */
                 $styles = aiImageStyles();
                 $tool['parameters']['style']['enum'] = $pictures['styles'];
                 $tool['parameters']['style']['description'] .= "\n\n"
                     . implode("\n", array_map(
-                        fn(string $key): string => sprintf('  %s - %s %s',
-                            $key, $styles[$key]['label'], $styles[$key]['what']),
+                        fn(string $key): string => sprintf(
+                            '  %s - %s',
+                            $key,
+                            $styles[$key] ?? $key
+                        ),
                         $pictures['styles']
                     ));
             }

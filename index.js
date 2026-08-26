@@ -5164,6 +5164,23 @@ function renderAiTools(data) {
     enabled.disabled = !data.writable;
     on.appendChild(enabled);
 
+    /*
+     * A tick that is not reaching the model says so.
+     *
+     * The picture tools need a key, reactions need a search key, and both of
+     * those live on another page - so a tool could be ticked here and still be
+     * one the assistant had never heard of. It then says it has no such tool,
+     * which reads as a fault in the assistant rather than a setting somewhere
+     * else.
+     */
+    if (tool.enabled && tool.offered === false) {
+      const why = document.createElement("div");
+      why.className = "band-warn small";
+      why.textContent = "not in use";
+      why.title = tool.not_offered_because ?? "";
+      on.appendChild(why);
+    }
+
     const gate = row.insertCell();
     const ask = document.createElement("input");
     ask.type = "checkbox";
@@ -5326,32 +5343,11 @@ function pictureFields(data) {
       ? "A key is set. Leaving this blank keeps it."
       : "From deepai.org. Without one the picture tools stay hidden."));
 
-  const styleBox = document.createElement("div");
-  for (const [key_, meta] of Object.entries(pictures.all_styles)) {
-    const line = document.createElement("label");
-    line.className = "scan-toggle";
-
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.className = "picture-style";
-    box.dataset.style = key_;
-    box.checked = pictures.styles.includes(key_);
-    line.appendChild(box);
-
-    const label = document.createElement("span");
-    label.textContent = ` ${meta.label} — `;
-    line.appendChild(label);
-
-    const what = document.createElement("span");
-    what.className = "muted small";
-    what.textContent = meta.what;
-    line.appendChild(what);
-
-    styleBox.appendChild(line);
-  }
-  form.appendChild(fieldRow("Styles it may use", styleBox,
-    "Tick the ones it may choose from. A model offered twelve will use twelve, and most "
-    + "of them are wrong for a monitoring dashboard — two or three is plenty."));
+  form.appendChild(fieldRow("Styles it may use", styleFinder(pictures),
+    "Tick the ones it may choose from. There are over a hundred, and a model offered "
+    + "twelve will use twelve — most of them are wrong for a monitoring dashboard, so "
+    + "two or three is plenty. Type to narrow the list; the ones you have ticked stay "
+    + "at the top whatever you search for."));
 
   const quality = document.createElement("select");
   quality.id = "aiQuality";
@@ -5558,6 +5554,102 @@ function pictureFields(data) {
   wrap.appendChild(form);
   return wrap;
 }
+
+/**
+ * A searchable list of the hundred-odd generator styles.
+ *
+ * A column of 123 tick boxes is not a control, it is a wall - and the three
+ * somebody has chosen are somewhere in the middle of it. So: chosen ones first
+ * and always visible, a box to type in, and a count of what is hidden. Nothing
+ * is removed from the form when it is filtered out, only hidden, because a
+ * filter that unticked things by narrowing the view would be a filter that
+ * silently changes settings.
+ */
+function styleFinder(pictures) {
+  const wrap = document.createElement("div");
+  wrap.className = "style-finder";
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "wide-field";
+  search.placeholder = "type to narrow — cyberpunk, watercolour, pixel…";
+  search.spellcheck = false;
+  wrap.appendChild(search);
+
+  const said = document.createElement("div");
+  said.className = "muted small";
+  wrap.appendChild(said);
+
+  const list = document.createElement("div");
+  list.className = "style-list";
+  wrap.appendChild(list);
+
+  const entries = Object.entries(pictures.all_styles ?? {});
+  const rows = [];
+
+  /*
+   * Chosen first, then everything else alphabetically by its shown name.
+   *
+   * Sorted once, at build time: re-sorting as somebody ticks would move the row
+   * out from under the pointer they just clicked with.
+   */
+  entries.sort(([aKey, aName], [bKey, bName]) => {
+    const aOn = pictures.styles.includes(aKey);
+    const bOn = pictures.styles.includes(bKey);
+    if (aOn !== bOn) return aOn ? -1 : 1;
+    return String(aName).localeCompare(String(bName));
+  });
+
+  for (const [key, name] of entries) {
+    const line = document.createElement("label");
+    line.className = "scan-toggle style-row";
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "picture-style";
+    box.dataset.style = key;
+    box.checked = pictures.styles.includes(key);
+    line.appendChild(box);
+
+    const label = document.createElement("span");
+    label.textContent = ` ${name}`;
+    line.appendChild(label);
+
+    const id = document.createElement("span");
+    id.className = "muted small";
+    id.textContent = ` ${key}`;
+    line.appendChild(id);
+
+    list.appendChild(line);
+    rows.push({ line, box, haystack: `${name} ${key}`.toLowerCase() });
+  }
+
+  const sync = () => {
+    const wanted = search.value.trim().toLowerCase();
+    let shown = 0;
+
+    for (const row of rows) {
+      // A ticked style is never hidden: it is a setting in force, and a setting
+      // you cannot see is one you cannot turn off.
+      const keep = row.box.checked || wanted === "" || row.haystack.includes(wanted);
+      row.line.hidden = !keep;
+      if (keep) shown++;
+    }
+
+    const chosen = rows.filter(row => row.box.checked).length;
+    said.textContent = `${count(chosen, "style")} ticked · `
+      + (wanted === ""
+        ? `${humanCount(rows.length)} to choose from`
+        : `${humanCount(shown)} of ${humanCount(rows.length)} match`);
+  };
+
+  search.addEventListener("input", sync);
+  list.addEventListener("change", sync);
+  sync();
+
+  return wrap;
+}
+
 
 async function saveAiSettings(extra = {}) {
   const on = [...document.querySelectorAll("input.tool-on")]

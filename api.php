@@ -6885,6 +6885,20 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
              * conclusion that they do not exist.
              */
             'why_not' => aiWhyNotTryable($tool, isset($live[$name])),
+            /*
+             * Whether the model is actually being offered this, and why not.
+             *
+             * A tool can be ticked here and still not reach the model - the
+             * picture tools disappear without a key, show_reaction disappears
+             * without reactions switched on - and until now the page showed a
+             * tick beside a tool the assistant had never heard of. The
+             * assistant then says it has no such tool, which reads as a bug in
+             * the assistant.
+             */
+            'offered' => isset($live[$name]),
+            'not_offered_because' => isset($live[$name])
+                ? null
+                : aiWhyNotOffered($config, $name, $tool),
         ];
     }
 
@@ -6951,6 +6965,51 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         'database' => aiDatabaseFacts($config),
         'views' => $views,
     ];
+}
+
+/**
+ * Why a tool the operator has ticked is still not reaching the model.
+ *
+ * These are all conditions somewhere else on the settings pages, which is
+ * exactly why they need saying here: the tick is in one place and the reason it
+ * does nothing is in another.
+ */
+function aiWhyNotOffered(array $config, string $name, array $tool): string
+{
+    $pictures = aiImageSettings($config);
+    $chosen = $config['ai']['tools'][$name] ?? [];
+
+    if (array_key_exists('enabled', $chosen) && !$chosen['enabled']) {
+        return 'It is switched off just above.';
+    }
+
+    if ($tool['group'] === 'pictures') {
+        if (!$pictures['enabled']) {
+            return 'Picture generation is switched off on the Images page.';
+        }
+        if ($pictures['api_key'] === '') {
+            return 'No key is set for the image generator, on the Images page.';
+        }
+        if ($name === 'redraw_yourself' && !$pictures['self_portrait']) {
+            return '"Let it redraw itself" is off on the Images page.';
+        }
+        if ($pictures['styles'] === []) {
+            return 'No styles are ticked on the Images page, so there is nothing it '
+                . 'could ask for.';
+        }
+    }
+
+    if ($name === 'show_reaction') {
+        if (!$pictures['reactions']) {
+            return '"Let it react" is off on the Images page.';
+        }
+        if ($pictures['search_key'] === '') {
+            return 'No search key is set on the Images page, so there is nothing to '
+                . 'search with.';
+        }
+    }
+
+    return 'Something on another settings page is switching it off.';
 }
 
 /**

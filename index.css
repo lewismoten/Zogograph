@@ -2582,3 +2582,28 @@ tr.muted-row { opacity: .7; }
 }
 
 .chat-summary-head:hover { color: var(--text); background: var(--panel-hover); }
+
+/* ------------------------------------------------------------ style picker -- */
+
+/*
+ * A hundred and twenty-three styles, made findable.
+ *
+ * Fixed height and its own scroll: a list this long inside a settings page
+ * either scrolls itself or buries everything below it.
+ */
+.style-finder { display: grid; gap: 8px; }
+
+.style-list {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.style-row { display: flex; align-items: baseline; gap: 6px; }
+.style-row[hidden] { display: none; }
+
+/* The identifier, which is what the model actually sends. */
+.style-row .muted { margin-left: auto; font-family: ui-monospace, Menlo, monospace; }

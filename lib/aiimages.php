@@ -24,83 +24,93 @@ require_once __DIR__ . '/spans.php';
 require_once __DIR__ . '/aidb.php';
 
 /**
- * The image styles on offer, and what each is for.
+ * Every style the generator offers, read from data rather than written here.
  *
- * DeepAI exposes these as separate endpoints rather than as a parameter, which
- * is why they are a list of names rather than a prompt suffix. The operator
- * chooses which the assistant may reach for; a model given twelve options will
- * use twelve, and most of them will be wrong for a monitoring dashboard.
+ * A hundred and twenty-three of them, and the list is somebody else's to
+ * change. Hard-coding it meant a handful were supported and the rest did not
+ * exist as far as this tool was concerned; as a file it can be replaced without
+ * touching any code, and the one thing this needs to know about a style - that
+ * its key is also its endpoint - is true of all of them.
  *
- * @return array<string, array{label: string, endpoint: string, what: string}>
+ * @return array<string, string> key => the name the provider gives it
  */
 function aiImageStyles(): array
 {
-    return [
-        'text2img' => [
-            'label' => 'Plain',
-            'endpoint' => 'text2img',
-            'what' => 'No particular style. The one to use when the picture is meant to '
-                . 'illustrate something rather than to be a joke.',
-        ],
-        'fantasy-world-generator' => [
-            'label' => 'Fantasy world',
-            'endpoint' => 'fantasy-world-generator',
-            'what' => 'Sweeping, painterly, unreal landscapes.',
-        ],
-        'cyberpunk-portrait-generator' => [
-            'label' => 'Cyberpunk portrait',
-            'endpoint' => 'cyberpunk-portrait-generator',
-            'what' => 'Neon-lit faces and machines. The obvious choice for a self-portrait.',
-        ],
-        'renaissance-painting-generator' => [
-            'label' => 'Renaissance painting',
-            'endpoint' => 'renaissance-painting-generator',
-            'what' => 'Oil-painted gravity. Absurd applied to an ordinary subject.',
-        ],
-        'steampunk-generator' => [
-            'label' => 'Steampunk',
-            'endpoint' => 'steampunk-generator',
-            'what' => 'Brass, valves and improbable machinery.',
-        ],
-        'future-architecture-generator' => [
-            'label' => 'Underground cityscape',
-            'endpoint' => 'future-architecture-generator',
-            'what' => 'Vast built spaces. Good for anything about scale or capacity.',
-        ],
-        'anime-portrait-generator' => [
-            'label' => 'Anime portrait',
-            'endpoint' => 'anime-portrait-generator',
-            'what' => 'Stylised characters.',
-        ],
-        'old-style-generator' => [
-            'label' => 'Intergalactic battle',
-            'endpoint' => 'old-style-generator',
-            'what' => 'Painted science-fiction spectacle. Suits an urgent operational '
-                . 'status rather more than the situation usually deserves.',
-        ],
-    ];
+    static $styles = null;
+
+    if ($styles !== null) {
+        return $styles;
+    }
+
+    $file = __DIR__ . '/../data/image-styles.json';
+    $raw = is_file($file) ? file_get_contents($file) : false;
+    $found = $raw === false ? null : json_decode($raw, true);
+
+    /*
+     * A fallback that is not empty.
+     *
+     * If the file is missing or unreadable the picture tools would otherwise
+     * offer nothing, which reads as "this install cannot generate pictures"
+     * rather than "a file is missing". One style is enough to keep the feature
+     * working and obvious enough to be noticed.
+     */
+    $styles = is_array($found) && $found !== []
+        ? array_map('strval', $found)
+        : ['text2img' => 'Plain (the style list could not be read)'];
+
+    return $styles;
 }
 
-/** Shapes and sizes, which DeepAI takes as width and height. */
+
+
+/** How large a picture may be, and the sizes worth asking for. */
 function aiImageShapes(): array
 {
+    /*
+     * Multiples of 32, between 128 and 1536, and 256-700 is where the
+     * generator behaves. Past that it starts repeating limbs and horizons -
+     * so the choices offered stay inside the range the provider recommends
+     * rather than the range it accepts.
+     */
     return [
         'square' => ['label' => 'Square', 'width' => 512, 'height' => 512],
-        'classic' => ['label' => 'Classic (4:3)', 'width' => 704, 'height' => 512],
-        'wide' => ['label' => 'Wide (16:9)', 'width' => 896, 'height' => 512],
-        'tall' => ['label' => 'Tall (3:4)', 'width' => 512, 'height' => 704],
+        'classic' => ['label' => 'Classic', 'width' => 640, 'height' => 480],
+        'wide' => ['label' => 'Wide', 'width' => 704, 'height' => 384],
+        'tall' => ['label' => 'Tall', 'width' => 384, 'height' => 704],
+        'small' => ['label' => 'Small square', 'width' => 256, 'height' => 256],
     ];
 }
 
+
+/** The four generator tiers, and what each is for. */
 function aiImageQualities(): array
 {
     return [
-        'standard' => ['label' => 'Standard', 'hd' => false,
-                       'what' => 'One pass. Cheaper and quicker.'],
-        'hd' => ['label' => 'HD', 'hd' => true,
-                 'what' => 'Higher quality, and costs more per image.'],
+        'standard' => [
+            'label' => 'Standard',
+            'version' => 'standard',
+            'what' => 'The ordinary generator. Fine for anything illustrative.',
+        ],
+        'hd' => [
+            'label' => 'HD',
+            'version' => 'hd',
+            'what' => 'More detail, more time, and it counts against the same allowance.',
+        ],
+        'genius' => [
+            'label' => 'Genius',
+            'version' => 'genius',
+            'what' => 'The expensive tier, with its own monthly allowance. Takes a '
+                . 'preference for how it should look.',
+        ],
+        'super_genius' => [
+            'label' => 'Super genius',
+            'version' => 'super_genius',
+            'what' => 'The most expensive, and the only one that will render at 2K or 4K.',
+        ],
     ];
 }
+
+
 
 /**
  * The image settings in force.
@@ -124,6 +134,21 @@ function aiImageSettings(array $config): array
         'styles' => $allowed === [] ? ['text2img'] : $allowed,
         'quality' => isset(aiImageQualities()[$set['quality'] ?? ''])
             ? (string)$set['quality'] : 'standard',
+
+        /*
+         * Three parameters the generator documents and this never sent.
+         *
+         * genius_preference and resolution are each read by exactly one tier;
+         * negative_prompt is read by all of them and is the difference between
+         * a picture with six fingers and one without.
+         */
+        'genius_preference' => isset(aiGeniusPreferences()[$set['genius_preference'] ?? ''])
+            ? (string)($set['genius_preference'] ?? '') : '',
+        'resolution' => isset(aiImageResolutions()[$set['resolution'] ?? ''])
+            ? (string)($set['resolution'] ?? '') : '',
+        'negative_prompt' => (string)($set['negative_prompt']
+            ?? 'bad anatomy, blurry, cropped, deformed, disfigured, extra limbs, text, '
+               . 'watermark'),
         'shape' => isset(aiImageShapes()[$set['shape'] ?? ''])
             ? (string)$set['shape'] : 'square',
         /*
@@ -494,47 +519,71 @@ function aiFetchBytes(string $url): array
 }
 
 /**
- * Asks DeepAI for a picture.
+ * Asks the generator for a picture.
  *
  * Returns the URL it produced rather than the bytes: the image lives on their
- * CDN, the browser fetches it directly, and this never has to hold a megabyte
- * of JPEG in memory to pass it along.
+ * CDN, and the bytes are fetched separately and kept - see aiKeepAsset, which
+ * exists because that URL expires.
+ *
+ * The request is a multipart form with the key in a header, which is what their
+ * own documentation shows:
+ *
+ *     curl -F 'text=...' -H 'api-key: ...' https://api.deepai.org/api/text2img
  *
  * @return array<string, mixed>
  */
 function aiMakeImage(array $settings, string $prompt, string $style, ?callable $ask = null): array
 {
     $styles = aiImageStyles();
+
     if (!isset($styles[$style]) || !in_array($style, $settings['styles'], true)) {
         return ['ok' => false, 'error' => 'that style is not one this install allows'];
     }
 
     if ($settings['api_key'] === '') {
-        return ['ok' => false, 'error' => 'no DeepAI key is set'];
+        return ['ok' => false, 'error' => 'no key is set for the image generator'];
     }
 
-    $shape = aiImageShapes()[$settings['shape']];
+    $shape = aiImageShapes()[$settings['shape']] ?? aiImageShapes()['square'];
+    $quality = aiImageQualities()[$settings['quality']] ?? aiImageQualities()['standard'];
+
     $fields = [
         'text' => mb_substr($prompt, 0, 1000),
-        'width' => (string)$shape['width'],
-        'height' => (string)$shape['height'],
+        'width' => (string)aiImageDimension((int)$shape['width']),
+        'height' => (string)aiImageDimension((int)$shape['height']),
+        'image_generator_version' => $quality['version'],
     ];
 
-    if (aiImageQualities()[$settings['quality']]['hd']) {
-        // DeepAI's name for it, and only accepted by some of the generators -
-        // the ones that ignore it ignore it harmlessly.
-        $fields['image_generator_version'] = 'hd';
+    /*
+     * Two parameters that only one tier each will accept.
+     *
+     * Sent unconditionally they are either ignored or rejected depending on the
+     * generator, and "rejected" is a failed picture with a message about a
+     * parameter nobody chose. Gated on the tier that documents them.
+     */
+    if ($quality['version'] === 'genius' && $settings['genius_preference'] !== '') {
+        $fields['genius_preference'] = $settings['genius_preference'];
+    }
+
+    if ($quality['version'] === 'super_genius' && $settings['resolution'] !== '') {
+        $fields['resolution'] = $settings['resolution'];
+    }
+
+    if (trim((string)$settings['negative_prompt']) !== '') {
+        $fields['negative_prompt'] = mb_substr(trim((string)$settings['negative_prompt']), 0, 500);
     }
 
     /*
-     * The address is configurable so this can be pointed at a stub.
+     * The address, with a real default.
      *
-     * Not a feature anybody needs in production - DeepAI is at one address -
-     * but the alternative is an untestable code path, and an untestable path
-     * is one nobody has ever run.
+     * `?? 'https://...'` was wrong here and produced a request to "/text2img":
+     * the setting is an empty string when nothing is configured, and `??` only
+     * falls back on null. curl called that "URL using bad/illegal format or
+     * missing URL", which is exactly what it is and gives no hint where it came
+     * from. `?:` falls back on empty as well.
      */
-    $base = rtrim((string)($settings['base'] ?? 'https://api.deepai.org/api'), '/');
-    $url = $base . '/' . $styles[$style]['endpoint'];
+    $base = rtrim(((string)($settings['base'] ?? '')) ?: 'https://api.deepai.org/api', '/');
+    $url = $base . '/' . $style;
 
     if ($ask !== null) {
         return $ask($url, $fields, $settings['api_key']);
@@ -542,6 +591,49 @@ function aiMakeImage(array $settings, string $prompt, string $style, ?callable $
 
     return aiPostForm($url, $fields, ['api-key: ' . $settings['api_key']], 90);
 }
+
+
+
+/**
+ * A width or height the generator will actually accept.
+ *
+ * Rounded to a multiple of 32 and clamped, rather than sent as typed and
+ * refused: the failure at the far end is a rejected request with a message
+ * about dimensions, which is a slow way to learn a rule that can be applied
+ * here.
+ */
+function aiImageDimension(int $wanted): int
+{
+    $stepped = (int)(round($wanted / AI_IMAGE_STEP) * AI_IMAGE_STEP);
+
+    return max(AI_IMAGE_MIN, min(AI_IMAGE_MAX, $stepped));
+}
+
+
+/** What a genius-tier picture should look like. Only that tier reads it. */
+function aiGeniusPreferences(): array
+{
+    return [
+        '' => 'no preference',
+        'anime' => 'anime',
+        'photography' => 'photography',
+        'graphic' => 'graphic',
+        'cinematic' => 'cinematic',
+    ];
+}
+
+
+/** The two resolutions, which only the top tier accepts. */
+function aiImageResolutions(): array
+{
+    return ['' => 'whatever the size asks for', '2k' => '2K', '4k' => '4K'];
+}
+
+
+/** Least and most the generator will accept, for anything typed in by hand. */
+const AI_IMAGE_MIN = 128;
+const AI_IMAGE_MAX = 1536;
+const AI_IMAGE_STEP = 32;
 
 /**
  * A form post that returns decoded JSON, used by both services here.
