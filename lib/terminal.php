@@ -56,14 +56,33 @@ function terminalSettings(array $config, ?PDO $pdo = null): array
 {
     $set = $config['terminal'] ?? [];
     $can = terminalCanRun();
-    $permitted = (bool)($set['enabled'] ?? false) && $can['ok'];
+
+    /*
+     * Two places the permission can come from, and the stored one wins.
+     *
+     * The config file is the install's starting position. The stored setting is
+     * somebody signed in deciding, on the page, with the warning in front of
+     * them - which is the same deliberate act the config file was asking for,
+     * only reachable by the person who actually wants it rather than by
+     * whoever can edit PHP on the server.
+     *
+     * Stored as a string because that is what settings are; absent means the
+     * config file has not been overruled, which is not the same as false.
+     */
+    $stored = $pdo === null ? null : recallSetting($pdo, 'terminal_permitted');
+    $wanted = $stored === null
+        ? (bool)($set['enabled'] ?? false)
+        : $stored === '1';
+
+    $permitted = $wanted && $can['ok'];
 
     /*
      * Two switches, and they answer different questions.
      *
-     * `permitted` is the config file: is this install allowed to have a shell
-     * in a web page at all. That is a decision made once, deliberately, by
-     * somebody who read what it means.
+     * `permitted` is whether this install is allowed to have a shell in a web
+     * page at all. That is a decision made once, deliberately, by somebody who
+     * read what it means - from the config file or from the page, but never by
+     * accident.
      *
      * `unlocked_until` is a clock: is it open right now. It closes itself,
      * which is the point - a web shell left permanently open is a web shell
@@ -81,7 +100,12 @@ function terminalSettings(array $config, ?PDO $pdo = null): array
     return [
         'enabled' => $open,
         'permitted' => $permitted,
-        'wanted' => (bool)($set['enabled'] ?? false),
+        'wanted' => $wanted,
+        // Which of the two said so, because "turn it off" needs to know whether
+        // turning it off here is enough or whether the config file will just
+        // turn it back on.
+        'from_config' => $stored === null,
+        'config_says' => (bool)($set['enabled'] ?? false),
         'can' => $can['ok'],
         'why' => $can['why'],
         'unlocked_until' => $open ? $until : 0,
@@ -90,6 +114,24 @@ function terminalSettings(array $config, ?PDO $pdo = null): array
         'shell' => (string)($set['shell'] ?? '/bin/sh'),
         'spans' => terminalUnlockSpans(),
     ];
+}
+
+/**
+ * Allows, or stops allowing, a shell in a web page.
+ *
+ * Stored rather than written into the config file. Rewriting PHP that the
+ * application then loads is a class of thing worth not building at all, and the
+ * setting reads the same either way.
+ *
+ * Turning it off does not close an open session on its own, so this locks it
+ * too - "off" that leaves a shell running for another twenty minutes is not off.
+ */
+function terminalPermit(PDO $pdo, bool $allowed): void
+{
+    rememberSetting($pdo, 'terminal_permitted', $allowed ? '1' : '0');
+    if (!$allowed) {
+        terminalLock($pdo);
+    }
 }
 
 /** How long it may be unlocked for. Nothing longer than an afternoon. */

@@ -147,6 +147,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'terminal-stop' => doTerminalStop($config, $pdo, $post),
         'terminal-unlock' => doTerminalUnlock($config, $pdo, $post),
         'terminal-lock' => doTerminalLock($config, $pdo, $post),
+        'terminal-permit' => doTerminalPermit($config, $pdo, $post),
         'terminal-forget' => doTerminalForget($config, $pdo, $post),
         'ai-memories' => aiMemoriesView($config, $signedIn),
         'ai-memory-save' => doAiMemorySave($config, $pdo, $post),
@@ -7818,6 +7819,8 @@ function terminalView(array $config, PDO $pdo, bool $signedIn): array
         'enabled' => $settings['enabled'],
         'permitted' => $settings['permitted'],
         'wanted' => $settings['wanted'],
+        'from_config' => $settings['from_config'],
+        'config_says' => $settings['config_says'],
         'can' => $settings['can'],
         'why' => $settings['why'],
         'unlocked_until' => $settings['unlocked_until'],
@@ -7883,6 +7886,33 @@ function doTerminalUnlock(array $config, PDO $pdo, bool $post): array
     ));
 
     return ['ok' => true, 'until' => $until] + terminalView($config, $pdo, true);
+}
+
+/**
+ * Switches the whole feature on or off.
+ *
+ * Separate from unlocking, because they are different decisions: this one is
+ * "may this install have a shell in a web page", and it is made once. The
+ * unlock is "is it open right now", and it expires.
+ */
+function doTerminalPermit(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $allowed = ($_POST['allowed'] ?? '') === '1';
+    terminalPermit($pdo, $allowed);
+
+    logAction(
+        $pdo,
+        $allowed ? 'terminal_permit' : 'terminal_forbid',
+        null,
+        'ok',
+        0,
+        0,
+        currentAccountName()
+    );
+
+    return ['ok' => true] + terminalView($config, $pdo, true);
 }
 
 /** Locks it again, now. */

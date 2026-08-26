@@ -65,7 +65,7 @@ require_once $root . '/lib/hostdb.php';
 const SETUP_UNLOCK_SECONDS = 900;
 
 $sample = require $samplePath;
-$fields = configFields($sample);
+$fields = allConfigFields($sample, $samplePath);
 $existing = readExistingSecrets($targetPath);
 
 if (PHP_SAPI === 'cli') {
@@ -345,7 +345,8 @@ function runWeb(
 
     echo webPage(
         $fields, $values, $errors, $rendered, $written, $writeError,
-        $configured, $authorised, $posted, $existing, $refusal, $unlocked
+        $configured, $authorised, $posted, $existing, $refusal, $unlocked,
+        $root . '/lib/config.sample.php'
     );
 }
 
@@ -401,7 +402,8 @@ function webPage(
     bool $posted,
     ?array $existing,
     ?string $refusal,
-    bool $unlocked
+    bool $unlocked,
+    string $samplePath
 ): string {
     $out = [];
     $out[] = '<!doctype html><html lang="en"><head><meta charset="utf-8">';
@@ -427,6 +429,11 @@ function webPage(
         . '.banner.ok{border-color:#2f6f3a;background:#152b1c}'
         . '.banner.crit{border-color:#7a3030;background:#2b1414}'
         . 'code{background:#111;padding:1px 5px;border-radius:4px}'
+        . 'details{border:1px solid var(--line);border-radius:10px;margin:0 0 12px;padding:0 14px}'
+        . 'details[open]{padding-bottom:8px}'
+        . 'summary{cursor:pointer;padding:12px 0;color:var(--text);font-size:.92rem}'
+        . 'summary strong{color:#ffb0b0;font-weight:600}'
+        . '.wiz details label{margin-bottom:14px}'
         . 'pre{overflow-x:auto}'
         // Only the form fields. The rule above is for the big read-only box
         // that holds the config to copy, which has no name and wants its 340px.
@@ -517,8 +524,60 @@ function webPage(
             . '</fieldset>';
     }
 
+    /*
+     * The questions worth asking, then everything else.
+     *
+     * The hand-written fields are the install: without them nothing runs. The
+     * generated ones are every other option in the file, and there are ninety
+     * of them - presented as one flat list they would bury the four that
+     * matter and make the page read as a wall rather than a wizard.
+     *
+     * So they are grouped by their section and collapsed. Closed is not hidden:
+     * every one is in the form, submits with it, and keeps its current value
+     * whether or not anybody opened the group it is in.
+     */
+    $sections = [];
     foreach ($fields as $field) {
-        $out[] = renderField($field, $values, $errors, $configured);
+        if (empty($field['generated'])) {
+            $out[] = renderField($field, $values, $errors, $configured);
+            continue;
+        }
+        $sections[$field['section']][] = $field;
+    }
+
+    if ($sections) {
+        $out[] = '<h2 style="margin-top:30px">Everything else in the file</h2>';
+        $out[] = '<p class="help">Every remaining option in <code>lib/config.php</code>, '
+            . 'grouped the way the file groups them. They all have working defaults — open '
+            . 'a group only if you want to change something in it. What each one does is '
+            . 'read from the sample file itself, which is where the full explanation lives.</p>';
+
+        $notes = sampleHelp($samplePath)['sections'];
+
+        foreach ($sections as $name => $group) {
+            // A group is worth opening on its own errors: an answer that failed
+            // to parse inside a closed group would look like nothing happened.
+            $broken = false;
+            foreach ($group as $field) {
+                if (isset($errors[$field['key']])) {
+                    $broken = true;
+                }
+            }
+
+            $out[] = '<details' . ($broken ? ' open' : '') . '>';
+            $out[] = '<summary>' . h(sectionTitle($name)) . ' — '
+                . count($group) . ' option' . (count($group) === 1 ? '' : 's')
+                . ($broken ? ' <strong>(needs another look)</strong>' : '') . '</summary>';
+
+            if (isset($notes[$name])) {
+                $out[] = '<p class="help">' . h(firstParagraph($notes[$name])) . '</p>';
+            }
+
+            foreach ($group as $field) {
+                $out[] = renderField($field, $values, $errors, $configured);
+            }
+            $out[] = '</details>';
+        }
     }
 
     $out[] = '<button type="submit">'
@@ -540,6 +599,42 @@ function webPage(
 
     $out[] = '</body></html>';
     return implode("\n", $out);
+}
+
+/** A section's key as a heading. `alerts` is a word; `host_log_paths` is not. */
+function sectionTitle(string $name): string
+{
+    // "Ai" is not a word, and a heading that reads as one undoes the point of
+    // making these legible.
+    if ($name === 'ai') {
+        return 'AI';
+    }
+    return ucfirst(str_replace('_', ' ', $name));
+}
+
+/**
+ * The opening paragraph of a comment, for a group heading.
+ *
+ * The sample's section comments run to twenty lines and earn every one of them
+ * when you are reading the file. Above a form they are a wall, and the first
+ * paragraph is the one that says what the section is - which is all a heading
+ * needs to do. The file is still there for the rest.
+ */
+function firstParagraph(string $text): string
+{
+    // Sentences, until there are enough of them. The comment arrives as one
+    // run of text because the line breaks in it were formatting, not meaning.
+    $parts = preg_split('/(?<=\.)\s+/', trim($text)) ?: [];
+    $said = '';
+
+    foreach ($parts as $part) {
+        if ($said !== '' && strlen($said) + strlen($part) > 220) {
+            break;
+        }
+        $said = $said === '' ? $part : $said . ' ' . $part;
+    }
+
+    return $said === '' ? $text : $said;
 }
 
 function renderField(array $field, array $values, array $errors, bool $configured): string

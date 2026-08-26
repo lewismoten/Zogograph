@@ -2243,9 +2243,8 @@
   <p class="muted small sub-note">
     This runs what you type, as the user the web server runs as, and shows the
     output. Be clear-eyed about what that means: anybody who has the dashboard
-    password has this, so it stays off until it is switched on in
-    <code>lib/config.php</code>, and every command is written to the action log
-    before it runs. Each command is its own process &mdash; <code>cd</code> does
+    password has this, so it stays off until somebody switches it on here, and
+    every command is written to the action log before it runs. Each command is its own process &mdash; <code>cd</code> does
     not carry over to the next one, because pretending it did would be a lie
     about what actually ran.
   </p>
@@ -2497,6 +2496,17 @@
   </div>
   <p class="muted small" id="listDialogNote"></p>
   <div id="listDialogBody" class="scroll-list"></div>
+</dialog>
+
+<dialog id="askDialog">
+  <div class="panel-head">
+    <h2 id="askTitle">Are you sure?</h2>
+  </div>
+  <div id="askBody" class="dialog-body"></div>
+  <div class="dialog-actions">
+    <button id="askNo" class="link" type="button">Cancel</button>
+    <button id="askYes" type="button">Yes</button>
+  </div>
 </dialog>
 
 <dialog id="signInDialog">

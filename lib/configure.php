@@ -302,6 +302,325 @@ function configFields(array $sample): array
     ];
 }
 
+/* ------------------------------------------------------------------ *
+ * Every other option in the file
+ * ------------------------------------------------------------------ */
+
+/**
+ * What the sample file says about each option, read out of its own comments.
+ *
+ * The sample is the single description of what an option is - that is the rule
+ * this whole wizard is built on - so the help text comes from there rather than
+ * being written twice and drifting apart. Two shapes are picked up:
+ *
+ *   a comment directly above a key, whether `//` or a block
+ *   a line inside a section's block comment of the form
+ *       key      what it does
+ *     which is how the sample already documents the options in a group
+ *
+ * Anything it cannot find help for is still offered, without any. A missing
+ * sentence is a smaller problem than a missing option.
+ *
+ * @return array{help: array<string, string>, sections: array<string, string>}
+ */
+function sampleHelp(string $samplePath): array
+{
+    $source = is_file($samplePath) ? (string)file_get_contents($samplePath) : '';
+    $lines = preg_split('/\R/', $source) ?: [];
+
+    $help = [];
+    $sections = [];
+    $stack = [];
+    $comment = [];
+    $inBlock = false;
+    // Per-key lines from the block comment that opened the section we are in.
+    $keyNotes = [];
+    $noteStack = [];
+
+    foreach ($lines as $line) {
+        $trim = trim($line);
+
+        /* ------------------------------------------------- comments -- */
+
+        if (!$inBlock && str_starts_with($trim, '/*')) {
+            $inBlock = true;
+            $comment = [];
+            $trim = ltrim(substr($trim, 2), '*');
+            if ($trim === '') {
+                continue;
+            }
+        }
+
+        if ($inBlock) {
+            $done = str_contains($trim, '*/');
+            $text = trim(str_replace(['*/', '*'], '', $trim));
+            if ($text !== '') {
+                $comment[] = $text;
+            }
+            if ($done) {
+                $inBlock = false;
+            }
+            continue;
+        }
+
+        if (str_starts_with($trim, '//')) {
+            $comment[] = trim(substr($trim, 2));
+            continue;
+        }
+
+        /* ----------------------------------------------- structure -- */
+
+        // A section opening: 'name' => [   with nothing closing it on the line.
+        if (preg_match("/^'([^']+)'\s*=>\s*\[\s*$/", $trim, $m)) {
+            $stack[] = $m[1];
+            $path = implode('.', $stack);
+            if ($comment !== []) {
+                $sections[$path] = implode(' ', $comment);
+            }
+            // The notes for the keys inside are the ones this comment listed.
+            $noteStack[] = $keyNotes;
+            $keyNotes = keyNotesIn($comment);
+            $comment = [];
+            continue;
+        }
+
+        if ($trim === '],' || $trim === ']' || $trim === '];') {
+            array_pop($stack);
+            $keyNotes = array_pop($noteStack) ?? [];
+            $comment = [];
+            continue;
+        }
+
+        // A leaf: 'name' => something,
+        if (preg_match("/^'([^']+)'\s*=>\s*(.+?),?\s*$/", $trim, $m)) {
+            $key = $m[1];
+            $path = implode('.', array_merge($stack, [$key]));
+
+            $said = $comment !== []
+                ? implode(' ', $comment)
+                : ($keyNotes[$key] ?? '');
+
+            if ($said !== '') {
+                $help[$path] = $said;
+            }
+
+            /*
+             * The comment is not cleared here, on purpose.
+             *
+             * The sample documents a run of related keys with one comment above
+             * all of them - "all three of these define the rule together" sits
+             * above cpu_percent, cpu_minutes and cpu_share. Clearing after the
+             * first would leave the other two undocumented while the sentence
+             * explaining them is three lines up. A blank line ends the run,
+             * which is exactly where the file already puts one.
+             */
+            continue;
+        }
+
+        // A blank line, or anything else, ends a comment's reach.
+        $comment = [];
+    }
+
+    return ['help' => $help, 'sections' => $sections];
+}
+
+/**
+ * The per-key lines out of one block comment.
+ *
+ * The sample documents a group by listing its keys in a column:
+ *
+ *     enabled      off until this says otherwise
+ *     max_seconds  anything still going after this is killed. The page
+ *                  checks on read, because nothing else is running to notice
+ *
+ * A continuation line is one that starts with spaces and no key, and belongs to
+ * whichever key was last named.
+ *
+ * @param list<string> $comment
+ * @return array<string, string>
+ */
+function keyNotesIn(array $comment): array
+{
+    $notes = [];
+    $last = null;
+
+    foreach ($comment as $line) {
+        if (preg_match('/^([a-z][a-z0-9_]{2,})\s{2,}(\S.*)$/', $line, $m)) {
+            $last = $m[1];
+            $notes[$last] = trim($m[2]);
+            continue;
+        }
+        // Only continue a note while the lines keep coming; a blank line or a
+        // sentence of prose ends the list.
+        if ($last !== null && $line !== '' && !str_ends_with($line, '.')) {
+            $notes[$last] .= ' ' . $line;
+            continue;
+        }
+        $last = null;
+    }
+
+    return $notes;
+}
+
+/**
+ * Every question, hand-written and generated, in one list.
+ *
+ * The wizard used to ask twenty of the file's hundred and nineteen options, and
+ * the other ninety-nine meant opening lib/config.php in an editor. The rest are
+ * generated from the sample, so an option added there appears here without
+ * anybody remembering to add it - the only way a list this long stays true.
+ *
+ * The hand-written ones still win where they exist. They carry validation,
+ * better wording, and the `when` rules that hide what does not apply.
+ *
+ * @return list<array>
+ */
+function allConfigFields(array $sample, ?string $samplePath = null): array
+{
+    static $path = null;
+
+    /*
+     * The path is remembered once.
+     *
+     * buildConfig is handed a config array and no path, and it must produce the
+     * same field list the form was rendered from - a field the form asked about
+     * and buildConfig has never heard of is an answer silently dropped.
+     */
+    if ($samplePath !== null) {
+        $path = $samplePath;
+    }
+    if ($path === null) {
+        return configFields($sample);
+    }
+
+    return array_merge(configFields($sample), generatedFields($sample, $path));
+}
+
+/**
+ * A field for every option the hand-written questions do not ask about.
+ *
+ * @return list<array>
+ */
+function generatedFields(array $sample, string $samplePath): array
+{
+    $notes = sampleHelp($samplePath);
+    $covered = [];
+    foreach (configFields($sample) as $field) {
+        $covered[implode('.', $field['path'])] = true;
+    }
+
+    $fields = [];
+
+    $walk = function (array $level, array $path) use (
+        &$walk, &$fields, $covered, $notes
+    ): void {
+        foreach ($level as $key => $value) {
+            $here = array_merge($path, [(string)$key]);
+            $dotted = implode('.', $here);
+
+            /*
+             * A map of settings is walked into; a list is one answer.
+             *
+             * `['a', 'b']` is a value somebody edits as a whole. `['enabled' =>
+             * true]` is two questions. The difference is whether the keys are
+             * 0,1,2 - which is exactly what array_is_list asks.
+             */
+            if (is_array($value) && $value !== [] && !array_is_list($value)) {
+                $walk($value, $here);
+                continue;
+            }
+
+            if (isset($covered[$dotted]) || in_array($dotted, hiddenConfigPaths(), true)) {
+                continue;
+            }
+
+            $fields[] = generatedField($dotted, $here, $value, $notes['help'][$dotted] ?? '');
+        }
+    };
+
+    $walk($sample, []);
+
+    return $fields;
+}
+
+/**
+ * The options the wizard must not offer as a text box.
+ *
+ * Not secrets - those are asked for properly elsewhere - but values where a
+ * form field would be a worse way to set them than the thing that already sets
+ * them, and offering both is how two sources of truth start.
+ *
+ * @return list<string>
+ */
+function hiddenConfigPaths(): array
+{
+    return [
+        // Proved, hashed and written by the wizard itself.
+        'password_hash',
+        // Generated. Editing it renames every masked path on the dashboard,
+        // and there is a checkbox that does that deliberately.
+        'mask_secret',
+        // Written from scan_root, and wrong if they disagree.
+        'database',
+        // Edited by the schedule page, which knows what each scan costs.
+        'scans',
+        // Ticked on the Images and Tools pages, which list what exists.
+        'ai.images',
+        'ai.tools',
+    ];
+}
+
+/** One generated field, with its type guessed from what the sample holds. */
+function generatedField(string $dotted, array $path, mixed $value, string $help): array
+{
+    $key = (string)end($path);
+    $field = [
+        'key' => 'cfg_' . str_replace('.', '__', $dotted),
+        'path' => $path,
+        'label' => $dotted,
+        'help' => $help,
+        'section' => count($path) > 1 ? $path[0] : 'general',
+        'generated' => true,
+    ];
+
+    if (is_bool($value)) {
+        return $field + ['type' => 'bool', 'default' => $value];
+    }
+
+    if (is_array($value)) {
+        return $field + ['type' => 'lines', 'default' => $value];
+    }
+
+    if ($value === null) {
+        /*
+         * Null means "work it out", and blank has to mean that too.
+         *
+         * Every one of these is a path or a database location that defaults to
+         * somewhere sensible beside the others. A field that turned blank into
+         * an empty string would break the very thing null is for.
+         */
+        return $field + ['type' => 'nullable', 'default' => '', 'optional' => true];
+    }
+
+    if (is_int($value)) {
+        // The suffix says what the number means, and the sample is consistent
+        // about it, so the field can accept "5G" or "6h" where those make sense.
+        if (str_ends_with($key, '_bytes')) {
+            return $field + ['type' => 'bytes', 'default' => $value];
+        }
+        if (str_ends_with($key, '_seconds') || $key === 'session_lifetime') {
+            return $field + ['type' => 'seconds', 'default' => $value];
+        }
+        return $field + ['type' => 'int', 'default' => $value];
+    }
+
+    if (is_float($value)) {
+        return $field + ['type' => 'number', 'default' => $value];
+    }
+
+    return $field + ['type' => 'text', 'default' => (string)$value, 'optional' => true];
+}
+
 /**
  * The account this process is running as, for the host database's owner.
  *
@@ -372,6 +691,17 @@ function parseField(array $field, mixed $raw): array
 
     $value = is_string($raw) ? trim($raw) : '';
 
+    /*
+     * Blank means null, and null means "work it out".
+     *
+     * These are the options that default to somewhere beside the other files -
+     * a database path, the daemon list. Writing an empty string into one would
+     * turn "decide for me" into "use the file called nothing".
+     */
+    if ($type === 'nullable') {
+        return [$value === '' ? null : $value, null];
+    }
+
     if ($value === '' && ($field['optional'] ?? false)) {
         return ['', null];
     }
@@ -421,7 +751,7 @@ function buildConfig(array $sample, array $values, string $passwordHash, string 
 {
     $config = $sample;
 
-    foreach (configFields($sample) as $field) {
+    foreach (allConfigFields($sample) as $field) {
         if ($field['type'] === 'password' || !fieldApplies($field, $values)) {
             continue;
         }
@@ -552,6 +882,9 @@ function displayValue(array $field, mixed $value): string
         'bool' => $value ? 'y' : 'n',
         'categories' => implode(', ', (array)$value),
         'lines' => implode("\n", (array)$value),
+        // Blank, so that leaving it blank means what it already meant. Showing
+        // the word "null" in a text box invites somebody to type it.
+        'nullable' => $value === null ? '' : (string)$value,
         default => (string)$value,
     };
 }

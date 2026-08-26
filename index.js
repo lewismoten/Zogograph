@@ -9824,11 +9824,11 @@ function renderTerminal(data) {
 
   if (!data.permitted) {
     parts.push(note(
-      "The terminal is switched off. Add “terminal” => [“enabled” => true] "
-      + "to lib/config.php to turn it on. It is off by default because it runs whatever "
-      + "is typed into it — that is not a reason to avoid it, but it is a reason for the "
-      + "decision to be deliberate rather than inherited."
+      "The terminal is switched off. It is off by default because it runs whatever is "
+      + "typed into it — that is not a reason to avoid it, but it is a reason for the "
+      + "decision to be deliberate rather than inherited from a sample file."
     ));
+    parts.push(permitForm(data));
     body.replaceChildren(...parts);
     return;
   }
@@ -9907,6 +9907,36 @@ function renderTerminal(data) {
     + `${humanSpan(data.max_seconds, true)} is stopped.`;
   parts.push(said);
 
+  /*
+   * Off, as opposed to locked.
+   *
+   * Locking closes it until somebody opens it again; this withdraws the
+   * permission entirely, and is the same decision as the button on the other
+   * side of this page rather than a different feature.
+   */
+  const off = document.createElement("button");
+  off.type = "button";
+  off.className = "link danger";
+  off.textContent = "Switch the terminal off";
+  off.addEventListener("click", async () => {
+    const yes = await askFirst("Switch the terminal off?", [
+      "This withdraws the permission, not just the unlock. Anything running now is "
+      + "stopped and the page goes back to offering a switch.",
+      "Nothing is lost - the transcript of what has been run stays in the action log, "
+      + "and you can switch it on again whenever you want it.",
+    ], "Switch it off", true);
+
+    if (!yes) return;
+
+    try {
+      renderTerminal(await post("terminal-permit", { allowed: "0" }));
+      notice("The terminal is switched off.");
+    } catch (error) {
+      notice(String(error.message || error));
+    }
+  });
+  parts.push(off);
+
   const out = document.createElement("pre");
   out.className = "term-out";
   out.id = "terminalOut";
@@ -9970,6 +10000,74 @@ function renderTerminal(data) {
 }
 
 /** The "open it for a while" form, shown when the terminal is locked. */
+/**
+ * The switch that decides whether this install may have a shell at all.
+ *
+ * A button rather than an instruction to edit PHP. The deliberateness the
+ * config file was asking for is not in the file being hard to edit - it is in
+ * somebody reading what this does and choosing it, and that reader is far more
+ * likely to be here, signed in, than in a text editor on the server.
+ *
+ * Signing in is the authorisation. Anybody who can reach this button can
+ * already change what the collectors run and delete files with the page.
+ */
+function permitForm(data) {
+  const wrap = document.createElement("div");
+
+  if (!state.signedIn) {
+    wrap.appendChild(note("Sign in to switch it on."));
+    return wrap;
+  }
+
+  const row = document.createElement("div");
+  row.className = "pattern-row";
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.textContent = "Switch it on";
+  go.addEventListener("click", async () => {
+    const yes = await askFirst("Allow a shell in this web page?", [
+      "This runs whatever is typed into it, as the user the web server runs as, and "
+      + "shows the output. It is a web shell.",
+      "That means anybody who has this dashboard's password has it too. If that "
+      + "password is shared, or is the only thing between the internet and this "
+      + "machine, decide about that first.",
+      "Every command is written to the action log before it runs, so a command that "
+      + "hangs the machine still appears in the record. It stays locked until you open "
+      + "it, and it locks itself again after the time you choose.",
+      "You can switch it off again here at any time.",
+    ], "Switch it on", true);
+
+    if (!yes) return;
+
+    try {
+      renderTerminal(await post("terminal-permit", { allowed: "1" }));
+      notice("The terminal is switched on. It is still locked until you open it.");
+    } catch (error) {
+      notice(String(error.message || error));
+    }
+  });
+  row.appendChild(go);
+
+  wrap.appendChild(row);
+
+  /*
+   * When the config file is the thing saying no, say so.
+   *
+   * Switching it on here would be overruled on the next request otherwise, and
+   * a button that appears to work and does not is worse than no button.
+   */
+  if (data.config_says === false && data.from_config) {
+    const said = document.createElement("p");
+    said.className = "muted small";
+    said.textContent = "lib/config.php has it off, which is the default. Switching it on "
+      + "here overrules that and is remembered; the config file is not rewritten.";
+    wrap.appendChild(said);
+  }
+
+  return wrap;
+}
+
 function unlockForm(data) {
   const wrap = document.createElement("div");
 
@@ -13339,6 +13437,55 @@ function showListDialog(title, nodes, note = "") {
   body.replaceChildren(...nodes);
 
   $("listDialog").showModal();
+}
+
+/**
+ * Asks before doing something, and says what "yes" means.
+ *
+ * Resolves true or false, so a caller reads as a sentence and nothing happens
+ * in a callback somewhere else. Cancel is the default: closing the dialog with
+ * Escape, or by any other route, is a no.
+ *
+ * `danger` colours the confirm button and nothing else. It is for actions that
+ * are hard to take back, and it is deliberately not used for the ordinary ones
+ * - a warning that appears every time is a warning nobody reads.
+ */
+function askFirst(title, paragraphs, yesLabel = "Yes", danger = false) {
+  const dialog = $("askDialog");
+  $("askTitle").textContent = title;
+
+  $("askBody").replaceChildren(...paragraphs.map(text => {
+    const p = document.createElement("p");
+    // A paragraph may arrive already built, when it needs a link or emphasis
+    // in the middle of it.
+    if (text instanceof Node) return text;
+    p.textContent = text;
+    return p;
+  }));
+
+  const yes = $("askYes");
+  yes.textContent = yesLabel;
+  yes.className = danger ? "danger" : "";
+
+  return new Promise(resolve => {
+    let answer = false;
+
+    const done = () => {
+      yes.removeEventListener("click", said);
+      $("askNo").removeEventListener("click", refused);
+      dialog.removeEventListener("close", closed);
+      resolve(answer);
+    };
+    const said = () => { answer = true; dialog.close(); };
+    const refused = () => { answer = false; dialog.close(); };
+    const closed = () => done();
+
+    yes.addEventListener("click", said);
+    $("askNo").addEventListener("click", refused);
+    dialog.addEventListener("close", closed);
+
+    dialog.showModal();
+  });
 }
 
 /** Shows a long list of paths in a dialog that scrolls. */

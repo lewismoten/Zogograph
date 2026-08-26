@@ -2628,3 +2628,21 @@ tr.muted-row { opacity: .7; }
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ------------------------------------------------------- asking first -- */
+
+/*
+ * The one dialog that stands between somebody and a decision they meant.
+ *
+ * Deliberately plain: a wall of colour on a confirmation trains people to
+ * dismiss confirmations. The weight is in the sentences, which say what will
+ * actually happen rather than "are you sure?".
+ */
+#askDialog { max-width: min(94vw, 560px); }
+#askBody { gap: 10px; font-size: .9rem; line-height: 1.6; color: #cfcfcf; }
+#askBody p { margin: 0; }
+#askBody strong { color: var(--text); }
+.dialog-actions {
+  display: flex; justify-content: flex-end; align-items: center;
+  gap: 14px; margin-top: 18px;
+}
