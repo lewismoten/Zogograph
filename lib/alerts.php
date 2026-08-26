@@ -1009,9 +1009,30 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
         ? null
         : 'mail() refused: ' . implode(', ', $failed);
 
-    $update = $pdo->prepare('UPDATE alerts SET emailed_at = ?, email_error = ? WHERE id = ?');
+    /*
+     * The message is kept, whether or not it was delivered.
+     *
+     * Especially when it was not: "the email failed" is a fact about the mail
+     * system, and the thing somebody wants next is what it would have said. It
+     * is stored before the alerts are updated so that a row pointing at a
+     * message always finds one.
+     */
+    $ids = array_map(intval(...), array_column($raised, 'id'));
+
+    $pdo->prepare(
+        'INSERT INTO alert_emails (at, subject, body, recipients, headers, sent, error, alert_ids)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    )->execute([
+        time(), $subject, $body, implode('; ', $recipients),
+        implode("\n", $headers), $sentAny ? 1 : 0, $error, implode(',', $ids),
+    ]);
+    $emailId = (int)$pdo->lastInsertId();
+
+    $update = $pdo->prepare(
+        'UPDATE alerts SET emailed_at = ?, email_error = ?, email_id = ? WHERE id = ?'
+    );
     foreach ($raised as $alert) {
-        $update->execute([$sentAny ? time() : null, $error, $alert['id']]);
+        $update->execute([$sentAny ? time() : null, $error, $emailId, $alert['id']]);
     }
 
     logAction(

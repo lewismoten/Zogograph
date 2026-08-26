@@ -2607,3 +2607,24 @@ tr.muted-row { opacity: .7; }
 
 /* The identifier, which is what the model actually sends. */
 .style-row .muted { margin-left: auto; font-family: ui-monospace, Menlo, monospace; }
+
+/*
+ * A sent message, shown as it was sent.
+ *
+ * Monospaced and wrapping only where it has to: these are plain-text emails and
+ * the line breaks are the ones the recipient saw.
+ */
+.sent-mail {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 46vh;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

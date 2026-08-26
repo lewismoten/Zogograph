@@ -120,6 +120,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'offenders' => offenders($config, $pdo, $signedIn),
         'history' => pathHistory($config, $pdo, $signedIn),
         'alerts' => alertList($config, $pdo, $signedIn),
+        'alert-email' => alertEmailView($pdo, $signedIn),
         'actions' => actionLog($config, $pdo, $signedIn),
         'incident' => incidentView($config, $pdo, $signedIn),
         'treemap' => treemapView($config, $signedIn),
@@ -924,7 +925,8 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
     $limit = clampInt($_GET['limit'] ?? 50, 1, 500);
     $stmt = $pdo->prepare(
         'SELECT a.id, a.raised_at, a.rule, a.severity, a.subject, a.detail,
-                a.emailed_at, a.email_error, a.path_id, a.incident_id, a.acknowledged_at,
+                a.emailed_at, a.email_error, a.email_id, a.path_id, a.incident_id,
+                a.acknowledged_at,
                 a.ai_summary, a.ai_verdict, a.ai_reason, a.ai_advice, a.ai_at, a.silenced,
                 p.path, p.kind
          FROM alerts a LEFT JOIN paths p ON p.id = a.path_id
@@ -938,6 +940,68 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
             fn(array $row): array => presentAlert($config, $row, $signedIn),
             $stmt->fetchAll()
         ),
+    ];
+}
+
+/**
+ * One alert email, exactly as it was sent.
+ *
+ * Signed-in only and never masked. The body carries paths, addresses and
+ * whatever a log line happened to say - it is the same content the alert page
+ * refuses to show a signed-out visitor, and reconstructing it here for one
+ * would be the same leak by a different door.
+ */
+function alertEmailView(PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to read a sent message');
+    }
+
+    $id = clampInt($_GET['id'] ?? 0, 1, PHP_INT_MAX);
+    $stmt = $pdo->prepare('SELECT * FROM alert_emails WHERE id = ?');
+    $stmt->execute([$id]);
+    $row = $stmt->fetch();
+
+    if ($row === false) {
+        throw new ActionRefused(
+            'that message was not kept. Only messages sent since this feature existed '
+            . 'are stored; older alerts say they were emailed and cannot show what was '
+            . 'said, which is true and is why it says so rather than showing nothing.'
+        );
+    }
+
+    /*
+     * Which alerts went out together in it.
+     *
+     * The subject of a batched message names a count rather than a cause, so
+     * the list is the only thing that says what the message was actually about.
+     */
+    $ids = array_values(array_filter(array_map(
+        intval(...),
+        explode(',', (string)$row['alert_ids'])
+    )));
+
+    $covered = [];
+    if ($ids !== []) {
+        $marks = implode(',', array_fill(0, count($ids), '?'));
+        $others = $pdo->prepare(
+            "SELECT id, raised_at, severity, subject FROM alerts WHERE id IN ({$marks})
+              ORDER BY raised_at"
+        );
+        $others->execute($ids);
+        $covered = $others->fetchAll();
+    }
+
+    return [
+        'id' => (int)$row['id'],
+        'at' => (int)$row['at'],
+        'subject' => (string)$row['subject'],
+        'body' => (string)$row['body'],
+        'recipients' => (string)$row['recipients'],
+        'headers' => (string)($row['headers'] ?? ''),
+        'sent' => (bool)$row['sent'],
+        'error' => $row['error'],
+        'covered' => $covered,
     ];
 }
 
@@ -1219,7 +1283,10 @@ function latestCapture(PDO $host, ?PDO $account = null, ?int $id = null): ?array
     );
     $rows->execute([(int)$capture['id']]);
 
-    $grouped = ['peers' => [], 'ports' => [], 'names' => [], 'flags' => []];
+    $grouped = [
+        'peers' => [], 'ports' => [], 'names' => [], 'flags' => [],
+        'asked' => [], 'visited' => [],
+    ];
     foreach ($rows->fetchAll() as $row) {
         $kind = (string)$row['kind'];
         if (!isset($grouped[$kind])) {
@@ -1243,6 +1310,18 @@ function latestCapture(PDO $host, ?PDO $account = null, ?int $id = null): ?array
         if ($kind === 'ports') {
             $entry['port'] = (int)$row['label'];
             $entry['service'] = portService((int)$row['label']);
+        }
+
+        /*
+         * The rollups carry their sub-kind at the front of the label.
+         *
+         * "A git.example.com" and "page GET /admin" - split back apart here so
+         * the browser gets two fields rather than a string it has to parse.
+         */
+        if ($kind === 'asked' || $kind === 'visited') {
+            $parts = explode(' ', (string)$row['label'], 2);
+            $entry['how'] = $parts[0] ?? '';
+            $entry['what'] = $parts[1] ?? '';
         }
         $grouped[$kind][] = $entry;
     }
@@ -2489,7 +2568,11 @@ function doRequestCapture(array $config, PDO $pdo, bool $post): array
         throw new ActionRefused('that is not one of the capture filters on offer');
     }
 
-    $at = requestHostTask($pdo, captureTaskName($interface, $filter), currentAccountName());
+    $at = requestHostTask(
+        $pdo,
+        captureTaskName($interface, $filter, ($_POST['read_asked'] ?? '0') === '1'),
+        currentAccountName()
+    );
     logAction($pdo, 'request_capture', $interface . ' ' . $filter, 'ok', 0, 0,
         'waiting for the host collector');
 

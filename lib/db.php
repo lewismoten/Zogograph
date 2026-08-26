@@ -595,6 +595,39 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        31 => [
+            /*
+             * The messages that went out, exactly as they were sent.
+             *
+             * Because "was I told about this" and "what did it say" are
+             * different questions, and until now only the first had an answer -
+             * the alerts page showed a tick in an Emailed column and nothing
+             * behind it. An alert email carries the links, the diagnostic
+             * commands and the assistant's note, none of which is reconstructible
+             * from the alert row afterwards: the wording depends on what else
+             * fired in the same minute, and the settings may have changed since.
+             *
+             * One row per message, not per alert. A disk filling up trips
+             * several rules at once and they go out together in one message,
+             * which is the whole point of batching them.
+             */
+            "CREATE TABLE alert_emails (
+                id         INTEGER PRIMARY KEY,
+                at         INTEGER NOT NULL,
+                subject    TEXT NOT NULL,
+                body       TEXT NOT NULL,
+                recipients TEXT NOT NULL,
+                headers    TEXT,
+                sent       INTEGER NOT NULL DEFAULT 0,
+                error      TEXT,
+                alert_ids  TEXT NOT NULL
+            )",
+            'CREATE INDEX alert_emails_at ON alert_emails (at)',
+
+            // Which message an alert went out in, so a row can open its own.
+            'ALTER TABLE alerts ADD COLUMN email_id INTEGER',
+        ],
+
         30 => [
             /*
              * The assistant's verdict on an alert, where it has one.

@@ -564,13 +564,22 @@ function localAddresses(): array
  * people's traffic into a file on a shared host would be a far worse problem
  * than whatever it was pointed at.
  *
+ * `$readAsked` relaxes that, and only that. With it on, tcpdump prints packet
+ * contents and this reads three things out of them: the name in a TLS
+ * handshake, and the Host and path of an HTTP request. Those are counted like
+ * everything else and the packet is discarded - still no payload stored - but
+ * it does mean the process has looked at the beginning of other people's
+ * traffic, so it is off unless somebody asks for it on one capture, and the
+ * page says so in those words. Query strings are dropped before counting.
+ *
  * @return array<string, mixed>
  */
 function captureTraffic(
     string $interface,
     int $seconds,
     string $filter = '',
-    ?array $local = null
+    ?array $local = null,
+    bool $readAsked = false
 ): array {
     $seconds = max(5, min(CAPTURE_MAX_SECONDS, $seconds));
 
@@ -597,10 +606,21 @@ function captureTraffic(
     }
 
     $timeout = whichBinary('timeout');
+    /*
+     * Two shapes of the same command.
+     *
+     * Without payload reading: quiet output and a 128-byte snaplen, which is
+     * headers and nothing more. With it: `-A` to print contents and 512 bytes,
+     * which is enough to reach a TLS server name and an HTTP Host header and
+     * not much more. `-q` goes, because it suppresses the protocol detail the
+     * ASCII sits beside.
+     */
     $command = sprintf(
-        '%s%s -nn -q -l -s 128 -c %d -i %s %s 2>&1',
+        '%s%s -nn %s -l -s %d -c %d -i %s %s 2>&1',
         $timeout === null ? '' : escapeshellarg($timeout) . ' ' . ($seconds + 3) . ' ',
         escapeshellarg($tcpdump),
+        $readAsked ? '-A' : '-q',
+        $readAsked ? 512 : 128,
         CAPTURE_MAX_PACKETS,
         escapeshellarg($interface),
         $expression['argument'] === '' ? '' : escapeshellarg($expression['argument'])
@@ -614,7 +634,7 @@ function captureTraffic(
         return captureFailure('The capture could not be started.');
     }
 
-    $state = newCaptureState($local);
+    $state = newCaptureState($local, $readAsked);
     $complaints = [];
 
     while (($line = fgets($handle)) !== false) {
@@ -683,6 +703,7 @@ function captureFailure(string $reason): array
     return [
         'ok' => false, 'reason' => $reason, 'packets' => 0, 'bytes' => 0,
         'peers' => [], 'ports' => [], 'names' => [], 'flags' => [],
+        'asked' => [], 'visited' => [], 'read_asked' => false,
         'in_packets' => 0, 'out_packets' => 0, 'in_bytes' => 0, 'out_bytes' => 0,
         'unparsed' => 0, 'distinct_peers' => 0, 'distinct_names' => 0,
         'seconds' => 0, 'interface' => '', 'filter' => '', 'filter_label' => '',
@@ -691,15 +712,20 @@ function captureFailure(string $reason): array
 }
 
 /** The counters a capture accumulates, one packet at a time. */
-function newCaptureState(array $local): array
+function newCaptureState(array $local, bool $readAsked = false): array
 {
     return [
         'local' => array_flip($local),
+        'read_asked' => $readAsked,
         'seen' => [],
         'peers' => [],
         'ports' => [],
         'names' => [],
         'flags' => [],
+        // name => count, by DNS record type, and the hosts and pages read out
+        // of TLS and HTTP when that was asked for.
+        'asked' => [],
+        'visited' => [],
         'packets' => 0,
         'bytes' => 0,
         'in_packets' => 0,
@@ -721,12 +747,29 @@ function newCaptureState(array $local): array
  */
 function countPacket(array &$state, string $line): void
 {
-    $state['packets']++;
-
+    /*
+     * A packet header, or the contents of the packet before it?
+     *
+     * With `-A` in effect tcpdump writes the header line and then the payload
+     * on the lines after it, and the two need completely different treatment: a
+     * payload line is not a packet and counting it as one inflates every total
+     * on the page. It also cannot be parsed for addresses, so the first version
+     * counted every one of them as an unparsed packet and returned before ever
+     * looking at the contents - which is where the whole point of reading them
+     * was supposed to happen.
+     */
     if (!preg_match('/\s(\S+?)\.(\d+) > (\S+?)\.(\d+):/', $line, $m)) {
+        if (!empty($state['read_asked'])) {
+            countPayload($state, $line);
+            return;
+        }
+
+        $state['packets']++;
         $state['unparsed']++;
         return;
     }
+
+    $state['packets']++;
 
     [, $source, $sourcePort, $destination, $destinationPort] = $m;
 
@@ -822,12 +865,261 @@ function countPacket(array &$state, string $line): void
         }
     }
 
-    if (preg_match('/\s(?:A|AAAA|NS|MX|TXT|SOA|PTR|CNAME|SRV|ANY)\?\s+([A-Za-z0-9._-]+)/', $line, $q)) {
-        $name = strtolower(rtrim($q[1], '.'));
-        if ($name !== '') {
-            $state['names'][$name] = ($state['names'][$name] ?? 0) + 1;
+    /*
+     * What was actually asked for, which is the only part anybody reads.
+     *
+     * "748 packets on 443" is true and answers nothing; the name in the
+     * handshake answers the question that was being asked.
+     */
+    $question = captureDnsQuestion($line);
+    if ($question !== null) {
+        $state['names'][$question['name']] = ($state['names'][$question['name']] ?? 0) + 1;
+
+        $key = $question['type'] . ' ' . $question['name'];
+        $state['asked'][$key] = ($state['asked'][$key] ?? 0) + 1;
+    }
+
+}
+
+/**
+ * The contents of a packet, when contents are being read.
+ *
+ * Only ever called for lines that are not packet headers, which matters more
+ * than it sounds: a DNS summary line contains a hostname, and running the TLS
+ * matcher over it counted every DNS question a second time as a server name.
+ * Eighty TLS connections to a host that had been looked up eighty times, and
+ * the number was the number of lookups.
+ */
+function countPayload(array &$state, string $line): void
+{
+    /*
+     * HTTP first, and if it is HTTP then it is not a TLS handshake.
+     *
+     * Both matchers looked at every payload line, so an HTTP request was
+     * reported twice: once correctly as a page, and once as a TLS connection to
+     * its own Host header. A request for a file was reported a third time, as a
+     * connection to "thumb.png".
+     */
+    $http = captureHttpRequest($line);
+
+    if ($http !== null) {
+        if ($http['host'] !== null) {
+            $key = 'http ' . $http['host'];
+            $state['visited'][$key] = ($state['visited'][$key] ?? 0) + 1;
+        }
+        if ($http['path'] !== null) {
+            $key = 'page ' . $http['path'];
+            $state['visited'][$key] = ($state['visited'][$key] ?? 0) + 1;
+        }
+        return;
+    }
+
+    $tls = captureTlsName($line);
+    if ($tls !== null) {
+        $key = 'https ' . $tls;
+        $state['visited'][$key] = ($state['visited'][$key] ?? 0) + 1;
+    }
+}
+
+/* ------------------------------------------------ what it was asking for -- */
+
+/**
+ * Reading what the traffic was actually asking for.
+ *
+ * A capture without this counts packets and addresses: "748 packets on 443" is
+ * true and answers almost nothing. What somebody wants is which name, which
+ * page. Three things carry that in the clear, and only three:
+ *
+ *   DNS       the question is the name, and tcpdump prints it even in quiet
+ *             mode. This is free and is on by default.
+ *   TLS SNI   a ClientHello names the host it wants before any encryption
+ *             starts. Needs the payload.
+ *   HTTP      the request line and the Host header. Needs the payload.
+ *
+ * BE CLEAR ABOUT THE COST. The last two need tcpdump to print packet contents
+ * (`-A`) with a snaplen big enough to reach them, and that means this reads the
+ * first few hundred bytes of other people's traffic on a shared machine. That
+ * is why it is off unless somebody turns it on for one capture, why the page
+ * says so in those words, and why the query string is thrown away: a path says
+ * which page, and a query string is where tokens, session ids and search terms
+ * live. "Which page" is the question that was asked; the rest is not needed to
+ * answer it and is not kept.
+ *
+ * Nothing here decrypts anything. An SNI is sent in the clear by design, and a
+ * request to an https:// address shows only the name.
+ */
+
+/** Longest thing this will treat as a hostname or path. */
+const CAPTURE_ASKED_MAX = 180;
+
+/**
+ * The DNS question on a line, if there is one.
+ *
+ * tcpdump writes `A? name.example.` and `AAAA? name.example.`; the record type
+ * is worth keeping because a flood of AAAA lookups against a host with no IPv6
+ * is a different fault from a flood of A lookups, and they are identical when
+ * the type is discarded.
+ *
+ * @return array{name: string, type: string}|null
+ */
+function captureDnsQuestion(string $line): ?array
+{
+    if (!preg_match(
+        '/\s(A|AAAA|NS|MX|TXT|SOA|PTR|CNAME|SRV|CAA|DS|DNSKEY|ANY)\?\s+([A-Za-z0-9._-]+)/',
+        $line,
+        $m
+    )) {
+        return null;
+    }
+
+    $name = strtolower(rtrim($m[2], '.'));
+
+    return $name === '' ? null : ['name' => $name, 'type' => $m[1]];
+}
+
+/**
+ * The host a TLS handshake asked for, from the ASCII of a ClientHello.
+ *
+ * Not a TLS parser. tcpdump's `-A` gives printable bytes with dots for the
+ * rest, so the structure is gone and only the string survives - and the SNI is
+ * a run of hostname characters that no other part of a handshake looks like.
+ * Anchored on a plausible domain shape rather than on an offset, which is the
+ * only thing that survives the mangling.
+ *
+ * Returns null far more often than it returns a name, and that is correct: only
+ * the first packet of a connection carries one.
+ */
+function captureTlsName(string $line): ?string
+{
+    /*
+     * A ClientHello starts with 0x16 0x03 - "handshake, TLS" - which prints as
+     * an unprintable byte then a dot. Checking for the string instead: the
+     * hostname is preceded by the SNI extension header, whose length bytes are
+     * unprintable, so the name appears as a run bounded by dots.
+     */
+    if (!str_contains($line, '.') || strlen($line) < 16) {
+        return null;
+    }
+
+    /*
+     * A dot must be followed by a letter or digit to be part of a name.
+     *
+     * That one rule is what makes this work at all, and leaving it out is what
+     * made the first version match nothing useful. tcpdump prints every
+     * unprintable byte as a dot, so a hostname in this output is nearly always
+     * surrounded by them - `..git.lewismoten.com..` - and a pattern that treats
+     * a dot as a name character either swallows the padding or refuses to start
+     * because the character before is a dot.
+     */
+    if (!preg_match_all(
+        '/[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){1,6}/i',
+        $line,
+        $matches
+    )) {
+        return null;
+    }
+
+    foreach ($matches[0] as $candidate) {
+        $name = strtolower(rtrim($candidate, '.'));
+
+        /*
+         * The last label has to look like a top-level domain.
+         *
+         * Without this, version strings and file names - "1.2.3", "3.1" - come
+         * through as hosts, and this output is full of both.
+         */
+        if (!preg_match('/\.[a-z]{2,24}$/', $name)) {
+            continue;
+        }
+
+        /*
+         * The protocol list, which sits right beside the name it is not.
+         *
+         * A ClientHello advertises ALPN - "h2", "http/1.1", "spdy/3.1" - a few
+         * bytes from the server name, so "h2.http" reads as a perfectly
+         * well-formed hostname and was being reported as one on every single
+         * TLS connection. These are the tokens that actually appear there.
+         */
+        if (preg_match('/^(?:h2|h3|http|spdy|hq|quic)\b/', $name)
+            || str_contains($name, 'http/')) {
+            continue;
+        }
+
+        /*
+         * A file name is not a host name.
+         *
+         * "thumb.png" and "app.min.js" are perfectly well-formed by every rule
+         * above, and payload is full of them - so the last label is checked
+         * against the extensions that turn up rather than against a list of
+         * every real top-level domain, which would be a list to maintain.
+         */
+        if (preg_match(
+            '/\.(?:png|jpe?g|gif|webp|svg|ico|css|js|mjs|json|xml|html?|txt|woff2?|'
+            . 'ttf|eot|map|pdf|zip|gz|mp4|webm|mp3|wav|php|asp|aspx|jsp)$/',
+            $name
+        )) {
+            continue;
+        }
+
+        /*
+         * A dotted quad is an address, not a name.
+         *
+         * They turn up constantly in this output and would otherwise be
+         * reported as the host somebody asked for.
+         */
+        if (filter_var($name, FILTER_VALIDATE_IP) !== false) {
+            continue;
+        }
+        if (strlen($name) > CAPTURE_ASKED_MAX) {
+            continue;
+        }
+
+        return $name;
+    }
+
+    return null;
+}
+
+/**
+ * The page an HTTP request asked for, from the payload.
+ *
+ * The request line and the Host header arrive in the same packet often enough
+ * to be worth pairing, and separately often enough that each is reported on its
+ * own rather than waiting for both.
+ *
+ * The query string is cut off. A path answers "which page"; a query string is
+ * where session ids, tokens and search terms live, and none of that is needed
+ * to answer the question that was asked.
+ *
+ * @return array{host: ?string, path: ?string}|null
+ */
+function captureHttpRequest(string $line): ?array
+{
+    $out = ['host' => null, 'path' => null];
+
+    if (preg_match('#\b(GET|POST|HEAD|PUT|DELETE|PATCH|OPTIONS)\s+(/[^\s?]*)#', $line, $m)) {
+        $out['path'] = $m[1] . ' ' . substr($m[2], 0, CAPTURE_ASKED_MAX);
+    }
+
+    /*
+     * The same rule as the TLS name: a dot has to be followed by a character.
+     *
+     * tcpdump renders the CRLF between headers as "..", and a pattern treating
+     * a dot as a name character ran straight through it and into the next
+     * header - "radio.kognabo.com..user-agent" was reported as a hostname.
+     */
+    if (preg_match(
+        '/\bHost:\s*([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)/i',
+        $line,
+        $m
+    )) {
+        $host = strtolower(rtrim($m[1], '.'));
+        if ($host !== '' && strlen($host) <= CAPTURE_ASKED_MAX) {
+            $out['host'] = $host;
         }
     }
+
+    return ($out['host'] === null && $out['path'] === null) ? null : $out;
 }
 
 /** tcpdump's flag letters, named for what they mean. */
@@ -1015,6 +1307,28 @@ function finishCapture(array $state): array
 
     arsort($state['flags']);
 
+    /*
+     * The rollup: what was asked for, most first.
+     *
+     * Split into the DNS questions and what was read from the traffic itself,
+     * because they are answers to different questions and have very different
+     * costs - one is free and always on, the other means having looked at
+     * packet contents.
+     */
+    arsort($state['asked']);
+    $askedRows = [];
+    foreach (array_slice($state['asked'], 0, CAPTURE_KEEP, true) as $key => $count) {
+        [$type, $name] = explode(' ', $key, 2);
+        $askedRows[] = ['kind' => $type, 'name' => $name, 'packets' => $count];
+    }
+
+    arsort($state['visited']);
+    $visitedRows = [];
+    foreach (array_slice($state['visited'], 0, CAPTURE_KEEP, true) as $key => $count) {
+        [$how, $what] = explode(' ', $key, 2);
+        $visitedRows[] = ['kind' => $how, 'name' => $what, 'packets' => $count];
+    }
+
     return [
         'packets' => $state['packets'],
         'bytes' => $state['bytes'],
@@ -1026,6 +1340,9 @@ function finishCapture(array $state): array
         'peers' => $peerRows,
         'ports' => $portRows,
         'names' => $nameRows,
+        'asked' => $askedRows,
+        'visited' => $visitedRows,
+        'read_asked' => (bool)($state['read_asked'] ?? false),
         'flags' => $state['flags'],
         'distinct_peers' => count($peers),
         'distinct_names' => count($state['names']),
@@ -1520,6 +1837,23 @@ function storeCapture(PDO $host, array $capture): int
              in_packets, out_packets, in_bytes, out_bytes, opened, bytes)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
+    /*
+     * The two rollups are stored with their sub-kind in the label.
+     *
+     * "A git.example.com" rather than a column for the record type: this table
+     * is a label and a count by design, and it already holds four unrelated
+     * kinds that way. A column read by one of six kinds would be emptier than
+     * the string it replaced.
+     */
+    foreach (['asked', 'visited'] as $kind) {
+        foreach ($capture[$kind] ?? [] as $row) {
+            $insert->execute([
+                $id, $kind, $row['kind'] . ' ' . $row['name'], (int)$row['packets'],
+                0, 0, 0, 0, 0, 0, 0,
+            ]);
+        }
+    }
+
     foreach (['peers' => 'address', 'ports' => 'port', 'names' => 'name'] as $kind => $field) {
         foreach ($capture[$kind] ?? [] as $row) {
             $insert->execute([
@@ -1547,9 +1881,18 @@ function storeCapture(PDO $host, array $capture): int
  * asking for DNS on eth0 and then everything on eth1 should run both, not
  * overwrite one with the other.
  */
-function captureTaskName(string $interface, string $filter): string
+function captureTaskName(string $interface, string $filter, bool $readAsked = false): string
 {
-    return 'capture:' . $interface . ':' . $filter;
+    /*
+     * The payload flag rides in the task name.
+     *
+     * The task table is one row per name with no argument column - that is the
+     * whole protocol - so a capture that reads contents has to be a different
+     * task from one that does not, or asking for one would silently satisfy a
+     * request for the other. Two people asking for the same capture still get
+     * one capture; two people asking for different ones get both.
+     */
+    return 'capture:' . $interface . ':' . $filter . ($readAsked ? ':asked' : '');
 }
 
 /** Reads a task name back into its parts, or null if it is not one. */
@@ -1558,14 +1901,21 @@ function parseCaptureTask(string $task): ?array
     if (!str_starts_with($task, 'capture:')) {
         return null;
     }
-    $parts = explode(':', $task, 3);
-    if (count($parts) !== 3) {
+
+    $parts = explode(':', $task, 4);
+    if (count($parts) < 3) {
         return null;
     }
+
     if (!preg_match('/^[A-Za-z0-9._-]{1,32}$/', $parts[1]) || captureFilter($parts[2]) === null) {
         return null;
     }
-    return ['interface' => $parts[1], 'filter' => $parts[2]];
+
+    return [
+        'interface' => $parts[1],
+        'filter' => $parts[2],
+        'read_asked' => ($parts[3] ?? '') === 'asked',
+    ];
 }
 
 /* ------------------------------------------------- commands root can run -- */

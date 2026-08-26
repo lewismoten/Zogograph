@@ -203,11 +203,18 @@ try {
         }
 
         $seconds = (int)($config['network']['capture_seconds'] ?? 20);
-        $say(sprintf('Capturing %ds of %s on %s (requested %s ago)...',
+        $say(sprintf('Capturing %ds of %s on %s%s (requested %s ago)...',
             $seconds, $capture['filter'], $capture['interface'],
+            !empty($capture['read_asked']) ? ', reading what was asked for' : '',
             humanDuration(time() - (int)$requested)));
 
-        $result = captureTraffic($capture['interface'], $seconds, $capture['filter']);
+        $result = captureTraffic(
+            $capture['interface'],
+            $seconds,
+            $capture['filter'],
+            null,
+            (bool)($capture['read_asked'] ?? false)
+        );
         storeCapture($pdo, $result);
         hostHandOver($config, hostDatabasePath($config));
 

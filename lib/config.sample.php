@@ -669,6 +669,30 @@ return [
     ],
 
     /*
+     * Reading what captured traffic was asking for.
+     *
+     * A capture counts packets and addresses. That answers "there were 748
+     * packets on port 443" and nothing about what they wanted, which is almost
+     * always the actual question.
+     *
+     * Turning this on for a capture makes tcpdump print packet contents so that
+     * three things which travel in the clear can be read out and counted: the
+     * host name in a TLS handshake, and the Host and page of an HTTP request.
+     * Nothing decrypts, no payload is stored, and a query string is cut off
+     * before counting - a path says which page, and a query string is where
+     * tokens and search terms live.
+     *
+     * It is asked for per capture from the page rather than set here, because
+     * it means the process has looked at the beginning of other people's
+     * traffic on a machine that may be shared. That is a decision worth making
+     * one capture at a time.
+     *
+     * There is nothing to configure. This note is here because somebody reading
+     * the configuration to find out what this tool looks at deserves to find
+     * it, and its absence would read as its absence.
+     */
+
+    /*
      * A shell, in a web page.
      *
      * Off by default, and the default is the important part. This runs

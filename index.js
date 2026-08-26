@@ -15969,10 +15969,29 @@ function alertSeverity(row) {
  */
 function alertEmailed(row) {
   if (row.emailed_at) {
+    /*
+     * The message itself is one click away.
+     *
+     * "Emailed: yes" answers whether anybody was told and nothing about what
+     * they were told - and the wording of an alert email depends on what else
+     * fired in the same minute, which settings were in force, and what the
+     * assistant made of it. None of that is reconstructible from the row
+     * afterwards, so the message is kept and this opens it.
+     */
+    if (row.email_id) {
+      const open = document.createElement("button");
+      open.className = "link";
+      open.textContent = "yes";
+      open.title = `Sent ${whenTitle(row.emailed_at)}. Click to read it.`;
+      open.addEventListener("click", () => showAlertEmail(row));
+      return open;
+    }
+
     const span = document.createElement("span");
     span.textContent = "yes";
     span.className = "when";
-    span.title = `Sent ${whenTitle(row.emailed_at)}`;
+    span.title = `Sent ${whenTitle(row.emailed_at)}. `
+      + "This one went out before messages were kept, so there is nothing to open.";
     return span;
   }
 
@@ -15996,6 +16015,84 @@ function alertEmailed(row) {
 
   return wrap;
 }
+
+/**
+ * The message that went out, exactly as it was sent.
+ *
+ * Monospaced and unwrapped, because it is a plain-text email and the line
+ * breaks are the ones the recipient saw. Nothing here is re-rendered or tidied
+ * - the point of keeping it is being able to say "this is what arrived", and a
+ * prettied version cannot say that.
+ */
+async function showAlertEmail(row) {
+  let mail;
+
+  try {
+    mail = await api("alert-email", { id: row.email_id });
+  } catch (error) {
+    notice(String(error.message || error));
+    return;
+  }
+
+  const nodes = [];
+
+  const facts = [
+    ["Sent", mail.sent ? whenLabel(mail.at) : "it was not"],
+    ["To", mail.recipients || "nobody"],
+    ["Subject", mail.subject],
+  ];
+  if (mail.error) facts.push(["What went wrong", mail.error]);
+  nodes.push(factGrid(facts));
+
+  if (!mail.sent) {
+    nodes.push(note(
+      "This message was written and not delivered. It is kept anyway: “the email "
+      + "failed” is a fact about the mail system, and the thing worth having next "
+      + "is what it would have said."
+    ));
+  }
+
+  /*
+   * Everything that went out together in it.
+   *
+   * A batched subject says "4 things need looking at", which names a count and
+   * not a cause - this is the only place that says which four.
+   */
+  if (mail.covered.length > 1) {
+    const holder = document.createElement("div");
+    holder.id = "alertEmailCovers";
+    nodes.push(section(`${count(mail.covered.length, "alert")} went out in it`, holder));
+  }
+
+  const body = document.createElement("pre");
+  body.className = "sent-mail";
+  body.textContent = mail.body;
+  nodes.push(section("The message", body));
+
+  if (mail.headers) {
+    const headers = document.createElement("pre");
+    headers.className = "sent-mail muted";
+    headers.textContent = mail.headers;
+    nodes.push(section("Headers", headers));
+  }
+
+  showListDialog(
+    "What was sent",
+    nodes,
+    "Kept as it was sent. The wording depends on what else fired in the same minute and "
+    + "on the settings at the time, so it cannot be worked out again afterwards — "
+    + "which is why it is stored rather than rebuilt."
+  );
+
+  if (mail.covered.length > 1) {
+    renderTable("alertEmailCovers", mail.covered, [
+      { label: "When", render: one => whenSpan(one.raised_at) },
+      { label: "Severity", render: one => one.severity },
+      { label: "What", className: "name", render: one => one.subject },
+    ], null, one => (one.id === row.id ? "row-ok" : ""), one => String(one.id));
+  }
+}
+
 
 /** The assistant's note, rendered as the markdown it was written as. */
 function alertOpinion(row) {
@@ -18499,6 +18596,7 @@ function renderCaptureRequest(data) {
       await post("request-capture", {
         interface: picker.value,
         filter: filter.value,
+        read_asked: $("captureReadAsked").checked ? "1" : "0",
       });
       notice("Asked for. The host collector takes it on its next run — every five "
         + "minutes with the suggested crontab line.", true);
@@ -18510,6 +18608,38 @@ function renderCaptureRequest(data) {
   });
   form.appendChild(go);
   wrap.appendChild(form);
+
+  /*
+   * Reading what the traffic asked for, which is off by default and says why.
+   *
+   * Everything else a capture does is count packets and addresses. This one
+   * option makes tcpdump print packet contents so that a TLS server name and
+   * an HTTP Host and path can be read out of them - which is the only way to
+   * answer "what is all that traffic on 443", and does mean looking at the
+   * beginning of other people's traffic on a shared machine. That is a
+   * decision, so it is a decision somebody makes, per capture.
+   */
+  const deeper = document.createElement("label");
+  deeper.className = "pill";
+
+  const readAsked = document.createElement("input");
+  readAsked.type = "checkbox";
+  readAsked.id = "captureReadAsked";
+  deeper.appendChild(readAsked);
+  deeper.appendChild(document.createTextNode(" Read what the traffic asked for"));
+  wrap.appendChild(deeper);
+
+  const warning = document.createElement("p");
+  warning.className = "muted small";
+  warning.textContent =
+    "Counting packets tells you there were 748 on port 443 and nothing about what they "
+    + "wanted. This reads three things that travel in the clear — the host name in a TLS "
+    + "handshake, and the Host and page of an HTTP request — and counts them like "
+    + "everything else. It does mean tcpdump prints the first 512 bytes of each packet "
+    + "for this run, on a machine you may be sharing. Nothing decrypts, no payload is "
+    + "stored, and query strings are cut off before counting: a path says which page, "
+    + "and a query string is where tokens and search terms live.";
+  wrap.appendChild(warning);
 
   // What the chosen filter is actually for, which is the useful half.
   const about = document.createElement("p");
@@ -18788,6 +18918,48 @@ function renderCapture(capture, target = "captureBody") {
       ]),
       ["size", "size", "size", "size", "name"]
     )));
+  }
+
+  /*
+   * What was asked for, which is the part anybody actually reads.
+   *
+   * Above the packet counts rather than below them: "748 packets on 443" is
+   * where somebody starts and "git.example.com, 60 times" is where they were
+   * trying to get to.
+   */
+  if ((capture.asked || []).length) {
+    parts.push(section("What was looked up", simpleTable(
+      ["Record", "Name", "Queries"],
+      capture.asked.slice(0, 40).map(a => [a.how, a.what, humanCount(a.packets)]),
+      ["size", "name", "size"]
+    )));
+  }
+
+  if ((capture.visited || []).length) {
+    const rows = capture.visited.slice(0, 40).map(v => [
+      { https: "TLS", http: "HTTP", page: "page" }[v.how] ?? v.how,
+      v.what,
+      humanCount(v.packets),
+    ]);
+
+    parts.push(section("What it was asking them for", simpleTable(
+      ["How", "What", "Packets"],
+      rows,
+      ["size", "name", "size"]
+    )));
+
+    parts.push(note(
+      "Read from traffic that travels in the clear: the host name in a TLS handshake, "
+      + "and the Host and page of an HTTP request. A TLS row says which host was "
+      + "reached, never what was said to it. Query strings were cut off before counting."
+    ));
+  } else if (capture.read_asked) {
+    parts.push(note(
+      "Contents were read for this capture and nothing recognisable came out of them — "
+      + "no TLS handshakes and no HTTP requests in the packets sampled. A capture of an "
+      + "established connection sees neither: only the first packet of a connection "
+      + "carries a server name."
+    ));
   }
 
   if ((capture.names || []).length) {
