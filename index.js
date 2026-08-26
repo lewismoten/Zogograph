@@ -58,6 +58,8 @@ const POLL_GRACE_SECONDS = 2;
 const state = {
   signedIn: false,
   csrf: null,
+  // Which account this runs as, so the process lists can mark its own rows.
+  account: null,
   range: 86400,
   capabilities: null,
   view: "overview",
@@ -2832,6 +2834,7 @@ async function refreshShared() {
 
   state.signedIn = overview.signed_in;
   state.csrf = overview.csrf;
+  state.account = overview.account ?? state.account;
   state.deletable = overview.deletable || [];
   state.deletableScope = overview.deletable_scope || "account";
   state.totals = overview.totals || {};
@@ -12920,6 +12923,10 @@ async function refreshLinks() {
 /* -------------------------------------------------------------- processes -- */
 
 async function refreshProcesses() {
+  // Once per page load. The marks beside process names come from it, and a
+  // table drawn before it arrives would simply have none.
+  if (!WHAT_IS.loaded) await loadWhatIs();
+
   const panel = $("processPanel");
   if (!state.signedIn) {
     panel.hidden = true;
@@ -12944,9 +12951,9 @@ async function refreshProcesses() {
   } else {
     const grouped = data.grouped;
     const columns = [
-      { label: "Process", render: row => row.name },
+      { label: "Process", render: row => namedThing("process", row.name) },
       { label: "How many", className: "size", render: row => (row.procs > 1 ? row.procs : "") },
-      { label: "User", render: row => row.user },
+      { label: "User", render: row => userCell(row.user) },
       { label: "CPU", className: "size", render: row => `${row.cpu_percent.toFixed(1)}%` },
       { label: "Memory", className: "size", render: row => humanBytes(row.rss_bytes) },
       { label: "Of RAM", className: "size", render: row => `${row.mem_percent.toFixed(1)}%` },
@@ -13418,6 +13425,8 @@ const HOST_PANELS = [
 ];
 
 async function refreshHost() {
+  if (!WHAT_IS.loaded) await loadWhatIs();
+
   /*
    * One request, three pages.
    *
@@ -13644,7 +13653,7 @@ async function refreshHost() {
   ], { axis: bytesAxis, zeroBased: true, empty: "Only one host reading so far" });
 
   renderTable("hostUsers", data.users, [
-    { label: "User", render: r => r.user },
+    { label: "User", render: r => userCell(r.user) },
     { label: "Processes", className: "size", render: r => r.procs },
     { label: "Threads", className: "size", render: r => r.threads },
     { label: "Resident", className: "size", render: r => humanBytes(r.rss_bytes) },
@@ -13663,8 +13672,8 @@ async function refreshHost() {
 
   renderTable("hostProcesses", data.processes, [
     { label: "PID", className: "size", render: r => r.pid },
-    { label: "User", render: r => r.user },
-    { label: "Process", render: r => r.name },
+    { label: "User", render: r => userCell(r.user) },
+    { label: "Process", render: r => namedThing("process", r.name) },
     { label: "Resident", className: "size", render: r => humanBytes(r.rss_bytes) },
     { label: "Proportional (PSS)", className: "size", render: r => hostPss(r.pss_bytes) },
     { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
@@ -13701,7 +13710,7 @@ async function refreshHost() {
   renderHostDaemons(data.daemons ?? null);
 
   renderTable("hostSlab", data.slab, [
-    { label: "Cache", render: r => r.name },
+    { label: "Cache", render: r => namedThing("slab", r.name) },
     { label: "Holding", className: "size", render: r => humanBytes(r.cache_bytes) },
     { label: "Objects", className: "size", render: r => Number(r.objs).toLocaleString() },
     { label: "Each", className: "size", render: r => humanBytes(r.obj_bytes) },
@@ -21183,6 +21192,342 @@ function markWideTables(within = document) {
 }
 
 /**
+ * A user name, marked when it is one of the two that matter.
+ *
+ * Reading a hundred-row process table means asking "is that one mine" over and
+ * over, and the answer is already on the page - it is just not marked. Two get
+ * marked: this account, because those are the rows anybody here can actually
+ * do something about, and root, because those are the rows they cannot.
+ *
+ * Colour is not the only signal. Each carries a word on hover, since a colour
+ * alone tells somebody who cannot distinguish it nothing at all.
+ */
+function userCell(user) {
+  const span = document.createElement("span");
+  span.textContent = user;
+
+  if (user === state.account) {
+    span.className = "user-me";
+    span.title = "This account — the one this dashboard runs as.";
+  } else if (user === "root") {
+    span.className = "user-root";
+    span.title = "root. This dashboard cannot stop or change these.";
+  }
+
+  return span;
+}
+
+/* ----------------------------------------------------- what a thing is -- */
+
+/*
+ * Descriptions for the names in the slab and process lists.
+ *
+ * Fetched once and held, because they change only when somebody writes one and
+ * the two pages that use them redraw constantly.
+ */
+const WHAT_IS = { slab: {}, process: {}, mine: [], writable: false, loaded: false };
+
+async function loadWhatIs() {
+  try {
+    const data = await api("descriptions");
+    WHAT_IS.slab = data.slab || {};
+    WHAT_IS.process = data.process || {};
+    WHAT_IS.mine = data.mine || [];
+    WHAT_IS.writable = Boolean(data.writable);
+    WHAT_IS.loaded = true;
+  } catch {
+    /*
+     * A description is decoration, and a page that failed to load one should
+     * still show its numbers. The marks simply do not appear.
+     */
+    WHAT_IS.loaded = true;
+  }
+}
+
+/**
+ * What is known about one name, exactly or by family.
+ *
+ * Exact first, then the longest matching prefix: `kmalloc-512` is described by
+ * `kmalloc-*` unless somebody has written about that one size specifically,
+ * and the longest prefix wins so a more specific family beats a broader one.
+ */
+function whatIs(kind, name) {
+  const known = WHAT_IS[kind] || {};
+  if (known[name]) return known[name];
+
+  let best = null;
+  let longest = -1;
+
+  for (const [key, entry] of Object.entries(known)) {
+    if (!key.endsWith("*")) continue;
+    const stem = key.slice(0, -1);
+    if (name.startsWith(stem) && stem.length > longest) {
+      longest = stem.length;
+      best = entry;
+    }
+  }
+
+  return best;
+}
+
+/**
+ * A name with a help mark beside it, when there is something to say.
+ *
+ * The mark only appears where there is a description, so its presence is
+ * itself information: an unmarked process on a page full of marked ones is one
+ * nothing here knows about, which is exactly the one worth writing down.
+ */
+function namedThing(kind, name) {
+  const wrap = document.createElement("span");
+  wrap.className = "named-thing";
+
+  const said = document.createElement("span");
+  said.textContent = name;
+  wrap.appendChild(said);
+
+  const entry = whatIs(kind, name);
+  if (!entry) return wrap;
+
+  const mark = document.createElement("span");
+  mark.className = "help-icon";
+  mark.textContent = entry.mine ? "\u{1F4DD}" : "❓";
+  mark.tabIndex = 0;
+  mark.setAttribute("role", "button");
+  mark.setAttribute("aria-label", `What ${name} is: ${entry.what}`);
+
+  const build = () => whatIsBubble(name, entry);
+  const key = `whatis:${kind}:${name}`;
+
+  mark.addEventListener("pointerenter", () => {
+    if (helpBubble?.dataset.pinned !== "yes") showHelp(mark, build(), false);
+  });
+  mark.addEventListener("pointerleave", () => {
+    if (helpBubble?.dataset.pinned !== "yes") hideHelp();
+  });
+  mark.addEventListener("focus", () => showHelp(mark, build(), false));
+  mark.addEventListener("blur", () => {
+    if (helpBubble?.dataset.pinned !== "yes") hideHelp();
+  });
+
+  /*
+   * Clicking opens the dialog rather than pinning the bubble.
+   *
+   * A bubble can be read; a dialog can be read, kept open while looking at the
+   * table behind it, and holds a link that is worth actually clicking - which
+   * a bubble that vanishes when the pointer moves cannot.
+   */
+  mark.addEventListener("click", event => {
+    event.stopPropagation();
+    hideHelp();
+    showWhatIsDialog(kind, name, entry);
+  });
+
+  mark.addEventListener("keydown", event => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      hideHelp();
+      showWhatIsDialog(kind, name, entry);
+    }
+  });
+
+  mark.dataset.key = key;
+  wrap.appendChild(mark);
+  return wrap;
+}
+
+/** The short form, for pointing at. */
+function whatIsBubble(name, entry) {
+  const wrap = document.createElement("div");
+  wrap.dataset.helpKey = `whatis:${name}`;
+
+  const title = document.createElement("div");
+  title.className = "bubble-title";
+  title.textContent = name;
+  wrap.appendChild(title);
+
+  const said = document.createElement("div");
+  said.textContent = entry.what;
+  wrap.appendChild(said);
+
+  const more = document.createElement("div");
+  more.className = "muted small";
+  more.textContent = entry.mine
+    ? "Your own note. Click for the link and to edit it."
+    : (entry.link ? "Click to open this, with a link to more." : "Click to keep this open.");
+  wrap.appendChild(more);
+
+  return wrap;
+}
+
+/** The full form, with the link and a way to write your own. */
+function showWhatIsDialog(kind, name, entry) {
+  const parts = [];
+
+  const said = document.createElement("p");
+  said.textContent = entry.what;
+  parts.push(said);
+
+  if (entry.link) {
+    const p = document.createElement("p");
+    const link = document.createElement("a");
+    link.href = entry.link;
+    link.textContent = entry.link;
+    /*
+     * A new tab, and no referrer.
+     *
+     * Somebody reading about a slab cache should not lose the page they were
+     * diagnosing from, and the site they land on has no business knowing which
+     * dashboard sent them.
+     */
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    p.appendChild(link);
+    parts.push(p);
+  }
+
+  const whose = document.createElement("p");
+  whose.className = "muted small";
+  whose.textContent = entry.mine
+    ? "Written on this machine, about this machine."
+    : "From the built-in list, which is guessing from the name. If you know better "
+      + "for this machine, write your own — it will replace this everywhere.";
+  parts.push(whose);
+
+  if (WHAT_IS.writable) {
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "link";
+    edit.textContent = entry.mine ? "Edit this note" : "Write your own";
+    edit.addEventListener("click", () => {
+      $("listDialog").close();
+      showView("sys-descriptions");
+      // The form arrives filled in, so writing one is one click and a sentence.
+      setTimeout(() => fillDescriptionForm(kind, name, entry.mine ? entry : null), 300);
+    });
+    parts.push(edit);
+  }
+
+  showListDialog(name, parts, kind === "slab"
+    ? "A kernel slab cache — memory the kernel itself is holding."
+    : "A process running on this machine.");
+}
+
+/* ------------------------------------------------- your own descriptions -- */
+
+/** The page for writing down what this machine's own processes are. */
+async function refreshDescriptions() {
+  await loadWhatIs();
+  renderDescriptions();
+}
+
+function renderDescriptions() {
+  const body = $("descriptionsBody");
+  const form = $("descriptionForm");
+
+  form.hidden = !WHAT_IS.writable;
+  if (!WHAT_IS.writable) {
+    body.replaceChildren(note("Sign in to write your own."));
+    return;
+  }
+
+  if (!WHAT_IS.mine.length) {
+    body.replaceChildren(note(
+      "Nothing written yet. The built-in list covers "
+      + `${count(Object.keys(WHAT_IS.process).length, "process", "processes")} and `
+      + `${count(Object.keys(WHAT_IS.slab).length, "slab cache")}; `
+      + "anything on this machine it does not know about shows its name with no "
+      + "mark beside it, which is how to find the ones worth writing down."
+    ));
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.id = "descriptionsTable";
+  body.replaceChildren(holder);
+
+  renderTable("descriptionsTable", WHAT_IS.mine, [
+    { label: "Kind", render: row => (row.kind === "slab" ? "Slab cache" : "Process") },
+    { label: "Name", className: "cmd", render: row => row.name },
+    { label: "What it is", render: row => row.what },
+    {
+      label: "Link",
+      render: row => {
+        if (!row.link) return "";
+        const link = document.createElement("a");
+        link.href = row.link;
+        link.textContent = "open";
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        return link;
+      },
+    },
+    { label: "Written", render: row => whenSpan(row.added_at) },
+    {
+      label: "",
+      render: row => {
+        const wrap = document.createElement("span");
+
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "link";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", () => fillDescriptionForm(row.kind, row.name, row));
+        wrap.appendChild(edit);
+
+        const gone = document.createElement("button");
+        gone.type = "button";
+        gone.className = "link danger";
+        gone.textContent = "Forget";
+        gone.addEventListener("click", async () => {
+          const yes = await askFirst(`Forget what ${row.name} is?`, [
+            "The note goes; the built-in description takes over again if there is one "
+            + "for that name, and otherwise the name appears with nothing beside it.",
+          ], "Forget it", true);
+          if (!yes) return;
+
+          try {
+            const data = await post("description-forget", { id: row.id });
+            takeWhatIs(data);
+            renderDescriptions();
+          } catch (error) {
+            notice(String(error.message || error));
+          }
+        });
+        wrap.appendChild(gone);
+
+        return wrap;
+      },
+    },
+  ], null, null, row => String(row.id));
+}
+
+/** Fills the form from an existing note, or just its name. */
+function fillDescriptionForm(kind, name, row) {
+  showView("sys-descriptions");
+
+  $("descriptionKind").value = kind;
+  $("descriptionName").value = name;
+  $("descriptionWhat").value = row?.what ?? "";
+  $("descriptionLink").value = row?.link ?? "";
+
+  /*
+   * Focused on the sentence rather than the name.
+   *
+   * The name is already right - it was clicked on - and the whole reason
+   * somebody is here is the sentence they want to write.
+   */
+  $("descriptionWhat").focus();
+}
+
+/** Takes the fresh set out of a save or forget response. */
+function takeWhatIs(data) {
+  WHAT_IS.slab = data.slab || {};
+  WHAT_IS.process = data.process || {};
+  WHAT_IS.mine = data.mine || [];
+  WHAT_IS.writable = Boolean(data.writable);
+}
+
+/**
  * The one floating box every help mark shares.
  *
  * One element rather than one per mark, because there is only ever one open and
@@ -25563,6 +25908,10 @@ const VIEWS = {
   "mem-services": { label: "Services over time", parent: "host", refresh: () => refreshHost() },
   "mem-procs": { label: "Biggest processes", parent: "host", refresh: () => refreshHost() },
   "mem-slab": { label: "Kernel slab caches", parent: "host", refresh: () => refreshHost() },
+  "sys-descriptions": {
+    manual: true, label: "What things are", parent: "system",
+    refresh: () => refreshDescriptions(),
+  },
 
   processes: { label: "Processes", refresh: () => refreshProcesses() },
   services: { label: "Services", parent: "processes", refresh: () => refreshHost() },
@@ -27213,6 +27562,27 @@ $("labelForm").addEventListener("submit", async event => {
     renderLabels(result);
     if (networkState.data) await refreshNetwork();
     notice("Saved. It will show wherever that address or port appears.", true);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
+$("descriptionForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  try {
+    const data = await post("description-save", {
+      kind: $("descriptionKind").value,
+      name: $("descriptionName").value.trim(),
+      what: $("descriptionWhat").value.trim(),
+      link: $("descriptionLink").value.trim(),
+    });
+
+    takeWhatIs(data);
+    $("descriptionName").value = "";
+    $("descriptionWhat").value = "";
+    $("descriptionLink").value = "";
+    renderDescriptions();
+    notice("Saved. It shows beside that name from now on.", true);
   } catch (error) {
     notice(String(error.message || error));
   }

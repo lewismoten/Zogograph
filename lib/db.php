@@ -595,6 +595,32 @@ function migrations(): array
          * later, and a row that was removed cannot answer it. The change log
          * beside it is what makes that query cheap.
          */
+        32 => [
+            /*
+             * What the operator knows about a process or a slab cache.
+             *
+             * The built-in list is guessing from a name, which is often just
+             * whatever a binary got called. Somebody running the machine knows
+             * what `backup-shim` actually is, and writing it down once puts it
+             * on the page for everyone who reads it afterwards - including
+             * whoever inherits the server.
+             *
+             * Kept apart from `labels` although both are the operator naming
+             * things, because these carry a paragraph and a link rather than a
+             * short name, and because a label is a substitute for a value while
+             * this is an annotation beside one.
+             */
+            "CREATE TABLE descriptions (
+                id       INTEGER PRIMARY KEY,
+                kind     TEXT NOT NULL,
+                name     TEXT NOT NULL,
+                what     TEXT NOT NULL,
+                link     TEXT,
+                added_at INTEGER NOT NULL
+            )",
+            'CREATE UNIQUE INDEX descriptions_kind_name ON descriptions (kind, name)',
+        ],
+
         31 => [
             /*
              * The messages that went out, exactly as they were sent.

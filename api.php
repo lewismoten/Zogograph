@@ -66,6 +66,7 @@ require_once __DIR__ . '/lib/network.php';
 require_once __DIR__ . '/lib/logstream.php';
 require_once __DIR__ . '/lib/diagnose.php';
 require_once __DIR__ . '/lib/labels.php';
+require_once __DIR__ . '/lib/whatis.php';
 require_once __DIR__ . '/lib/urlwatch.php';
 require_once __DIR__ . '/lib/spans.php';
 require_once __DIR__ . '/lib/storekeep.php';
@@ -135,6 +136,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'dns' => dnsView($config, $signedIn),
         'captures' => capturesView($config, $pdo, $signedIn),
         'labels' => labelsView($pdo, $signedIn),
+        'descriptions' => descriptionsView($pdo, $signedIn),
         'whoami' => whoAmIView($config, $pdo, $signedIn),
         'dns-records' => dnsRecordsView($config, $pdo, $signedIn),
         'urls' => urlsView($pdo, $signedIn),
@@ -242,6 +244,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'cancel-task' => doCancelTask($pdo, $post),
         'label-save' => doLabelSave($pdo, $post),
         'label-delete' => doLabelDelete($pdo, $post),
+        'description-save' => doDescriptionSave($pdo, $post),
+        'description-forget' => doDescriptionForget($pdo, $post),
         'url-save' => doUrlSave($config, $pdo, $post),
         'url-delete' => doUrlDelete($pdo, $post),
         'url-run' => doUrlRun($config, $pdo, $post),
@@ -313,6 +317,18 @@ function overview(array $config, PDO $pdo, bool $signedIn): array
     return [
         'signed_in' => $signedIn,
         'csrf' => $signedIn ? csrfToken() : null,
+        /*
+         * Which account this dashboard is running as.
+         *
+         * So that the process lists can mark the rows that are this account's
+         * own work and the rows that are root's. Reading a hundred-row process
+         * table means constantly asking "is that one mine", and the answer is
+         * on the page already - it just is not marked.
+         *
+         * Not a secret: it is in every path the signed-in view already shows,
+         * and the masked view masks the paths rather than the account name.
+         */
+        'account' => currentAccountName(),
         /*
          * The newest summary, for the front page.
          *
@@ -2120,6 +2136,64 @@ function labelsView(PDO $pdo, bool $signedIn): array
     }
 
     return ['rows' => $rows, 'max' => LABEL_MAX];
+}
+
+/**
+ * What everything is called and what it does, for the pages that list names.
+ *
+ * Sent whole rather than a name at a time. The slab page has ninety rows and
+ * the process page a hundred, and describing them one request each would be a
+ * hundred requests to say something that fits in a few kilobytes.
+ *
+ * Not gated on signing in: a description of what `dentry` is reveals nothing
+ * about this machine, and the pages showing the names are readable without
+ * signing in. The operator's own notes are included, since they were written
+ * to be read on the page they annotate - if one of them holds something
+ * private, that is a reason to reword it rather than to hide the whole set.
+ */
+function descriptionsView(PDO $pdo, bool $signedIn): array
+{
+    return [
+        'slab' => whatIsAll($pdo, 'slab'),
+        'process' => whatIsAll($pdo, 'process'),
+        'mine' => $signedIn ? whatIsMine($pdo) : [],
+        'max' => WHATIS_MAX,
+        'writable' => $signedIn,
+    ];
+}
+
+/** Writes one of the operator's own descriptions. */
+function doDescriptionSave(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $name = (string)($_POST['name'] ?? '');
+
+    whatIsSave(
+        $pdo,
+        (string)($_POST['kind'] ?? 'process'),
+        $name,
+        (string)($_POST['what'] ?? ''),
+        (string)($_POST['link'] ?? '')
+    );
+
+    logAction($pdo, 'description_save', $name, 'ok', 0, 0,
+        (string)($_POST['kind'] ?? 'process'));
+
+    return ['ok' => true] + descriptionsView($pdo, true);
+}
+
+/** Removes one. */
+function doDescriptionForget(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    $gone = whatIsForget($pdo, $id);
+
+    logAction($pdo, 'description_forget', (string)$id, $gone ? 'ok' : 'missing', 0, 0, null);
+
+    return ['ok' => $gone] + descriptionsView($pdo, true);
 }
 
 function doLabelSave(PDO $pdo, bool $post): array

@@ -2736,3 +2736,39 @@ tr.muted-row { opacity: .7; }
 .when-detail tr:first-child .when-value { color: var(--text); font-weight: 600; }
 .when-detail tr:first-child td { padding-bottom: 7px; }
 .when-detail tr:nth-child(2) td { border-top: 1px solid var(--line); padding-top: 7px; }
+
+/* ------------------------------------------------- what a thing is, and whose -- */
+
+/*
+ * A name with its question mark held beside it.
+ *
+ * inline-flex so the mark cannot wrap onto a line of its own, which is what a
+ * plain span does in a narrow column and which reads as a stray character.
+ */
+.named-thing { display: inline-flex; align-items: baseline; gap: 4px; }
+/* The mark's own margin is for headers, where it follows a run of text. Here
+   it sits inside a flex row that already spaces it, and doubling up put a
+   visible gap between a name and the mark belonging to it. */
+.named-thing .help-icon { margin-left: 0; }
+.bubble-title { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.help-bubble .muted { margin-top: 6px; display: block; }
+
+/*
+ * The two accounts worth picking out of a hundred rows.
+ *
+ * This account is the one whose rows can be acted on; root's are the ones that
+ * cannot. Both carry a title as well as a colour, because a colour on its own
+ * says nothing to somebody who cannot tell it from the text around it.
+ */
+.user-me { color: var(--accent); font-weight: 600; }
+.user-root { color: var(--warn); font-weight: 600; }
+
+#descriptionForm { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+#descriptionForm textarea {
+  width: 100%; min-height: 68px; font: inherit;
+  background: var(--bg-raised); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px;
+}
+#descriptionForm button { align-self: flex-start; }
+#descriptionName { min-width: 200px; }
+#descriptionLink { flex: 1; min-width: 240px; }
