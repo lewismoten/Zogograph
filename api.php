@@ -3244,6 +3244,27 @@ function processList(array $config, PDO $pdo, bool $signedIn): array
         // So the Stop buttons are only drawn where they could actually work.
         'can_stop' => $stopping['available'],
         'stop_reason' => $stopping['reason'],
+        /*
+         * How many cores the percentages are against.
+         *
+         * `ps` reports each process as a share of ONE core, so a threaded
+         * program legitimately reads 400% and a group of them can pass 800% -
+         * which sits on the page beside a machine-wide figure that is clamped
+         * to 100 and means something entirely different. Two numbers written
+         * the same way meaning different things is the whole fault; the core
+         * count is what lets the page say which is which.
+         */
+        'cores' => cpuCores(),
+        /*
+         * The collectors are in this list, and are not in the recorded one.
+         *
+         * The stored snapshots drop this tool's own processes, because a record
+         * of what was running during a spike should not be mostly the thing
+         * that noticed the spike. The live list keeps them: they are really
+         * running and really using the CPU, and hiding them would make the
+         * column stop adding up.
+         */
+        'own_processes_shown' => true,
     ];
 }
 

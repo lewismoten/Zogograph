@@ -14991,7 +14991,20 @@ async function refreshProcesses() {
       { label: "Process", render: row => namedThing("process", row.name) },
       { label: "How many", className: "size", render: row => (row.procs > 1 ? row.procs : "") },
       { label: "User", render: row => userCell(row.user) },
-      { label: "CPU", className: "size", render: row => `${row.cpu_percent.toFixed(1)}%` },
+      {
+        label: "CPU",
+        className: "size",
+        /*
+         * A share of one core, which is what `ps` measures and what `top`
+         * shows - so a threaded program reads 400% and is not wrong.
+         *
+         * The trouble is the machine-wide CPU figure elsewhere on this
+         * dashboard is a share of ALL cores and is clamped to 100, so the two
+         * numbers were written identically and meant different things. Past one
+         * core, this says how many cores that actually is.
+         */
+        render: row => processCpuCell(row.cpu_percent, data.cores),
+      },
       { label: "Memory", className: "size", render: row => humanBytes(row.rss_bytes) },
       { label: "Of RAM", className: "size", render: row => `${row.mem_percent.toFixed(1)}%` },
       { label: "Running for", className: "size", render: row => processAge(row) },
@@ -15054,7 +15067,20 @@ function stopButtons(row, grouped) {
     button.addEventListener("click", async () => {
       if (!confirmStop(row, grouped, force)) return;
 
+      /*
+       * The button waits for the process to actually go.
+       *
+       * Sending a signal returns immediately and says nothing about whether it
+       * worked: SIGTERM is a request, and a program that is ignoring it looks
+       * exactly like one that is about to exit. The button went straight back
+       * to enabled, so the only way to find out was to press it again and see
+       * whether the row was still there.
+       */
+      const was = button.textContent;
       button.disabled = true;
+      button.classList.add("working");
+      button.textContent = force ? "Killing…" : "Asking…";
+
       try {
         const result = many
           ? await post("stop-group", { name: row.name, force: force ? "1" : "0" })
@@ -15068,11 +15094,25 @@ function stopButtons(row, grouped) {
               elapsed: row.oldest_seconds ?? row.elapsed_seconds ?? "",
               force: force ? "1" : "0",
             });
+
         notice(describeStop(result, row, many), true);
+
+        const gone = await waitForProcessToGo(row, many, force);
+
+        if (gone === false) {
+          notice(force
+            ? `${row.name} is still in the process list after SIGKILL. That normally `
+              + "means it is stuck in the kernel — waiting on a disk or a network mount — "
+              + "where no signal can reach it until whatever it is waiting for returns."
+            : `${row.name} was asked to stop and has not. It is entitled to ignore `
+              + "SIGTERM; Force sends a signal it cannot ignore.");
+        }
       } catch (error) {
         notice(String(error.message || error));
       } finally {
         button.disabled = false;
+        button.classList.remove("working");
+        button.textContent = was;
         refreshProcesses().catch(() => {});
       }
     });
@@ -15081,6 +15121,59 @@ function stopButtons(row, grouped) {
   }
 
   return holder;
+}
+
+/**
+ * Watches until the process is gone, or until waiting stops being useful.
+ *
+ * Polled quickly at first and then more slowly. Most things exit within a
+ * second of being asked, so a first look after half a second answers it most of
+ * the time; something taking longer is either tidying up - which is the whole
+ * reason SIGTERM exists and is worth waiting for - or ignoring the signal, and
+ * the difference only shows with time.
+ *
+ * Returns true if it went, false if it is still there, and null if the list
+ * could not be read - which is not the same as "still running" and must not be
+ * reported as it.
+ */
+async function waitForProcessToGo(row, many, force) {
+  // Half a second, then a second, then longer: about twelve seconds in all,
+  // which is longer than anything well-behaved takes and shorter than a person
+  // will sit watching a button.
+  const waits = [500, 500, 1000, 1000, 1000, 2000, 2000, 2000, 2000];
+
+  for (const wait of waits) {
+    await new Promise(resolve => setTimeout(resolve, wait));
+
+    let data;
+    try {
+      data = await api("processes", {
+        // Whatever the page is showing, so the row being watched is in the
+        // shape that was clicked on.
+        by: $("procBy")?.value ?? "cpu",
+        limit: 100,
+        group: many ? 1 : 0,
+      });
+    } catch {
+      return null;
+    }
+
+    if (!data.available) return null;
+
+    /*
+     * Matched on pid for one process and on name for a group.
+     *
+     * A pid is exact. A group is a name, and "still there" means any of them
+     * is - which is the honest answer for a pool where two of five exited.
+     */
+    const still = many
+      ? data.rows.some(other => other.name === row.name)
+      : data.rows.some(other => String(other.pid) === String(row.pid));
+
+    if (!still) return true;
+  }
+
+  return false;
 }
 
 /**
@@ -15127,6 +15220,78 @@ function describeStop(result, row, many) {
  * from one that has simply been running a long time, and the pair of numbers is
  * the only thing that says so.
  */
+/**
+ * Which row holds the largest and second-largest of each named figure.
+ *
+ * Returns the rows themselves rather than their values, so a tie does not mark
+ * two rows as first - identity is what is compared, and the first of two equal
+ * rows wins, which is arbitrary but stable.
+ *
+ * Zeroes are never ranked. "The most swap" among a table where nothing has
+ * swapped is a fact about nothing, and colouring it red would send somebody
+ * looking for a problem that does not exist.
+ */
+function topTwo(rows, fields) {
+  const out = {};
+
+  for (const field of fields) {
+    const sorted = [...rows]
+      .filter(row => Number(row[field]) > 0)
+      .sort((a, b) => Number(b[field]) - Number(a[field]));
+
+    out[field] = { first: sorted[0] ?? null, second: sorted[1] ?? null };
+  }
+
+  return out;
+}
+
+/** A figure, marked if it is the largest or second largest in its column. */
+function rankedCell(text, rank, row) {
+  const span = document.createElement("span");
+  span.textContent = text;
+
+  if (rank?.first === row) {
+    span.className = "rank-first";
+    span.title = "The largest in this column.";
+  } else if (rank?.second === row) {
+    span.className = "rank-second";
+    span.title = "The second largest in this column.";
+  }
+
+  return span;
+}
+
+/**
+ * One process's CPU, with what the percentage is a percentage of.
+ *
+ * Under a core, the bare number is unambiguous enough. Over one it is not: 812%
+ * beside a machine reading 74% invites the reasonable conclusion that something
+ * is broken, when both are correct and measuring different things.
+ */
+function processCpuCell(percent, cores) {
+  const wrap = document.createElement("span");
+
+  const said = document.createElement("span");
+  said.textContent = `${Number(percent).toFixed(1)}%`;
+  wrap.appendChild(said);
+
+  if (percent > 100) {
+    said.className = "grew";
+
+    const of = document.createElement("div");
+    of.className = "muted small";
+    of.textContent = cores
+      ? `${(percent / 100).toFixed(1)} of ${count(cores, "core")}`
+      : `${(percent / 100).toFixed(1)} cores' worth`;
+    of.title = "ps measures each process against one core, so anything threaded can "
+      + "pass 100%. The CPU figure on the overview is a share of the whole machine "
+      + "and is a different measurement.";
+    wrap.appendChild(of);
+  }
+
+  return wrap;
+}
+
 function processAge(row) {
   // Grouped rows carry the span of the group; a single process carries its own
   // age under a different name, and the ungrouped table is made of those.
@@ -15136,10 +15301,34 @@ function processAge(row) {
   const age = humanDuration(oldest);
   const newest = row.newest_seconds;
 
-  if (row.procs > 1 && newest != null && newest * 8 < oldest && oldest > 600) {
-    return `${age} · newest ${humanDuration(newest)}`;
-  }
-  return age;
+  const said = document.createElement("span");
+  said.textContent = row.procs > 1 && newest != null && newest * 8 < oldest && oldest > 600
+    ? `${age} · newest ${humanDuration(newest)}`
+    : age;
+
+  /*
+   * Four ages, four meanings, and the column read the same for all of them.
+   *
+   * A process that started this second is the one you just caused and the one
+   * worth watching. A minute old on a machine under load is a job that has not
+   * finished when it should have. A few hours is ordinary work. Days is either
+   * a daemon, which is fine, or something that never exited, which is not - and
+   * scanning a column of durations for that distinction is exactly the work a
+   * colour saves.
+   */
+  const [band, why] = oldest < 5
+    ? ["age-new", "Started just now."]
+    : oldest < 3600
+      ? ["age-recent", "Started within the hour."]
+      : oldest < 86400
+        ? ["", "Started today."]
+        : ["age-old", "Running for more than a day - a daemon, or something that never "
+           + "finished."];
+
+  if (band) said.className = band;
+  said.title = why;
+
+  return said;
 }
 
 /**
@@ -15689,13 +15878,39 @@ async function refreshHost() {
     { key: "unaccounted", label: "Other kernel/system" },
   ], { axis: bytesAxis, zeroBased: true, empty: "Only one host reading so far" });
 
+  /*
+   * The two biggest in each column, marked.
+   *
+   * A table of twenty accounts and six columns of bytes is a table you read by
+   * comparing every row against every other one, in your head, once per column.
+   * The question being asked of it is almost always "who is using the most",
+   * and the answer is already in the data - marking it is the difference
+   * between a table you search and a table you read.
+   *
+   * Two, not one: the second is what says whether the first is an outlier or
+   * just the top of a crowd, and that changes what to do about it.
+   */
+  const rank = topTwo(data.users, ["rss_bytes", "pss_bytes", "swap_bytes"]);
+
   renderTable("hostUsers", data.users, [
     { label: "User", render: r => userCell(r.user) },
     { label: "Processes", className: "size", render: r => r.procs },
     { label: "Threads", className: "size", render: r => r.threads },
-    { label: "Resident", className: "size", render: r => humanBytes(r.rss_bytes) },
-    { label: "Proportional (PSS)", className: "size", render: r => hostPss(r.pss_bytes) },
-    { label: "Swapped", className: "size", render: r => humanBytes(r.swap_bytes) },
+    {
+      label: "Resident",
+      className: "size",
+      render: r => rankedCell(humanBytes(r.rss_bytes), rank.rss_bytes, r),
+    },
+    {
+      label: "Proportional (PSS)",
+      className: "size",
+      render: r => rankedCell(hostPss(r.pss_bytes), rank.pss_bytes, r),
+    },
+    {
+      label: "Swapped",
+      className: "size",
+      render: r => rankedCell(humanBytes(r.swap_bytes), rank.swap_bytes, r),
+    },
   ]);
 
   renderServices(
@@ -27233,27 +27448,77 @@ async function refreshMounts() {
       ["name", null, "name", "size", "size", null]
     )));
 
+  /*
+   * The skeleton's own mounts live on the CageFS page now.
+   *
+   * They were the second half of this page, which made "Filesystem layout" two
+   * subjects under one heading - and left the page actually called "The CageFS
+   * skeleton" without the table of the skeleton. A pointer is enough here; the
+   * detail belongs where somebody looking for it will go.
+   */
   const cage = data.cagefs;
-  const cageBox = document.createDocumentFragment();
-  cageBox.appendChild(note(cage.note));
+  if (cage) {
+    const said = document.createElement("div");
+    said.className = "muted small";
+    said.textContent = cage.present
+      ? `${count(cage.count, "mount")} make up the CageFS skeleton. `
+      : "";
 
-  if (cage.present) {
-    cageBox.appendChild(simpleTable(
+    const link = document.createElement("a");
+    link.href = "#/cagefs";
+    link.textContent = cage.present
+      ? "They are on the CageFS skeleton page."
+      : "What CageFS is, and whether this machine has it.";
+    said.appendChild(link);
+
+    frag.appendChild(said);
+  }
+
+  body.replaceChildren(frag);
+  renderCagefsMounts(data);
+}
+
+/**
+ * The skeleton's mounts, on the page named after them.
+ *
+ * Drawn from the same reading as the layout page - one request answers both -
+ * so this fills in whichever of the two is on screen rather than fetching the
+ * mount table twice.
+ */
+function renderCagefsMounts(data) {
+  const holder = $("cagefsMounts");
+  if (!holder) return;
+
+  const cage = data?.cagefs;
+  if (!cage) { holder.replaceChildren(); return; }
+
+  const frag = document.createDocumentFragment();
+
+  /*
+   * Nothing, when there is no skeleton.
+   *
+   * The explainer above this already says whether CageFS is here and why an
+   * empty answer is not proof of absence. Repeating it as a second panel would
+   * be the same sentence twice on one short page.
+   */
+  if (!cage.present) {
+    holder.replaceChildren();
+    return;
+  }
+
+  frag.appendChild(section(
+    `The skeleton — ${count(cage.count, "mount")}`,
+    simpleTable(
       ["Path inside the skeleton", "Type", "From", "Bind", "Read-only"],
       cage.mounts.map(m => [
         m.relative, m.fs_type, m.fs_root === "/" ? m.source : m.fs_root,
         m.bind ? "yes" : "no", m.read_only ? "yes" : "no",
       ]),
       ["name", null, "name", null, null]
-    ));
-  }
-
-  frag.appendChild(section(
-    cage.present ? `CageFS skeleton — ${count(cage.count, "mount")}` : "CageFS",
-    cageBox
+    )
   ));
 
-  body.replaceChildren(frag);
+  holder.replaceChildren(frag);
 }
 
 
@@ -28108,7 +28373,7 @@ const VIEWS = {
 
   alerts: { label: "Alerts", parent: "overview", refresh: () => refreshAlerts() },
   uptime: { label: "Uptime", parent: "overview", refresh: () => refreshUptime() },
-  deletions: { label: "Actions", parent: "system", refresh: () => refreshActionLog() },
+  deletions: { label: "Audit", parent: "system", refresh: () => refreshActionLog() },
   email: {
     // Rebuilds its form from the server's answer, so it must not be polled -
     // see the note on sys-ai.

@@ -3046,3 +3046,33 @@ tr.muted-row { opacity: .7; }
 /* The session log reuses the transcript, but reads rather than follows, so it
    grows with its content instead of being a fixed window. */
 .term-out.session-log { height: auto; max-height: 70vh; }
+
+/* ------------------------------------------------------- how old it is -- */
+
+/*
+ * Four ages that mean four different things.
+ *
+ * Deliberately not the warn/crit colours: none of these is a fault. A process
+ * that started a second ago is interesting, and one running for a week is
+ * usually a daemon doing its job. The colour is a sorting aid for the eye, not
+ * a judgement, so it is quieter than anything that is one.
+ */
+.age-new { color: var(--accent); font-weight: 600; }
+.age-recent { color: #82c6ff; }
+.age-old { color: var(--muted); }
+
+/* A button that is waiting for something to happen elsewhere. */
+button.working { opacity: .75; cursor: progress; }
+
+/* ------------------------------------------------- the biggest two -- */
+
+/*
+ * The largest and second largest in a column of figures.
+ *
+ * Red and amber, but not the warn/crit colours and not bold: being the biggest
+ * user of memory on a machine is not a fault, it is a fact, and a table where
+ * the top row always looks like an alert is a table that cries wolf. Enough to
+ * find with the eye, not enough to alarm.
+ */
+.rank-first { color: #ff9a9a; }
+.rank-second { color: #ffc98a; }
