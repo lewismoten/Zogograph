@@ -8684,10 +8684,21 @@ async function runWaitForReadings(args) {
   const which = args.which === "host" ? "host" : "account";
   const seconds = Math.max(30, Math.min(1800, Number(args.seconds) || 300));
 
+  /*
+   * The collectors' own last-run times, from the page that already reports them.
+   *
+   * Not `health`, which is the install's own self-check and carries no
+   * timestamps at all - reading a field that is never there would have made
+   * this wait out its full timeout every time and then report the collector as
+   * stopped, which is a confident wrong answer rather than a missing one.
+   */
+  const wanted = which === "host" ? "Host collection" : "Readings";
+
   const at = async () => {
     try {
-      const health = await api("health");
-      return Number(which === "host" ? health.host_at : health.account_at) || 0;
+      const self = await api("self");
+      const row = (self.collectors || []).find(c => c.name === wanted);
+      return Number(row?.last_at) || 0;
     } catch {
       return 0;
     }
