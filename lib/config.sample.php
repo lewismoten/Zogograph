@@ -578,6 +578,38 @@ return [
         'personality' => '',
 
         /*
+         * How much the model can hold, and when to summarise.
+         *
+         *   context_tokens         the model's window. Not discoverable from
+         *                          the API - it is a fact about the model -
+         *                          so it is typed in. Guessing high is the
+         *                          worse mistake: the provider rejects the
+         *                          request outright
+         *   compact_at             per cent full at which the older part of a
+         *                          conversation is replaced by a summary.
+         *                          Clamped to 85: summarising means sending
+         *                          the part being summarised, so a limit that
+         *                          fires when the window is already full
+         *                          cannot act
+         *   compact_automatically  off means the ring in the chat goes amber
+         *                          and waits to be clicked
+         */
+        'context_tokens' => 128000,
+        'compact_at' => 70,
+        'compact_automatically' => true,
+
+        /*
+         * Whether recommended commands come with their explanation.
+         *
+         * On, every command it suggests carries a comment above each part,
+         * what the output should look like, and a documentation link. Somebody
+         * pasting a command they have not understood is the thing this is meant
+         * to prevent rather than a step on the way to it - but it is a
+         * preference, and somebody fluent in shell may find it noise.
+         */
+        'explain_commands' => true,
+
+        /*
          * Pictures, which are entirely optional and off until keyed.
          *
          *   enabled        the picture tools are not offered at all when off
@@ -586,14 +618,47 @@ return [
          *                  a model offered twelve will use twelve
          *   quality        standard or hd (hd costs more per image)
          *   shape          square, classic, wide or tall
-         *   per_hour       across everything here, including reactions. This
-         *                  is what stops a loop running up a bill
+         *   per_hour       generated pictures only, which is the half that
+         *                  costs money. This is what stops a loop running up
+         *                  a bill
          *   self_portrait  let it regenerate its own avatar. A novelty
-         *   reactions      short animated images for the occasional aside
-         *   giphy_key      needed for those
-         *   rating         g, pg or pg-13. These appear unannounced in a
-         *                  browser, chosen by a language model from a search
-         *                  term it invented; g is the sensible default
+         *
+         * Searching for an animation is a separate thing from generating a
+         * picture, and is limited separately: a search is a free read against
+         * somebody else's quota, a generation is a bill.
+         *
+         *   reactions          short animated images for the occasional aside
+         *   search_service     tenor, klipy, or legacy. Three services with
+         *                      the same shape and different terms; which one
+         *                      an install may use is not something this code
+         *                      can know
+         *   search_key         for whichever of them is chosen
+         *   search_base        the endpoint, if it is not the default. A
+         *                      field rather than a constant so a service can
+         *                      move without a code change
+         *   searches_per_hour  up to 100, which is what these services publish
+         *                      as a free allowance. It can be set lower and
+         *                      not higher: a ceiling that a setting can lift
+         *                      past the provider's own protects nothing
+         *   rating             g, pg or pg-13. These appear unannounced in a
+         *                      browser, chosen by a language model from a
+         *                      search term it invented; g is the sensible
+         *                      default
+         *
+         * What pictures cost, for the running total. The plan these are sold
+         * on is a monthly fee with an allowance and then credits, so a
+         * per-image price is only true once the allowance is gone. Both are
+         * recorded and the arithmetic is shown rather than hidden - inside the
+         * allowance a picture adds nothing to a conversation's cost, because
+         * that is the truth. The monthly fee is never divided among whatever
+         * happened to be generated: that would make the first picture of the
+         * month cost five dollars and the hundredth cost nothing.
+         *
+         *   monthly_cents       what the plan costs each month
+         *   included_per_month  how many generations it covers
+         *   price_standard      cents each, after the allowance
+         *   price_hd            cents each at HD
+         *   price_genius        cents each at the top quality
          */
         'images' => [],
 
@@ -601,6 +666,39 @@ return [
 
         // Defaults to ai.db beside the other two databases.
         'database' => null,
+    ],
+
+    /*
+     * A shell, in a web page.
+     *
+     * Off by default, and the default is the important part. This runs
+     * whatever is typed into it, as the user the web server runs as, and
+     * returns the output - which is to say it is a web shell. Anybody who gets
+     * the dashboard password gets this. That is not an argument against having
+     * it, but it is an argument for the decision being deliberate rather than
+     * inherited from a sample file somebody copied.
+     *
+     * What it buys is the half of troubleshooting that PHP running as this
+     * account cannot reach: the process table as root sees it, the output of
+     * a host utility, whatever a support technician asked for. Without it the
+     * answer is "open an SSH session and paste this back to me", which loses
+     * the context, the transcript, and usually the person.
+     *
+     * The assistant cannot run anything. It can put a command on the page for
+     * somebody to read and decide about, and there is no tool that executes.
+     *
+     *   enabled      off until this says otherwise
+     *   max_seconds  anything still going after this is killed. The page
+     *                checks on read, because nothing else is running to notice
+     *   shell        /bin/sh unless the host is unusual
+     *
+     * Every command is written to the action log before it runs, not after: a
+     * command that hangs the machine still has to appear in the record.
+     */
+    'terminal' => [
+        'enabled' => false,
+        'max_seconds' => 300,
+        'shell' => '/bin/sh',
     ],
 
     /*

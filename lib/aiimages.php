@@ -135,13 +135,53 @@ function aiImageSettings(array $config): array
          */
         'per_hour' => max(0, (int)($set['per_hour'] ?? 10)),
         'self_portrait' => (bool)($set['self_portrait'] ?? false),
+
+        /*
+         * Searching for an animation, which is a different thing from
+         * generating a picture and is priced, limited and named differently.
+         *
+         * `search_key` was `giphy_key`. The old name is still read so nobody's
+         * configuration breaks, but the field is not named after one company:
+         * there are three services with the same shape, the endpoint is a
+         * setting, and hard-coding a brand into a config key is how an install
+         * ends up unable to switch.
+         */
         'reactions' => (bool)($set['reactions'] ?? false),
-        'giphy_key' => (string)($set['giphy_key'] ?? ''),
+        'search_service' => isset(aiReactionServices()[$set['search_service'] ?? ''])
+            ? (string)$set['search_service']
+            : 'tenor',
+        'search_key' => (string)($set['search_key'] ?? $set['giphy_key'] ?? ''),
+        'search_base' => (string)($set['search_base'] ?? $set['giphy_base'] ?? ''),
+        /*
+         * Searches an hour. A hundred is the free allowance these services
+         * publish; it can be set lower and not higher, because a ceiling a
+         * setting can lift past the provider's own protects nothing.
+         */
+        'searches_per_hour' => max(0, min(100, (int)($set['searches_per_hour'] ?? 100))),
         'rating' => in_array($set['rating'] ?? 'g', ['g', 'pg', 'pg-13'], true)
             ? (string)($set['rating'] ?? 'g') : 'g',
+
+        /*
+         * What generated pictures cost, for the running total.
+         *
+         * DeepAI sells a monthly plan with an allowance and then charges for
+         * credits past it, so a per-image price is only true once the allowance
+         * is gone. Both are recorded and the arithmetic is shown rather than
+         * hidden: while there is allowance left the marginal cost is nothing,
+         * and after it the per-image price applies. Guessing either would
+         * produce a total that looks authoritative and is not.
+         */
+        'monthly_cents' => max(0, (float)($set['monthly_cents'] ?? 0)),
+        'included_per_month' => max(0, (int)($set['included_per_month'] ?? 0)),
+        'price_standard' => max(0, (float)($set['price_standard'] ?? 0)),
+        'price_hd' => max(0, (float)($set['price_hd'] ?? 0)),
+        'price_genius' => max(0, (float)($set['price_genius'] ?? 0)),
+
         // Overridable so the paths that leave this machine can be exercised
         // against a stub; there is one real address for each in practice.
         'base' => (string)($set['base'] ?? ''),
+
+        // Kept so an install configured before the rename still works.
         'giphy_base' => (string)($set['giphy_base'] ?? ''),
     ];
 }
@@ -158,10 +198,20 @@ function aiImageBudget(PDO $ai, array $settings): array
 {
     $allowed = (int)$settings['per_hour'];
 
+    /*
+     * Generated pictures only.
+     *
+     * Searching for an animation and generating an image share nothing except
+     * that both produce a picture: one is a read against a free quota, the
+     * other is a bill. Counting them together meant a handful of reactions
+     * could use up the budget for the thing that actually costs money.
+     */
     try {
-        $used = (int)$ai->query(
-            "SELECT COUNT(*) FROM ai_images WHERE at >= " . (time() - SPAN_HOUR)
-        )->fetchColumn();
+        $stmt = $ai->prepare(
+            "SELECT COUNT(*) FROM ai_images WHERE at >= ? AND kind != 'reaction'"
+        );
+        $stmt->execute([time() - SPAN_HOUR]);
+        $used = (int)$stmt->fetchColumn();
     } catch (Throwable) {
         $used = 0;
     }
@@ -180,6 +230,185 @@ function aiImageBudget(PDO $ai, array $settings): array
     }
 
     return ['used' => $used, 'allowed' => $allowed, 'ok' => true, 'why' => ''];
+}
+
+/**
+ * Whether another animation search may be made this hour.
+ *
+ * Its own budget, far larger than the picture one, because the two cost
+ * different things. A hundred an hour is what these services publish as a free
+ * allowance; going past it gets the key throttled, which breaks the feature for
+ * everybody using this install rather than costing anybody money.
+ *
+ * @return array{used: int, allowed: int, ok: bool, why: string}
+ */
+function aiSearchBudget(PDO $ai, array $settings): array
+{
+    $allowed = (int)$settings['searches_per_hour'];
+
+    try {
+        $stmt = $ai->prepare(
+            "SELECT COUNT(*) FROM ai_images WHERE at >= ? AND kind = 'reaction'"
+        );
+        $stmt->execute([time() - SPAN_HOUR]);
+        $used = (int)$stmt->fetchColumn();
+    } catch (Throwable) {
+        $used = 0;
+    }
+
+    if ($allowed <= 0) {
+        return ['used' => $used, 'allowed' => 0, 'ok' => false,
+                'why' => 'reaction searches are switched off'];
+    }
+
+    if ($used >= $allowed) {
+        return ['used' => $used, 'allowed' => $allowed, 'ok' => false, 'why' => sprintf(
+            'that is %d searches this hour, which is the limit. It resets as the hour '
+            . 'rolls forward.',
+            $used
+        )];
+    }
+
+    return ['used' => $used, 'allowed' => $allowed, 'ok' => true, 'why' => ''];
+}
+
+/**
+ * What one generated picture costs, in millicents.
+ *
+ * The awkward part of this, and it is worth writing down rather than papering
+ * over: the plan is a monthly fee with an allowance, and credits afterwards. So
+ * a picture's marginal cost is zero until the allowance runs out and the
+ * per-image price after that, and neither figure alone is the truth.
+ *
+ * What is NOT done here is spreading the monthly fee across the images made -
+ * that would make the first picture of the month cost five dollars and the
+ * hundredth cost nothing, which is arithmetic nobody can act on. The monthly
+ * fee is reported separately, as a monthly fee.
+ */
+function aiImageCost(PDO $ai, array $settings, string $quality): int
+{
+    $price = match ($quality) {
+        'hd' => (float)$settings['price_hd'],
+        'genius' => (float)$settings['price_genius'],
+        default => (float)$settings['price_standard'],
+    };
+
+    if ($price <= 0) {
+        return 0;
+    }
+
+    $included = (int)$settings['included_per_month'];
+    if ($included <= 0) {
+        return (int)round($price * 1000);
+    }
+
+    /*
+     * Inside the allowance costs nothing extra, which is the honest answer.
+     *
+     * Counted over the calendar month because that is how the plan is sold.
+     */
+    try {
+        $stmt = $ai->prepare(
+            "SELECT COUNT(*) FROM ai_images WHERE at >= ? AND kind != 'reaction' AND error IS NULL"
+        );
+        $stmt->execute([(int)mktime(0, 0, 0, (int)date('n'), 1, (int)date('Y'))]);
+        $thisMonth = (int)$stmt->fetchColumn();
+    } catch (Throwable) {
+        $thisMonth = 0;
+    }
+
+    return $thisMonth < $included ? 0 : (int)round($price * 1000);
+}
+
+/**
+ * Keeps the bytes of a generated picture.
+ *
+ * Only generated ones. An animation found by a search is somebody else's file
+ * sitting on their service, and copying it here would be storing their content
+ * rather than ours; the link is enough for something nobody paid for.
+ *
+ * The reason to keep the bytes at all is that a provider URL expires. A picture
+ * that was paid for and is a 404 a fortnight later is a record of nothing, and
+ * "review them later in full size" is not possible from a dead link.
+ *
+ * @return array{ok: bool, bytes?: int, why?: string}
+ */
+function aiKeepAsset(PDO $ai, int $imageId, string $url, ?callable $fetch = null): array
+{
+    if ($url === '') {
+        return ['ok' => false, 'why' => 'there was no picture to keep'];
+    }
+
+    $got = $fetch !== null ? $fetch($url) : aiFetchBytes($url);
+
+    if (!$got['ok']) {
+        return ['ok' => false, 'why' => $got['why']];
+    }
+
+    $size = @getimagesizefromstring($got['body']);
+    if ($size === false) {
+        return ['ok' => false, 'why' => 'what came back was not an image'];
+    }
+
+    $ai->prepare(
+        'INSERT INTO ai_assets (image_id, at, mime, width, height, bytes, body)
+         VALUES (?, ?, ?, ?, ?, ?, ?)'
+    )->execute([
+        $imageId, time(), (string)($size['mime'] ?? 'application/octet-stream'),
+        (int)$size[0], (int)$size[1], strlen($got['body']), $got['body'],
+    ]);
+
+    return ['ok' => true, 'bytes' => strlen($got['body'])];
+}
+
+/** Largest generated image kept. Past this the link is all there is. */
+const AI_ASSET_MAX = 12 * 1024 * 1024;
+
+/** Fetches an image, refusing anything that is not one or is too large. */
+function aiFetchBytes(string $url): array
+{
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'why' => 'this PHP has no curl'];
+    }
+    if (!str_starts_with($url, 'https://')) {
+        return ['ok' => false, 'why' => 'only https addresses are fetched'];
+    }
+
+    $handle = curl_init($url);
+    curl_setopt_array($handle, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS => 3,
+        /*
+         * Stopped mid-download rather than checked afterwards.
+         *
+         * A Content-Length is a claim by somebody else's server; the only limit
+         * that holds is one that counts the bytes as they arrive.
+         */
+        CURLOPT_NOPROGRESS => false,
+        CURLOPT_PROGRESSFUNCTION => fn($handle, $expect, $got): int =>
+            $got > AI_ASSET_MAX ? 1 : 0,
+    ]);
+
+    $body = curl_exec($handle);
+    $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+    $error = curl_error($handle);
+    curl_close($handle);
+
+    if (!is_string($body) || $body === '') {
+        return ['ok' => false, 'why' => $error !== '' ? $error : 'nothing came back'];
+    }
+    if ($status >= 400) {
+        return ['ok' => false, 'why' => 'the picture host answered ' . $status];
+    }
+    if (strlen($body) > AI_ASSET_MAX) {
+        return ['ok' => false, 'why' => 'that picture is larger than this keeps'];
+    }
+
+    return ['ok' => true, 'body' => $body];
 }
 
 /**
@@ -281,30 +510,130 @@ function aiPostForm(string $url, array $fields, array $headers, int $timeout = 3
 }
 
 /**
- * Finds a reaction image for a mood.
+ * The animation services this can search, and how each one answers.
  *
- * A search rather than a generation: these are meant to be instant and free,
- * and generating one would cost seconds and money for something whose whole
- * point is being a throwaway aside.
+ * Three of them, and the endpoint is a field rather than a constant, because
+ * which one an install can use is not something this code can know: they have
+ * different terms, different regions, and one of them may be the only one an
+ * employer will approve. The differences between their responses are small
+ * enough to describe in a table and large enough that guessing would break.
  *
- * @return array<string, mixed>
+ * `path` is appended to the base. `pick` is told the decoded body and returns
+ * the first usable animation, or null.
+ */
+function aiReactionServices(): array
+{
+    return [
+        'tenor' => [
+            'label' => 'Tenor',
+            'base' => 'https://tenor.googleapis.com/v2',
+            'path' => '/search',
+            'note' => 'Google runs it, and both Google and the service it grew out of '
+                . 'support it. A key comes from the Google Cloud console.',
+            'query' => fn(array $set, string $mood): array => [
+                'key' => $set['search_key'],
+                'q' => $mood,
+                'limit' => 1,
+                'media_filter' => 'tinygif',
+                'contentfilter' => $set['rating'] === 'g' ? 'high' : 'medium',
+            ],
+            'pick' => function (array $body): ?array {
+                $first = $body['results'][0] ?? null;
+                if (!is_array($first)) {
+                    return null;
+                }
+                $media = $first['media_formats'] ?? [];
+                $url = $media['tinygif']['url'] ?? $media['gif']['url'] ?? '';
+                return $url === '' ? null : [
+                    'url' => (string)$url,
+                    'title' => (string)($first['content_description'] ?? ''),
+                ];
+            },
+        ],
+
+        'klipy' => [
+            'label' => 'Klipy',
+            'base' => 'https://api.klipy.com/api/v1',
+            'path' => '/gifs/search',
+            'note' => 'A smaller service with its own catalogue.',
+            'query' => fn(array $set, string $mood): array => [
+                'q' => $mood,
+                'per_page' => 1,
+                'content_filter' => $set['rating'],
+            ],
+            'pick' => function (array $body): ?array {
+                $first = $body['data'][0] ?? $body['result'][0] ?? null;
+                if (!is_array($first)) {
+                    return null;
+                }
+                $url = $first['file']['sm']['gif']['url']
+                    ?? $first['url']
+                    ?? '';
+                return $url === '' ? null : [
+                    'url' => (string)$url,
+                    'title' => (string)($first['title'] ?? ''),
+                ];
+            },
+        ],
+
+        'legacy' => [
+            'label' => 'The older search service',
+            'base' => 'https://api.giphy.com/v1',
+            'path' => '/gifs/search',
+            'note' => 'The one most keys are already for.',
+            'query' => fn(array $set, string $mood): array => [
+                'api_key' => $set['search_key'],
+                'q' => $mood,
+                'limit' => 1,
+                'rating' => $set['rating'],
+                'lang' => 'en',
+            ],
+            'pick' => function (array $body): ?array {
+                $first = $body['data'][0] ?? null;
+                if (!is_array($first)) {
+                    return null;
+                }
+                $url = $first['images']['downsized']['url']
+                    ?? $first['images']['original']['url']
+                    ?? '';
+                return $url === '' ? null : [
+                    'url' => (string)$url,
+                    'title' => (string)($first['title'] ?? ''),
+                ];
+            },
+        ],
+    ];
+}
+
+/**
+ * Finds one animation for a mood.
+ *
+ * Rate limited separately from the picture budget, and much more loosely: a
+ * search is a cheap read against somebody else's quota, where generating an
+ * image is a bill. The default ceiling is the free tier most of these publish;
+ * it can be set lower and not higher, because a limit that a setting can raise
+ * past the service's own is not protecting anything.
+ *
+ * @return array{ok: bool, url?: string, title?: string, source?: string, error?: string}
  */
 function aiFindReaction(array $settings, string $mood, ?callable $ask = null): array
 {
-    if (!$settings['reactions'] || $settings['giphy_key'] === '') {
+    if (!$settings['reactions'] || $settings['search_key'] === '') {
         return ['ok' => false, 'error' => 'reactions are not set up'];
     }
 
-    $base = rtrim((string)($settings['giphy_base'] ?? 'https://api.giphy.com/v1'), '/');
-    $url = $base . '/gifs/search?' . http_build_query([
-        'api_key' => $settings['giphy_key'],
-        'q' => mb_substr($mood, 0, 60),
-        'limit' => 1,
-        // The rating matters: this appears unannounced in somebody's browser
-        // at work, chosen by a language model from a search term it invented.
-        'rating' => $settings['rating'],
-        'lang' => 'en',
-    ]);
+    $services = aiReactionServices();
+    $key = $settings['search_service'];
+
+    if (!isset($services[$key])) {
+        return ['ok' => false, 'error' => 'no search service is chosen'];
+    }
+
+    $service = $services[$key];
+    $base = rtrim($settings['search_base'] ?: $service['base'], '/');
+    $url = $base . $service['path'] . '?' . http_build_query(
+        ($service['query'])($settings, mb_substr($mood, 0, 60))
+    );
 
     if ($ask !== null) {
         return $ask($url);
@@ -325,18 +654,20 @@ function aiFindReaction(array $settings, string $mood, ?callable $ask = null): a
     curl_close($handle);
 
     $decoded = is_string($raw) ? json_decode($raw, true) : null;
-    if (!is_array($decoded) || empty($decoded['data'][0])) {
+    if (!is_array($decoded)) {
+        return ['ok' => false, 'error' => 'the search did not answer'];
+    }
+
+    $found = ($service['pick'])($decoded);
+    if ($found === null) {
         return ['ok' => false, 'error' => 'nothing matched that'];
     }
 
-    $found = $decoded['data'][0];
-
     return [
         'ok' => true,
-        'url' => (string)($found['images']['downsized']['url']
-            ?? $found['images']['original']['url'] ?? ''),
-        'title' => (string)($found['title'] ?? ''),
-        'source' => 'GIPHY',
+        'url' => $found['url'],
+        'title' => $found['title'],
+        'source' => $service['label'],
     ];
 }
 
@@ -348,12 +679,16 @@ function aiRecordImage(
     string $prompt,
     string $style,
     ?string $url,
-    ?string $error
+    ?string $error,
+    int $millicents = 0
 ): int {
     $ai->prepare(
-        'INSERT INTO ai_images (session_id, at, kind, prompt, style, url, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?)'
-    )->execute([$session, time(), $kind, mb_substr($prompt, 0, 1000), $style, $url, $error]);
+        'INSERT INTO ai_images (session_id, at, kind, prompt, style, url, error, millicents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    )->execute([
+        $session, time(), $kind, mb_substr($prompt, 0, 1000), $style, $url, $error,
+        $millicents,
+    ]);
 
     return (int)$ai->lastInsertId();
 }

@@ -168,9 +168,13 @@ function aiChartData(PDO $pdo, string $chartId, int $hours): array
         'chart' => $chartId,
         'name' => $chart['name'],
         'shown_on' => $chart['view'],
+        'page' => $chart['view'],
         'what' => $chart['what'],
         'period' => 'the last ' . plainSpan($hours * SPAN_HOUR, true),
         'bucket' => plainSpan($bucket),
+        // The browser formats its axis from this; every series on one chart
+        // shares a unit, so the first one is the chart's.
+        'units' => $chart['series'][0][2] ?? '',
         'series' => [],
     ];
 
@@ -192,8 +196,19 @@ function aiChartData(PDO $pdo, string $chartId, int $hours): array
         $stmt->execute([':since' => $since, ':bucket' => $bucket]);
         $rows = $stmt->fetchAll();
 
+        /*
+         * Two forms of the same moment, and both are needed.
+         *
+         * `when` is for the model, which cannot do anything sensible with an
+         * epoch second. `at` is the epoch second, for the browser, which draws
+         * the chart from this same answer and cannot plot a string - it was
+         * getting only the string, so every chart the assistant drew in the
+         * conversation came out empty while the numbers underneath it were
+         * perfectly good.
+         */
         $points = array_map(fn(array $row): array => [
-            'at' => date('Y-m-d H:i', (int)$row['from_at']),
+            'at' => (int)$row['from_at'],
+            'when' => date('Y-m-d H:i', (int)$row['from_at']),
             'low' => round((float)$row['low'], 2),
             'high' => round((float)$row['high'], 2),
             'average' => round((float)$row['mean'], 2),

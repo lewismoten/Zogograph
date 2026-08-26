@@ -554,6 +554,147 @@ function aiToolCatalogue(): array
 
         /* --------------------------------------------------- saying things -- */
 
+        'remember' => [
+            'group' => 'memory',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'write something down for future conversations.',
+            'description' =>
+                "Stores one fact so that a LATER conversation can use it. This survives "
+                . "the end of this session; nothing else you do here does.\n\n"
+                . "USE THIS for things that will still be true next month and that cost "
+                . "real work to establish:\n"
+                . "  - which of several installed versions of something the site actually "
+                . "uses, when that is not the obvious one\n"
+                . "  - what a recurring pattern in the readings turns out to be (a nightly "
+                . "backup, a cron job, a neighbour on the same host)\n"
+                . "  - a conclusion you reached from evidence, WITH what it rested on\n"
+                . "  - something the operator told you about how they want to be helped\n\n"
+                . "DO NOT use it for:\n"
+                . "  - anything already visible in the dashboard - the readings, the disk "
+                . "sizes, the alert list. Those are looked up, not remembered, and a "
+                . "remembered copy is a stale copy.\n"
+                . "  - what is happening right now. \"CPU is at 94%\" is a reading, not a "
+                . "memory, and next week it will be a lie.\n"
+                . "  - anything you were told in confidence, and never a password, key or "
+                . "token. The store is refused outright if it looks like a credential, and "
+                . "everything in it is shown to the operator on a page.\n"
+                . "  - a guess. If you are not sure, do not write it down; a remembered "
+                . "guess reads exactly like a remembered fact six weeks later.\n\n"
+                . "Writing the same SUBJECT twice replaces what was there. Use that to "
+                . "correct yourself rather than writing a second, contradicting memory.",
+            'parameters' => [
+                'kind' => [
+                    'type' => 'string', 'required' => true,
+                    'enum' => ['fact', 'preference', 'finding', 'todo'],
+                    'description' => 'fact = something true of this machine. preference = '
+                        . 'how the operator wants to be helped. finding = a conclusion you '
+                        . 'reached and what it rested on. todo = something identified and '
+                        . 'not yet done.',
+                ],
+                'subject' => [
+                    'type' => 'string', 'required' => true, 'maxLength' => 120,
+                    'description' => 'What this memory is ABOUT, as a short phrase, in lower '
+                        . 'case. This is the key: writing the same subject again replaces '
+                        . 'the memory. "the nightly io spike", not "I found out that the '
+                        . 'nightly io spike is the backup".',
+                ],
+                'body' => [
+                    'type' => 'string', 'required' => true, 'maxLength' => 1200,
+                    'description' => 'The fact itself, in full sentences, including what it '
+                        . 'was based on. Written for a version of you that has none of this '
+                        . 'conversation - so no "as we discussed" and no pronouns pointing '
+                        . 'at things that will not be there.',
+                ],
+            ],
+        ],
+
+        'recall' => [
+            'group' => 'memory',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'look up what was remembered from earlier conversations.',
+            'description' =>
+                "Searches everything written down by `remember` in past conversations.\n\n"
+                . "The most useful memories are already put in front of you at the start of "
+                . "a conversation, so use this when you want something SPECIFIC that is not "
+                . "there - you are about to investigate a subsystem and want to know whether "
+                . "it has been looked at before, or the operator refers to something that "
+                . "sounds like it happened previously.\n\n"
+                . "Plain substring matching on the subject and the body. It is not a "
+                . "semantic search: search for a word that would literally appear, and if "
+                . "nothing comes back, nothing was remembered about it - do not treat an "
+                . "empty result as evidence that a thing did not happen.",
+            'parameters' => [
+                'about' => [
+                    'type' => 'string', 'required' => false, 'maxLength' => 120,
+                    'description' => 'A word or phrase to look for. Leave it out to get the '
+                        . 'most recently useful memories.',
+                ],
+                'limit' => [
+                    'type' => 'integer', 'minimum' => 1, 'maximum' => 50, 'required' => false,
+                    'default' => 20,
+                    'description' => 'How many to return at most.',
+                ],
+            ],
+        ],
+
+        'recommend_command' => [
+            'group' => 'terminal',
+            'where' => 'server',
+            'permission' => false,
+            'summary' => 'put a command in the terminal for the operator to run.',
+            'description' =>
+                "Writes a shell command onto the operator's terminal page, where they can "
+                . "read it and choose to run it. YOU DO NOT RUN ANYTHING. There is no tool "
+                . "here that executes a command, and there will not be one - the person "
+                . "reading it decides.\n\n"
+                . "USE THIS when the answer is somewhere your tools cannot reach: the "
+                . "process table as root sees it, a log this account cannot open, the "
+                . "output of a host utility, the state of something after a change.\n\n"
+                . "DO NOT use it for anything a tool here already answers. If there is a "
+                . "tool for it, use the tool - it is faster, it is already permitted, and "
+                . "asking a person to type something you could have looked up yourself is "
+                . "how an assistant becomes a chore.\n\n"
+                . "REQUIREMENTS, all of them, every time:\n"
+                . "  - the command must be safe to run and must not change anything unless "
+                . "the operator has asked for exactly that change. Prefer reading over "
+                . "writing. Never suggest something destructive as a diagnostic.\n"
+                . "  - `reading` must explain what the output will look like and how to tell "
+                . "a good result from a bad one BEFORE they run it. Somebody staring at "
+                . "unfamiliar output with no idea what they are looking for is worse off "
+                . "than before they ran it.\n"
+                . "  - the command runs as the web account, not as root, unless they have "
+                . "told you otherwise. Say so if it needs privileges it will not have.\n\n"
+                . "After it runs they can send you the output with one button. Wait for "
+                . "that rather than guessing what it said.",
+            'parameters' => [
+                'command' => [
+                    'type' => 'string', 'required' => true, 'maxLength' => 2000,
+                    'description' => 'The command itself, exactly as it should be typed. One '
+                        . 'command - use a pipeline if you need several steps, not several '
+                        . 'calls to this tool. No leading prompt character.',
+                ],
+                'why' => [
+                    'type' => 'string', 'required' => true, 'maxLength' => 400,
+                    'description' => 'Why you want this run, in one or two sentences, in '
+                        . 'terms of what you are trying to find out.',
+                ],
+                'what_to_look_for' => [
+                    'type' => 'string', 'required' => true, 'maxLength' => 600,
+                    'description' => 'What the output will look like and what would count as '
+                        . 'a problem in it. Written so somebody can read the output without '
+                        . 'you.',
+                ],
+                'reading' => [
+                    'type' => 'string', 'required' => false, 'maxLength' => 400,
+                    'description' => 'A link to documentation for the main command, if there '
+                        . 'is an obvious one - a man page or the project site. Leave it out '
+                        . 'rather than inventing a URL.',
+                ],
+            ],
+        ],
+
         'show_progress' => [
             'group' => 'navigation',
             'where' => 'browser',

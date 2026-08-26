@@ -4267,6 +4267,83 @@ function paintDial(svg) {
     : `Next one in about ${humanSpan(interval - age)}.`;
 }
 
+/* ------------------------------------------------------- forms being used -- */
+
+/**
+ * Remembers what a form looked like when it was drawn.
+ *
+ * Every field is stamped with the value it was rendered with, so "has somebody
+ * changed this" can be answered later without keeping a copy of the form
+ * anywhere.
+ */
+function markFormRendered(container) {
+  if (!container) return;
+
+  for (const field of container.querySelectorAll("input, select, textarea")) {
+    field.dataset.rendered = field.type === "checkbox" || field.type === "radio"
+      ? String(field.checked)
+      : String(field.value);
+  }
+}
+
+/**
+ * Is somebody part-way through filling this in?
+ *
+ * The question that matters before redrawing a settings page. `manual: true`
+ * keeps the poll timer off a view, and that turned out to be half the problem:
+ * the range picker in the top bar rewrites the route, the route redraws the
+ * current view, and the redraw is not a poll - so an API key half typed
+ * vanished when somebody changed the range out of habit. Measured, with a
+ * script that typed into every box and then changed the dropdown: eight fields
+ * in, zero fields out.
+ *
+ * Compares against what was stamped at render time rather than against the
+ * defaults, so a field that has always been empty is not mistaken for one
+ * somebody has just cleared.
+ */
+function formIsDirty(container) {
+  if (!container) return false;
+
+  for (const field of container.querySelectorAll("input, select, textarea")) {
+    if (field.dataset.rendered === undefined) continue;
+
+    const now = field.type === "checkbox" || field.type === "radio"
+      ? String(field.checked)
+      : String(field.value);
+
+    if (now !== field.dataset.rendered) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Redraws a settings panel unless somebody is using it.
+ *
+ * The refusal is said out loud rather than silent: a page that quietly stops
+ * updating is its own kind of confusing, and "this is not refreshing while you
+ * are editing" is a promise as much as a warning.
+ */
+function keepIfEditing(containerId, draw) {
+  const container = $(containerId);
+
+  if (container && formIsDirty(container)) {
+    let said = container.querySelector(".form-held");
+    if (!said) {
+      said = document.createElement("p");
+      said.className = "form-held muted small";
+      said.textContent = "Not refreshed while you are editing. Save, or move away and "
+        + "come back, to see what is stored.";
+      container.prepend(said);
+    }
+    return false;
+  }
+
+  draw();
+  markFormRendered(container);
+  return true;
+}
+
 /**
  * Advances every dial on screen, once a second.
  *
@@ -4314,8 +4391,22 @@ async function refreshAiSettings() {
     return;
   }
 
+  /*
+   * Fetched only if it is going to be used.
+   *
+   * Asking the server for settings that are about to be thrown away is a round
+   * trip for nothing, and on this page it is a round trip whose answer would
+   * have wiped what somebody was typing.
+   */
+  if (formIsDirty(body)) {
+    keepIfEditing("aiSettingsBody", () => {});
+    await refreshAiSessions();
+    return;
+  }
+
   try {
-    renderAiSettings(await api("ai-settings"));
+    const data = await api("ai-settings");
+    keepIfEditing("aiSettingsBody", () => renderAiSettings(data));
     await refreshAiSessions();
   } catch (error) {
     body.replaceChildren(note(String(error.message || error)));
@@ -4555,6 +4646,57 @@ function renderAiSettings(data) {
     + "problem rather than a long investigation."));
 
   parts.push(section("Limits on one conversation", limits));
+
+  /* ---- how much it can hold ---- */
+
+  const room = document.createElement("div");
+  room.className = "settings";
+
+  const window_ = document.createElement("input");
+  window_.type = "number";
+  window_.id = "aiContextTokens";
+  window_.min = "4000";
+  window_.step = "1000";
+  window_.className = "days";
+  window_.value = String(data.context_tokens ?? 128000);
+  room.appendChild(fieldRow("Context window (tokens)", window_,
+    "How much the chosen model can hold at once. It is a fact about the model, not "
+    + "something the API will tell us, so it is typed in — check the model's own "
+    + "documentation. Guessing high is the worse mistake: the provider rejects the "
+    + "request outright, which ends the conversation."));
+
+  const at = document.createElement("input");
+  at.type = "number";
+  at.id = "aiCompactAt";
+  at.min = "30";
+  at.max = "85";
+  at.className = "days";
+  at.value = String(data.compact_at ?? 70);
+  room.appendChild(fieldRow("Summarise at (%)", at,
+    "How full it gets before the older part of a conversation is replaced with a summary. "
+    + "Deliberately not near 100: summarising means sending the part being summarised, so "
+    + "a limit that fires when the window is already full is a limit that cannot act."));
+
+  const auto = document.createElement("input");
+  auto.type = "checkbox";
+  auto.id = "aiCompactAuto";
+  auto.checked = data.compact_automatically !== false;
+  room.appendChild(fieldRow("Summarise automatically", auto,
+    "On, it happens on the next turn after the mark is passed. Off, the ring in the chat "
+    + "window goes amber and waits for you to click it — and the conversation will "
+    + "eventually be refused by the provider if you never do."));
+
+  const explain = document.createElement("input");
+  explain.type = "checkbox";
+  explain.id = "aiExplain";
+  explain.checked = data.explain_commands !== false;
+  room.appendChild(fieldRow("Explain its commands", explain,
+    "When it suggests a terminal command, it comments each part, says what the output "
+    + "should look like, and links to the documentation. Worth leaving on: somebody "
+    + "pasting a command they have not understood is the thing this is meant to prevent. "
+    + "Turn it off if you read shell fluently and find the commentary noise."));
+
+  parts.push(section("How much it can hold", room));
   parts.push(section("Pictures", pictureFields(data)));
 
   /* ---- database ---- */
@@ -4900,15 +5042,70 @@ function pictureFields(data) {
     + "chooses a mood, not an image — what comes back is whatever the catalogue "
     + "returns."));
 
-  const giphy = document.createElement("input");
-  giphy.type = "password";
-  giphy.id = "aiGiphyKey";
-  giphy.className = "wide-field";
-  giphy.autocomplete = "off";
-  giphy.placeholder = pictures.has_giphy_key
-    ? "•".repeat(20) + " (unchanged)" : "your GIPHY key";
-  form.appendChild(fieldRow("GIPHY key", giphy,
-    pictures.has_giphy_key ? "A key is set." : "From developers.giphy.com."));
+  /*
+   * Which search service, as a choice rather than a brand baked into the code.
+   *
+   * There are three with the same shape and different terms, and which one an
+   * install may use is not something this code can know - one of them may be
+   * the only one an employer will approve. The endpoint is a field too, for the
+   * same reason.
+   */
+  const service = document.createElement("select");
+  service.id = "aiSearchService";
+  for (const [key_, meta] of Object.entries(pictures.services)) {
+    const option = document.createElement("option");
+    option.value = key_;
+    option.textContent = meta.label;
+    option.selected = pictures.search_service === key_;
+    service.appendChild(option);
+  }
+  const serviceNote = document.createElement("div");
+  serviceNote.className = "muted small";
+  form.appendChild(fieldRow("Search service", service, ""));
+  form.appendChild(serviceNote);
+
+  const searchKey = document.createElement("input");
+  searchKey.type = "password";
+  searchKey.id = "aiSearchKey";
+  searchKey.className = "wide-field";
+  searchKey.autocomplete = "off";
+  searchKey.placeholder = pictures.has_search_key
+    ? "•".repeat(20) + " (unchanged)" : "the key for that service";
+  form.appendChild(fieldRow("Search key", searchKey,
+    pictures.has_search_key
+      ? "A key is set. Leaving this blank keeps it."
+      : "Without one, reactions stay off."));
+
+  const searchBase = document.createElement("input");
+  searchBase.type = "text";
+  searchBase.id = "aiSearchBase";
+  searchBase.className = "wide-field";
+  searchBase.spellcheck = false;
+  searchBase.value = pictures.search_base || "";
+  form.appendChild(fieldRow("Endpoint", searchBase, ""));
+
+  const searchRate = document.createElement("input");
+  searchRate.type = "number";
+  searchRate.id = "aiSearchRate";
+  searchRate.min = "0";
+  searchRate.max = "100";
+  searchRate.className = "days";
+  searchRate.value = String(pictures.searches_per_hour);
+  form.appendChild(fieldRow("Searches per hour", searchRate,
+    "Separate from the picture limit above, because the two cost different things: a "
+    + "search is a free read against somebody else's quota, a picture is a bill. A "
+    + "hundred is what these services publish as their free allowance and is the most "
+    + "this will do — going past it gets the key throttled, which breaks the feature for "
+    + "everyone rather than costing money. Set it lower if you share the key."
+    + (pictures.searches ? ` ${pictures.searches.used} in the last hour.` : "")));
+
+  const syncService = () => {
+    const meta = pictures.services[service.value];
+    serviceNote.textContent = meta?.note ?? "";
+    searchBase.placeholder = meta?.base ?? "";
+  };
+  service.addEventListener("change", syncService);
+  syncService();
 
   const rating = document.createElement("select");
   rating.id = "aiRating";
@@ -4924,6 +5121,43 @@ function pictureFields(data) {
     "This appears unannounced in a browser, possibly at work, chosen by a language model "
     + "from a search term it invented. G is the sensible default and there is no good "
     + "argument against it."));
+
+  /*
+   * What the pictures cost, which is not one number.
+   *
+   * The plan is a monthly fee with an allowance and then credits, so a
+   * per-image price is only true once the allowance is gone. Both are asked for
+   * and the arithmetic is shown rather than hidden: inside the allowance a
+   * picture adds nothing to the session total, after it the per-image price
+   * applies, and the monthly fee is reported as a monthly fee rather than
+   * smeared across whatever happened to be generated.
+   */
+  const money = document.createElement("div");
+  money.className = "settings";
+
+  for (const [id, label, value, hint] of [
+    ["aiMonthlyCents", "Monthly plan", pictures.monthly_cents,
+      "In cents. What the plan costs every month regardless of use. Reported on its own; "
+      + "it is never divided among the pictures made."],
+    ["aiIncluded", "Included each month", pictures.included_per_month,
+      "How many generations the plan covers. While there are some left, a picture adds "
+      + "nothing to a conversation's cost, because that is the truth."],
+    ["aiPriceStandard", "Each one after that", pictures.price_standard,
+      "In cents, for a standard generation, once the allowance is used up."],
+    ["aiPriceHd", "…at HD", pictures.price_hd, "In cents."],
+    ["aiPriceGenius", "…at the top quality", pictures.price_genius, "In cents."],
+  ]) {
+    const box = document.createElement("input");
+    box.type = "number";
+    box.id = id;
+    box.min = "0";
+    box.step = "0.01";
+    box.className = "days";
+    box.value = String(value ?? 0);
+    money.appendChild(fieldRow(label, box, hint));
+  }
+
+  form.appendChild(section("What they cost", money));
 
   wrap.appendChild(form);
   return wrap;
@@ -4961,8 +5195,20 @@ async function saveAiSettings(extra = {}) {
       per_hour: $("aiPerHour").value,
       self_portrait: $("aiSelfPortrait").checked ? "1" : "0",
       reactions_on: $("aiReactions").checked ? "1" : "0",
-      giphy_key: $("aiGiphyKey").value,
+      search_service: $("aiSearchService").value,
+      search_key: $("aiSearchKey").value,
+      search_base: $("aiSearchBase").value.trim(),
+      searches_per_hour: $("aiSearchRate").value,
       rating: $("aiRating").value,
+      monthly_cents: $("aiMonthlyCents").value,
+      included_per_month: $("aiIncluded").value,
+      price_standard: $("aiPriceStandard").value,
+      price_hd: $("aiPriceHd").value,
+      price_genius: $("aiPriceGenius").value,
+      context_tokens: $("aiContextTokens").value,
+      compact_at: $("aiCompactAt").value,
+      compact_automatically: $("aiCompactAuto").checked ? "1" : "0",
+      explain_commands: $("aiExplain").checked ? "1" : "0",
       tools_on: on,
       tools_ask: ask,
       ...extra,
@@ -5217,6 +5463,28 @@ function chatChartCard(message) {
       );
       head.textContent = `${drawn.name} · `
         + `${humanSpan(Number(message.arguments.hours) * 3600, true)}`;
+
+      /*
+       * Where this chart actually lives.
+       *
+       * A picture in a chat window is a dead end: it cannot be hovered for a
+       * value, ranged, or compared against the one below it. The page it came
+       * from can do all three, and is one click away.
+       */
+      if (drawn.page && VIEWS[drawn.page]) {
+        const go = document.createElement("button");
+        go.className = "link small";
+        go.textContent = `Open it on ${VIEWS[drawn.page].label}`;
+        go.addEventListener("click", () => {
+          location.hash = `#/${drawn.page}?range=${state.range}`;
+        });
+        card.appendChild(go);
+      }
+
+      if (!drawn.points) {
+        caption.textContent = "Nothing was recorded in this period. "
+          + (caption.textContent || "");
+      }
     } catch (error) {
       head.textContent = "That chart could not be drawn";
       caption.textContent = String(error.message || error);
@@ -5567,8 +5835,16 @@ async function refreshScans(side) {
     return;
   }
 
+  if (formIsDirty(body)) {
+    keepIfEditing(side === "host" ? "hostScansBody" : "accountScansBody", () => {});
+    return;
+  }
+
   try {
-    renderScans(await api("scan-schedule"));
+    const data = await api("scan-schedule");
+    renderScans(data);
+    markFormRendered($("accountScansBody"));
+    markFormRendered($("hostScansBody"));
   } catch (error) {
     body.replaceChildren(note(String(error.message || error)));
   }
@@ -6021,7 +6297,7 @@ async function renderNamedChart(canvas, chartId, hours) {
     notes: [],
   });
 
-  return { name: chart.name, points: ordered.length };
+  return { name: chart.name, points: ordered.length, page: data.page ?? chart.view };
 }
 
 /* ----------------------------------------------------------------- lookout -- */
@@ -6163,7 +6439,11 @@ async function pollChat() {
   }
 
   try {
-    chatState.session = await api("ai-poll", { session: session.id });
+    chatState.session = await api("ai-poll", {
+      session: session.id,
+      // Kept current as they move, so it knows what "this page" means.
+      view: state.view ?? "",
+    });
   } catch {
     // A failed poll is not worth a message: the next one usually works, and an
     // error toast every second would be worse than the silence.
@@ -6449,21 +6729,176 @@ function renderChat() {
     + "was cached input."
     + (session.spent.known ? "" : " No prices are set, so the cost is not known.");
 
+  renderChatRoom(session);
+  renderChatEffort(session);
+
   const finished = ["stopped", "ended", "failed"].includes(session.state);
-  $("chatSend").disabled = finished || session.state !== "idle";
+  const busy = ["thinking", "waiting_permission", "waiting_browser"].includes(session.state);
+
+  /*
+   * You can type while it is working.
+   *
+   * Watching a model spend four turns confidently investigating the wrong
+   * subsystem, with the box greyed out, is the worst version of this. What is
+   * typed goes into the transcript and the model reads it on its next turn -
+   * an interruption, which is what it is.
+   */
+  $("chatSend").disabled = finished;
   $("chatText").disabled = finished;
+  $("chatSend").textContent = busy ? "Add" : "Ask";
+  $("chatSend").title = busy
+    ? "It is working. This goes in now and it reads it on its next turn."
+    : "";
   $("chatStop").hidden = finished;
+  $("chatInterrupt").hidden = finished || !busy;
 }
+
+/**
+ * How full the model's context is, as a ring.
+ *
+ * An estimate, and it says so: the exact number is known only to the provider
+ * and arrives after the request, which is too late to act on. Being right to
+ * within ten per cent and available now beats exact and useless.
+ *
+ * The ring turns amber at the point where compaction will fire, not when the
+ * window is actually full - that gap is deliberate, because summarising means
+ * sending the part being summarised, and a limit that triggers with no room
+ * left is a limit that cannot act.
+ */
+function renderChatRoom(session) {
+  const spot = $("chatRoom");
+  const room = session.context;
+
+  if (!spot || !room) {
+    if (spot) spot.hidden = true;
+    return;
+  }
+
+  spot.hidden = false;
+  spot.replaceChildren();
+
+  const size = 18;
+  const radius = 7;
+  const circumference = 2 * Math.PI * radius;
+  const share = Math.min(1, room.share);
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("aria-hidden", "true");
+
+  for (const [cls, dash, offset] of [
+    ["dial-track", null, null],
+    [room.full ? "dial-value dial-due" : "dial-value", circumference,
+      circumference * (1 - share)],
+  ]) {
+    const ring = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    ring.setAttribute("cx", String(size / 2));
+    ring.setAttribute("cy", String(size / 2));
+    ring.setAttribute("r", String(radius));
+    ring.setAttribute("fill", "none");
+    ring.setAttribute("stroke-width", "3");
+    ring.setAttribute("class", cls);
+    if (dash !== null) {
+      ring.setAttribute("stroke-dasharray", String(dash));
+      ring.setAttribute("stroke-dashoffset", String(offset));
+      ring.setAttribute("transform", `rotate(-90 ${size / 2} ${size / 2})`);
+    }
+    svg.appendChild(ring);
+  }
+  spot.appendChild(svg);
+
+  spot.title = `About ${humanCount(room.tokens)} of ${humanCount(room.window)} tokens used `
+    + `— an estimate from the length of the conversation, not a figure from the provider.\n`
+    + (room.full
+      ? room.automatic
+        ? "Past the point where the older part gets summarised; that happens on the next turn."
+        : "Past the point where it would normally be summarised, and automatic summarising "
+          + "is switched off. Click to do it now."
+      : `The older part is summarised at about ${humanCount(room.soft)}.`)
+    + "\nClick to summarise it now.";
+
+  spot.onclick = async () => {
+    if (!chatState.session?.exists) return;
+    try {
+      const result = await post("ai-compact", { session: chatState.session.id });
+      chatState.session = result.session;
+      notice(
+        `${count(result.compacted, "message")} replaced with a summary. `
+        + "The whole transcript is still on the conversations page.",
+        true
+      );
+      renderChat();
+    } catch (error) {
+      notice(String(error.message || error));
+    }
+  };
+}
+
+/**
+ * How hard it should think, for this conversation only.
+ *
+ * Down from the configured setting, never up. Most questions do not need the
+ * expensive tier and the person asking usually knows which theirs is - but the
+ * ceiling is a decision made once, in settings, by whoever pays the bill.
+ */
+function renderChatEffort(session) {
+  const picker = $("chatEffort");
+  if (!picker) return;
+
+  const ceiling = session.effort_ceiling ?? "";
+  const levels = session.effort_levels ?? [];
+
+  if (ceiling === "" || !levels.length) {
+    // Nothing configured means the provider's own default and no choice worth
+    // offering; a control that changes nothing is worse than no control.
+    picker.hidden = true;
+    return;
+  }
+
+  picker.hidden = false;
+  const upTo = levels.slice(0, levels.indexOf(ceiling) + 1);
+
+  if (picker.dataset.built !== upTo.join(",")) {
+    picker.replaceChildren();
+    for (const level of upTo) {
+      const option = document.createElement("option");
+      option.value = level;
+      option.textContent = level;
+      picker.appendChild(option);
+    }
+    picker.dataset.built = upTo.join(",");
+  }
+
+  picker.value = session.effort || ceiling;
+  picker.title = `Thinking: ${picker.value}. The setting allows up to ${ceiling}; `
+    + "this turns it down for this conversation only.";
+}
+
 
 /** What the model is doing, in words, plus anything it is waiting on. */
 function renderChatStatus(session) {
   const status = $("chatStatus");
   status.replaceChildren();
 
+  /*
+   * The permission question is drawn in its own strip above the log.
+   *
+   * It stays there until it is answered - it is the one thing in this panel
+   * that blocks everything else, and it used to scroll away under the message
+   * box where it could not be clicked at all.
+   */
+  const ask = $("chatAsk");
   if (session.permission) {
-    status.appendChild(chatPermissionPrompt(session.permission));
-    return;
+    ask.replaceChildren(chatPermissionPrompt(session.permission));
+    ask.hidden = false;
+  } else {
+    ask.replaceChildren();
+    ask.hidden = true;
   }
+
+  if (session.permission) return;
 
   const said = {
     idle: "",
@@ -6564,6 +6999,11 @@ function chatToolPhrase(tool, args) {
     open_page: `Opened ${VIEWS[args.page]?.label ?? args.page}`,
     take_screenshot: "Took a screenshot",
     show_progress: `Showed progress on ${args.what ?? "something"}`,
+    recommend_command: "Put a command on the terminal page",
+    remember: `Wrote down what it worked out about ${args.subject ?? "something"}`,
+    recall: args.about
+      ? `Looked up what it remembered about ${args.about}`
+      : "Looked at what it remembered",
     show_reaction: "Reacted",
     make_picture: "Had a picture drawn",
     redraw_yourself: "Redrew itself",
@@ -6593,11 +7033,28 @@ async function sayToChat(text) {
   $("chatText").value = "";
 
   try {
-    chatState.session = (await post("ai-say", {
+    const result = await post("ai-say", {
       session: chatState.session.id,
       text,
-    })).session;
+      // So it knows where the operator is looking when they said this.
+      view: state.view ?? "",
+    });
+    chatState.session = result.session;
     renderChat();
+
+    /*
+     * A message added while it is working is not a new turn.
+     *
+     * It is already in the transcript and the model reads it on the turn it is
+     * in the middle of. Driving here as well would start a second request
+     * alongside the one in flight.
+     */
+    if (result.queued) {
+      notice("Added. It will read that on its next turn.", true);
+      scheduleChatPoll();
+      return;
+    }
+
     await driveChat();
     scheduleChatPoll();
   } catch (error) {
@@ -7934,7 +8391,7 @@ function renderStore(data) {
    */
   renderAccountData(data);
   renderHostData(data);
-  renderRetention(data);
+  keepIfEditing("retentionBody", () => renderRetention(data));
 }
 
 /**
@@ -8295,6 +8752,652 @@ function purgeButton(entry) {
 /* --------------------------------------------------------------- symlinks -- */
 
 /** What each finding means, in the order that matters. */
+/* --------------------------------------------------------------- terminal -- */
+
+/**
+ * One command at a time, and what it has printed so far.
+ *
+ * `from` is how many bytes of the current command's output have already been
+ * drawn. Reading by offset rather than re-fetching the whole thing is what
+ * makes a command that prints for ten minutes cost the same per poll as one
+ * that printed a line - and is why this can be pointed at a `tail -f`.
+ */
+const termState = {
+  data: null,
+  running: null,
+  from: 0,
+  timer: null,
+  text: "",
+};
+
+async function refreshTerminal() {
+  const body = $("terminalBody");
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to use the terminal."));
+    return;
+  }
+
+  try {
+    renderTerminal(await api("terminal"));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderTerminal(data) {
+  termState.data = data;
+  const body = $("terminalBody");
+  const parts = [];
+
+  if (!data.can) {
+    parts.push(note(
+      `${data.why} There is nothing this page can do about that, and nothing it should `
+      + "try — a host that has taken shell functions away has taken them away on purpose."
+    ));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  if (!data.enabled) {
+    parts.push(note(
+      "The terminal is switched off. Add “terminal” => [“enabled” => true] "
+      + "to lib/config.php to turn it on. It is off by default because it runs whatever "
+      + "is typed into it — that is not a reason to avoid it, but it is a reason for the "
+      + "decision to be deliberate rather than inherited."
+    ));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  /*
+   * What the assistant has asked somebody to run.
+   *
+   * Above the box rather than below it, because it is the reason most people
+   * will be on this page, and it is a suggestion to read rather than a button
+   * to press: it fills the box in and waits.
+   */
+  if (data.suggestions.length) {
+    parts.push(section(
+      `${data.who.name} suggested ${count(data.suggestions.length, "command")}`,
+      suggestionList(data.suggestions)
+    ));
+  }
+
+  const form = document.createElement("form");
+  form.className = "term-form";
+  form.id = "terminalForm";
+
+  const box = document.createElement("textarea");
+  box.id = "terminalInput";
+  box.rows = 2;
+  box.spellcheck = false;
+  box.placeholder = "df -h; echo; ls -la ~/public_html | head";
+  form.appendChild(box);
+
+  const go = document.createElement("button");
+  go.type = "submit";
+  go.textContent = "Run it";
+  form.appendChild(go);
+
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    runTerminal(box.value.trim()).catch(error => notice(String(error.message || error)));
+  });
+
+  /*
+   * Enter runs it, shift-Enter makes a new line.
+   *
+   * The same way round as the chat box next to it. A command is one line far
+   * more often than it is several.
+   */
+  box.addEventListener("keydown", event => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  parts.push(form);
+
+  const said = document.createElement("p");
+  said.className = "muted small";
+  said.id = "terminalSaid";
+  said.textContent = `Runs as this account with ${data.shell}. Anything still going after `
+    + `${humanSpan(data.max_seconds, true)} is stopped.`;
+  parts.push(said);
+
+  const out = document.createElement("pre");
+  out.className = "term-out";
+  out.id = "terminalOut";
+  out.textContent = termState.text;
+  parts.push(out);
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+  actions.id = "terminalActions";
+  parts.push(actions);
+
+  if (data.history.length) {
+    const holder = document.createElement("div");
+    holder.id = "terminalHistory";
+    parts.push(section("Earlier commands", holder));
+  }
+
+  body.replaceChildren(...parts);
+  renderTerminalActions();
+
+  if (data.history.length) {
+    renderTable("terminalHistory", data.history, [
+      { label: "Command", className: "cmd", render: row => row.command },
+      { label: "When", render: row => ago(row.started_at) },
+      { label: "Output", className: "size", render: row => humanBytes(row.bytes) },
+      {
+        label: "",
+        render: row => {
+          const span = document.createElement("span");
+          span.textContent = row.running ? "running" : "";
+          span.className = row.running ? "chat-thinking" : "muted";
+          return span;
+        },
+      },
+      {
+        label: "",
+        className: "row-actions",
+        render: row => {
+          const wrap = document.createDocumentFragment();
+
+          const open = document.createElement("button");
+          open.className = "link";
+          open.textContent = "Show it";
+          open.addEventListener("click", () => watchTerminal(row.id, true));
+          wrap.appendChild(open);
+
+          const again = document.createElement("button");
+          again.className = "link";
+          again.textContent = "Run it again";
+          again.addEventListener("click", () => {
+            $("terminalInput").value = row.command;
+            $("terminalInput").focus();
+          });
+          wrap.appendChild(again);
+
+          return wrap;
+        },
+      },
+    ], null, row => (row.running ? "row-bad" : ""), row => row.id);
+  }
+}
+
+/** The commands the assistant has put here, with its reasoning. */
+function suggestionList(suggestions) {
+  const wrap = document.createElement("div");
+
+  for (const one of suggestions) {
+    const card = document.createElement("div");
+    card.className = "term-suggested";
+
+    const why = document.createElement("div");
+    why.className = "muted small";
+    why.textContent = one.why;
+    card.appendChild(why);
+
+    const command = document.createElement("pre");
+    command.className = "term-command";
+    command.textContent = one.command;
+    card.appendChild(command);
+
+    if (one.expect) {
+      const expect = document.createElement("div");
+      expect.className = "muted small";
+      expect.textContent = `What to look for: ${one.expect}`;
+      card.appendChild(expect);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "inspect-actions";
+
+    /*
+     * Put in the box, not run.
+     *
+     * One press away from running is close enough to be convenient and far
+     * enough that nobody runs something they have not read. The whole point of
+     * the assistant not having an execute tool would be lost to a button here
+     * that did the same thing.
+     */
+    const fill = document.createElement("button");
+    fill.className = "link";
+    fill.textContent = "Put it in the box";
+    fill.addEventListener("click", () => {
+      const box = $("terminalInput");
+      box.value = one.command;
+      box.focus();
+      box.dataset.suggestion = String(one.id);
+    });
+    actions.appendChild(fill);
+
+    const copy = document.createElement("button");
+    copy.className = "link";
+    copy.textContent = "Copy";
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(one.command);
+        copy.textContent = "Copied";
+        setTimeout(() => { copy.textContent = "Copy"; }, 1400);
+      } catch {
+        notice("Select the command and copy it — this browser would not.");
+      }
+    });
+    actions.appendChild(copy);
+
+    if (one.reading) {
+      const link = externalLink(one.reading);
+      link.className = "link small";
+      link.textContent = "What this command does";
+      actions.appendChild(link);
+    }
+
+    card.appendChild(actions);
+    wrap.appendChild(card);
+  }
+
+  return wrap;
+}
+
+async function runTerminal(command) {
+  if (command === "") return;
+
+  const box = $("terminalInput");
+  const result = await post("terminal-run", {
+    command,
+    from_suggestion: box.dataset.suggestion || "0",
+  });
+
+  delete box.dataset.suggestion;
+  box.value = "";
+  termState.text = "";
+  termState.from = 0;
+  termState.data = result;
+
+  watchTerminal(result.run.id, false);
+}
+
+/** Follows one command's output until it stops. */
+function watchTerminal(id, fresh) {
+  if (termState.timer) clearTimeout(termState.timer);
+
+  if (fresh) {
+    termState.text = "";
+    termState.from = 0;
+  }
+
+  termState.running = id;
+  pollTerminal();
+}
+
+async function pollTerminal() {
+  const id = termState.running;
+  if (!id) return;
+
+  let data;
+  try {
+    data = await api("terminal-read", { id, from: termState.from });
+  } catch (error) {
+    notice(String(error.message || error));
+    return;
+  }
+
+  if (data.text) {
+    termState.text += data.text;
+    termState.from = data.to;
+
+    const out = $("terminalOut");
+    if (out) {
+      out.textContent = termState.text;
+      /*
+       * Only follow the tail if the reader is already at it.
+       *
+       * Scrolling somebody back to the bottom while they are reading something
+       * further up is the single most annoying thing a log view can do.
+       */
+      const atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+      if (atEnd) out.scrollTop = out.scrollHeight;
+    }
+  }
+
+  termState.last = data;
+  renderTerminalActions();
+
+  const said = $("terminalSaid");
+  if (said) {
+    said.textContent = data.running
+      ? `Running for ${humanSpan(data.ran_for, true)} — ${humanBytes(data.size)} so far.`
+      : terminalVerdict(data);
+  }
+
+  $("terminalStop").hidden = !data.running;
+
+  if (data.running) {
+    /*
+     * Faster while something is arriving, slower when it is quiet.
+     *
+     * A command that prints steadily should feel live; one sitting on a lock
+     * for four minutes should not cost two hundred requests to watch.
+     */
+    termState.timer = setTimeout(() => pollTerminal(), data.text ? 700 : 2000);
+  } else {
+    /*
+     * Redrawn once it has finished, for the history list and the suggestions -
+     * and then the verdict is written back, because the redraw resets the
+     * status line to the page's default text. Losing "stopped after three
+     * seconds" the instant it becomes true is worse than not saying it.
+     */
+    termState.running = null;
+    const verdict = data;
+    refreshTerminal().then(() => {
+      const said = $("terminalSaid");
+      if (said) said.textContent = terminalVerdict(verdict);
+      const out = $("terminalOut");
+      if (out) out.textContent = termState.text;
+      renderTerminalActions();
+    }).catch(() => {});
+  }
+}
+
+/** How a finished command is described. */
+function terminalVerdict(data) {
+  const how = data.timed_out
+    ? "Stopped at the time limit"
+    : data.stopped_by
+      ? `Stopped by ${data.stopped_by}`
+      : "Finished";
+
+  return `${how} after ${humanSpan(data.ran_for, true)}, `
+    + `${humanBytes(data.size)} of output.`;
+}
+
+/** Send-to-the-assistant and the rest, redrawn as the state changes. */
+function renderTerminalActions() {
+  const actions = $("terminalActions");
+  if (!actions) return;
+
+  actions.replaceChildren();
+  const data = termState.last;
+  if (!data || termState.text === "") return;
+
+  const send = document.createElement("button");
+  send.className = "link";
+  send.textContent = `Send this output to ${termState.data?.who?.name ?? "the assistant"}`;
+  send.title = "It goes into the conversation as a message from you.";
+  send.addEventListener("click", () => {
+    sendOutputToChat(data).catch(error => notice(String(error.message || error)));
+  });
+  actions.appendChild(send);
+
+  const copy = document.createElement("button");
+  copy.className = "link";
+  copy.textContent = "Copy the output";
+  copy.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(termState.text);
+      copy.textContent = "Copied";
+      setTimeout(() => { copy.textContent = "Copy the output"; }, 1400);
+    } catch {
+      notice("This browser would not copy it.");
+    }
+  });
+  actions.appendChild(copy);
+}
+
+/** How much output goes to the model in one message. */
+const TERMINAL_TO_CHAT = 24000;
+
+/**
+ * Hands a command's output to the assistant.
+ *
+ * The command itself goes too, and that matters more than it looks: output
+ * without the command that produced it is a wall of text the model has to guess
+ * the shape of, and it guesses wrong.
+ *
+ * Long output is cut from the MIDDLE. The first lines say what was run and the
+ * last lines say how it ended, and both matter more than whatever was in the
+ * middle of forty thousand lines - whereas cutting the tail throws away the
+ * error, which is almost always the point.
+ */
+async function sendOutputToChat(data) {
+  let text = termState.text;
+  let note = "";
+
+  if (text.length > TERMINAL_TO_CHAT) {
+    const half = Math.floor(TERMINAL_TO_CHAT / 2);
+    const dropped = text.length - TERMINAL_TO_CHAT;
+    text = text.slice(0, half)
+      + `\n\n… ${humanCount(dropped)} characters from the middle are not shown …\n\n`
+      + text.slice(-half);
+    note = ` The middle was left out; ${humanBytes(data.size)} in total.`;
+  }
+
+  const message = `I ran this in the terminal:\n\n$ ${data.command}\n\n`
+    + `It ${data.running ? "is still going" : data.timed_out ? "hit the time limit"
+      : data.stopped_by ? "was stopped" : "finished"}`
+    + ` after ${humanSpan(data.ran_for, true)}.${note}\n\nOutput:\n\n${text}`;
+
+  openChat();
+  await sayToChat(message);
+}
+
+/* --------------------------------------------------------------- memories -- */
+
+const memoryState = { data: null };
+
+async function refreshMemories() {
+  const body = $("memoryBody");
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see this."));
+    return;
+  }
+
+  if (formIsDirty(body)) {
+    keepIfEditing("memoryBody", () => {});
+    return;
+  }
+
+  try {
+    const data = await api("ai-memories");
+    keepIfEditing("memoryBody", () => renderMemories(data));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderMemories(data) {
+  memoryState.data = data;
+  const body = $("memoryBody");
+  const parts = [];
+
+  if (!data.memories.length) {
+    parts.push(note(
+      `${data.who.name} has not written anything down yet. It does that on its own when it `
+      + "works something out that will still be true next month — and you can add one "
+      + "yourself with the button above."
+    ));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  const said = document.createElement("p");
+  said.className = "muted small";
+  said.textContent = `${count(data.memories.length, "memory", "memories")} of a possible `
+    + `${humanCount(data.max)}. Past that the least useful are dropped — pinning one keeps `
+    + "it whatever happens.";
+  parts.push(said);
+
+  const holder = document.createElement("div");
+  holder.id = "memoryTable";
+  parts.push(holder);
+
+  body.replaceChildren(...parts);
+
+  renderTable("memoryTable", data.memories, [
+    {
+      label: "",
+      render: row => {
+        const pin = document.createElement("button");
+        pin.className = "link";
+        pin.textContent = row.pinned ? "📌" : "○";
+        pin.title = row.pinned ? "Pinned — never dropped" : "Pin it";
+        pin.addEventListener("click", async () => {
+          try {
+            renderMemories(await post("ai-memory-pin", {
+              id: row.id,
+              pinned: row.pinned ? "0" : "1",
+            }));
+          } catch (error) {
+            notice(String(error.message || error));
+          }
+        });
+        return pin;
+      },
+    },
+    { label: "Kind", render: row => data.kinds[row.kind]?.label ?? row.kind },
+    { label: "About", className: "name", render: row => row.subject },
+    { label: "What it remembers", className: "cmd", render: row => row.body },
+    {
+      label: "Written",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = ago(row.updated_at);
+        span.title = row.written_by === "you"
+          ? "You wrote this."
+          : `Written by the assistant${row.source_session
+              ? ` in conversation ${row.source_session}` : ""}.`;
+        return span;
+      },
+    },
+    {
+      label: "Used",
+      className: "size",
+      render: row => (row.used ? `${humanCount(row.used)}×` : "never"),
+    },
+    {
+      label: "",
+      className: "row-actions",
+      render: row => {
+        const wrap = document.createDocumentFragment();
+
+        const edit = document.createElement("button");
+        edit.className = "link";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", () => showMemoryDialog(row));
+        wrap.appendChild(edit);
+
+        const drop = document.createElement("button");
+        drop.className = "link danger";
+        drop.textContent = "Forget";
+        drop.addEventListener("click", async () => {
+          if (!confirm(`Forget "${row.subject}"?`)) return;
+          try {
+            renderMemories(await post("ai-memory-forget", { id: row.id }));
+          } catch (error) {
+            notice(String(error.message || error));
+          }
+        });
+        wrap.appendChild(drop);
+
+        return wrap;
+      },
+    },
+  ], null, row => (row.pinned ? "row-ok" : ""), row => String(row.id));
+}
+
+/** Writing or editing one by hand. */
+function showMemoryDialog(row) {
+  const data = memoryState.data;
+  const parts = [];
+
+  const kind = document.createElement("select");
+  for (const [key, meta] of Object.entries(data.kinds)) {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = meta.label;
+    option.selected = (row?.kind ?? "fact") === key;
+    kind.appendChild(option);
+  }
+  const kindNote = document.createElement("div");
+  kindNote.className = "muted small";
+  parts.push(fieldRow("Kind", kind, ""));
+  parts.push(kindNote);
+
+  const subject = document.createElement("input");
+  subject.type = "text";
+  subject.className = "wide";
+  subject.value = row?.subject ?? "";
+  subject.disabled = Boolean(row);
+  subject.placeholder = "the nightly io spike";
+  parts.push(fieldRow("About", subject, row
+    ? "The subject is the key, so it cannot be changed — forget this one and write a new "
+      + "one if it is wrong."
+    : "A short phrase. Writing the same subject again replaces what is stored under it."));
+
+  const body = document.createElement("textarea");
+  body.rows = 5;
+  body.className = "wide";
+  body.value = row?.body ?? "";
+  parts.push(fieldRow("What to remember", body,
+    "Written for somebody with none of the conversation it came from — no “as we "
+    + "discussed”, and say what it was based on."));
+
+  const sync = () => { kindNote.textContent = data.kinds[kind.value]?.note ?? ""; };
+  kind.addEventListener("change", sync);
+  sync();
+
+  showFormDialog(row ? "Edit a memory" : "Write a memory", parts, async () => {
+    renderMemories(await post("ai-memory-save", {
+      id: row ? String(row.id) : "0",
+      kind: kind.value,
+      subject: subject.value,
+      body: body.value,
+    }));
+  });
+}
+
+/**
+ * A dialog with fields and one Save button.
+ *
+ * The note dialog's shell, borrowed. There is exactly one modal in this page
+ * and giving each small form its own would be three more elements to keep in
+ * step for no gain.
+ */
+function showFormDialog(title, parts, save) {
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const go = document.createElement("button");
+  go.type = "submit";
+  go.textContent = "Save it";
+  actions.appendChild(go);
+
+  $("noteFormBody").replaceChildren(...parts, actions);
+  $("noteDialogTitle").textContent = title;
+
+  const form = $("noteForm");
+  form.onsubmit = async event => {
+    event.preventDefault();
+    go.disabled = true;
+    try {
+      await save();
+      $("noteDialog").close();
+    } catch (error) {
+      notice(String(error.message || error));
+    } finally {
+      go.disabled = false;
+    }
+  };
+
+  $("noteDialog").showModal();
+}
+
 /* ------------------------------------------------- the assistant's store -- */
 
 const aiStoreState = { data: null };
@@ -8355,9 +9458,15 @@ function renderAiStore(data) {
     parts.push(note(data.table_why));
   }
 
+  const gallery = document.createElement("div");
+  gallery.id = "aiAssets";
+  parts.push(section("Pictures it has made", gallery));
+
   parts.push(section("Forget old conversations", aiForgetForm(who)));
 
   body.replaceChildren(...parts);
+
+  loadAiAssets().catch(() => {});
 
   renderTable("aiHoldsTable", data.holds, [
     { label: "", render: row => row.label },
@@ -8391,6 +9500,69 @@ function renderAiStore(data) {
     ], null, null, row => row.table);
   }
 }
+
+/**
+ * The generated pictures, kept so they can be looked at afterwards.
+ *
+ * Fetched separately from the rest of the page, because it is the one part
+ * nobody needs immediately and it is the only part with images in it - a page
+ * that waits for twelve thumbnails before drawing its numbers has its
+ * priorities the wrong way round.
+ */
+async function loadAiAssets() {
+  const holder = $("aiAssets");
+  if (!holder) return;
+
+  let data;
+  try {
+    data = await api("ai-asset");
+  } catch {
+    holder.replaceChildren(note("The picture store could not be read."));
+    return;
+  }
+
+  if (!data.assets.length) {
+    holder.replaceChildren(note(
+      "None yet. Anything generated is kept here at full size — the provider's own link "
+      + "expires within days, so a picture that was paid for would otherwise be a dead "
+      + "link by the time anybody looked."
+    ));
+    return;
+  }
+
+  const grid = document.createElement("div");
+  grid.className = "asset-grid";
+
+  for (const asset of data.assets) {
+    const card = document.createElement("figure");
+    card.className = "asset";
+
+    const link = document.createElement("a");
+    link.href = `aiasset.php?id=${encodeURIComponent(asset.id)}`;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.title = "Open it at full size";
+
+    const image = document.createElement("img");
+    image.src = link.href;
+    image.alt = asset.prompt;
+    image.loading = "lazy";
+    link.appendChild(image);
+    card.appendChild(link);
+
+    const caption = document.createElement("figcaption");
+    caption.className = "muted small";
+    caption.textContent = asset.prompt;
+    caption.title = `${asset.width}×${asset.height}, ${humanBytes(asset.bytes)}, `
+      + `${asset.style}${asset.cost ? `, ${asset.cost}` : ""} — ${humanTime(asset.at)}`;
+    card.appendChild(caption);
+
+    grid.appendChild(card);
+  }
+
+  holder.replaceChildren(grid);
+}
+
 
 /**
  * Deleting conversations past a certain age.
@@ -19353,7 +20525,7 @@ async function refreshEmail() {
     return;
   }
 
-  renderEmail(data);
+  keepIfEditing("emailBody", () => renderEmail(data));
 }
 
 /**
@@ -21207,6 +22379,25 @@ const VIEWS = {
     parent: "system",
     refresh: () => refreshStore(),
   },
+  "sys-terminal": {
+    /*
+     * Never on the timer.
+     *
+     * A poll would throw away a half-typed command, and the output has its own
+     * follower which reads by offset - re-fetching the page would be both
+     * slower and less live than what is already running.
+     */
+    manual: true,
+    label: "Terminal",
+    parent: "system",
+    refresh: () => refreshTerminal(),
+  },
+  "sys-memory": {
+    manual: true,
+    label: "What it remembers",
+    parent: "system",
+    refresh: () => refreshMemories(),
+  },
   "sys-ai-data": {
     // Renamed by renderChatIdentity along with everything else that says it.
     label: "Mr. Radar's data",
@@ -22002,6 +23193,53 @@ $("aiSessionsRefresh").addEventListener("click", () => {
   refreshAiSessions().catch(error => notice(String(error.message || error)));
 });
 
+$("terminalStop").addEventListener("click", async () => {
+  if (!termState.running) return;
+  try {
+    const result = await post("terminal-stop", { id: termState.running });
+    notice(result.killed ? "Stopped." : "It had already finished.", true);
+    await pollTerminal();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
+$("memoryAdd").addEventListener("click", () => {
+  if (!memoryState.data) {
+    notice("Open this page first.");
+    return;
+  }
+  showMemoryDialog(null);
+});
+
+$("memoryClear").addEventListener("click", async () => {
+  if (!confirm(
+    "Forget everything it has remembered?\n\n"
+    + "Every conversation starts from nothing again. This cannot be undone from here."
+  )) return;
+
+  try {
+    const result = await post("ai-memory-clear");
+    notice(`${count(result.forgotten, "memory", "memories")} forgotten.`, true);
+    renderMemories(result);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
+$("chatEffort").addEventListener("change", async event => {
+  if (!chatState.session?.exists) return;
+  try {
+    chatState.session = (await post("ai-effort", {
+      session: chatState.session.id,
+      effort: event.target.value,
+    })).session;
+    renderChat();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
 $("chatClose").addEventListener("click", () => hideChat());
 $("chatNew").addEventListener("click", () => startChat());
 
@@ -22010,6 +23248,39 @@ $("chatStop").addEventListener("click", async () => {
   try {
     chatState.session = (await post("ai-stop", { session: chatState.session.id })).session;
     renderChat();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
+$("chatInterrupt").addEventListener("click", async () => {
+  if (!chatState.session?.exists) return;
+
+  /*
+   * Anything already typed goes with the interruption.
+   *
+   * Somebody who has typed "no, look at the database" and then reached for
+   * Interrupt meant both, and making them press Ask afterwards - into a box
+   * whose message they may reasonably think was already sent - is a way to
+   * lose it.
+   */
+  const text = $("chatText").value.trim();
+
+  try {
+    const result = await post("ai-interrupt", { session: chatState.session.id, text });
+    chatState.session = result.session;
+    if (text) {
+      $("chatText").value = "";
+      await sayToChat(text);
+    } else {
+      renderChat();
+    }
+    notice(
+      result.runs
+        ? `Stopped. ${count(result.runs, "thing")} it had started was dropped.`
+        : "Stopped. Tell it what you want it to do instead.",
+      true
+    );
   } catch (error) {
     notice(String(error.message || error));
   }

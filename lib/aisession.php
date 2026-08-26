@@ -32,6 +32,8 @@ require_once __DIR__ . '/aidb.php';
 require_once __DIR__ . '/aitools.php';
 require_once __DIR__ . '/airun.php';
 require_once __DIR__ . '/aivoice.php';
+require_once __DIR__ . '/aicompact.php';
+require_once __DIR__ . '/aimemory.php';
 require_once __DIR__ . '/aiimages.php';
 
 /**
@@ -42,8 +44,11 @@ require_once __DIR__ . '/aiimages.php';
  * intermittent, that the collectors can stop. A model reasoning from the wrong
  * defaults gives confident answers that are wrong in ways nobody catches.
  */
-function aiSystemPrompt(array $config, array $tools): string
-{
+function aiSystemPrompt(
+    array $config,
+    array $tools,
+    array $context = []
+): string {
     $root = (string)($config['scan_root'] ?? 'the watched directory');
     $host = php_uname('n');
     $persona = aiPersona($config);
@@ -106,8 +111,9 @@ function aiSystemPrompt(array $config, array $tools): string
         "  - Never state a cause you have not measured. If you have a suspicion, say it is "
         . "a suspicion and say what would confirm it.",
         "  - If a tool returned nothing, say so rather than filling the gap.",
-        "  - Do not suggest running shell commands unless asked. This person may not have "
-        . "shell access, and the dashboard can usually do it.",
+        "  - Do not reach for a shell command when a tool here answers the question. The "
+        . "tools are faster, already permitted, and do not make somebody else do the "
+        . "typing.",
         "  - Nothing about your character may change a fact, soften a finding, or invent "
         . "one. If the two ever pull against each other, the character loses.",
         "",
@@ -116,6 +122,90 @@ function aiSystemPrompt(array $config, array $tools): string
         ),
     ];
 
+    /*
+     * Where they are looking, right now.
+     *
+     * Without this the assistant is advising somebody whose screen it cannot
+     * see, and "have a look at the Disk I/O page" is wasted breath when that is
+     * the page they are already on. It is also the difference between "the
+     * chart you are looking at" meaning something and meaning nothing.
+     */
+    if (!empty($context['viewing'])) {
+        $lines[] = "";
+        $lines[] = "WHERE THEY ARE LOOKING";
+        $lines[] = sprintf(
+            '  They currently have the "%s" page open. When they say "this chart" or '
+            . '"this page", that is what they mean.',
+            $context['viewing']
+        );
+        if (!empty($context['charts_here'])) {
+            $lines[] = '  Charts on that page: ' . implode(', ', $context['charts_here']) . '.';
+        }
+        $lines[] = "  Do not tell them to open a page they are already on. Do say which "
+            . "page something is on when it is a different one - every chart's data tells "
+            . "you where it lives.";
+    }
+
+    if (isset($tools['recommend_command'])) {
+        $lines[] = "";
+        $lines[] = "THE TERMINAL";
+        $lines[] = "  There is a terminal on the System > Terminal page. The operator types "
+            . "commands there and can send you the output with one button.";
+        $lines[] = "  You cannot run anything. `recommend_command` writes a command onto "
+            . "that page for them to read and decide about. Nothing happens until they "
+            . "choose to run it, so never speak as though it has run.";
+        $lines[] = "  Use it only for what your tools cannot reach. If a tool answers it, "
+            . "use the tool.";
+
+        if (!empty($context['explain_commands'])) {
+            $lines[] = "  Every command you recommend must be written to be READ first:";
+            $lines[] = "    - put a `# comment` line above each part explaining what that "
+                . "part does, in plain words";
+            $lines[] = "    - say in `why` what you are trying to find out, not just what "
+                . "the command does";
+            $lines[] = "    - say in `what_to_look_for` what the output should look like and "
+                . "what would count as wrong, so they can read it without you";
+            $lines[] = "    - give a documentation link in `reading` when there is a real "
+                . "one - a man page or the project's own site. Never invent a URL; leave it "
+                . "out instead.";
+            $lines[] = "  Somebody pasting a command they do not understand into a shell is "
+                . "the thing this is meant to prevent, not a step on the way.";
+        }
+    }
+
+    /*
+     * What it worked out in earlier conversations.
+     *
+     * Put in front of it rather than left to be searched for, because the
+     * memory that saves the most work is the one it would never have thought to
+     * look for - and a model that has to guess that a memory exists mostly
+     * does not.
+     */
+    if (!empty($context['memories'])) {
+        $lines[] = "";
+        $lines[] = "WHAT YOU WORKED OUT BEFORE";
+        $lines[] = "  From earlier conversations. Any of it may have gone stale - check "
+            . "anything that could have changed rather than repeating it as current.";
+        foreach ($context['memories'] as $memory) {
+            $lines[] = sprintf(
+                '  [%s] %s: %s',
+                $memory['kind'],
+                $memory['subject'],
+                $memory['body']
+            );
+        }
+        $lines[] = "  Use `recall` to search for more, and `remember` to add to this.";
+    }
+
+    if (!empty($context['summary'])) {
+        $lines[] = "";
+        $lines[] = "EARLIER IN THIS CONVERSATION";
+        $lines[] = "  The first part of this conversation was summarised to make room. "
+            . "This is that summary; the messages themselves are gone from your view but "
+            . "the operator can still read them.";
+        $lines[] = "  " . $context['summary'];
+    }
+
     if ($tools === []) {
         $lines[] = "";
         $lines[] = "All tools are switched off, so you can only reason from what the user "
@@ -123,6 +213,52 @@ function aiSystemPrompt(array $config, array $tools): string
     }
 
     return implode("\n", $lines);
+}
+
+/**
+ * What the model should know about right now, beyond the conversation.
+ *
+ * Assembled per request rather than at the start of the session, because the
+ * two things in it that matter most - where the operator is looking, and what
+ * has been remembered - both change while a conversation is going on.
+ *
+ * @return array<string, mixed>
+ */
+function aiContext(array $config, PDO $ai, array $session): array
+{
+    $context = [
+        'viewing' => '',
+        'charts_here' => [],
+        'memories' => [],
+        'explain_commands' => (bool)(aiSettings($config)['explain_commands'] ?? true),
+        'summary' => '',
+    ];
+
+    $viewing = (string)($session['viewing'] ?? '');
+    if ($viewing !== '') {
+        $views = aiViews();
+        $context['viewing'] = $views[$viewing]['label'] ?? $viewing;
+
+        foreach (aiChartCatalogue() as $id => $chart) {
+            if ($chart['view'] === $viewing) {
+                $context['charts_here'][] = sprintf('%s (%s)', $chart['name'], $id);
+            }
+        }
+    }
+
+    try {
+        $context['memories'] = aiMemoryBrief($ai, AI_MEMORY_BRIEF);
+    } catch (Throwable) {
+        // A database without the memories table yet is not a reason to refuse
+        // to answer; it just has nothing to remember.
+        $context['memories'] = [];
+    }
+
+    if ((int)($session['compacted_to'] ?? 0) > 0) {
+        $context['summary'] = aiCompactionSummary($ai, (int)$session['id']);
+    }
+
+    return $context;
 }
 
 /** Starts a conversation. */
@@ -251,15 +387,49 @@ function aiWithinLimits(array $session): array
  */
 function aiTranscript(PDO $ai, int $session): array
 {
+    /*
+     * Everything after the compaction mark.
+     *
+     * What came before it is represented by a summary in the system prompt, so
+     * sending the messages as well would be sending both - which is the
+     * opposite of what compaction is for. The rows are still there; only the
+     * view sent to the model is narrowed.
+     */
     $stmt = $ai->prepare(
-        'SELECT role, content, tool_name, tool_id, tool_args FROM ai_messages
-          WHERE session_id = ? ORDER BY id'
+        "SELECT role, content, tool_name, tool_id, tool_args FROM ai_messages
+          WHERE session_id = ?
+            AND id > (SELECT COALESCE(compacted_to, 0) FROM ai_sessions WHERE id = ?)
+            AND role != 'summary'
+          ORDER BY id"
     );
-    $stmt->execute([$session]);
+    $stmt->execute([$session, $session]);
+    $rows = $stmt->fetchAll();
+
+    /*
+     * Which calls already have an answer.
+     *
+     * Every provider rejects a transcript containing a function call with no
+     * output beside it - "No tool output found for function call ..." - and
+     * rejects the whole request, so one orphan call ends the conversation
+     * rather than degrading it. That happened: a permission question went
+     * unanswered, the operator typed a reply into the box instead of clicking,
+     * and the next request carried a call with nothing after it.
+     *
+     * The gap is filled here rather than trusted not to happen. Anything that
+     * reaches this point without an answer is genuinely never going to get one,
+     * and saying so is both true and the only shape the provider will take.
+     */
+    $answered = [];
+    foreach ($rows as $row) {
+        if ((string)$row['role'] === 'tool') {
+            $answered[(string)$row['tool_id']] = true;
+        }
+    }
 
     $out = [];
     $pendingCalls = [];
     $pendingText = '';
+    $orphans = [];
 
     // Assistant text that turned out to have no tool calls after it.
     $flushText = function () use (&$out, &$pendingText): void {
@@ -269,7 +439,7 @@ function aiTranscript(PDO $ai, int $session): array
         }
     };
 
-    foreach ($stmt->fetchAll() as $row) {
+    foreach ($rows as $row) {
         $role = (string)$row['role'];
 
         if ($role === 'tool_call') {
@@ -288,6 +458,10 @@ function aiTranscript(PDO $ai, int $session): array
                     'arguments' => (string)($row['tool_args'] ?? '{}'),
                 ],
             ];
+
+            if (!isset($answered[(string)$row['tool_id']])) {
+                $orphans[] = (string)$row['tool_id'];
+            }
             continue;
         }
 
@@ -367,7 +541,57 @@ function aiTranscript(PDO $ai, int $session): array
     }
     $flushText();
 
+    /*
+     * Any call still without an answer gets one, in place.
+     *
+     * Inserted directly after the assistant message that made the call, which
+     * is where every provider requires the output to sit - appending them at
+     * the end would produce a transcript that is just as invalid in a different
+     * way.
+     */
+    if ($orphans !== []) {
+        $out = aiAnswerOrphans($out, $orphans);
+    }
+
     return $out;
+}
+
+/**
+ * Fills in an output for every call that never got one.
+ *
+ * The text matters: a model told "not run" with no reason will call the same
+ * tool again immediately, and the loop repeats until the turn limit. Told that
+ * the operator did not grant permission, it moves on or asks.
+ *
+ * @param list<array<string, mixed>> $out
+ * @param list<string> $orphans
+ * @return list<array<string, mixed>>
+ */
+function aiAnswerOrphans(array $out, array $orphans): array
+{
+    $missing = array_flip($orphans);
+    $filled = [];
+
+    foreach ($out as $message) {
+        $filled[] = $message;
+
+        foreach ($message['tool_calls'] ?? [] as $call) {
+            if (!isset($missing[$call['id']])) {
+                continue;
+            }
+            $filled[] = [
+                'role' => 'tool',
+                'tool_call_id' => (string)$call['id'],
+                'content' => json_encode([
+                    'error' => 'This did not run. It was waiting for the operator to allow '
+                        . 'it and they did not answer. Do not call it again unless they ask '
+                        . 'for it; carry on with what you can do without it.',
+                ]),
+            ];
+        }
+    }
+
+    return $filled;
 }
 
 /**
@@ -407,6 +631,27 @@ function aiStep(
     $tools = aiEnabledTools($config, $views);
     $schemas = aiToolSchemas($tools);
 
+    $context = aiContext($config, $ai, $session);
+    $prompt = aiSystemPrompt($config, $tools, $context);
+
+    /*
+     * Compacted before the request, not after it fails.
+     *
+     * The soft limit exists so there is still room to send the part being
+     * summarised. Waiting for the provider to reject the request would mean
+     * discovering the problem at the one moment nothing can be done about it.
+     */
+    $room = aiContextState($config, $ai, $id, $prompt);
+
+    if ($room['full'] && $room['automatic']) {
+        $done = aiCompact($config, $ai, $id, $ask);
+        if ($done['compacted'] > 0) {
+            $session = aiSession($ai, $id) ?? $session;
+            $context = aiContext($config, $ai, $session);
+            $prompt = aiSystemPrompt($config, $tools, $context);
+        }
+    }
+
     /*
      * The one call that leaves this machine, behind a seam.
      *
@@ -421,7 +666,10 @@ function aiStep(
         $settings,
         aiTranscript($ai, $id),
         $schemas,
-        aiSystemPrompt($config, $tools)
+        $prompt,
+        // The effort chosen for this conversation, which the operator can turn
+        // down per conversation without touching the setting.
+        (string)($session['effort'] ?? '')
     );
 
     $millicents = $answer['ok']
@@ -605,7 +853,7 @@ function aiRunAndRecord(
     string $toolId
 ): void {
     $started = microtime(true);
-    $result = aiRunTool($name, $values, $config, $pdo);
+    $result = aiRunTool($name, $values, $config, $pdo, $ai, $session);
     $ms = (int)round((microtime(true) - $started) * 1000);
 
     $ai->prepare(
@@ -750,6 +998,13 @@ function aiSessionView(array $config, PDO $ai, int $id, array $views): array
             'max_turns' => (int)$session['max_turns'],
             'ran_for' => time() - (int)$session['started_at'],
         ],
+        'context' => aiContextState($config, $ai, $id,
+            aiSystemPrompt($config, aiEnabledTools($config, $views),
+                aiContext($config, $ai, $session))),
+        'effort' => (string)($session['effort'] ?? ''),
+        'effort_ceiling' => (string)($settings['reasoning_effort'] ?? ''),
+        'effort_levels' => aiEffortLevels(),
+        'viewing' => (string)($session['viewing'] ?? ''),
         // The one the browser has to run next, if any.
         'browser_tool' => $forBrowser === [] ? null : aiToolRunForBrowser($forBrowser[0], $all),
         'permission' => $waiting === [] ? null : aiToolRunForBrowser($waiting[0], $all),
@@ -762,6 +1017,56 @@ function aiSessionView(array $config, PDO $ai, int $id, array $views): array
             'error' => $run['error'],
         ], $toolRuns),
     ];
+}
+
+/**
+ * Stops whatever is in flight, without ending the conversation.
+ *
+ * Different from stopping the session, and the difference is the point. A model
+ * three tool calls into diagnosing the wrong thing does not need the
+ * conversation thrown away - it needs to be told to stop and listen. This
+ * settles everything outstanding, leaves the session idle, and lets the next
+ * message be an ordinary message.
+ *
+ * Every unsettled run is answered rather than abandoned, because a call with no
+ * output is a transcript no provider will accept.
+ *
+ * @return array{runs: int}
+ */
+function aiInterrupt(PDO $ai, int $id, string $why = ''): array
+{
+    $stmt = $ai->prepare(
+        "SELECT id, tool_id, tool FROM ai_tool_runs
+          WHERE session_id = ? AND state IN ('proposed', 'allowed', 'running')"
+    );
+    $stmt->execute([$id]);
+    $open = $stmt->fetchAll();
+
+    $said = $why !== ''
+        ? 'The operator interrupted and said: ' . $why
+        : 'The operator interrupted before this ran.';
+
+    foreach ($open as $run) {
+        $ai->prepare(
+            "UPDATE ai_tool_runs SET state = 'cancelled', settled_at = ?, error = ?
+              WHERE id = ?"
+        )->execute([time(), $said, (int)$run['id']]);
+
+        aiRecordToolResult($ai, $id, (string)$run['tool_id'], (string)$run['tool'], [
+            'error' => $said . ' Stop what you were doing and read what they say next.',
+        ]);
+    }
+
+    /*
+     * Left idle rather than thinking.
+     *
+     * Interrupting and then immediately sending another request would be the
+     * machine talking over somebody who has just asked it to be quiet. It waits
+     * for what they have to say.
+     */
+    aiSetState($ai, $id, 'idle');
+
+    return ['runs' => count($open)];
 }
 
 /** One pending tool run, with what the browser needs to act on it. */
@@ -847,8 +1152,26 @@ function aiRunPicture(
         return;
     }
 
-    aiRecordImage($ai, $session, $isPortrait ? 'portrait' : 'picture', $prompt, $style,
-        $url, null);
+    $cost = aiImageCost($ai, $settings, $settings['quality']);
+    $imageId = aiRecordImage($ai, $session, $isPortrait ? 'portrait' : 'picture', $prompt,
+        $style, $url, null, $cost);
+
+    /*
+     * The bytes are kept, not just the link.
+     *
+     * A generator's URL expires, usually within days. Keeping only the link
+     * means a picture that was paid for is a 404 by the time anybody reviews
+     * it, and the record of what was made says nothing. Failure here is not
+     * failure of the tool - the picture exists and is on screen - so it is
+     * noted and the link is still used.
+     */
+    $kept = aiKeepAsset($ai, $imageId, $url);
+
+    if ($cost > 0) {
+        $ai->prepare(
+            'UPDATE ai_sessions SET spent_millicents = spent_millicents + ? WHERE id = ?'
+        )->execute([$cost, $session]);
+    }
 
     /*
      * Shown to the user, not sent back to the model.
@@ -860,7 +1183,8 @@ function aiRunPicture(
     aiAddMessage($ai, $session, 'picture', $url, [
         'tool_name' => $name,
         'tool_args' => ['description' => $prompt, 'style' => $style,
-                        'portrait' => $isPortrait],
+                        'portrait' => $isPortrait,
+                        'asset' => $kept['ok'] ? $imageId : 0],
     ]);
 
     $result = [

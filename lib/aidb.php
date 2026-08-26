@@ -255,6 +255,94 @@ function aiMigrations(): array
             'CREATE INDEX ai_images_at ON ai_images (at)',
             'CREATE INDEX ai_images_kind ON ai_images (kind, id)',
         ],
+
+        3 => [
+            /*
+             * Which page the operator is looking at.
+             *
+             * Kept on the session and refreshed as they move, so every request
+             * can say it. Without it the model is advising somebody whose
+             * screen it cannot see, and "check the Disk I/O page" is wasted
+             * breath when they are already on it.
+             */
+            "ALTER TABLE ai_sessions ADD COLUMN viewing TEXT",
+
+            /*
+             * How hard to think, per conversation.
+             *
+             * Settings hold the ceiling; this holds what was chosen for this
+             * one. Most questions do not need the expensive setting and the
+             * person asking usually knows which theirs is.
+             */
+            "ALTER TABLE ai_sessions ADD COLUMN effort TEXT",
+        ],
+
+        4 => [
+            /*
+             * What it remembers between conversations.
+             *
+             * Deliberately its own table rather than a long-lived session: a
+             * memory outlives the conversation that produced it, has to be
+             * reviewable on its own, and has to be deletable without throwing
+             * away the transcript it came from.
+             *
+             * `source_session` is kept so every memory can be traced back to
+             * the conversation that made it. A remembered claim whose origin
+             * cannot be found is a rumour.
+             */
+            "CREATE TABLE ai_memories (
+                id             INTEGER PRIMARY KEY,
+                at             INTEGER NOT NULL,
+                updated_at     INTEGER NOT NULL,
+                source_session INTEGER,
+                kind           TEXT NOT NULL,
+                subject        TEXT NOT NULL,
+                body           TEXT NOT NULL,
+                pinned         INTEGER NOT NULL DEFAULT 0,
+                used_at        INTEGER,
+                used           INTEGER NOT NULL DEFAULT 0,
+                written_by     TEXT NOT NULL DEFAULT 'assistant'
+            )",
+            'CREATE UNIQUE INDEX ai_memories_subject ON ai_memories (subject)',
+            'CREATE INDEX ai_memories_kind ON ai_memories (kind, updated_at)',
+
+            /*
+             * Where a conversation was summarised.
+             *
+             * Compaction replaces a run of old messages with one summary. The
+             * originals are not deleted - they are the record of what was
+             * actually sent - so the transcript builder needs to know which
+             * ones to skip and what to put in their place.
+             */
+            "ALTER TABLE ai_sessions ADD COLUMN compacted_to INTEGER NOT NULL DEFAULT 0",
+        ],
+
+        5 => [
+            /*
+             * The generated images themselves, not just a link to them.
+             *
+             * A provider's URL expires. Keeping only the link means a picture
+             * that was paid for is gone in a week and the record of what was
+             * made is a 404. The bytes are small next to the transcripts they
+             * sit beside, and only images this tool generated are stored -
+             * animations fetched from a search are somebody else's file and
+             * stay theirs.
+             */
+            "CREATE TABLE ai_assets (
+                id       INTEGER PRIMARY KEY,
+                image_id INTEGER NOT NULL,
+                at       INTEGER NOT NULL,
+                mime     TEXT NOT NULL,
+                width    INTEGER NOT NULL DEFAULT 0,
+                height   INTEGER NOT NULL DEFAULT 0,
+                bytes    INTEGER NOT NULL,
+                body     BLOB NOT NULL
+            )",
+            'CREATE INDEX ai_assets_image ON ai_assets (image_id)',
+
+            // What one image cost, so a session total can include it.
+            "ALTER TABLE ai_images ADD COLUMN millicents INTEGER NOT NULL DEFAULT 0",
+        ],
     ];
 }
 

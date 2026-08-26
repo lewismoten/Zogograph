@@ -341,6 +341,16 @@
       <span class="nav-label">Mr. Radar</span>
       <span class="nav-badge" data-badge="sys-ai" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/sys-terminal" data-nav="sys-terminal" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Terminal</span>
+      <span class="nav-badge" data-badge="sys-terminal" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/sys-memory" data-nav="sys-memory" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">What it remembers</span>
+      <span class="nav-badge" data-badge="sys-memory" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-ai-data" data-nav="sys-ai-data" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label"><span class="ai-name">Mr. Radar</span>&rsquo;s data</span>
@@ -2093,6 +2103,48 @@
 </section>
 </section>
 
+<section class="view" data-view="sys-terminal" hidden>
+<section class="panel" id="terminalPanel">
+  <div class="panel-head">
+    <h2>Terminal</h2>
+    <div class="panel-controls">
+      <button id="terminalStop" class="link danger" hidden>Stop it</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    This runs what you type, as the user the web server runs as, and shows the
+    output. Be clear-eyed about what that means: anybody who has the dashboard
+    password has this, so it stays off until it is switched on in
+    <code>lib/config.php</code>, and every command is written to the action log
+    before it runs. Each command is its own process &mdash; <code>cd</code> does
+    not carry over to the next one, because pretending it did would be a lie
+    about what actually ran.
+  </p>
+  <div id="terminalBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="sys-memory" hidden>
+<section class="panel" id="memoryPanel">
+  <div class="panel-head">
+    <h2>What <span class="ai-name">Mr. Radar</span> remembers</h2>
+    <div class="panel-controls">
+      <button id="memoryAdd" class="link">Add one</button>
+      <button id="memoryClear" class="link danger">Forget everything</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    A conversation ends and everything worked out in it goes with it. These are
+    the things kept on purpose &mdash; which of the installed PHP versions the
+    site actually runs, what the 03:10 spike turns out to be, how you have said
+    you want to be told things. Everything here is editable and deletable by
+    you, and every one records the conversation it came from, because a
+    remembered claim whose origin cannot be found is a rumour.
+  </p>
+  <div id="memoryBody"></div>
+</section>
+</section>
+
 <section class="view" data-view="sys-ai-data" hidden>
 <section class="panel" id="aiDataPanel">
   <div class="panel-head">
@@ -2242,10 +2294,23 @@
     <div class="chat-head">
       <strong id="chatTitle">Mr. Radar</strong>
       <span class="muted small" id="chatCost"></span>
+      <span class="chat-room" id="chatRoom" hidden></span>
+      <select id="chatEffort" class="chat-effort" title="How hard to think"></select>
       <button id="chatNew" class="link" title="Start a fresh conversation">New</button>
+      <button id="chatInterrupt" class="link" hidden
+              title="Stop what it is doing, keep the conversation">Interrupt</button>
       <button id="chatStop" class="link danger" title="Stop this conversation">Stop</button>
       <button id="chatClose" class="link" title="Hide this — the conversation carries on">Hide</button>
     </div>
+    <!--
+      Permission questions live here, above the log and outside it.
+
+      They were drawn in the status strip below the log, which is a flex child
+      that can shrink - so on a conversation long enough to fill the panel it
+      shrank to nothing and its buttons ended up underneath the message box,
+      unreachable. A question nobody can answer is worse than no question.
+    -->
+    <div class="chat-ask" id="chatAsk" hidden></div>
     <div class="chat-log" id="chatLog"></div>
     <div class="chat-status" id="chatStatus"></div>
     <form class="chat-say" id="chatForm">

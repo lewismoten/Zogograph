@@ -28,6 +28,7 @@ require_once __DIR__ . '/aitools.php';
 require_once __DIR__ . '/logstream.php';
 require_once __DIR__ . '/logwatch.php';
 require_once __DIR__ . '/aicharts.php';
+require_once __DIR__ . '/aimemory.php';
 
 /** How much text one tool may return. Beyond this the reply is trimmed and says so. */
 const AI_RESULT_MAX = 12000;
@@ -45,7 +46,9 @@ function aiRunTool(
     string $name,
     array $values,
     array $config,
-    PDO $pdo
+    PDO $pdo,
+    ?PDO $ai = null,
+    int $session = 0
 ): array {
     try {
         $result = match ($name) {
@@ -64,6 +67,15 @@ function aiRunTool(
             'get_action_history' => aiActionHistory($pdo, $values),
             'get_chart_data' => aiChartData($pdo, (string)$values['chart'],
                 (int)$values['hours']),
+            /*
+             * The three that need the assistant's own database rather than the
+             * account's - what it remembers, and what it has asked somebody to
+             * type. They are given it explicitly rather than opening it here,
+             * so this file still has exactly one connection to reason about.
+             */
+            'remember' => aiToolRemember($ai, $session, $values),
+            'recall' => aiToolRecall($ai, $values),
+            'recommend_command' => aiToolRecommend($values),
             default => ['error' => 'That tool does not run on the server.'],
         };
     } catch (Throwable $e) {
@@ -909,4 +921,100 @@ function aiEncodeResult(array $result): string
             strlen($json),
             AI_RESULT_MAX
         );
+}
+
+/* --------------------------------------------------------------- memory -- */
+
+/**
+ * Writes one memory.
+ *
+ * The refusals from aiMemoryWrite are returned to the model as ordinary tool
+ * results rather than thrown, because a model told "not remembering that, it
+ * looks like a credential" understands and moves on, while one whose call
+ * vanished tries again.
+ */
+function aiToolRemember(?PDO $ai, int $session, array $values): array
+{
+    if ($ai === null) {
+        return ['error' => 'There is nowhere to remember things right now.'];
+    }
+
+    try {
+        $result = aiMemoryWrite(
+            $ai,
+            $session > 0 ? $session : null,
+            (string)$values['kind'],
+            (string)$values['subject'],
+            (string)$values['body']
+        );
+    } catch (ActionRefused $e) {
+        return ['error' => $e->getMessage()];
+    }
+
+    return [
+        'remembered' => true,
+        'subject' => (string)$values['subject'],
+        'replaced_an_earlier_one' => $result['replaced'],
+        'note' => $result['replaced']
+            ? 'This replaced what was previously remembered under that subject.'
+            : 'Written down. It will be there in future conversations.',
+    ];
+}
+
+/** Looks memories up. */
+function aiToolRecall(?PDO $ai, array $values): array
+{
+    if ($ai === null) {
+        return ['error' => 'There is nothing to recall from right now.'];
+    }
+
+    $about = trim((string)($values['about'] ?? ''));
+    $found = aiMemoryFind($ai, $about, (int)($values['limit'] ?? 20));
+
+    if ($found === []) {
+        return [
+            'memories' => [],
+            'note' => $about === ''
+                ? 'Nothing has been remembered yet.'
+                : sprintf(
+                    'Nothing remembered mentions "%s". That means nothing was written down '
+                    . 'about it - not that it did not happen.',
+                    $about
+                ),
+        ];
+    }
+
+    return [
+        'memories' => array_map(fn(array $memory): array => [
+            'kind' => $memory['kind'],
+            'subject' => $memory['subject'],
+            'body' => $memory['body'],
+            'written' => plainWhen($memory['at']),
+            'last_changed' => plainWhen($memory['updated_at']),
+            'written_by' => $memory['written_by'] === 'you'
+                ? 'the operator, by hand'
+                : 'you, in an earlier conversation',
+        ], $found),
+        'note' => 'These were written in earlier conversations. Check anything that could '
+            . 'have changed before relying on it.',
+    ];
+}
+
+/**
+ * Puts a command on the terminal page.
+ *
+ * Returns success as soon as it is written down, which is the honest answer:
+ * the tool's job is to make the suggestion visible, and whether anybody runs it
+ * is not this tool's business and must not be implied.
+ */
+function aiToolRecommend(array $values): array
+{
+    return [
+        'shown_to_the_operator' => true,
+        'command' => (string)$values['command'],
+        'where' => 'It is on the System > Terminal page, waiting for them to read it.',
+        'note' => 'It has NOT been run and will not be unless they choose to run it. Do '
+            . 'not assume any output. When they send it back, you will see it as a message '
+            . 'from them. If they do not, ask - do not guess what it said.',
+    ];
 }

@@ -74,6 +74,8 @@ require_once __DIR__ . '/lib/software.php';
 require_once __DIR__ . '/lib/rdns.php';
 require_once __DIR__ . '/lib/scans.php';
 require_once __DIR__ . '/lib/aisession.php';
+require_once __DIR__ . '/lib/aimemory.php';
+require_once __DIR__ . '/lib/terminal.php';
 require_once __DIR__ . '/lib/headers.php';
 require_once __DIR__ . '/lib/pagebits.php';
 require_once __DIR__ . '/lib/domains.php';
@@ -137,6 +139,16 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'fetch' => fetchView($pdo, $signedIn),
         'store' => storeView($config, $pdo, $signedIn),
         'ai-store' => aiStoreView($config, $signedIn),
+        'terminal' => terminalView($config, $signedIn),
+        'terminal-run' => doTerminalRun($config, $pdo, $post),
+        'terminal-read' => terminalReadView($config, $signedIn),
+        'terminal-stop' => doTerminalStop($config, $pdo, $post),
+        'terminal-forget' => doTerminalForget($config, $pdo, $post),
+        'ai-memories' => aiMemoriesView($config, $signedIn),
+        'ai-memory-save' => doAiMemorySave($config, $pdo, $post),
+        'ai-memory-forget' => doAiMemoryForget($config, $pdo, $post),
+        'ai-memory-pin' => doAiMemoryPin($config, $pdo, $post),
+        'ai-memory-clear' => doAiMemoryClear($config, $pdo, $post),
         'ai-compact' => doAiCompact($config, $pdo, $post),
         'ai-forget' => doAiForget($config, $pdo, $post),
         'store-save' => doStoreSave($config, $pdo, $post),
@@ -170,6 +182,10 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-permit' => doAiPermit($config, $pdo, $post),
         'ai-tool-result' => doAiToolResult($config, $pdo, $post),
         'ai-stop' => doAiStop($config, $pdo, $post),
+        'ai-interrupt' => doAiInterrupt($config, $pdo, $post),
+        'ai-effort' => doAiEffort($config, $pdo, $post),
+        'ai-compact' => doAiCompactSession($config, $pdo, $post),
+        'ai-asset' => aiAssetView($config, $signedIn),
         'ai-settings' => aiSettingsView($config, $pdo, $signedIn),
         'ai-settings-save' => doAiSettingsSave($config, $pdo, $post),
         'ai-test' => doAiTest($config, $pdo, $post),
@@ -6044,9 +6060,50 @@ function doAiSay(array $config, PDO $pdo, bool $post): array
     }
 
     aiAddMessage($ai, $id, 'user', $text);
-    aiSetState($ai, $id, 'thinking');
 
-    return ['ok' => true, 'session' => aiSessionView($config, $ai, $id, aiViews())];
+    /*
+     * Where they were when they said it.
+     *
+     * Recorded on the session rather than sent with each request, so the poll
+     * can update it as they move around without adding a field to every call.
+     */
+    $view = trim((string)($_POST['view'] ?? ''));
+    if ($view !== '') {
+        $ai->prepare('UPDATE ai_sessions SET viewing = ? WHERE id = ?')
+            ->execute([$view, $id]);
+    }
+
+    /*
+     * Only nudge it if it is not already busy.
+     *
+     * Typing while it is thinking, or while a permission question is on screen,
+     * used to flip the session straight back to "thinking" - and if a tool call
+     * was outstanding, the next request carried that call with no output beside
+     * it and the provider rejected the whole thing. Somebody answering a
+     * permission prompt by typing "yes" instead of clicking ended the
+     * conversation with a 400.
+     *
+     * Now the message is simply added. It is in the transcript, so the next
+     * request carries it and the model reads it as the operator interrupting -
+     * which is exactly what it is. A permission question stays up and still has
+     * to be clicked, because there is no reading of "yes" that is safe to
+     * infer.
+     */
+    $busy = in_array(
+        (string)$session['state'],
+        ['thinking', 'waiting_permission', 'waiting_browser'],
+        true
+    );
+
+    if (!$busy) {
+        aiSetState($ai, $id, 'thinking');
+    }
+
+    return [
+        'ok' => true,
+        'queued' => $busy,
+        'session' => aiSessionView($config, $ai, $id, aiViews()),
+    ];
 }
 
 /**
@@ -6080,12 +6137,28 @@ function aiPollView(array $config, PDO $pdo, bool $signedIn): array
         throw new ActionRefused('sign in to ask ' . aiPersona($config)['name']);
     }
 
-    $ai = aiDb($config, false);
+    /*
+     * Opened for writing, for one small write.
+     *
+     * The poll is the only thing that runs while somebody moves around the
+     * dashboard, so it is the only place that can keep track of where they are
+     * - and knowing that is the difference between "go and look at the Disk I/O
+     * page" being useful and being a page they are already on.
+     */
+    $view = trim((string)($_GET['view'] ?? ''));
+    $ai = aiDb($config, $view !== '');
+
     if ($ai === null) {
         return ['exists' => false];
     }
 
     $id = clampInt($_GET['session'] ?? 0, 1, PHP_INT_MAX);
+
+    if ($view !== '' && isset(aiViews()[$view])) {
+        $ai->prepare('UPDATE ai_sessions SET viewing = ? WHERE id = ? AND viewing IS NOT ?')
+            ->execute([$view, $id, $view]);
+    }
+
     return aiSessionView($config, $ai, $id, aiViews());
 }
 
@@ -6389,6 +6462,127 @@ function aiBrowserResult(PDO $ai, int $session, array $run): array
     return ['error' => 'unknown browser tool'];
 }
 
+/** Sets how hard to think for this conversation, up to the configured ceiling. */
+function doAiEffort(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
+    }
+
+    $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
+    $wanted = (string)($_POST['effort'] ?? '');
+
+    if ($wanted !== '' && !in_array($wanted, aiEffortLevels(), true)) {
+        throw new ActionRefused('that is not one of the thinking levels');
+    }
+
+    /*
+     * Clamped when it is stored as well as when it is sent.
+     *
+     * Two places, deliberately: the request builder is where the ceiling has to
+     * hold, and this is where somebody would otherwise see a stored value that
+     * is not what will actually be used.
+     */
+    $ceiling = (string)(aiSettings($config)['reasoning_effort'] ?? '');
+    $effort = $wanted === '' ? '' : aiEffortAtMost($wanted, $ceiling);
+
+    $ai->prepare('UPDATE ai_sessions SET effort = ? WHERE id = ?')->execute([$effort, $id]);
+
+    return ['ok' => true, 'session' => aiSessionView($config, $ai, $id, aiViews())];
+}
+
+/** Summarises the older part of a conversation to make room. */
+function doAiCompactSession(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
+    }
+
+    $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
+    $result = aiCompact($config, $ai, $id);
+
+    if ($result['compacted'] === 0) {
+        throw new ActionRefused((string)$result['why']);
+    }
+
+    logAction($pdo, 'ai_compact_session', null, 'ok', $result['compacted'], 0, null);
+
+    return [
+        'ok' => true,
+        'compacted' => $result['compacted'],
+        'session' => aiSessionView($config, $ai, $id, aiViews()),
+    ];
+}
+
+/** One kept picture, listed. The bytes themselves come from aiasset.php. */
+function aiAssetView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see this');
+    }
+
+    $ai = aiDb($config, false);
+    if ($ai === null) {
+        return ['assets' => []];
+    }
+
+    try {
+        $rows = $ai->query(
+            'SELECT a.id, a.image_id, a.at, a.mime, a.width, a.height, a.bytes,
+                    i.prompt, i.style, i.kind, i.session_id, i.millicents
+               FROM ai_assets a JOIN ai_images i ON i.id = a.image_id
+              ORDER BY a.id DESC LIMIT 200'
+        )->fetchAll();
+    } catch (Throwable) {
+        return ['assets' => []];
+    }
+
+    return ['assets' => array_map(fn(array $row): array => [
+        'id' => (int)$row['id'],
+        'at' => (int)$row['at'],
+        'kind' => (string)$row['kind'],
+        'prompt' => (string)$row['prompt'],
+        'style' => (string)$row['style'],
+        'width' => (int)$row['width'],
+        'height' => (int)$row['height'],
+        'bytes' => (int)$row['bytes'],
+        'session' => (int)$row['session_id'],
+        'cost' => aiMoney((int)$row['millicents']),
+    ], $rows)];
+}
+
+/** Halts whatever is in flight, leaving the conversation open. */
+function doAiInterrupt(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
+    }
+
+    $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
+    $session = aiSession($ai, $id);
+
+    if ($session === null) {
+        throw new ActionRefused('no such conversation');
+    }
+
+    $result = aiInterrupt($ai, $id, trim((string)($_POST['text'] ?? '')));
+
+    return [
+        'ok' => true,
+        'runs' => $result['runs'],
+        'session' => aiSessionView($config, $ai, $id, aiViews()),
+    ];
+}
+
 /** Stops the conversation without deleting it. */
 function doAiStop(array $config, PDO $pdo, bool $post): array
 {
@@ -6464,12 +6658,18 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
             // The key is never sent back; only whether one is set.
             'api_key' => null,
             'has_key' => $pictures['api_key'] !== '',
-            'giphy_key' => null,
-            'has_giphy_key' => $pictures['giphy_key'] !== '',
+            'search_key' => null,
+            'has_search_key' => $pictures['search_key'] !== '',
+            'services' => array_map(
+                fn(array $one): array => ['label' => $one['label'], 'note' => $one['note'],
+                                          'base' => $one['base']],
+                aiReactionServices()
+            ),
             'all_styles' => aiImageStyles(),
             'shapes' => aiImageShapes(),
             'qualities' => aiImageQualities(),
             'budget' => $ai === null ? null : aiImageBudget($ai, $pictures),
+            'searches' => $ai === null ? null : aiSearchBudget($ai, $pictures),
         ],
         'enabled' => $settings['enabled'],
         'provider' => $settings['provider'],
@@ -6485,6 +6685,11 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         'max_seconds' => $settings['max_seconds'],
         'max_cents' => $settings['max_cents'],
         'max_turns' => $settings['max_turns'],
+        'context_tokens' => $settings['context_tokens'],
+        'compact_at' => $settings['compact_at'],
+        'compact_automatically' => $settings['compact_automatically'],
+        'explain_commands' => $settings['explain_commands'],
+        'effort_levels' => aiEffortLevels(),
         'tools' => $tools,
         'ready' => $ready['ok'],
         'why' => $ready['why'],
@@ -6528,6 +6733,13 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
     }
     $current['ai']['reasoning_effort'] = $effort;
 
+    $current['ai']['context_tokens'] = clampInt($_POST['context_tokens'] ?? 128000,
+        4000, 4000000);
+    $current['ai']['compact_at'] = clampInt($_POST['compact_at'] ?? 70, 30, 85);
+    $current['ai']['compact_automatically'] =
+        ($_POST['compact_automatically'] ?? '0') === '1';
+    $current['ai']['explain_commands'] = ($_POST['explain_commands'] ?? '0') === '1';
+
     /*
      * Who it is, which is the operator's to decide.
      *
@@ -6570,8 +6782,24 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
         'per_hour' => clampInt($_POST['per_hour'] ?? 10, 0, 200),
         'self_portrait' => ($_POST['self_portrait'] ?? '0') === '1',
         'reactions' => ($_POST['reactions_on'] ?? '0') === '1',
+        'search_service' => isset(aiReactionServices()[$_POST['search_service'] ?? ''])
+            ? (string)$_POST['search_service'] : 'tenor',
+        'search_base' => trim((string)($_POST['search_base'] ?? '')),
+        /*
+         * Lower than the published allowance, never higher.
+         *
+         * A ceiling a setting can lift past the provider's own is not a
+         * ceiling; going over gets the key throttled, which breaks the feature
+         * for the whole install rather than costing anybody money.
+         */
+        'searches_per_hour' => clampInt($_POST['searches_per_hour'] ?? 100, 0, 100),
         'rating' => in_array($_POST['rating'] ?? 'g', ['g', 'pg', 'pg-13'], true)
             ? (string)$_POST['rating'] : 'g',
+        'monthly_cents' => max(0.0, (float)($_POST['monthly_cents'] ?? 0)),
+        'included_per_month' => clampInt($_POST['included_per_month'] ?? 0, 0, 1000000),
+        'price_standard' => max(0.0, (float)($_POST['price_standard'] ?? 0)),
+        'price_hd' => max(0.0, (float)($_POST['price_hd'] ?? 0)),
+        'price_genius' => max(0.0, (float)($_POST['price_genius'] ?? 0)),
     ]);
 
     /*
@@ -6580,7 +6808,7 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
      * The page cannot show them, so treating an empty field as "clear it"
      * would disconnect the service every time an unrelated setting was saved.
      */
-    foreach ([['picture_key', 'api_key'], ['giphy_key', 'giphy_key']] as [$field, $store]) {
+    foreach ([['picture_key', 'api_key'], ['search_key', 'search_key']] as [$field, $store]) {
         $existing = (string)($config['ai']['images'][$store] ?? '');
         $given = trim((string)($_POST[$field] ?? ''));
         $current['ai']['images'][$store] = $given !== '' ? $given : $existing;
@@ -6774,6 +7002,273 @@ function aiNoteBrowsing(PDO $pdo): bool
 {
     noteBrowsing($pdo);
     return true;
+}
+
+/* --------------------------------------------------------------- terminal -- */
+
+/** What the terminal page needs to draw itself. */
+function terminalView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to use the terminal');
+    }
+
+    $settings = terminalSettings($config);
+
+    return [
+        'enabled' => $settings['enabled'],
+        'wanted' => $settings['wanted'],
+        'can' => $settings['can'],
+        'why' => $settings['why'],
+        'max_seconds' => $settings['max_seconds'],
+        'shell' => $settings['shell'],
+        'history' => $settings['enabled'] ? terminalHistory($config) : [],
+        'suggestions' => aiSuggestedCommands($config),
+        'who' => aiPersona($config),
+    ];
+}
+
+/**
+ * Starts a command.
+ *
+ * Logged before it runs, not after. A command that hangs the machine still has
+ * to appear in the record, and a log written on completion is a log that misses
+ * exactly the commands worth having logged.
+ */
+function doTerminalRun(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $command = (string)($_POST['command'] ?? '');
+    $who = currentAccountName();
+
+    logAction($pdo, 'terminal', substr(trim($command), 0, 400), 'started', 0, 0, $who);
+
+    $started = terminalStart($config, $command, $who);
+
+    /*
+     * A recommendation is marked as taken once it has been run.
+     *
+     * So the list under the box is what is still outstanding rather than
+     * everything the assistant has ever suggested.
+     */
+    $suggestion = clampInt($_POST['from_suggestion'] ?? 0, 0, PHP_INT_MAX);
+    if ($suggestion > 0) {
+        $ai = aiDb($config);
+        if ($ai !== null) {
+            $ai->prepare(
+                "UPDATE ai_tool_runs SET decided_by = ?
+                  WHERE id = ? AND tool = 'recommend_command'"
+            )->execute([$who, $suggestion]);
+        }
+    }
+
+    return ['ok' => true, 'run' => $started] + terminalView($config, true);
+}
+
+/** What one command has printed since an offset. */
+function terminalReadView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to use the terminal');
+    }
+
+    return terminalRead(
+        $config,
+        (string)($_GET['id'] ?? ''),
+        clampInt($_GET['from'] ?? 0, 0, PHP_INT_MAX)
+    );
+}
+
+/** Kills a running command. */
+function doTerminalStop(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $id = (string)($_POST['id'] ?? '');
+    $killed = terminalStop($config, $id, currentAccountName());
+
+    logAction($pdo, 'terminal_stop', $id, $killed ? 'ok' : 'not running', 0, 0, null);
+
+    return ['ok' => true, 'killed' => $killed] + terminalView($config, true);
+}
+
+/** Removes one command's transcript. */
+function doTerminalForget(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    terminalForget($config, (string)($_POST['id'] ?? ''));
+
+    return ['ok' => true] + terminalView($config, true);
+}
+
+/**
+ * Commands the assistant has recommended and nobody has run yet.
+ *
+ * They live in the tool-run table because that is what they are - a tool the
+ * model called - and the terminal is simply where their output goes. Nothing
+ * here executes anything; this is a list of text.
+ */
+function aiSuggestedCommands(array $config): array
+{
+    $ai = aiDb($config, false);
+    if ($ai === null) {
+        return [];
+    }
+
+    /*
+     * Outstanding means "nobody has run it", not "the tool has not finished".
+     *
+     * The first version filtered on state != 'done', which was wrong in a way
+     * that made the feature invisible: the tool succeeds the moment it writes
+     * the suggestion down, so every recommendation was 'done' before the page
+     * ever loaded and the list was always empty. Whether a person has ACTED on
+     * it is a different fact, and it is recorded separately when they do.
+     */
+    try {
+        $rows = $ai->query(
+            "SELECT id, at, arguments, session_id FROM ai_tool_runs
+              WHERE tool = 'recommend_command' AND decided_by IS NULL
+              ORDER BY id DESC LIMIT 20"
+        )->fetchAll();
+    } catch (Throwable) {
+        return [];
+    }
+
+    $out = [];
+    foreach ($rows as $row) {
+        $arguments = json_decode((string)$row['arguments'], true) ?: [];
+        $out[] = [
+            'id' => (int)$row['id'],
+            'at' => (int)$row['at'],
+            'session' => (int)$row['session_id'],
+            'command' => (string)($arguments['command'] ?? ''),
+            'why' => (string)($arguments['why'] ?? ''),
+            'expect' => (string)($arguments['what_to_look_for'] ?? ''),
+            'reading' => (string)($arguments['reading'] ?? ''),
+        ];
+    }
+
+    return $out;
+}
+
+/* --------------------------------------------------------------- memories -- */
+
+/** Everything it remembers, for the page that lists them. */
+function aiMemoriesView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see this');
+    }
+
+    $ai = aiDb($config, false);
+
+    return [
+        'kinds' => aiMemoryKinds(),
+        'memories' => $ai === null ? [] : aiMemoryAll($ai),
+        'max' => AI_MEMORY_MAX,
+        'who' => aiPersona($config),
+    ];
+}
+
+/** Writes or edits one, by hand. */
+function doAiMemorySave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('there is no database to remember into');
+    }
+
+    $id = clampInt($_POST['id'] ?? 0, 0, PHP_INT_MAX);
+
+    if ($id > 0) {
+        /*
+         * An edit keeps the subject.
+         *
+         * Changing it would create a second memory rather than change this one,
+         * because the subject is the key - and the person editing would
+         * reasonably expect the opposite.
+         */
+        $stmt = $ai->prepare('SELECT subject FROM ai_memories WHERE id = ?');
+        $stmt->execute([$id]);
+        $subject = $stmt->fetchColumn();
+
+        if ($subject === false) {
+            throw new ActionRefused('no such memory');
+        }
+    } else {
+        $subject = (string)($_POST['subject'] ?? '');
+    }
+
+    aiMemoryWrite(
+        $ai,
+        null,
+        (string)($_POST['kind'] ?? 'fact'),
+        (string)$subject,
+        (string)($_POST['body'] ?? ''),
+        'you'
+    );
+
+    logAction($pdo, 'ai_memory', substr((string)$subject, 0, 200), 'saved', 0, 0, null);
+
+    return ['ok' => true] + aiMemoriesView($config, true);
+}
+
+/** Removes one. */
+function doAiMemoryForget(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('there is nothing to forget');
+    }
+
+    if (!aiMemoryForget($ai, clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX))) {
+        throw new ActionRefused('no such memory');
+    }
+
+    logAction($pdo, 'ai_memory', null, 'forgotten', 1, 0, null);
+
+    return ['ok' => true] + aiMemoriesView($config, true);
+}
+
+/** Pins one so the trim never takes it. */
+function doAiMemoryPin(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('there is nothing to pin');
+    }
+
+    aiMemoryPin(
+        $ai,
+        clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX),
+        ($_POST['pinned'] ?? '0') === '1'
+    );
+
+    return ['ok' => true] + aiMemoriesView($config, true);
+}
+
+/** Forgets everything. */
+function doAiMemoryClear(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('there is nothing to forget');
+    }
+
+    $n = aiMemoryClear($ai);
+    logAction($pdo, 'ai_memory', null, 'cleared', $n, 0, null);
+
+    return ['ok' => true, 'forgotten' => $n] + aiMemoriesView($config, true);
 }
 
 /* -------------------------------------------------------------- scanning -- */
@@ -7170,9 +7665,21 @@ function doAiReaction(array $config, PDO $pdo, bool $post): array
     $mood = trim((string)($_POST['mood'] ?? ''));
     $session = clampInt($_POST['session'] ?? 0, 0, PHP_INT_MAX);
 
+    /*
+     * Its own hourly budget, counted from the record.
+     *
+     * A search costs nothing here and everything at the other end: going past
+     * the published free allowance gets the key throttled, which breaks the
+     * feature for the whole install rather than costing anybody money.
+     */
+    $budget = aiSearchBudget($ai, $settings);
+    if (!$budget['ok']) {
+        return ['ok' => false, 'error' => $budget['why']];
+    }
+
     $found = aiFindReaction($settings, $mood);
 
-    aiRecordImage($ai, $session, 'reaction', $mood, 'giphy',
+    aiRecordImage($ai, $session, 'reaction', $mood, $settings['search_service'],
         $found['ok'] ? (string)$found['url'] : null,
         $found['ok'] ? null : (string)($found['error'] ?? 'not found'));
 

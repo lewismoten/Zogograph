@@ -135,13 +135,68 @@ function aiSettings(array $config): array
          * none, which is the error that led to this endpoint being spoken at
          * all.
          */
-        'reasoning_effort' => in_array($set['reasoning_effort'] ?? '', 
-            ['', 'minimal', 'low', 'medium', 'high'], true)
+        'reasoning_effort' => in_array((string)($set['reasoning_effort'] ?? ''),
+            array_merge([''], aiEffortLevels()), true)
             ? (string)($set['reasoning_effort'] ?? '')
             : '',
 
+        /*
+         * How much the model can hold, and when to start summarising.
+         *
+         * The window is not discoverable from the API - it is a fact about the
+         * model that changes when the model does - so it is typed in. The
+         * default is deliberately conservative: guessing high means the
+         * provider rejects the request, which is the failure this exists to
+         * avoid.
+         */
+        'context_tokens' => max(4000, (int)($set['context_tokens'] ?? 128000)),
+        'compact_at' => min(85, max(30, (int)($set['compact_at'] ?? 70))),
+        'compact_automatically' => (bool)($set['compact_automatically'] ?? true),
+
+        /*
+         * Whether recommended commands come with their explanation.
+         *
+         * On by default. Somebody pasting a command they do not understand into
+         * a shell is the thing this is meant to prevent rather than a step on
+         * the way to it - but it is a preference, and somebody who reads shell
+         * fluently should be able to turn the commentary off.
+         */
+        'explain_commands' => (bool)($set['explain_commands'] ?? true),
+
         'tools' => $set['tools'] ?? [],
     ];
+}
+
+/** The effort levels, cheapest first. The empty string means "do not send one". */
+function aiEffortLevels(): array
+{
+    return ['minimal', 'low', 'medium', 'high'];
+}
+
+/**
+ * The lower of two effort levels.
+ *
+ * A ceiling has to be enforced where the request is built, not where it is
+ * chosen - anything else is a limit that holds until somebody finds the other
+ * route to the same field.
+ */
+function aiEffortAtMost(string $wanted, string $ceiling): string
+{
+    $levels = aiEffortLevels();
+
+    $wantedAt = array_search($wanted, $levels, true);
+    if ($wantedAt === false) {
+        return $ceiling;
+    }
+
+    $ceilingAt = array_search($ceiling, $levels, true);
+    if ($ceilingAt === false) {
+        // No ceiling configured means the provider's own default, and a request
+        // that names an effort where none was configured is not a raise.
+        return $wanted;
+    }
+
+    return $levels[min($wantedAt, $ceilingAt)];
 }
 
 /** Whether there is enough configured to try. */
@@ -218,10 +273,26 @@ function aiMoney(int $millicents, string $symbol = '$'): string
  *
  * @return array<string, mixed>
  */
-function aiAsk(array $settings, array $messages, array $tools, ?string $system = null): array
-{
+function aiAsk(
+    array $settings,
+    array $messages,
+    array $tools,
+    ?string $system = null,
+    string $effort = ''
+): array {
     $started = microtime(true);
     $provider = $settings['provider'];
+
+    /*
+     * A per-conversation effort, never above the configured one.
+     *
+     * The setting is a ceiling, not a default that anything may raise: turning
+     * thinking down for a quick question should be free, and turning it up
+     * should be a decision made once, in settings, by whoever pays the bill.
+     */
+    if ($effort !== '') {
+        $settings['reasoning_effort'] = aiEffortAtMost($effort, $settings['reasoning_effort']);
+    }
 
     [$url, $headers, $body] = match ($provider) {
         'anthropic' => aiAnthropicRequest($settings, $messages, $tools, $system),
