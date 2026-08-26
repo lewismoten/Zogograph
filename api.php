@@ -3560,21 +3560,46 @@ function cpuView(array $config, bool $signedIn, PDO $account): array
     [$from, $to] = window();
 
     /*
+     * Whether root's collector has caught up with this dashboard.
+     *
+     * The two halves of this install are upgraded separately and there is no
+     * order that avoids a window between them: the host database is migrated by
+     * host-cron.php running as root, and the dashboard opens it read-only
+     * precisely so that it can never be the thing that rewrites root's file. So
+     * between uploading these pages and root's cron firing - a minute, or a
+     * fortnight if the crontab was never set up - the columns this page is
+     * built on genuinely do not exist yet.
+     *
+     * Asked rather than discovered by catching the failure. The first version
+     * let the query throw, which took the whole request down with
+     * "no such column: cpu_user_ticks" - a true statement, addressed to nobody,
+     * that loses the gauges and the LVE table as well even though both are read
+     * from columns that have been there for years.
+     */
+    $ready = columnExists($pdo, 'host_samples', 'cpu_user_ticks');
+    $notReady = 'The host collector has not recorded the processor breakdown yet. It is '
+        . 'written by host-cron.php running as root, which adds these columns the first '
+        . 'time it runs after an upgrade — so this fills in on its next collection.';
+
+    /*
      * Only the columns the differencing needs.
      *
      * host_samples is eighty columns wide and a day of it is fifteen hundred
      * rows; selecting * here to save typing would ship a megabyte of memory
      * figures to draw a CPU chart.
      */
-    $series = $pdo->prepare(
-        'SELECT taken_at, cpu_percent, cpu_user_ticks, cpu_nice_ticks, cpu_system_ticks,
-                cpu_idle_ticks, cpu_iowait_ticks, cpu_irq_ticks, cpu_softirq_ticks,
-                cpu_steal_ticks, ctxt_switches, interrupts, forks, procs_running,
-                procs_blocked, cpu_pressure_some, load1, cpu_cores
-         FROM host_samples WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
-    );
-    $series->execute([$from, $to]);
-    $rows = $series->fetchAll();
+    $rows = [];
+    if ($ready) {
+        $series = $pdo->prepare(
+            'SELECT taken_at, cpu_percent, cpu_user_ticks, cpu_nice_ticks, cpu_system_ticks,
+                    cpu_idle_ticks, cpu_iowait_ticks, cpu_irq_ticks, cpu_softirq_ticks,
+                    cpu_steal_ticks, ctxt_switches, interrupts, forks, procs_running,
+                    procs_blocked, cpu_pressure_some, load1, cpu_cores
+             FROM host_samples WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
+        );
+        $series->execute([$from, $to]);
+        $rows = $series->fetchAll();
+    }
 
     /*
      * cpu_idle_ticks is stored as idle plus iowait, because that is what the
@@ -3599,7 +3624,7 @@ function cpuView(array $config, bool $signedIn, PDO $account): array
         return $stmt->fetchAll();
     };
 
-    $cores = $of('SELECT * FROM host_cpus WHERE sample_id = ? ORDER BY cpu');
+    $cores = $ready ? $of('SELECT * FROM host_cpus WHERE sample_id = ? ORDER BY cpu') : [];
 
     /*
      * The per-core history summarised rather than returned whole.
@@ -3608,17 +3633,21 @@ function cpuView(array $config, bool $signedIn, PDO $account): array
      * the question the chart answers - "was it one core or all of them" - is
      * four numbers per reading. The rest is detail nobody plots.
      */
-    $spreadSeries = $pdo->prepare(
-        'SELECT s.taken_at,
-                MAX(c.busy_percent) AS hottest,
-                MIN(c.busy_percent) AS coolest,
-                AVG(c.busy_percent) AS mean,
-                SUM(CASE WHEN c.busy_percent >= 90 THEN 1 ELSE 0 END) AS pinned
-         FROM host_cpus c JOIN host_samples s ON s.id = c.sample_id
-         WHERE s.taken_at BETWEEN ? AND ? AND c.busy_percent IS NOT NULL
-         GROUP BY c.sample_id ORDER BY s.taken_at'
-    );
-    $spreadSeries->execute([$from, $to]);
+    $spreadRows = [];
+    if ($ready) {
+        $spreadSeries = $pdo->prepare(
+            'SELECT s.taken_at,
+                    MAX(c.busy_percent) AS hottest,
+                    MIN(c.busy_percent) AS coolest,
+                    AVG(c.busy_percent) AS mean,
+                    SUM(CASE WHEN c.busy_percent >= 90 THEN 1 ELSE 0 END) AS pinned
+             FROM host_cpus c JOIN host_samples s ON s.id = c.sample_id
+             WHERE s.taken_at BETWEEN ? AND ? AND c.busy_percent IS NOT NULL
+             GROUP BY c.sample_id ORDER BY s.taken_at'
+        );
+        $spreadSeries->execute([$from, $to]);
+        $spreadRows = $spreadSeries->fetchAll();
+    }
 
     /*
      * Ranked on the recent figure, with the ones that only have a lifetime
@@ -3626,11 +3655,11 @@ function cpuView(array $config, bool $signedIn, PDO $account): array
      * has no recent figure at all, and sorting the two columns together would
      * put a long-dead average above a core being burned right now.
      */
-    $processes = $of(
+    $processes = $ready ? $of(
         'SELECT * FROM host_processes
          WHERE sample_id = ? AND (cpu_percent IS NOT NULL OR cpu_lifetime_percent IS NOT NULL)
          ORDER BY cpu_percent IS NULL, cpu_percent DESC, cpu_lifetime_percent DESC'
-    );
+    ) : [];
 
     $spread = cpuCoreSpread($cores);
 
@@ -3663,9 +3692,33 @@ function cpuView(array $config, bool $signedIn, PDO $account): array
         'now' => $now,
         'cores' => $cores,
         'spread' => $spread,
-        'spread_series' => $spreadSeries->fetchAll(),
+        'spread_series' => $spreadRows,
         'processes' => $processes,
-        'findings' => cpuFindings($sample, $now, $spread, $processes),
+        /*
+         * The upgrade window said out loud, above everything else.
+         *
+         * Without it these pages are five blank charts and a working set of
+         * gauges, which reads as broken rather than as waiting - and the thing
+         * somebody would go and check first is the one thing that is fine.
+         */
+        'findings' => $ready
+            ? cpuFindings($sample, $now, $spread, $processes)
+            // On its own, not alongside the ordinary checks: those would all
+            // report "not measured" from the same missing columns, and five
+            // restatements of one fact bury the one that says what to do.
+            : [finding(
+                'unknown',
+                'The host collector has not been upgraded yet',
+                'This reading has no processor breakdown in it.',
+                $notReady . ' The dials above and the account comparison are read from '
+                    . 'columns that predate these pages, so those are current; everything '
+                    . 'else here fills in on the collector\'s next run.',
+                'See when the collectors run',
+                'schedule'
+            )],
+        // Empty string when it is ready, so the pages can print it without
+        // having to know which case they are in.
+        'schema_reason' => $ready ? '' : $notReady,
         'limits' => accountLimits($vitals, $sample),
         'vitals' => $vitals,
         'lve' => $of('SELECT * FROM host_lve WHERE sample_id = ? ORDER BY faults_cpu DESC, user'),

@@ -749,6 +749,17 @@ async function refreshCpu() {
  * something to go and fix.
  */
 function cpuEmptyWhy(data) {
+  /*
+   * The upgrade window first, because it is the only one of the three that is
+   * somebody's to act on.
+   *
+   * The two halves of this install are upgraded separately - these pages by
+   * uploading them, the columns behind them by root's cron running once - so
+   * between the two there is a real interval where the charts are empty and
+   * nothing is wrong.
+   */
+  if (data.schema_reason) return data.schema_reason;
+
   if (!data.series?.length && Number(data.sample_count ?? 0) > 1) {
     return "No processor breakdown in this range yet — the collector records it "
       + "from the version that added these pages onward";
