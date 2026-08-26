@@ -7182,6 +7182,9 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
             'why_not' => aiWhyNotTryable($tool, isset($live[$name])),
             'where' => $tool['where'],
             'permission' => (bool)$tool['permission'],
+            // Whether asking first would be asking about asking. The page shows
+            // these as not applicable rather than as an unticked box.
+            'asks_by_design' => in_array($name, aiToolsThatAsk(), true),
             /*
              * Whether the model is actually being offered this, and why not.
              *

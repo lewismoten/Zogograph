@@ -5300,8 +5300,21 @@ function renderAiTools(data) {
 
   const tbody = table.createTBody();
 
-  for (const tool of groups.get(toolTab) ?? []) {
+  /*
+   * Every tool is in the table; the tabs only hide rows.
+   *
+   * Rendering just the chosen group looked identical and was not: the save
+   * reads the tick boxes out of the page, so a table holding one group's rows
+   * would have saved that group and switched off all thirty-odd others. The
+   * style list on the Images page carries the same warning for the same reason,
+   * and I walked into it anyway two pages later.
+   *
+   * Hidden rather than filtered out, so nothing about what is saved depends on
+   * which tab happens to be open.
+   */
+  for (const tool of data.tools) {
     const row = tbody.insertRow();
+    row.hidden = tool.group !== toolTab;
 
     const what = row.insertCell();
     what.className = "name";
@@ -5353,19 +5366,43 @@ function renderAiTools(data) {
     }
 
     const gate = row.insertCell();
-    const ask = document.createElement("input");
-    ask.type = "checkbox";
-    ask.className = "tool-ask";
-    ask.dataset.tool = tool.name;
-    ask.checked = tool.permission;
-    ask.disabled = !data.writable;
-    gate.appendChild(ask);
 
-    if (tool.recommends_permission) {
+    /*
+     * A tool whose whole job is asking has nothing to ask permission for.
+     *
+     * offer_choices and ask_the_user do not read anything, change anything or
+     * send anything anywhere - they put a question on the screen and wait. A
+     * tick box called "ask me first" beside them offers to interrupt somebody
+     * to find out whether they may be asked something, which is a question
+     * about a question. Worse, ticking it would produce two prompts in a row
+     * for one interaction.
+     *
+     * Marked as not applicable rather than hidden: an empty cell in a column
+     * of tick boxes reads as an oversight, and the whole point of listing every
+     * tool on this page is that nothing looks missing.
+     */
+    if (tool.asks_by_design) {
       const said = document.createElement("span");
       said.className = "muted small";
-      said.textContent = " recommended";
+      said.textContent = "it asks you anyway";
+      said.title = "This tool exists to put a question to you. There is nothing it could "
+        + "do that you would want warning of.";
       gate.appendChild(said);
+    } else {
+      const ask = document.createElement("input");
+      ask.type = "checkbox";
+      ask.className = "tool-ask";
+      ask.dataset.tool = tool.name;
+      ask.checked = tool.permission;
+      ask.disabled = !data.writable;
+      gate.appendChild(ask);
+
+      if (tool.recommends_permission) {
+        const said = document.createElement("span");
+        said.className = "muted small";
+        said.textContent = " recommended";
+        gate.appendChild(said);
+      }
     }
 
     const detail = row.insertCell();
@@ -5386,6 +5423,32 @@ function renderAiTools(data) {
   }
 
   parts.push(table);
+
+  /*
+   * A Save, on the page the ticks are on.
+   *
+   * This page had none: ticking a tool did nothing until you happened to visit
+   * one of the four pages that did have one and pressed Save there. The other
+   * pages are inside a form and this one was not, which is the whole of why -
+   * a setting you can change and cannot save is worse than one you cannot
+   * change.
+   */
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const save = document.createElement("button");
+  save.type = "submit";
+  save.textContent = "Save these settings";
+  save.disabled = !data.writable;
+  actions.appendChild(save);
+
+  const said = document.createElement("span");
+  said.className = "muted small";
+  said.textContent = `Saves everything on all of ${data.who?.name ?? "the assistant"}'s `
+    + "pages, including the tools on the other tabs.";
+  actions.appendChild(said);
+
+  parts.push(actions);
   body.replaceChildren(...parts);
 }
 
@@ -28875,7 +28938,8 @@ $("cornerChat").addEventListener("click", () => {
  * alternative is somebody typing a name on Identity, going to Thresholds to
  * change a limit, and losing the name.
  */
-for (const id of ["aiIdentityForm", "aiModelForm", "aiLimitsForm", "aiImagesForm"]) {
+for (const id of ["aiIdentityForm", "aiModelForm", "aiLimitsForm", "aiImagesForm",
+                  "aiToolsForm"]) {
   const form = $(id);
   if (!form) continue;
   form.addEventListener("submit", event => {

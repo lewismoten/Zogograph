@@ -1837,10 +1837,36 @@ function aiEnabledTools(array $config, array $views): array
             ? (bool)$mine['permission']
             : (bool)$tool['permission'];
 
+        // Settled here as well as on the page, because a stored setting from
+        // before this existed would otherwise still be in force.
+        if (in_array($name, aiToolsThatAsk(), true)) {
+            $tool['permission'] = false;
+        }
+
         $out[$name] = $tool;
     }
 
     return $out;
+}
+
+/**
+ * The tools whose entire purpose is to put a question to the user.
+ *
+ * They read nothing, change nothing and send nothing anywhere; they draw a
+ * question and wait for an answer. Asking permission before one of those is
+ * asking a question about a question, and turning it on would produce two
+ * prompts in a row for a single interaction - so the setting does not exist for
+ * them rather than existing and being a bad idea.
+ *
+ * A list rather than a flag on each definition, because it is a statement about
+ * this handful of tools and not a category anything else will join: any tool
+ * that acquires a reason to ask first has a reason worth asking about.
+ *
+ * @return list<string>
+ */
+function aiToolsThatAsk(): array
+{
+    return ['offer_choices', 'ask_the_user'];
 }
 
 /**
