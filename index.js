@@ -4478,6 +4478,29 @@ function startDialTicker() {
      * A dial that advances next to a number frozen at whatever it said when
      * the page last polled is worse than either on its own.
      */
+    /*
+     * The terminal's own countdown, which is a deadline rather than an age.
+     *
+     * Same ticker, because a second timer for one number on one page would be
+     * a second thing to remember to stop.
+     */
+    for (const spot of document.querySelectorAll("[data-until-from]")) {
+      if (spot.offsetParent === null) continue;
+      const left = Number(spot.dataset.untilFrom || 0) - Math.floor(Date.now() / 1000);
+
+      if (left <= 0) {
+        spot.textContent = "It has locked itself again.";
+        // Redrawn once, so the unlock form replaces the countdown.
+        if (!spot.dataset.saidSo) {
+          spot.dataset.saidSo = "1";
+          refreshTerminal().catch(() => {});
+        }
+      } else {
+        spot.textContent = `Open for another ${humanSpan(left, true)}.`;
+        if (left < 120) spot.className = "band-crit small";
+      }
+    }
+
     for (const spot of document.querySelectorAll("[data-ago-from]")) {
       if (spot.offsetParent === null) continue;
       const at = Number(spot.dataset.agoFrom || 0);
@@ -4494,11 +4517,16 @@ function startDialTicker() {
 
 const aiSetState = { data: null };
 
+/** Every container the settings are split across. */
+const AI_SETTING_PAGES = [
+  "aiIdentityBody", "aiModelBody", "aiLimitsBody", "aiImagesBody",
+];
+
 async function refreshAiSettings() {
-  const body = $("aiSettingsBody");
+  const bodies = AI_SETTING_PAGES.map(id => $(id)).filter(Boolean);
 
   if (!state.signedIn) {
-    body.replaceChildren(note("Sign in to see these settings."));
+    for (const body of bodies) body.replaceChildren(note("Sign in to see these settings."));
     return;
   }
 
@@ -4507,27 +4535,27 @@ async function refreshAiSettings() {
    *
    * Asking the server for settings that are about to be thrown away is a round
    * trip for nothing, and on this page it is a round trip whose answer would
-   * have wiped what somebody was typing.
+   * have wiped what somebody was typing. Any of the four pages being edited
+   * holds all four back, because they are one form and one Save.
    */
-  if (formIsDirty(body)) {
-    keepIfEditing("aiSettingsBody", () => {});
+  if (bodies.some(body => formIsDirty(body))) {
+    for (const id of AI_SETTING_PAGES) keepIfEditing(id, () => {});
     await refreshAiSessions();
     return;
   }
 
   try {
     const data = await api("ai-settings");
-    keepIfEditing("aiSettingsBody", () => renderAiSettings(data));
+    renderAiSettings(data);
     await refreshAiSessions();
   } catch (error) {
-    body.replaceChildren(note(String(error.message || error)));
+    for (const body of bodies) body.replaceChildren(note(String(error.message || error)));
   }
 }
 
 function renderAiSettings(data) {
   aiSetState.data = data;
 
-  const body = $("aiSettingsBody");
   const parts = [];
 
   if (!data.writable) {
@@ -4645,8 +4673,27 @@ function renderAiSettings(data) {
     form.appendChild(fieldRow("", forget, ""));
   }
 
-  parts.push(section("Who it is", personaFields(data)));
-  parts.push(section("Which model", form));
+  /*
+   * Six pages from one fetch.
+   *
+   * They are six questions - who it is, which model, what it may spend, what it
+   * may draw, what it may do, and what it has cost - but one set of settings and
+   * one Save. Every section is built whether or not its page is on screen,
+   * because the save reads the fields by id: rendering only the visible page
+   * would mean saving from Identity silently blanked everything on Model.
+   */
+  const pages = {
+    identity: [],
+    model: [],
+    limits: [],
+    images: [],
+  };
+
+  // Whatever the page said about being read-only belongs on all of them.
+  for (const key of Object.keys(pages)) pages[key].push(...parts.map(node => node.cloneNode(true)));
+
+  pages.identity.push(section("Identity", personaFields(data)));
+  pages.model.push(section("Which model", form));
 
   /*
    * A test before any of it is used in anger.
@@ -4672,8 +4719,8 @@ function renderAiSettings(data) {
   testResult.className = "muted small";
   testing.appendChild(testResult);
 
-  parts.push(testing);
-  parts.push(note(
+  pages.model.push(testing);
+  pages.model.push(note(
     "The test asks the model one trivial question with one tool attached. It costs a few "
     + "hundred tokens and tells you four things at once: the address answers, the key is "
     + "accepted, the model exists, and it will take tools."
@@ -4704,11 +4751,12 @@ function renderAiSettings(data) {
     money.appendChild(fieldRow(label, input, hint));
   }
 
-  parts.push(section("Prices, if you want a cost", money));
-  parts.push(note(
+  pages.model.push(section("Prices, if you want a cost", money));
+  pages.model.push(note(
     "Leave these at zero and sessions report token counts and no money. That is the "
     + "honest default — a wrong price is worse than no price, so nothing is guessed "
-    + "from the model name."
+    + "from the model name. Prices you set here are remembered against this provider and "
+    + "model, so changing the model and changing back does not lose them."
   ));
 
   /* ---- limits ---- */
@@ -4756,7 +4804,7 @@ function renderAiSettings(data) {
     + "one that has gone in a circle, so this is the limit most likely to catch a "
     + "problem rather than a long investigation."));
 
-  parts.push(section("Limits on one conversation", limits));
+  pages.limits.push(section("Limits on one conversation", limits));
 
   /* ---- how much it can hold ---- */
 
@@ -4819,35 +4867,54 @@ function renderAiSettings(data) {
     + "only, never changes to a shared server. Off by default because it changes the kind "
     + "of advice you get."));
 
-  parts.push(section("How much it can hold", room));
-  parts.push(section("Pictures", pictureFields(data)));
+  pages.limits.push(section("How much it can hold", room));
+  pages.images.push(pictureFields(data));
 
-  /* ---- database ---- */
+  /*
+   * Where the transcripts are is not repeated here.
+   *
+   * That page exists, in full, under the assistant's own data - with the table
+   * sizes, what it is keeping and the buttons to clear it out. Two places
+   * saying the same number is two places to get it wrong.
+   */
 
-  if (data.database.exists) {
-    parts.push(section("Where the transcripts are", factGrid([
-      ["File", humanBytes(data.database.bytes)
-        + (data.database.wal_bytes ? ` + ${humanBytes(data.database.wal_bytes)} log` : "")],
-      ["Path", data.database.path],
-    ])));
-    parts.push(note(
-      "Conversations are kept in their own database, separate from the monitoring data. "
-      + "It holds everything that was sent to the provider, including any screenshots — "
-      + "delete the file to be rid of all of it."
-    ));
+  /*
+   * A Save on every page that has something to save.
+   *
+   * All four write the same settings, because they are one form split across
+   * four pages - so pressing Save on Thresholds also saves a name typed on
+   * Identity, and that is deliberate: the alternative is somebody losing work
+   * by navigating away from it.
+   */
+  for (const [key, id] of [
+    ["identity", "aiIdentityBody"],
+    ["model", "aiModelBody"],
+    ["limits", "aiLimitsBody"],
+    ["images", "aiImagesBody"],
+  ]) {
+    const holder = $(id);
+    if (!holder) continue;
+
+    const actions = document.createElement("div");
+    actions.className = "inspect-actions";
+
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.textContent = "Save these settings";
+    save.disabled = !data.writable;
+    actions.appendChild(save);
+
+    const said = document.createElement("span");
+    said.className = "muted small";
+    said.textContent = "Saves everything on all of these pages.";
+    actions.appendChild(said);
+
+    holder.replaceChildren(...pages[key], actions);
+    markFormRendered(holder);
   }
 
-  const actions = document.createElement("div");
-  actions.className = "inspect-actions";
-
-  const save = document.createElement("button");
-  save.type = "submit";
-  save.textContent = "Save these settings";
-  save.disabled = !data.writable;
-  actions.appendChild(save);
-  parts.push(actions);
-
-  body.replaceChildren(...parts);
+  renderAiPrices(data);
+  renderAiTry(data);
 
   const syncProvider = () => {
     const meta = data.providers[provider.value];
@@ -5258,15 +5325,27 @@ function pictureFields(data) {
   const money = document.createElement("div");
   money.className = "settings";
 
+  const tiers = pictures.allowance?.tiers ?? {};
+  const each = tier => (tiers[tier]?.each
+    ? ` Currently ${(tiers[tier].each / 100).toFixed(6).replace(/0+$/, "")} `
+      + `per picture — ${tiers[tier].used} of ${tiers[tier].allowance} used this month.`
+    : "");
+
   for (const [id, label, value, hint] of [
-    ["aiMonthlyCents", "Monthly plan", pictures.monthly_cents,
-      "In cents. What the plan costs every month regardless of use. Reported on its own; "
-      + "it is never divided among the pictures made."],
-    ["aiIncluded", "Included each month", pictures.included_per_month,
-      "How many generations the plan covers. While there are some left, a picture adds "
-      + "nothing to a conversation's cost, because that is the truth."],
-    ["aiPriceStandard", "Each one after that", pictures.price_standard,
-      "In cents, for a standard generation, once the allowance is used up."],
+    ["aiMonthlyCents", "The plan, per month", pictures.monthly_cents,
+      "In cents. 495 for a $4.95 plan. This is divided by the allowances below to work "
+      + "out what one picture costs."],
+    ["aiIncludedStandard", "Standard images included", pictures.included_standard,
+      "How many the plan covers each month at the standard quality. The plan cost divided "
+      + "by this is what one is reported as costing."
+      + each("standard")],
+    ["aiIncludedGenius", "Top-quality images included", pictures.included_genius,
+      "The separate allowance for the expensive tier, counted apart from the standard one "
+      + "so that using one does not run the other out."
+      + each("genius")],
+    ["aiPriceStandard", "Each standard one past that", pictures.price_standard,
+      "In cents. Once the allowance is gone the plan charges for credits, and this is a "
+      + "real cost rather than a share of the fee."],
     ["aiPriceHd", "…at HD", pictures.price_hd, "In cents."],
     ["aiPriceGenius", "…at the top quality", pictures.price_genius, "In cents."],
   ]) {
@@ -5281,6 +5360,24 @@ function pictureFields(data) {
   }
 
   form.appendChild(section("What they cost", money));
+
+  /*
+   * What the number means, said out loud.
+   *
+   * Dividing a fixed monthly fee among the pictures it covers is the right
+   * figure for "what did this conversation cost" and the wrong one for "what
+   * will one more cost" - nothing is saved by generating one fewer. Both tiers
+   * divide the same fee, so a full month of both adds up to more than the fee.
+   * That is a real limitation of attributing a fixed cost and is better said
+   * than discovered.
+   */
+  form.appendChild(note(
+    "A picture inside the allowance has no marginal cost — the fee was paid for exactly "
+    + "this — so what a conversation reports is the fee divided by the allowance. It is "
+    + "what that picture cost you, not what one more would cost, and because both tiers "
+    + "divide the same fee a full month of both would add up to more than the fee. Past "
+    + "the allowance the credit price applies and is a real marginal cost."
+  ));
 
   wrap.appendChild(form);
   return wrap;
@@ -5324,7 +5421,8 @@ async function saveAiSettings(extra = {}) {
       searches_per_hour: $("aiSearchRate").value,
       rating: $("aiRating").value,
       monthly_cents: $("aiMonthlyCents").value,
-      included_per_month: $("aiIncluded").value,
+      included_standard: $("aiIncludedStandard").value,
+      included_genius: $("aiIncludedGenius").value,
       price_standard: $("aiPriceStandard").value,
       price_hd: $("aiPriceHd").value,
       price_genius: $("aiPriceGenius").value,
@@ -9232,7 +9330,7 @@ function renderTerminal(data) {
     return;
   }
 
-  if (!data.enabled) {
+  if (!data.permitted) {
     parts.push(note(
       "The terminal is switched off. Add “terminal” => [“enabled” => true] "
       + "to lib/config.php to turn it on. It is off by default because it runs whatever "
@@ -9242,6 +9340,23 @@ function renderTerminal(data) {
     body.replaceChildren(...parts);
     return;
   }
+
+  /*
+   * Permitted, but closed until somebody opens it.
+   *
+   * The config switch is the decision that this install may have a shell in a
+   * web page; this is whether it is open right now. It closes itself, which is
+   * the whole point - a web shell left permanently open is one that whoever
+   * gets the password inherits, and the cost of re-opening it falls entirely on
+   * the one person who wants it.
+   */
+  if (!data.enabled) {
+    parts.push(unlockForm(data));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  parts.push(openForNow(data));
 
   /*
    * What the assistant has asked somebody to run.
@@ -9361,6 +9476,91 @@ function renderTerminal(data) {
     ], null, row => (row.running ? "row-bad" : ""), row => row.id);
   }
 }
+
+/** The "open it for a while" form, shown when the terminal is locked. */
+function unlockForm(data) {
+  const wrap = document.createElement("div");
+
+  const said = document.createElement("p");
+  said.className = "muted small";
+  said.textContent = "The terminal is locked. It locks itself after a while on purpose — "
+    + "an always-open shell is one that whoever gets this password inherits. Open it for "
+    + "as long as you need and it will close on its own.";
+  wrap.appendChild(said);
+
+  const row = document.createElement("div");
+  row.className = "pattern-row";
+
+  const howLong = document.createElement("select");
+  howLong.id = "terminalSpan";
+  for (const [seconds, label] of Object.entries(data.spans)) {
+    const option = document.createElement("option");
+    option.value = seconds;
+    option.textContent = label;
+    option.selected = Number(seconds) === 1800;
+    howLong.appendChild(option);
+  }
+  row.appendChild(howLong);
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.textContent = "Unlock it";
+  go.addEventListener("click", () => unlockTerminal(Number(howLong.value)));
+  row.appendChild(go);
+
+  wrap.appendChild(row);
+  return wrap;
+}
+
+/** The countdown and the two things to do about it, once it is open. */
+function openForNow(data) {
+  const wrap = document.createElement("div");
+  wrap.className = "term-open";
+
+  const said = document.createElement("span");
+  said.className = "muted small";
+  /*
+   * The clock advances on its own, from the same ticker that drives the dials.
+   *
+   * A countdown that only moves when the page is refetched is not a countdown,
+   * and this one has a decision attached to it.
+   */
+  said.dataset.untilFrom = String(data.unlocked_until);
+  said.textContent = `Open for another ${humanSpan(data.unlocked_for, true)}.`;
+  wrap.appendChild(said);
+
+  const extend = document.createElement("button");
+  extend.className = "link";
+  extend.textContent = "Give it longer";
+  extend.addEventListener("click", () => unlockTerminal(1800));
+  wrap.appendChild(extend);
+
+  const lock = document.createElement("button");
+  lock.className = "link danger";
+  lock.textContent = "Lock it now";
+  lock.addEventListener("click", async () => {
+    try {
+      renderTerminal(await post("terminal-lock"));
+      notice("Locked.", true);
+    } catch (error) {
+      notice(String(error.message || error));
+    }
+  });
+  wrap.appendChild(lock);
+
+  return wrap;
+}
+
+async function unlockTerminal(seconds) {
+  try {
+    const data = await post("terminal-unlock", { seconds });
+    renderTerminal(data);
+    notice(`Open until ${whenLabel(data.until)}.`, true);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+}
+
 
 /** The commands the assistant has put here, with its reasoning. */
 function suggestionList(suggestions) {
@@ -9504,7 +9704,11 @@ async function pollTerminal() {
   const said = $("terminalSaid");
   if (said) {
     said.textContent = data.running
-      ? `Running for ${humanSpan(data.ran_for, true)} — ${humanBytes(data.size)} so far.`
+      ? (data.ran_for < 2
+        // "Running for no time at all" is what humanSpan says about zero, and
+        // it is a strange thing to read about something that has just begun.
+        ? "Just started…"
+        : `Running for ${humanSpan(data.ran_for, true)} — ${humanBytes(data.size)} so far.`)
       : terminalVerdict(data);
   }
 
@@ -9829,6 +10033,409 @@ function showFormDialog(title, parts, save) {
   };
 
   $("noteDialog").showModal();
+}
+
+/* ------------------------------------------------------------ trying one -- */
+
+const tryState = { tool: null, last: null };
+
+/**
+ * A form for one tool's parameters, built from the tool's own declarations.
+ *
+ * From the same specifications the JSON schema is generated from, so the form
+ * and the contract the model is held to are the same thing rather than two
+ * lists that drift apart. A parameter with an enum becomes a dropdown, one with
+ * bounds becomes a number field that carries them, a boolean becomes a tick.
+ */
+function renderAiTry(data) {
+  const body = $("aiTryBody");
+  if (!body) return;
+
+  const runnable = (data.tools || []).filter(tool => tool.where === "server");
+  const parts = [];
+
+  if (!runnable.length) {
+    body.replaceChildren(note("There are no server-side tools to try."));
+    return;
+  }
+
+  const pick = document.createElement("select");
+  pick.id = "aiTryTool";
+  for (const tool of runnable) {
+    const option = document.createElement("option");
+    option.value = tool.name;
+    option.textContent = `${tool.name} — ${tool.summary}`;
+    option.selected = tryState.tool === tool.name;
+    pick.appendChild(option);
+  }
+  parts.push(fieldRow("Tool", pick, ""));
+
+  const what = document.createElement("p");
+  what.className = "muted small";
+  what.id = "aiTryWhat";
+  parts.push(what);
+
+  const fields = document.createElement("div");
+  fields.className = "settings";
+  fields.id = "aiTryFields";
+  parts.push(fields);
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.id = "aiTryRun";
+  go.textContent = "Run it";
+  actions.appendChild(go);
+
+  const said = document.createElement("span");
+  said.className = "muted small";
+  said.id = "aiTrySaid";
+  actions.appendChild(said);
+
+  parts.push(actions);
+
+  const out = document.createElement("div");
+  out.id = "aiTryResult";
+  parts.push(out);
+
+  body.replaceChildren(...parts);
+
+  const sync = () => {
+    const tool = runnable.find(t => t.name === pick.value);
+    tryState.tool = pick.value;
+    what.textContent = tool ? tool.description.split("\n\n")[0] : "";
+    fields.replaceChildren(...tryFields(tool));
+  };
+
+  pick.addEventListener("change", sync);
+  go.addEventListener("click", () => runAiTry(runnable.find(t => t.name === pick.value)));
+  sync();
+}
+
+/** One input per declared parameter, typed the way the parameter is. */
+function tryFields(tool) {
+  if (!tool) return [];
+
+  const entries = Object.entries(tool.parameters || {});
+  if (!entries.length) {
+    return [note("This one takes no parameters.")];
+  }
+
+  return entries.map(([name, spec]) => {
+    let input;
+
+    if (spec.enum) {
+      input = document.createElement("select");
+      /*
+       * An optional parameter gets an explicit "leave it out" entry.
+       *
+       * A blank first option would be indistinguishable from a value the tool
+       * happens to accept, and "unset" and "empty" are different things to
+       * every tool here.
+       */
+      if (!spec.required) {
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = "— leave it out —";
+        input.appendChild(blank);
+      }
+      for (const value of spec.enum.filter(v => v !== null)) {
+        const option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = String(value);
+        option.selected = spec.default !== null && String(spec.default) === String(value);
+        input.appendChild(option);
+      }
+    } else if (spec.type === "boolean") {
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = spec.default === true;
+    } else if (spec.type === "integer" || spec.type === "number") {
+      input = document.createElement("input");
+      input.type = "number";
+      input.className = "days";
+      if (spec.minimum !== null) input.min = String(spec.minimum);
+      if (spec.maximum !== null) input.max = String(spec.maximum);
+      if (spec.type === "integer") input.step = "1";
+      if (spec.default !== null) input.value = String(spec.default);
+    } else {
+      input = document.createElement("input");
+      input.type = "text";
+      input.className = "wide-field";
+      if (spec.maxLength) input.maxLength = spec.maxLength;
+      if (spec.default !== null && spec.default !== undefined) {
+        input.value = String(spec.default);
+      }
+    }
+
+    input.dataset.param = name;
+    input.dataset.kind = spec.type;
+    input.dataset.required = spec.required ? "1" : "";
+
+    const bounds = [
+      spec.required ? "required" : "optional",
+      spec.minimum !== null && spec.maximum !== null
+        ? `${spec.minimum} to ${spec.maximum}` : "",
+      spec.maxLength ? `up to ${spec.maxLength} characters` : "",
+    ].filter(Boolean).join(", ");
+
+    return fieldRow(name, input, `${spec.description} (${bounds})`);
+  });
+}
+
+/** Collects the form, sends it, and shows what came back. */
+async function runAiTry(tool) {
+  const said = $("aiTrySaid");
+  const out = $("aiTryResult");
+  const args = {};
+
+  for (const input of $("aiTryFields").querySelectorAll("[data-param]")) {
+    const name = input.dataset.param;
+
+    if (input.dataset.kind === "boolean") {
+      args[name] = input.checked;
+      continue;
+    }
+
+    const raw = input.value.trim();
+    if (raw === "") {
+      // Left out rather than sent empty; the two mean different things.
+      continue;
+    }
+
+    args[name] = input.dataset.kind === "integer" || input.dataset.kind === "number"
+      ? Number(raw)
+      : raw;
+  }
+
+  said.textContent = "Running…";
+  out.replaceChildren();
+
+  try {
+    const result = await post("ai-try", {
+      tool: tool.name,
+      arguments: JSON.stringify(args),
+    });
+
+    tryState.last = result;
+
+    if (!result.ok) {
+      said.textContent = "";
+      out.replaceChildren(note(
+        `Refused before it ran: ${result.refused}\n\n${result.note}`
+      ));
+      return;
+    }
+
+    said.textContent = `${result.ms}ms, ${humanBytes(result.bytes)} back`;
+
+    const parts = [];
+
+    /*
+     * What was actually sent, above what came back.
+     *
+     * Because half of what this page is for is finding out that a parameter
+     * was not what somebody thought it was - a default filled in, a number
+     * clamped - and that is invisible if only the result is shown.
+     */
+    parts.push(section("What it was given", (() => {
+      const pre = document.createElement("pre");
+      pre.className = "md-code";
+      const code = document.createElement("code");
+      code.textContent = JSON.stringify(result.arguments, null, 2);
+      pre.appendChild(code);
+      return pre;
+    })()));
+
+    parts.push(section("What came back", (() => {
+      const pre = document.createElement("pre");
+      pre.className = "md-code try-result";
+      const code = document.createElement("code");
+      code.textContent = JSON.stringify(result.result, null, 2);
+      pre.appendChild(code);
+      return pre;
+    })()));
+
+    parts.push(note(
+      "This is exactly what the model would receive, in the same shape. If an answer "
+      + "looked wrong, this is what it was based on."
+    ));
+
+    out.replaceChildren(...parts);
+  } catch (error) {
+    said.textContent = "";
+    out.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+/* ----------------------------------------------------------- known prices -- */
+
+/**
+ * Prices this install has been told about, per provider and model.
+ *
+ * The problem this solves is small and constant: changing the model on the
+ * Model page leaves the three price boxes holding the old model's numbers,
+ * which are now wrong and look right. Nobody notices, and the running total is
+ * quietly nonsense until somebody checks a bill.
+ *
+ * Nothing here is fetched from anywhere. Providers do not publish prices in a
+ * form worth parsing, and a guessed price is the failure this is trying to
+ * avoid - so these are the numbers you were quoted, and the page says so.
+ */
+function renderAiPrices(data) {
+  const body = $("aiPricesBody");
+  if (!body) return;
+
+  const known = data.known_prices ?? {};
+  const rows = Object.entries(known).map(([key, price]) => {
+    const [provider, ...rest] = key.split("/");
+    return {
+      key,
+      provider,
+      model: rest.join("/"),
+      in: price.in ?? 0,
+      out: price.out ?? 0,
+      cached: price.cached ?? 0,
+      current: key === `${data.provider}/${data.model}`,
+    };
+  });
+
+  const parts = [];
+
+  if (!rows.length) {
+    parts.push(note(
+      "Nothing remembered yet. Set the prices on the Model page and they are kept here "
+      + "against whichever provider and model are selected — so switching models and "
+      + "switching back does not mean looking them up again."
+    ));
+    body.replaceChildren(...parts);
+    return;
+  }
+
+  const holder = document.createElement("div");
+  holder.id = "aiPricesTable";
+  parts.push(holder);
+  body.replaceChildren(...parts);
+
+  renderTable("aiPricesTable", rows.sort((a, b) => a.key.localeCompare(b.key)), [
+    { label: "Provider", render: row => row.provider },
+    {
+      label: "Model",
+      className: "name",
+      render: row => {
+        const span = document.createElement("span");
+        span.textContent = row.model;
+        if (row.current) {
+          const mark = document.createElement("span");
+          mark.className = "band-ok small";
+          mark.textContent = " in use";
+          span.appendChild(mark);
+        }
+        return span;
+      },
+    },
+    { label: "In", className: "size", render: row => `${row.in}¢/M` },
+    { label: "Out", className: "size", render: row => `${row.out}¢/M` },
+    { label: "Cached", className: "size", render: row => `${row.cached}¢/M` },
+    {
+      label: "",
+      className: "row-actions",
+      render: row => {
+        const wrap = document.createDocumentFragment();
+
+        const use = document.createElement("button");
+        use.className = "link";
+        use.textContent = "Use these";
+        use.title = "Put these prices into the Model page's boxes";
+        use.addEventListener("click", () => {
+          $("aiPriceIn").value = String(row.in);
+          $("aiPriceOut").value = String(row.out);
+          $("aiPriceCached").value = String(row.cached);
+          notice(`Prices for ${row.model} filled in. Save on the Model page to keep them.`,
+                 true);
+          location.hash = "#/sys-ai-model";
+        });
+        wrap.appendChild(use);
+
+        const edit = document.createElement("button");
+        edit.className = "link";
+        edit.textContent = "Edit";
+        edit.addEventListener("click", () => showPriceDialog(row));
+        wrap.appendChild(edit);
+
+        const drop = document.createElement("button");
+        drop.className = "link danger";
+        drop.textContent = "Forget";
+        drop.addEventListener("click", async () => {
+          if (!confirm(`Forget the prices for ${row.key}?`)) return;
+          try {
+            renderAiPrices(await post("ai-price-forget", { key: row.key }));
+            notice("Forgotten.", true);
+          } catch (error) {
+            notice(String(error.message || error));
+          }
+        });
+        wrap.appendChild(drop);
+
+        return wrap;
+      },
+    },
+  ], null, row => (row.current ? "row-ok" : ""), row => row.key);
+}
+
+/** Adding or editing one set of prices by hand. */
+function showPriceDialog(row) {
+  const data = aiSetState.data;
+  const parts = [];
+
+  const provider = document.createElement("select");
+  for (const [key, meta] of Object.entries(data.providers)) {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = meta.label ?? key;
+    option.selected = (row?.provider ?? data.provider) === key;
+    provider.appendChild(option);
+  }
+  parts.push(fieldRow("Provider", provider, ""));
+
+  const model = document.createElement("input");
+  model.type = "text";
+  model.className = "wide-field";
+  model.spellcheck = false;
+  model.value = row?.model ?? data.model ?? "";
+  parts.push(fieldRow("Model", model,
+    "Exactly as the provider names it — this is matched against what is sent."));
+
+  const boxes = {};
+  for (const [key, label, hint] of [
+    ["in", "Input, per million", "In cents."],
+    ["out", "Output, per million", "In cents. Usually several times the input price."],
+    ["cached", "Cached input, per million",
+      "In cents. Usually about a tenth of the input price, and most of the bill on a "
+      + "long conversation."],
+  ]) {
+    const box = document.createElement("input");
+    box.type = "number";
+    box.min = "0";
+    box.step = "0.01";
+    box.className = "days";
+    box.value = String(row?.[key] ?? 0);
+    boxes[key] = box;
+    parts.push(fieldRow(label, box, hint));
+  }
+
+  showFormDialog(row ? "Edit remembered prices" : "Remember prices for a model", parts,
+    async () => {
+      renderAiPrices(await post("ai-price-save", {
+        provider: provider.value,
+        model: model.value.trim(),
+        price_in: boxes.in.value,
+        price_out: boxes.out.value,
+        price_cached: boxes.cached.value,
+      }));
+    });
 }
 
 /* ------------------------------------------------- the assistant's store -- */
@@ -23128,6 +23735,34 @@ const VIEWS = {
     parent: "system",
     refresh: () => refreshStore(),
   },
+  /*
+   * The assistant's settings, split across pages that share one fetch.
+   *
+   * All manual: every one of them is a form, and a poll landing mid-sentence
+   * replaces the box being typed in. They all call the same refresh because
+   * they are all drawn from the same answer.
+   */
+  "sys-ai-model": {
+    manual: true, label: "Model", parent: "system", refresh: () => refreshAiSettings(),
+  },
+  "sys-ai-prices": {
+    manual: true, label: "Prices", parent: "system", refresh: () => refreshAiSettings(),
+  },
+  "sys-ai-limits": {
+    manual: true, label: "Thresholds", parent: "system", refresh: () => refreshAiSettings(),
+  },
+  "sys-ai-images": {
+    manual: true, label: "Images", parent: "system", refresh: () => refreshAiSettings(),
+  },
+  "sys-ai-tools": {
+    manual: true, label: "Tools", parent: "system", refresh: () => refreshAiSettings(),
+  },
+  "sys-ai-try": {
+    manual: true, label: "Try a tool", parent: "system", refresh: () => refreshAiSettings(),
+  },
+  "sys-ai-billing": {
+    manual: true, label: "Billing", parent: "system", refresh: () => refreshAiSessions(),
+  },
   "sys-terminal": {
     /*
      * Never on the timer.
@@ -23903,10 +24538,22 @@ $("cornerChat").addEventListener("click", () => {
   openChat();
 });
 
-$("aiSettingsForm").addEventListener("submit", event => {
-  event.preventDefault();
-  saveAiSettings();
-});
+/*
+ * Four forms, one Save.
+ *
+ * They are one set of settings split across four pages, so submitting any of
+ * them saves all of it - which is why every page's button says so. The
+ * alternative is somebody typing a name on Identity, going to Thresholds to
+ * change a limit, and losing the name.
+ */
+for (const id of ["aiIdentityForm", "aiModelForm", "aiLimitsForm", "aiImagesForm"]) {
+  const form = $(id);
+  if (!form) continue;
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    saveAiSettings();
+  });
+}
 
 for (const id of ["accountScansForm", "hostScansForm", "throttleForm"]) {
   $(id).addEventListener("submit", event => {
@@ -23953,6 +24600,14 @@ document.addEventListener("click", async event => {
     button.disabled = false;
     button.textContent = "Test the connection";
   }
+});
+
+$("aiPriceAdd").addEventListener("click", () => {
+  if (!aiSetState.data) {
+    notice("Open the Model page first so this knows what providers there are.");
+    return;
+  }
+  showPriceDialog(null);
 });
 
 $("aiSessionsRefresh").addEventListener("click", () => {

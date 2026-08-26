@@ -1169,7 +1169,7 @@ function aiRunPicture(
 
     $cost = aiImageCost($ai, $settings, $settings['quality']);
     $imageId = aiRecordImage($ai, $session, $isPortrait ? 'portrait' : 'picture', $prompt,
-        $style, $url, null, $cost);
+        $style, $url, null, $cost, (string)$settings['quality']);
 
     /*
      * The bytes are kept, not just the link.

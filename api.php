@@ -139,10 +139,12 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'fetch' => fetchView($pdo, $signedIn),
         'store' => storeView($config, $pdo, $signedIn),
         'ai-store' => aiStoreView($config, $signedIn),
-        'terminal' => terminalView($config, $signedIn),
+        'terminal' => terminalView($config, $pdo, $signedIn),
         'terminal-run' => doTerminalRun($config, $pdo, $post),
         'terminal-read' => terminalReadView($config, $signedIn),
         'terminal-stop' => doTerminalStop($config, $pdo, $post),
+        'terminal-unlock' => doTerminalUnlock($config, $pdo, $post),
+        'terminal-lock' => doTerminalLock($config, $pdo, $post),
         'terminal-forget' => doTerminalForget($config, $pdo, $post),
         'ai-memories' => aiMemoriesView($config, $signedIn),
         'ai-memory-save' => doAiMemorySave($config, $pdo, $post),
@@ -188,6 +190,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-asset' => aiAssetView($config, $signedIn),
         'ai-settings' => aiSettingsView($config, $pdo, $signedIn),
         'ai-settings-save' => doAiSettingsSave($config, $pdo, $post),
+        'ai-price-save' => doAiPriceSave($config, $pdo, $post),
+        'ai-price-forget' => doAiPriceForget($config, $pdo, $post),
+        'ai-try' => doAiTry($config, $pdo, $post),
         'ai-test' => doAiTest($config, $pdo, $post),
         'ai-reaction' => doAiReaction($config, $pdo, $post),
         'ai-sessions' => aiSessionsView($config, $signedIn),
@@ -6688,6 +6693,23 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
                 ? (bool)$mine['permission']
                 : (bool)$tool['permission'],
             'recommends_permission' => (bool)$tool['permission'],
+            /*
+             * The parameters, so the try-it page can build a real form.
+             *
+             * The same declarations the schema is generated from, which is what
+             * makes the form and the model's own contract the same thing rather
+             * than two lists that drift.
+             */
+            'parameters' => array_map(fn(array $spec): array => [
+                'type' => $spec['type'],
+                'description' => $spec['description'],
+                'required' => !empty($spec['required']),
+                'enum' => $spec['enum'] ?? null,
+                'minimum' => $spec['minimum'] ?? null,
+                'maximum' => $spec['maximum'] ?? null,
+                'maxLength' => $spec['maxLength'] ?? null,
+                'default' => $spec['default'] ?? null,
+            ], $tool['parameters'] ?? []),
         ];
     }
 
@@ -6723,6 +6745,7 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
             'qualities' => aiImageQualities(),
             'budget' => $ai === null ? null : aiImageBudget($ai, $pictures),
             'searches' => $ai === null ? null : aiSearchBudget($ai, $pictures),
+            'allowance' => $ai === null ? null : aiImageAllowance($ai, $pictures),
         ],
         'enabled' => $settings['enabled'],
         'provider' => $settings['provider'],
@@ -6732,6 +6755,7 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         // Whether one is set, never what it is.
         'has_key' => $settings['api_key'] !== '',
         'reasoning_effort' => $settings['reasoning_effort'],
+        'known_prices' => $settings['known_prices'],
         'price_in' => $settings['price_in'],
         'price_out' => $settings['price_out'],
         'price_cached' => $settings['price_cached'],
@@ -6751,6 +6775,132 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         'database' => aiDatabaseFacts($config),
         'views' => $views,
     ];
+}
+
+/**
+ * Runs one tool with parameters typed by hand, and shows what comes back.
+ *
+ * Two things this is for. Seeing whether a tool actually works on this install
+ * before switching it on - half of them depend on something the host may not
+ * have, and finding that out from a model's confused answer is the slow way.
+ * And reading exactly what the model is being told, in the shape it is told it,
+ * when an answer looks wrong.
+ *
+ * The model is not involved and nothing leaves the machine. The arguments go
+ * through the same aiCheckArguments the model's do, so a parameter this refuses
+ * here is one it would refuse there.
+ */
+function doAiTry(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $name = (string)($_POST['tool'] ?? '');
+    $views = aiViews();
+
+    /*
+     * Every tool, not just the enabled ones.
+     *
+     * The point is to find out whether a tool works before deciding to switch
+     * it on, and only offering the ones already on would make that impossible.
+     */
+    $all = aiTools($views);
+
+    if (!isset($all[$name])) {
+        throw new ActionRefused('there is no tool by that name');
+    }
+
+    $tool = $all[$name];
+
+    if ($tool['where'] !== 'server') {
+        throw new ActionRefused(
+            'that one runs in the browser rather than on the server, so there is nothing '
+            . 'here to run. Ask the assistant for it instead.'
+        );
+    }
+
+    $given = json_decode((string)($_POST['arguments'] ?? '{}'), true);
+    if (!is_array($given)) {
+        throw new ActionRefused('the parameters did not arrive as an object');
+    }
+
+    $checked = aiCheckArguments($tool, $given);
+    if (!$checked['ok']) {
+        return [
+            'ok' => false,
+            'refused' => $checked['why'],
+            'note' => 'The model would have been told this and asked to try again.',
+        ];
+    }
+
+    $ai = aiDb($config);
+    $started = microtime(true);
+    $result = aiRunTool($name, $checked['values'], $config, $pdo, $ai, 0);
+    $ms = (int)round((microtime(true) - $started) * 1000);
+
+    logAction($pdo, 'ai_try', $name, 'ok', 0, 0, null);
+
+    return [
+        'ok' => true,
+        'tool' => $name,
+        'arguments' => $checked['values'],
+        'ms' => $ms,
+        'result' => $result,
+        'bytes' => strlen(json_encode($result, JSON_PARTIAL_OUTPUT_ON_ERROR)),
+    ];
+}
+
+/** Remembers one model's prices, without changing which model is in use. */
+function doAiPriceSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    if (!is_writable(__DIR__ . '/lib/config.php')) {
+        throw new ActionRefused('lib/config.php is not writable, so this cannot save.');
+    }
+
+    $provider = (string)($_POST['provider'] ?? '');
+    $model = trim((string)($_POST['model'] ?? ''));
+
+    if (!isset(aiProviders()[$provider])) {
+        throw new ActionRefused('that is not a provider this knows about');
+    }
+    if ($model === '') {
+        throw new ActionRefused('which model are these prices for?');
+    }
+
+    $current = require __DIR__ . '/lib/config.php';
+    $current['ai']['known_prices'][$provider . '/' . $model] = [
+        'in' => max(0.0, (float)($_POST['price_in'] ?? 0)),
+        'out' => max(0.0, (float)($_POST['price_out'] ?? 0)),
+        'cached' => max(0.0, (float)($_POST['price_cached'] ?? 0)),
+    ];
+
+    writeConfigFile($current);
+    logAction($pdo, 'ai_prices', $provider . '/' . $model, 'ok', 0, 0, null);
+
+    return ['ok' => true] + aiSettingsView($current, $pdo, true);
+}
+
+/** Forgets one model's prices. */
+function doAiPriceForget(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    if (!is_writable(__DIR__ . '/lib/config.php')) {
+        throw new ActionRefused('lib/config.php is not writable, so this cannot save.');
+    }
+
+    $key = (string)($_POST['key'] ?? '');
+    $current = require __DIR__ . '/lib/config.php';
+
+    if (!isset($current['ai']['known_prices'][$key])) {
+        throw new ActionRefused('nothing is remembered for that');
+    }
+
+    unset($current['ai']['known_prices'][$key]);
+    writeConfigFile($current);
+
+    return ['ok' => true] + aiSettingsView($current, $pdo, true);
 }
 
 function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
@@ -6786,6 +6936,22 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
         throw new ActionRefused('that is not one of the reasoning settings');
     }
     $current['ai']['reasoning_effort'] = $effort;
+
+    /*
+     * Prices are remembered against the model they were entered for.
+     *
+     * So that changing the model and changing back does not lose them, and so
+     * that a model somebody has used before comes back with its own numbers
+     * rather than the last model's.
+     */
+    $key = $provider . '/' . trim((string)($_POST['model'] ?? ''));
+    if (trim((string)($_POST['model'] ?? '')) !== '') {
+        $current['ai']['known_prices'][$key] = [
+            'in' => max(0.0, (float)($_POST['price_in'] ?? 0)),
+            'out' => max(0.0, (float)($_POST['price_out'] ?? 0)),
+            'cached' => max(0.0, (float)($_POST['price_cached'] ?? 0)),
+        ];
+    }
 
     $current['ai']['context_tokens'] = clampInt($_POST['context_tokens'] ?? 128000,
         4000, 4000000);
@@ -6851,7 +7017,8 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
         'rating' => in_array($_POST['rating'] ?? 'g', ['g', 'pg', 'pg-13'], true)
             ? (string)$_POST['rating'] : 'g',
         'monthly_cents' => max(0.0, (float)($_POST['monthly_cents'] ?? 0)),
-        'included_per_month' => clampInt($_POST['included_per_month'] ?? 0, 0, 1000000),
+        'included_standard' => clampInt($_POST['included_standard'] ?? 0, 0, 1000000),
+        'included_genius' => clampInt($_POST['included_genius'] ?? 0, 0, 1000000),
         'price_standard' => max(0.0, (float)($_POST['price_standard'] ?? 0)),
         'price_hd' => max(0.0, (float)($_POST['price_hd'] ?? 0)),
         'price_genius' => max(0.0, (float)($_POST['price_genius'] ?? 0)),
@@ -7062,19 +7229,23 @@ function aiNoteBrowsing(PDO $pdo): bool
 /* --------------------------------------------------------------- terminal -- */
 
 /** What the terminal page needs to draw itself. */
-function terminalView(array $config, bool $signedIn): array
+function terminalView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
         throw new ActionRefused('sign in to use the terminal');
     }
 
-    $settings = terminalSettings($config);
+    $settings = terminalSettings($config, $pdo);
 
     return [
         'enabled' => $settings['enabled'],
+        'permitted' => $settings['permitted'],
         'wanted' => $settings['wanted'],
         'can' => $settings['can'],
         'why' => $settings['why'],
+        'unlocked_until' => $settings['unlocked_until'],
+        'unlocked_for' => $settings['unlocked_for'],
+        'spans' => $settings['spans'],
         'max_seconds' => $settings['max_seconds'],
         'shell' => $settings['shell'],
         'history' => $settings['enabled'] ? terminalHistory($config) : [],
@@ -7099,7 +7270,7 @@ function doTerminalRun(array $config, PDO $pdo, bool $post): array
 
     logAction($pdo, 'terminal', substr(trim($command), 0, 400), 'started', 0, 0, $who);
 
-    $started = terminalStart($config, $command, $who);
+    $started = terminalStart($config, $pdo, $command, $who);
 
     /*
      * A recommendation is marked as taken once it has been run.
@@ -7118,7 +7289,34 @@ function doTerminalRun(array $config, PDO $pdo, bool $post): array
         }
     }
 
-    return ['ok' => true, 'run' => $started] + terminalView($config, true);
+    return ['ok' => true, 'run' => $started] + terminalView($config, $pdo, true);
+}
+
+/** Opens the terminal for a while, or extends how long it has left. */
+function doTerminalUnlock(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $seconds = clampInt($_POST['seconds'] ?? 900, 60, 14400);
+    $until = terminalUnlock($config, $pdo, $seconds, currentAccountName());
+
+    logAction($pdo, 'terminal_unlock', null, 'ok', 0, 0, sprintf(
+        'open until %s',
+        date('H:i', $until)
+    ));
+
+    return ['ok' => true, 'until' => $until] + terminalView($config, $pdo, true);
+}
+
+/** Locks it again, now. */
+function doTerminalLock(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    terminalLock($pdo);
+    logAction($pdo, 'terminal_lock', null, 'ok', 0, 0, null);
+
+    return ['ok' => true] + terminalView($config, $pdo, true);
 }
 
 /** What one command has printed since an offset. */
@@ -7145,7 +7343,7 @@ function doTerminalStop(array $config, PDO $pdo, bool $post): array
 
     logAction($pdo, 'terminal_stop', $id, $killed ? 'ok' : 'not running', 0, 0, null);
 
-    return ['ok' => true, 'killed' => $killed] + terminalView($config, true);
+    return ['ok' => true, 'killed' => $killed] + terminalView($config, $pdo, true);
 }
 
 /** Removes one command's transcript. */
@@ -7155,7 +7353,7 @@ function doTerminalForget(array $config, PDO $pdo, bool $post): array
 
     terminalForget($config, (string)($_POST['id'] ?? ''));
 
-    return ['ok' => true] + terminalView($config, true);
+    return ['ok' => true] + terminalView($config, $pdo, true);
 }
 
 /**

@@ -343,6 +343,25 @@ function aiMigrations(): array
             // What one image cost, so a session total can include it.
             "ALTER TABLE ai_images ADD COLUMN millicents INTEGER NOT NULL DEFAULT 0",
         ],
+
+        6 => [
+            /*
+             * Which tier a picture was generated at.
+             *
+             * The plan sells separate allowances for standard and for the
+             * expensive tier, so counting them together runs one allowance out
+             * on the other's usage. Everything written before this column
+             * existed was standard, which was the only option at the time -
+             * hence the default rather than a null.
+             *
+             * Its own migration, not an edit to the one above. A migration that
+             * has already run never runs again, so adding a line to it changes
+             * nothing on any install that has already seen it - which is
+             * exactly what happened here, and the symptom was a fatal on the
+             * first insert.
+             */
+            "ALTER TABLE ai_images ADD COLUMN quality TEXT NOT NULL DEFAULT 'standard'",
+        ],
     ];
 }
 

@@ -351,6 +351,34 @@
       <span class="nav-label">What it remembers</span>
       <span class="nav-badge" data-badge="sys-memory" hidden></span>
     </a>
+    <a class="nav-item nav-sub nav-deep" href="#/sys-ai-model" data-nav="sys-ai-model" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">·</span>
+      <span class="nav-label">Model</span>
+    </a>
+    <a class="nav-item nav-sub nav-deep" href="#/sys-ai-prices" data-nav="sys-ai-prices" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">·</span>
+      <span class="nav-label">Prices</span>
+    </a>
+    <a class="nav-item nav-sub nav-deep" href="#/sys-ai-limits" data-nav="sys-ai-limits" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">·</span>
+      <span class="nav-label">Thresholds</span>
+    </a>
+    <a class="nav-item nav-sub nav-deep" href="#/sys-ai-images" data-nav="sys-ai-images" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">·</span>
+      <span class="nav-label">Images</span>
+    </a>
+    <a class="nav-item nav-sub nav-deep" href="#/sys-ai-tools" data-nav="sys-ai-tools" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">·</span>
+      <span class="nav-label">Tools</span>
+    </a>
+    <a class="nav-item nav-sub nav-deep" href="#/sys-ai-try" data-nav="sys-ai-try" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">·</span>
+      <span class="nav-label">Try a tool</span>
+    </a>
+    <a class="nav-item nav-sub nav-deep" href="#/sys-ai-billing" data-nav="sys-ai-billing" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">·</span>
+      <span class="nav-label">Billing</span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-ai-data" data-nav="sys-ai-data" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label"><span class="ai-name">Mr. Radar</span>&rsquo;s data</span>
@@ -1950,47 +1978,131 @@
     <h2><span class="ai-name">Mr. Radar</span></h2>
   </div>
   <p class="muted small sub-note">
-    <span class="ai-name">Mr. Radar</span> is a model you configure, given a fixed set of read-only tools for
-    looking at this machine — the name is the job: somebody on watch who tells
-    you what they can see. It is off until you set it up, and when it is on this tool
-    sends parts of your logs, your disk figures and your process list to
-    whichever service you point it at — which is worth deciding deliberately
-    rather than discovering. A local model needs no key and nothing leaves the
-    machine.
+    <span class="ai-name">Mr. Radar</span> is a model you configure, given a fixed set of
+    read-only tools for looking at this machine — the name is the job: somebody on watch
+    who tells you what they can see. It is off until you set it up, and when it is on this
+    tool sends parts of your logs, your disk figures and your process list to whichever
+    service you point it at — which is worth deciding deliberately rather than
+    discovering. A local model needs no key and nothing leaves the machine.
   </p>
   <p class="muted small sub-note">
-    The model can never write a query. Every tool is a fixed statement with
-    typed, enumerated parameters bound to it, and anything outside those bounds
-    is refused before it reaches a database.
+    The model can never write a query. Every tool is a fixed statement with typed,
+    enumerated parameters bound to it, and anything outside those bounds is refused before
+    it reaches a database. The rest of the settings are on the pages under this one.
   </p>
-  <form id="aiSettingsForm">
-    <div id="aiSettingsBody"></div>
+  <form id="aiIdentityForm">
+    <div id="aiIdentityBody"></div>
   </form>
 </section>
+</section>
 
+<section class="view" data-view="sys-ai-model" hidden>
+<section class="panel" id="aiModelPanel">
+  <div class="panel-head">
+    <h2>Model</h2>
+  </div>
+  <p class="muted small sub-note">
+    Which service to speak to, which model, and what it costs. Prices are per million
+    tokens, in cents, and are optional — without them everything still works and the
+    running total reports token counts rather than money, because a wrong price is worse
+    than no price.
+  </p>
+  <form id="aiModelForm">
+    <div id="aiModelBody"></div>
+  </form>
+</section>
+</section>
+
+<section class="view" data-view="sys-ai-prices" hidden>
+<section class="panel" id="aiPricesPanel">
+  <div class="panel-head">
+    <h2>Remembered prices</h2>
+    <button id="aiPriceAdd" class="link">Add a model</button>
+  </div>
+  <p class="muted small sub-note">
+    Prices this install has been told about, per provider and model. Changing the model on
+    the Model page fills the price boxes from here rather than making you look them up
+    again — and a model you have used before keeps whatever you set for it. Nothing here
+    is fetched from anywhere: these are the numbers you were quoted, which is the only
+    honest source for them.
+  </p>
+  <div id="aiPricesBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="sys-ai-limits" hidden>
+<section class="panel" id="aiLimitsPanel">
+  <div class="panel-head">
+    <h2>Thresholds</h2>
+  </div>
+  <p class="muted small sub-note">
+    What stops a conversation, and how much of one the model can hold at a time. Every
+    limit here is checked before a request rather than after, so it stops the next call
+    rather than being noticed once the money is gone.
+  </p>
+  <form id="aiLimitsForm">
+    <div id="aiLimitsBody"></div>
+  </form>
+</section>
+</section>
+
+<section class="view" data-view="sys-ai-images" hidden>
+<section class="panel" id="aiImagesPanel">
+  <div class="panel-head">
+    <h2>Images</h2>
+  </div>
+  <p class="muted small sub-note">
+    Entirely optional, and off until keyed. Generating a picture costs money; searching
+    for an animation is a free read against somebody else's quota. They are limited
+    separately for that reason.
+  </p>
+  <form id="aiImagesForm">
+    <div id="aiImagesBody"></div>
+  </form>
+</section>
+</section>
+
+<section class="view" data-view="sys-ai-tools" hidden>
 <section class="panel" id="aiToolsPanel">
   <div class="panel-head">
     <h2>What it may do</h2>
   </div>
   <p class="muted small sub-note">
-    A tool switched off is not described to the model at all, rather than being
-    described and then refused — one told about a tool it cannot use keeps
-    trying it and explains its absence to you as a fault. Anything that asks
-    permission asks every time, and a refusal is reported back to the model so
-    that it works around it rather than retrying.
+    A tool switched off is not described to the model at all, rather than being described
+    and then refused — one told about a tool it cannot use keeps trying it and explains its
+    absence to you as a fault. Anything that asks permission asks every time, and a refusal
+    is reported back to the model so that it works around it rather than retrying.
   </p>
   <div id="aiToolsBody"></div>
 </section>
+</section>
 
+<section class="view" data-view="sys-ai-try" hidden>
+<section class="panel" id="aiTryPanel">
+  <div class="panel-head">
+    <h2>Try a tool</h2>
+  </div>
+  <p class="muted small sub-note">
+    Runs one tool with parameters you choose and shows exactly what comes back — the same
+    thing the model would receive, in the same shape. Useful for two things: seeing whether
+    a tool actually works on this install before switching it on, and reading what the
+    model is being told when its answer looks wrong. Nothing here involves the model and
+    nothing leaves the machine.
+  </p>
+  <div id="aiTryBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="sys-ai-billing" hidden>
 <section class="panel" id="aiSessionsPanel">
   <div class="panel-head">
-    <h2>What <span class="ai-name">Mr. Radar</span> has cost</h2>
+    <h2>Billing</h2>
     <button id="aiSessionsRefresh" class="link">Refresh</button>
   </div>
   <p class="muted small sub-note">
-    Every conversation, with the tokens it used and what that came to. Costs are
-    shown only when prices are set above — without them this reports token
-    counts and no money, because a wrong price is worse than no price.
+    Every conversation, with the tokens it used and what that came to. Costs are shown only
+    when prices are set — without them this reports token counts and no money, because a
+    wrong price is worse than no price.
   </p>
   <div id="aiSessionsBody"></div>
 </section>

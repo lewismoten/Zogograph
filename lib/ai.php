@@ -173,8 +173,35 @@ function aiSettings(array $config): array
          */
         'host_commands' => (bool)($set['host_commands'] ?? false),
 
+        /*
+         * Prices remembered per provider and model.
+         *
+         * Keyed "provider/model". The problem is small and constant: changing
+         * the model leaves the price boxes holding the previous model's
+         * numbers, which are now wrong and look right, and nobody notices until
+         * a bill arrives. Remembering them means switching models and switching
+         * back does not silently corrupt every cost figure in between.
+         */
+        'known_prices' => is_array($set['known_prices'] ?? null) ? $set['known_prices'] : [],
+
         'tools' => $set['tools'] ?? [],
     ];
+}
+
+/**
+ * The prices for one provider and model, if this install has been told them.
+ *
+ * @return array{in: float, out: float, cached: float}|null
+ */
+function aiKnownPrice(array $settings, string $provider, string $model): ?array
+{
+    $found = $settings['known_prices'][$provider . '/' . $model] ?? null;
+
+    return is_array($found) ? [
+        'in' => (float)($found['in'] ?? 0),
+        'out' => (float)($found['out'] ?? 0),
+        'cached' => (float)($found['cached'] ?? 0),
+    ] : null;
 }
 
 /** The effort levels, cheapest first. The empty string means "do not send one". */

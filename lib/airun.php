@@ -75,7 +75,7 @@ function aiRunTool(
              * type. They are given it explicitly rather than opening it here,
              * so this file still has exactly one connection to reason about.
              */
-            'what_the_terminal_can_run' => aiTerminalTools($config),
+            'what_the_terminal_can_run' => aiTerminalTools($config, $pdo),
             'what_the_host_can_be_asked' => aiHostJobs($config, $pdo),
             'get_pending_host_requests' => aiPendingHostRequests($config, $pdo),
             'get_collection_schedule' => aiCronRhythm($config, $pdo),
@@ -965,9 +965,9 @@ function terminalToolbox(): array
  *
  * @return array<string, mixed>
  */
-function aiTerminalTools(array $config): array
+function aiTerminalTools(array $config, PDO $pdo): array
 {
-    $settings = terminalSettings($config);
+    $settings = terminalSettings($config, $pdo);
 
     if (!$settings['can']) {
         return [
@@ -981,10 +981,15 @@ function aiTerminalTools(array $config): array
     if (!$settings['enabled']) {
         return [
             'terminal_available' => false,
-            'why' => 'The terminal is switched off.',
-            'note' => 'The operator can turn it on from the System > Terminal page, where '
-                . 'it is enabled for a chosen length of time and then locks itself again. '
-                . 'Say that, rather than suggesting commands they cannot run.',
+            'why' => $settings['permitted']
+                ? 'The terminal is permitted but locked right now.'
+                : 'The terminal is switched off in the configuration.',
+            'note' => $settings['permitted']
+                ? 'It locks itself after a while on purpose. The operator can unlock it '
+                  . 'again from the System > Terminal page in one click, so a command is '
+                  . 'still worth suggesting - just say they will need to unlock it first.'
+                : 'Turning it on is a change to lib/config.php, not a button. Do not '
+                  . 'suggest commands; suggest what the dashboard can do instead.',
         ];
     }
 

@@ -39,6 +39,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/collect.php';
 require_once __DIR__ . '/spans.php';
+// rememberSetting and recallSetting, which the unlock clock is kept in.
+require_once __DIR__ . '/symlinks.php';
 
 /** Longest a command may run before it is killed. */
 const TERMINAL_MAX_SECONDS = 900;
@@ -50,19 +52,92 @@ const TERMINAL_MAX_BYTES = 4 * 1024 * 1024;
 const TERMINAL_KEEP = 40;
 
 /** Is it turned on, and can this machine actually do it? */
-function terminalSettings(array $config): array
+function terminalSettings(array $config, ?PDO $pdo = null): array
 {
     $set = $config['terminal'] ?? [];
     $can = terminalCanRun();
+    $permitted = (bool)($set['enabled'] ?? false) && $can['ok'];
+
+    /*
+     * Two switches, and they answer different questions.
+     *
+     * `permitted` is the config file: is this install allowed to have a shell
+     * in a web page at all. That is a decision made once, deliberately, by
+     * somebody who read what it means.
+     *
+     * `unlocked_until` is a clock: is it open right now. It closes itself,
+     * which is the point - a web shell left permanently open is a web shell
+     * whoever gets the password inherits. Making somebody re-open it is a small
+     * cost paid by the one person who wants it and a real obstacle to anybody
+     * who should not have it.
+     */
+    $until = 0;
+    if ($permitted && $pdo !== null) {
+        $until = (int)(recallSetting($pdo, 'terminal_unlocked_until') ?? 0);
+    }
+
+    $open = $permitted && $until > time();
 
     return [
-        'enabled' => (bool)($set['enabled'] ?? false) && $can['ok'],
+        'enabled' => $open,
+        'permitted' => $permitted,
         'wanted' => (bool)($set['enabled'] ?? false),
         'can' => $can['ok'],
         'why' => $can['why'],
+        'unlocked_until' => $open ? $until : 0,
+        'unlocked_for' => $open ? $until - time() : 0,
         'max_seconds' => max(5, min(TERMINAL_MAX_SECONDS, (int)($set['max_seconds'] ?? 300))),
         'shell' => (string)($set['shell'] ?? '/bin/sh'),
+        'spans' => terminalUnlockSpans(),
     ];
+}
+
+/** How long it may be unlocked for. Nothing longer than an afternoon. */
+function terminalUnlockSpans(): array
+{
+    return [
+        900 => '15 minutes',
+        1800 => '30 minutes',
+        3600 => 'an hour',
+        7200 => 'two hours',
+        14400 => 'four hours',
+    ];
+}
+
+/**
+ * Opens the terminal for a while.
+ *
+ * Returns when it will close. Extending is the same call: the new window
+ * replaces the old rather than adding to it, so "extend by an hour" always
+ * means an hour from now and never quietly compounds into a day.
+ */
+function terminalUnlock(array $config, PDO $pdo, int $seconds, string $who): int
+{
+    $settings = terminalSettings($config, $pdo);
+
+    if (!$settings['permitted']) {
+        throw new ActionRefused(
+            $settings['can']
+                ? 'the terminal is switched off in the configuration, so it cannot be '
+                  . 'unlocked from here'
+                : (string)$settings['why']
+        );
+    }
+
+    if (!isset(terminalUnlockSpans()[$seconds])) {
+        throw new ActionRefused('that is not one of the lengths on offer');
+    }
+
+    $until = time() + $seconds;
+    rememberSetting($pdo, 'terminal_unlocked_until', (string)$until);
+
+    return $until;
+}
+
+/** Closes it again. */
+function terminalLock(PDO $pdo): void
+{
+    rememberSetting($pdo, 'terminal_unlocked_until', '0');
 }
 
 /**
@@ -106,15 +181,17 @@ function terminalDirectory(array $config): string
  *
  * @return array{id: string, pid: int}
  */
-function terminalStart(array $config, string $command, string $who): array
+function terminalStart(array $config, PDO $pdo, string $command, string $who): array
 {
-    $settings = terminalSettings($config);
+    $settings = terminalSettings($config, $pdo);
 
     if (!$settings['enabled']) {
         throw new ActionRefused(
-            $settings['can']
-                ? 'the terminal is switched off in the configuration'
-                : (string)$settings['why']
+            !$settings['can']
+                ? (string)$settings['why']
+                : ($settings['permitted']
+                    ? 'the terminal has locked itself again. Unlock it and try again.'
+                    : 'the terminal is switched off in the configuration')
         );
     }
 

@@ -172,7 +172,9 @@ function aiImageSettings(array $config): array
          * produce a total that looks authoritative and is not.
          */
         'monthly_cents' => max(0, (float)($set['monthly_cents'] ?? 0)),
-        'included_per_month' => max(0, (int)($set['included_per_month'] ?? 0)),
+        'included_standard' => max(0, (int)($set['included_standard']
+            ?? $set['included_per_month'] ?? 0)),
+        'included_genius' => max(0, (int)($set['included_genius'] ?? 0)),
         'price_standard' => max(0, (float)($set['price_standard'] ?? 0)),
         'price_hd' => max(0, (float)($set['price_hd'] ?? 0)),
         'price_genius' => max(0, (float)($set['price_genius'] ?? 0)),
@@ -275,49 +277,123 @@ function aiSearchBudget(PDO $ai, array $settings): array
 /**
  * What one generated picture costs, in millicents.
  *
- * The awkward part of this, and it is worth writing down rather than papering
- * over: the plan is a monthly fee with an allowance, and credits afterwards. So
- * a picture's marginal cost is zero until the allowance runs out and the
- * per-image price after that, and neither figure alone is the truth.
+ * The plan is a monthly fee with an allowance, so a picture inside the
+ * allowance has no marginal cost at all - and reporting zero would be true and
+ * useless, because the fee was paid for exactly this. What is reported instead
+ * is the fee divided by the allowance: four hundred standard images on a $4.95
+ * plan is 1.2375 cents each, which is the number somebody actually wants when
+ * they ask what a conversation cost.
  *
- * What is NOT done here is spreading the monthly fee across the images made -
- * that would make the first picture of the month cost five dollars and the
- * hundredth cost nothing, which is arithmetic nobody can act on. The monthly
- * fee is reported separately, as a monthly fee.
+ * Be clear about what that number is, because the UI has to be: it is an
+ * ATTRIBUTION of a fixed cost, not a marginal one. Nothing is saved by
+ * generating one fewer, and the two tiers divide the same fee, so adding up a
+ * full month of both would come to more than the fee. It is the right figure
+ * for "what did this conversation cost" and the wrong one for "what will one
+ * more cost".
+ *
+ * Past the allowance the plan charges for credits, and there the per-image
+ * price is a real marginal cost.
  */
 function aiImageCost(PDO $ai, array $settings, string $quality): int
 {
+    $genius = $quality === 'genius';
+
+    $allowance = $genius
+        ? (int)$settings['included_genius']
+        : (int)$settings['included_standard'];
+
+    $used = aiImagesThisMonth($ai, $genius);
+
+    if ($allowance > 0 && $used < $allowance) {
+        $monthly = (float)$settings['monthly_cents'];
+        return $monthly > 0 ? (int)round(($monthly / $allowance) * 1000) : 0;
+    }
+
+    /*
+     * Past the allowance, or no allowance configured.
+     *
+     * The overage price if one was given; otherwise nothing, because a guessed
+     * price is worse than an absent one and this is where guessing would be
+     * least visible.
+     */
     $price = match ($quality) {
         'hd' => (float)$settings['price_hd'],
         'genius' => (float)$settings['price_genius'],
         default => (float)$settings['price_standard'],
     };
 
-    if ($price <= 0) {
-        return 0;
-    }
+    return $price > 0 ? (int)round($price * 1000) : 0;
+}
 
-    $included = (int)$settings['included_per_month'];
-    if ($included <= 0) {
-        return (int)round($price * 1000);
-    }
+/**
+ * How many pictures of one tier were generated this calendar month.
+ *
+ * The calendar month because that is how the plan is sold, and the two tiers
+ * are counted apart because they have separate allowances. Failed generations
+ * do not count: nobody's allowance is spent on an error.
+ */
+function aiImagesThisMonth(PDO $ai, bool $genius): int
+{
+    $from = (int)mktime(0, 0, 0, (int)date('n'), 1, (int)date('Y'));
 
-    /*
-     * Inside the allowance costs nothing extra, which is the honest answer.
-     *
-     * Counted over the calendar month because that is how the plan is sold.
-     */
     try {
         $stmt = $ai->prepare(
-            "SELECT COUNT(*) FROM ai_images WHERE at >= ? AND kind != 'reaction' AND error IS NULL"
+            "SELECT COUNT(*) FROM ai_images
+              WHERE at >= ? AND kind != 'reaction' AND error IS NULL
+                AND (quality = ?) "
         );
-        $stmt->execute([(int)mktime(0, 0, 0, (int)date('n'), 1, (int)date('Y'))]);
-        $thisMonth = (int)$stmt->fetchColumn();
+        $stmt->execute([$from, $genius ? 'genius' : 'standard']);
+        return (int)$stmt->fetchColumn();
     } catch (Throwable) {
-        $thisMonth = 0;
+        /*
+         * An install from before the quality column existed.
+         *
+         * Everything in it was standard, which is what the default was, so the
+         * standard count is the whole count and the genius count is zero.
+         */
+        if ($genius) {
+            return 0;
+        }
+
+        try {
+            $stmt = $ai->prepare(
+                "SELECT COUNT(*) FROM ai_images
+                  WHERE at >= ? AND kind != 'reaction' AND error IS NULL"
+            );
+            $stmt->execute([$from]);
+            return (int)$stmt->fetchColumn();
+        } catch (Throwable) {
+            return 0;
+        }
+    }
+}
+
+/**
+ * What the picture plan is costing, and how much of it is used.
+ *
+ * For the settings page, so the arithmetic is visible rather than implied.
+ *
+ * @return array<string, mixed>
+ */
+function aiImageAllowance(PDO $ai, array $settings): array
+{
+    $out = ['monthly_cents' => $settings['monthly_cents'], 'tiers' => []];
+
+    foreach ([['standard', 'included_standard'], ['genius', 'included_genius']] as [$tier, $key]) {
+        $allowance = (int)$settings[$key];
+        $used = aiImagesThisMonth($ai, $tier === 'genius');
+
+        $out['tiers'][$tier] = [
+            'allowance' => $allowance,
+            'used' => $used,
+            'left' => max(0, $allowance - $used),
+            'each' => $allowance > 0 && $settings['monthly_cents'] > 0
+                ? round($settings['monthly_cents'] / $allowance, 6)
+                : null,
+        ];
     }
 
-    return $thisMonth < $included ? 0 : (int)round($price * 1000);
+    return $out;
 }
 
 /**
@@ -686,14 +762,16 @@ function aiRecordImage(
     string $style,
     ?string $url,
     ?string $error,
-    int $millicents = 0
+    int $millicents = 0,
+    string $quality = 'standard'
 ): int {
     $ai->prepare(
-        'INSERT INTO ai_images (session_id, at, kind, prompt, style, url, error, millicents)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO ai_images
+            (session_id, at, kind, prompt, style, url, error, millicents, quality)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )->execute([
         $session, time(), $kind, mb_substr($prompt, 0, 1000), $style, $url, $error,
-        $millicents,
+        $millicents, $quality,
     ]);
 
     return (int)$ai->lastInsertId();

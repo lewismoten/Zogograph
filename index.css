@@ -1863,12 +1863,21 @@ button.link.tiny:hover { opacity: 1; }
 .chat-panel[hidden],
 .corner-choices[hidden] { display: none; }
 
+/*
+ * Bigger than it was, because the things in it got bigger.
+ *
+ * It started as a message box. It now holds charts, progress bars, generated
+ * pictures, code blocks and permission prompts, and 420 by 640 made every one
+ * of those a scroll. Sized as a share of the window with a ceiling, so it grows
+ * on a large screen and still fits a laptop.
+ */
 .chat-panel {
   position: fixed;
   right: 22px;
   bottom: 84px;
-  width: min(420px, calc(100vw - 44px));
-  max-height: min(640px, calc(100vh - 140px));
+  width: min(560px, calc(100vw - 44px));
+  max-height: min(80vh, calc(100vh - 130px));
+  min-height: min(520px, calc(100vh - 130px));
   display: flex;
   flex-direction: column;
   background: var(--panel);
@@ -1912,7 +1921,7 @@ button.link.tiny:hover { opacity: 1; }
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 120px;
+  min-height: 200px;
 }
 .chat-line {
   padding: 8px 10px;
@@ -1987,7 +1996,10 @@ button.link.tiny:hover { opacity: 1; }
 input.wide-field { width: 100%; max-width: 34em; }
 
 @media (max-width: 620px) {
-  .chat-panel { right: 10px; left: 10px; width: auto; bottom: 74px; }
+  .chat-panel {
+    right: 10px; left: 10px; width: auto; bottom: 74px;
+    min-height: 0; max-height: calc(100vh - 100px);
+  }
   .corner-menu { right: 14px; bottom: 14px; }
 }
 
@@ -2426,3 +2438,29 @@ canvas.chart-empty {
   border-top: 1px solid var(--line);
   margin: .7em 0;
 }
+
+/* The terminal's unlock countdown and the two buttons beside it. */
+.term-open {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--warn);
+  background: var(--panel-hover);
+  border-radius: 6px;
+}
+
+/*
+ * A third level of navigation, for the assistant's own settings pages.
+ *
+ * Indented and quieter than the level above: these are pages you go to when
+ * you are already setting the assistant up, not places to be drawn into from
+ * the top of the menu.
+ */
+.nav-deep { padding-left: 34px; font-size: .88em; }
+.nav-deep .nav-icon { opacity: .5; }
+
+/* A tool's answer, which can be long. It scrolls rather than the page. */
+.try-result { max-height: 460px; overflow: auto; }
