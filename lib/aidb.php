@@ -27,6 +27,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/spans.php';
+require_once __DIR__ . '/storekeep.php';
 
 /** Where it lives: beside the other two, which .htaccess already denies. */
 function aiDatabasePath(array $config): string
@@ -274,4 +275,188 @@ function aiDatabaseFacts(array $config): array
         'wal_bytes' => is_file($path . '-wal') ? (int)filesize($path . '-wal') : 0,
         'writable' => is_writable(is_file($path) ? $path : dirname($path)),
     ];
+}
+
+/**
+ * What the assistant's database is holding, and how old it is.
+ *
+ * Its own page rather than a line on the settings one, because this is the
+ * database that grows without anybody deciding it should. The account database
+ * grows at a rate somebody chose - a reading every five minutes - and retention
+ * thins it. This one grows by the conversation: every message, every tool
+ * result that came back, every picture. One long session with a few screenshots
+ * in it can be larger than a week of readings.
+ *
+ * @return array<string, mixed>
+ */
+function aiStoreReport(array $config): array
+{
+    $facts = aiDatabaseFacts($config);
+    $out = [
+        'file' => $facts,
+        'tables' => [],
+        'holds' => [],
+        'why' => null,
+    ];
+
+    if (!$facts['exists']) {
+        $out['why'] = 'Nothing has been asked yet, so there is no database to look at.';
+        return $out;
+    }
+
+    $pdo = aiDb($config, false);
+    if ($pdo === null) {
+        $out['why'] = 'The database is there but could not be opened.';
+        return $out;
+    }
+
+    /*
+     * The fuller facts, with `exists` carried over.
+     *
+     * databaseFacts does not report it - it is only ever called on a database
+     * that is open, so the question does not arise there. It arises here,
+     * because the page decides between "there is nothing to show" and the
+     * whole report on that one key, and losing it made a database with a
+     * conversation in it render as "nothing has been asked yet".
+     */
+    $out['file'] = databaseFacts($pdo, $config, $facts['path']) + ['exists' => true];
+    $store = storeTables($pdo);
+    $out['tables'] = $store['tables'];
+    $out['measured'] = $store['measured'];
+    $out['table_why'] = $store['why'];
+
+    /*
+     * What each kind of row is, in the words somebody would use to decide
+     * whether to delete it - not the table names.
+     */
+    foreach (aiStoreKinds() as $key => $kind) {
+        $row = aiStoreCount($pdo, $kind['table'], $kind['when']);
+        $out['holds'][] = [
+            'key' => $key,
+            'label' => $kind['label'],
+            'note' => $kind['note'],
+            'rows' => $row['rows'],
+            'oldest' => $row['oldest'],
+            'newest' => $row['newest'],
+        ];
+    }
+
+    return $out;
+}
+
+/** The four things this database holds, and what deleting each one costs. */
+function aiStoreKinds(): array
+{
+    return [
+        'sessions' => [
+            'table' => 'ai_sessions',
+            'when' => 'started_at',
+            'label' => 'Conversations',
+            'note' => 'One per conversation, with what it cost. Deleting one takes its '
+                . 'messages and tool runs with it.',
+        ],
+        'messages' => [
+            'table' => 'ai_messages',
+            'when' => 'at',
+            'label' => 'Messages',
+            'note' => 'Every turn in both directions, including the tool results that '
+                . 'went back to the model. This is the record of what left the machine.',
+        ],
+        'calls' => [
+            'table' => 'ai_calls',
+            'when' => 'at',
+            'label' => 'Requests to the provider',
+            'note' => 'One per round trip, with the token counts each one was billed '
+                . 'for. What the cost figures are added up from.',
+        ],
+        'tool_runs' => [
+            'table' => 'ai_tool_runs',
+            'when' => 'at',
+            'label' => 'Tool runs',
+            'note' => 'Every tool the model asked for, what it was given, and what came '
+                . 'back. Kept so an answer can be checked against what it was based on.',
+        ],
+        'images' => [
+            'table' => 'ai_images',
+            'when' => 'at',
+            'label' => 'Pictures',
+            'note' => 'What was asked for and where the result was put. The pictures '
+                . 'themselves live at the provider, not here.',
+        ],
+    ];
+}
+
+/** Rows, oldest and newest, for one table. Missing tables report as empty. */
+function aiStoreCount(PDO $pdo, string $table, string $column): array
+{
+    /*
+     * The table and column are named by the catalogue above, never by anything
+     * that arrived in a request - they cannot be bound as parameters, so the
+     * only safe source for them is code.
+     */
+    try {
+        $row = $pdo->query(sprintf(
+            'SELECT COUNT(*) AS n, MIN(%s) AS oldest, MAX(%s) AS newest FROM %s',
+            $column,
+            $column,
+            $table
+        ))->fetch();
+    } catch (Throwable) {
+        return ['rows' => 0, 'oldest' => null, 'newest' => null];
+    }
+
+    return [
+        'rows' => (int)($row['n'] ?? 0),
+        'oldest' => $row['oldest'] === null ? null : (int)$row['oldest'],
+        'newest' => $row['newest'] === null ? null : (int)$row['newest'],
+    ];
+}
+
+/**
+ * Removes conversations that finished before a cut-off.
+ *
+ * Whole conversations only. Deleting the messages out of a session while
+ * leaving the session would produce a record that says a conversation cost
+ * four cents and contains nothing, which is worse than either keeping it or
+ * removing it - it looks like data loss, because it is.
+ *
+ * @return array{sessions: int, before: int}
+ */
+function aiForget(PDO $pdo, int $olderThanDays): array
+{
+    if ($olderThanDays < 0) {
+        throw new ActionRefused('that is not a number of days');
+    }
+
+    $before = time() - ($olderThanDays * 86400);
+
+    $stmt = $pdo->prepare('SELECT id FROM ai_sessions WHERE last_at < ?');
+    $stmt->execute([$before]);
+    $ids = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+    if ($ids === []) {
+        return ['sessions' => 0, 'before' => $before];
+    }
+
+    /*
+     * The children are deleted explicitly rather than left to the foreign key.
+     *
+     * ON DELETE CASCADE only fires when `PRAGMA foreign_keys` is on, and that
+     * pragma is per-connection and off by default in SQLite. Relying on it is
+     * how orphaned rows accumulate in a database that looks like it cascades.
+     */
+    $marks = implode(',', array_fill(0, count($ids), '?'));
+
+    foreach (['ai_messages', 'ai_calls', 'ai_tool_runs', 'ai_images'] as $table) {
+        try {
+            $pdo->prepare("DELETE FROM {$table} WHERE session_id IN ({$marks})")
+                ->execute($ids);
+        } catch (Throwable) {
+            // A table that is not there yet has nothing to remove from it.
+        }
+    }
+
+    $pdo->prepare("DELETE FROM ai_sessions WHERE id IN ({$marks})")->execute($ids);
+
+    return ['sessions' => count($ids), 'before' => $before];
 }

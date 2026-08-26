@@ -31,6 +31,12 @@ require_once __DIR__ . '/collect.php';
 /** Longest chain of links followed before calling it a loop regardless. */
 const SYMLINK_MAX_HOPS = 40;
 
+/** Most problems collected in one walk. A backstop, not a page size. */
+const SYMLINK_FIND_MAX = 20000;
+
+/** Most problems drawn on the page at once. Display only - nothing acts on this. */
+const SYMLINK_SHOW_MAX = 300;
+
 /**
  * Walks the tree looking for symlinks that will hurt something.
  *
@@ -39,9 +45,21 @@ const SYMLINK_MAX_HOPS = 40;
  * says when it stopped early: a check that quietly gave up and reported
  * "nothing wrong" would be worse than not having one.
  *
+ * Everything found is returned, not a page of it.
+ *
+ * An earlier version cut the list to 200 after sorting worst-first, which was
+ * fine for reading and wrong for everything else. On an account whose `.cpanel`
+ * directory holds a couple of hundred links pointing at the system PHP - all
+ * `outside`, all sorted ahead of `broken` - those two hundred slots were gone
+ * before a single broken link got one. Deleting the handful that showed through
+ * worked, and then the next check showed the same handful again, because the
+ * number that fits in the gap does not change. It looked exactly like a delete
+ * that silently did nothing. The page slices the list for display; nothing
+ * *decides* anything on a slice.
+ *
  * @return array{
- *   problems: list<array>, links: int, dirs: int,
- *   complete: bool, seconds: float
+ *   problems: list<array>, links: int, dirs: int, kinds: array<string,int>,
+ *   complete: bool, full: bool, seconds: float
  * }
  */
 function findSymlinkProblems(array $config, float $budgetSeconds = 10.0): array
@@ -55,7 +73,10 @@ function findSymlinkProblems(array $config, float $budgetSeconds = 10.0): array
     $deadline = microtime(true) + $budgetSeconds;
     $started = microtime(true);
 
-    $state = ['links' => 0, 'dirs' => 0, 'problems' => [], 'complete' => true];
+    $state = [
+        'links' => 0, 'dirs' => 0, 'problems' => [],
+        'complete' => true, 'full' => true,
+    ];
     walkForLinks($root, $root, $excluded, $deadline, $state);
 
     // Worst first: a loop will break a backup tonight, a broken link never will.
@@ -65,11 +86,20 @@ function findSymlinkProblems(array $config, float $budgetSeconds = 10.0): array
         fn(array $a, array $b): int => ($rank[$a['kind']] ?? 9) <=> ($rank[$b['kind']] ?? 9)
     );
 
+    $kinds = ['loop' => 0, 'ancestor' => 0, 'outside' => 0, 'broken' => 0];
+    foreach ($state['problems'] as $problem) {
+        $kinds[$problem['kind']] = ($kinds[$problem['kind']] ?? 0) + 1;
+    }
+
     return [
-        'problems' => array_slice($state['problems'], 0, 200),
+        'problems' => $state['problems'],
         'links' => $state['links'],
         'dirs' => $state['dirs'],
+        'kinds' => $kinds,
         'complete' => $state['complete'],
+        // False when the ceiling below stopped it collecting, which is a
+        // different thing from running out of time and is said differently.
+        'full' => $state['full'],
         'seconds' => round(microtime(true) - $started, 2),
     ];
 }
@@ -107,7 +137,16 @@ function walkForLinks(
             $state['links']++;
             $problem = inspectLink($full, $root);
             if ($problem !== null) {
-                $state['problems'][] = $problem;
+                /*
+                 * A ceiling, so a tree with a million bad links cannot exhaust
+                 * memory. Far above any real account, and said out loud when it
+                 * is hit rather than quietly truncating the answer.
+                 */
+                if (count($state['problems']) >= SYMLINK_FIND_MAX) {
+                    $state['full'] = false;
+                } else {
+                    $state['problems'][] = $problem;
+                }
             }
             // Never descend through one. Following the link is the mistake this
             // whole file exists to warn other programs about.
@@ -456,6 +495,44 @@ function replaceLinkWithDirectory(array $config, string $path): array
 }
 
 /**
+ * Does one path fall under a pattern the operator typed?
+ *
+ * A pattern names a place, and everything at or under that place matches. That
+ * is the whole rule, and it is the rule because the alternative was watched in
+ * use: to clear one previews directory somebody had to type
+ *
+ *     .../previews/*&#47;*&#47;*&#47;*&#47;*&#47;*
+ *
+ * counting directory levels by hand and adding another star whenever the count
+ * came out wrong. Nobody knows how deep a tree of thumbnails goes, and nobody
+ * should have to. Typing `.../previews` now means the same thing.
+ *
+ * A `*` still stops at a slash, but it chooses a *name*, not a depth: it says
+ * which entries at that position count, and everything under a chosen entry is
+ * included. `previews/*` therefore means the same as `rm -r previews/*` does in
+ * a shell, which is the behaviour anybody typing it already expects.
+ */
+function symlinkPatternMatch(string $pattern, string $path): bool
+{
+    $pattern = rtrim(trim($pattern), '/');
+    if ($pattern === '') {
+        return false;
+    }
+
+    $regex = '';
+    foreach (str_split($pattern) as $character) {
+        $regex .= match ($character) {
+            '*' => '[^/]*',
+            '?' => '[^/]',
+            default => preg_quote($character, '#'),
+        };
+    }
+
+    // The place itself, or anything below it.
+    return (bool)preg_match('#^' . $regex . '(/.*)?$#', $path);
+}
+
+/**
  * Deletes every broken link matching a pattern.
  *
  * A pattern rather than a list of ticked boxes, because the actual case is
@@ -497,9 +574,7 @@ function deleteBrokenMatching(
      * Checked on the literal prefix before the first wildcard, so `/*` and
      * `/home/*` are refused rather than matching the whole account by accident.
      */
-    $literal = $pattern;
-    $star = strcspn($pattern, '*?[');
-    $literal = substr($pattern, 0, $star);
+    $literal = substr($pattern, 0, strcspn($pattern, '*?['));
 
     $inside = rtrim($root, '/') . '/';
     if (!str_starts_with($literal, $inside) || strlen($literal) <= strlen($inside)) {
@@ -513,10 +588,11 @@ function deleteBrokenMatching(
 
     $deleted = [];
     $matched = 0;
+    $broken = 0;
     $skipped = 0;
 
     foreach ($found['problems'] as $problem) {
-        if (!fnmatch($pattern, $problem['path'], FNM_PATHNAME)) {
+        if (!symlinkPatternMatch($pattern, $problem['path'])) {
             continue;
         }
         $matched++;
@@ -526,6 +602,8 @@ function deleteBrokenMatching(
             $skipped++;
             continue;
         }
+
+        $broken++;
 
         if (count($deleted) >= SYMLINK_BULK_MAX) {
             continue;
@@ -547,10 +625,11 @@ function deleteBrokenMatching(
         'deleted' => $deleted,
         'skipped' => $skipped,
         'matched' => $matched,
-        'remaining' => max(0, $matched - $skipped - count($deleted)),
+        'broken' => $broken,
+        'remaining' => max(0, $broken - count($deleted)),
         // The walk itself may have run out of time, in which case there may be
         // matching links it never reached.
-        'complete' => $found['complete'],
+        'complete' => $found['complete'] && $found['full'],
         'dry_run' => $dryRun,
     ];
 }

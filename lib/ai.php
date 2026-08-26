@@ -150,7 +150,7 @@ function aiReady(array $config): array
     $set = aiSettings($config);
 
     if (!$set['enabled']) {
-        return ['ok' => false, 'why' => 'Lookout is switched off in Settings.'];
+        return ['ok' => false, 'why' => aiPersona($config)['name'] . ' is switched off in Settings.'];
     }
     if ($set['model'] === '') {
         return ['ok' => false, 'why' => 'No model has been chosen in Settings.'];

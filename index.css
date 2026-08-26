@@ -36,6 +36,21 @@
   font-size: 15px;
 }
 
+/*
+ * hidden means hidden, whatever else a rule says.
+ *
+ * The browser's own [hidden] rule is `display: none` at the user-agent level,
+ * which any author rule setting display beats - so `.settings-row { display:
+ * grid }` silently makes `row.hidden = true` do nothing at all. That has now
+ * cost three separate bugs here (a chat panel that would not close, a stray
+ * button, a settings row that stayed on screen under a scope it did not belong
+ * to), each found by somebody looking at the screen rather than by anything in
+ * the code. This is the rule the HTML specification suggests for exactly that
+ * reason, and it is the one place !important earns its keep: nothing should
+ * ever out-rank it.
+ */
+[hidden] { display: none !important; }
+
 * { box-sizing: border-box; }
 body { margin: 0; padding: 24px; max-width: 1600px; margin-inline: auto; }
 h1 { font-size: 1.35rem; margin: 0; }
@@ -1194,6 +1209,13 @@ img.thumb {
   border-top: 1px solid var(--line-soft);
 }
 .settings-row:first-child { border-top: 0; }
+
+/*
+ * An author rule that sets display beats the browser's own [hidden], every
+ * time. Without this line, hiding a settings row does nothing at all - which is
+ * how "Which charts" stayed on screen under a scope that has no charts.
+ */
+.settings-row[hidden] { display: none; }
 .settings-label { color: var(--muted); font-size: .9rem; padding-top: 4px; }
 .settings input[type="email"], .settings select {
   background: var(--bg-raised); color: var(--text);
@@ -2025,4 +2047,118 @@ img.portrait {
   object-fit: cover;
   display: block;
   margin-bottom: 6px;
+}
+
+/* ---------------------------------------------------------- paths in tables -- */
+
+/*
+ * The head of a path, greyed out.
+ *
+ * Every row on the symlink page begins with the same forty characters. They
+ * still have to be there - it is where the file is - but they should not be
+ * the first thing the eye lands on.
+ */
+.path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.path-dim { color: var(--dim); }
+
+/* ------------------------------------------------------------- segmented -- */
+
+.seg-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+
+.seg {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: .85rem;
+  cursor: pointer;
+}
+
+.seg:hover:not(:disabled) { color: var(--text); border-color: var(--dim); }
+.seg.on { background: var(--line); color: var(--text); border-color: var(--dim); }
+.seg:disabled { opacity: .4; cursor: default; }
+
+/* ------------------------------------------------------------ help bubble -- */
+
+/*
+ * Shown the instant a help mark is touched.
+ *
+ * It replaced a `title`, which appears after about a second - long enough for
+ * somebody to click, see nothing happen, and decide the mark is broken.
+ * Positioned by the three custom properties the script sets.
+ */
+.help-bubble {
+  position: fixed;
+  left: var(--x, 0);
+  top: var(--y, 0);
+  width: var(--w, 320px);
+  z-index: 60;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: .85rem;
+  line-height: 1.45;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  pointer-events: none;
+}
+
+.help-bubble[data-pinned="yes"] { pointer-events: auto; user-select: text; }
+.help-bubble[hidden] { display: none; }
+
+.help-icon { cursor: pointer; }
+
+/* --------------------------------------------------------- tick lists etc -- */
+
+.tick-list {
+  display: grid;
+  gap: 4px;
+  max-height: 190px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.tick {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: .9rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tick input { margin: 0; }
+
+/* The whole-dashboard option, set apart from the individual charts under it. */
+.tick-wide {
+  padding-bottom: 6px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--muted);
+}
+
+/* A screenshot waiting to be saved with a note. */
+.note-shot {
+  display: block;
+  max-width: 100%;
+  max-height: 130px;
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+/* A picture kept with a note, shown where somebody is already looking. */
+.note-picture {
+  display: block;
+  max-width: 100%;
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
 }

@@ -4153,7 +4153,6 @@ function collectorDial(collector) {
   const size = 46;
   const stroke = 5;
   const radius = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * radius;
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
@@ -4162,7 +4161,7 @@ function collectorDial(collector) {
   svg.setAttribute("class", "dial");
   svg.setAttribute("aria-hidden", "true");
 
-  const ring = (cls, dash) => {
+  const ring = (cls) => {
     const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
     circle.setAttribute("cx", String(size / 2));
     circle.setAttribute("cy", String(size / 2));
@@ -4170,14 +4169,58 @@ function collectorDial(collector) {
     circle.setAttribute("fill", "none");
     circle.setAttribute("stroke-width", String(stroke));
     circle.setAttribute("class", cls);
-    if (dash) circle.setAttribute("stroke-dasharray", dash);
     svg.appendChild(circle);
     return circle;
   };
 
-  const interval = Number(collector.interval || 0);
-  const age = Number(collector.age || 0);
-  const known = collector.last_at && interval > 0;
+  ring("dial-track");
+  const progress = ring("dial-value");
+  // Twelve o'clock rather than three, which is where everybody reads a dial from.
+  progress.setAttribute("transform", `rotate(-90 ${size / 2} ${size / 2})`);
+
+  const said = document.createElementNS("http://www.w3.org/2000/svg", "title");
+  svg.appendChild(said);
+
+  /*
+   * What it needs to redraw itself, kept on the element.
+   *
+   * The ring used to be painted once from an age the server had calculated,
+   * which meant it sat perfectly still between polls and then jumped. A dial
+   * that does not move is not read as "waiting", it is read as broken - which
+   * is exactly the report this came from. Everything below is derived from the
+   * last run time and the browser's own clock, so the ticker can advance it
+   * every second without asking the server anything.
+   */
+  svg.dataset.at = String(collector.last_at || 0);
+  svg.dataset.every = String(collector.interval || 0);
+  svg.dataset.state = String(collector.state || "");
+
+  paintDial(svg);
+  return svg;
+}
+
+/**
+ * Redraws one dial from the clock.
+ *
+ * Three states, and the distinction between the last two is the point:
+ *
+ *   waiting   part-filled, quiet
+ *   due       full, pulsing - the run is expected about now
+ *   stopped   grey and dashed, still - this is not late, it has stopped
+ *
+ * A ring that filled twenty minutes ago on a one-minute collector has not been
+ * "due" for twenty minutes, and leaving it pulsing would say the next one is
+ * imminent when nothing is coming.
+ */
+function paintDial(svg) {
+  const size = 46;
+  const radius = (size - 5) / 2;
+  const circumference = 2 * Math.PI * radius;
+
+  const at = Number(svg.dataset.at || 0);
+  const interval = Number(svg.dataset.every || 0);
+  const progress = svg.querySelector(".dial-value");
+  const said = svg.querySelector("title");
 
   /*
    * No interval, or nothing has ever arrived: a broken grey ring.
@@ -4185,58 +4228,78 @@ function collectorDial(collector) {
    * Two readings is not a schedule, and drawing a confident ring from one gap
    * would be inventing the thing this whole panel exists to report on.
    */
-  if (!known) {
-    ring("dial-track dial-dead", "4 5");
-    const said = document.createElementNS("http://www.w3.org/2000/svg", "title");
-    said.textContent = collector.last_at
+  if (!at || interval <= 0) {
+    svg.classList.remove("is-due");
+    svg.classList.add("is-dead");
+    progress.setAttribute("class", "dial-value dial-dead");
+    progress.setAttribute("stroke-dasharray", "4 5");
+    progress.removeAttribute("stroke-dashoffset");
+    said.textContent = at
       ? "Not enough runs yet to know how often this should happen."
       : "This has never run.";
-    svg.appendChild(said);
-    svg.classList.add("is-dead");
-    return svg;
+    return;
   }
 
-  ring("dial-track");
-
-  const share = Math.min(1, age / interval);
+  const age = Math.max(0, Math.floor(Date.now() / 1000) - at);
+  const stopped = svg.dataset.state === "stopped" || age > interval * 2;
   const due = age >= interval;
 
-  /*
-   * Stopped is not the same as due, and must not look like it.
-   *
-   * A ring that filled twenty minutes ago on a one-minute collector has not
-   * been "due" for twenty minutes - it has stopped. Past twice the interval
-   * the ring goes dashed and grey, matching the card's own verdict rather
-   * than sitting there full and pulsing as though the next one were imminent.
-   */
-  const stopped = collector.state === "stopped" || age > interval * 2;
+  svg.classList.toggle("is-dead", stopped);
+  svg.classList.toggle("is-due", due && !stopped);
 
-  const progress = ring(
-    stopped ? "dial-value dial-dead" : due ? "dial-value dial-due" : "dial-value",
-    stopped ? "4 5" : null
-  );
-
-  if (!stopped) {
-    progress.setAttribute("stroke-dasharray", String(circumference));
-    progress.setAttribute("stroke-dashoffset", String(circumference * (1 - share)));
-    // Starts at twelve o'clock rather than three, which is where everybody
-    // reads a dial from.
-    progress.setAttribute("transform", `rotate(-90 ${size / 2} ${size / 2})`);
+  if (stopped) {
+    progress.setAttribute("class", "dial-value dial-dead");
+    progress.setAttribute("stroke-dasharray", "4 5");
+    progress.removeAttribute("stroke-dashoffset");
+    said.textContent = `Nothing for ${humanSpan(age)}, on something that usually runs `
+      + `every ${humanSpan(interval)}.`;
+    return;
   }
 
-  if (due && !stopped) svg.classList.add("is-due");
-  if (stopped) svg.classList.add("is-dead");
+  progress.setAttribute("class", due ? "dial-value dial-due" : "dial-value");
+  progress.setAttribute("stroke-dasharray", String(circumference));
+  progress.setAttribute(
+    "stroke-dashoffset",
+    String(circumference * (1 - Math.min(1, age / interval)))
+  );
+  said.textContent = due
+    ? `Due now — nothing for ${humanSpan(age)}.`
+    : `Next one in about ${humanSpan(interval - age)}.`;
+}
 
-  const said = document.createElementNS("http://www.w3.org/2000/svg", "title");
-  said.textContent = stopped
-    ? `Nothing for ${humanSpan(age)}, on something that usually runs every `
-      + `${humanSpan(interval)}.`
-    : due
-      ? "Due about now."
-      : `Next one in about ${humanSpan(interval - age)}.`;
-  svg.appendChild(said);
+/**
+ * Advances every dial on screen, once a second.
+ *
+ * One timer for all of them rather than one each, and it does nothing at all
+ * when the tab is hidden or there are no dials drawn - a page in a background
+ * tab has no reason to be recalculating geometry nobody is looking at.
+ */
+function startDialTicker() {
+  setInterval(() => {
+    if (document.hidden) return;
 
-  return svg;
+    for (const svg of document.querySelectorAll("svg.dial[data-every]")) {
+      // offsetParent is null for anything inside a hidden view.
+      if (svg.parentElement?.offsetParent === null) continue;
+      paintDial(svg);
+    }
+
+    /*
+     * And the "3 seconds ago" beside it, for the same reason.
+     *
+     * A dial that advances next to a number frozen at whatever it said when
+     * the page last polled is worse than either on its own.
+     */
+    for (const spot of document.querySelectorAll("[data-ago-from]")) {
+      if (spot.offsetParent === null) continue;
+      const at = Number(spot.dataset.agoFrom || 0);
+      if (at > 0) {
+        spot.textContent = `${humanDuration(
+          Math.max(0, Math.floor(Date.now() / 1000) - at)
+        )} ago`;
+      }
+    }
+  }, 1000);
 }
 
 /* --------------------------------------------------------- setting lookout -- */
@@ -4279,15 +4342,15 @@ function renderAiSettings(data) {
   const form = document.createElement("div");
   form.className = "settings";
 
-  form.appendChild(fieldRow("Use Lookout", (() => {
+  form.appendChild(fieldRow(`Use ${chatState.who.name}`, (() => {
     const box = document.createElement("input");
     box.type = "checkbox";
     box.id = "aiEnabled";
     box.checked = data.enabled;
     return box;
   })(),
-    "Off means Lookout is unavailable and nothing is ever sent anywhere. Turning it on "
-    + "does not send anything by itself — only asking it something does."));
+    `Off means ${chatState.who.name} is unavailable and nothing is ever sent anywhere. `
+    + "Turning it on does not send anything by itself — only asking it something does."));
 
   const provider = document.createElement("select");
   provider.id = "aiProvider";
@@ -5079,7 +5142,7 @@ function chatPictureCard(message) {
 /**
  * A chart drawn inside the conversation.
  *
- * The point is that Lookout can show somebody something without moving them
+ * The point is that the assistant can show somebody something without moving them
  * off whatever page they are on, and without needing to know anything about
  * how the page is laid out. It names a chart; the browser draws it.
  */
@@ -5907,7 +5970,7 @@ function chartIdentity(id, chart) {
     "",
     chart.what,
     "",
-    "Click to copy the id. You can tell Lookout which chart you mean by name.",
+    `Click to copy the id. You can tell ${chatState.who.name} which chart you mean by name.`,
   ].join("\n");
 }
 
@@ -5991,7 +6054,7 @@ const chatState = {
   // every chart in the conversation several times a second.
   charts: new Map(),
   // Name, emoji and portrait, refreshed with the session.
-  who: { name: "Lookout", emoji: "\u{1F4E1}", portrait: null },
+  who: { name: "Mr. Radar", emoji: "\u{1F4E1}", portrait: null },
 };
 
 /** How often to ask, by what the session is doing. */
@@ -6281,6 +6344,26 @@ function renderChatIdentity() {
 
   const ask = $("cornerChat");
   if (ask) ask.textContent = `${who.emoji} Ask ${who.name}`;
+
+  /*
+   * The name written into the page's own prose.
+   *
+   * Every heading and sentence that says it out loud carries this class, so a
+   * rename reaches all of them. The alternative - and what was there - is a
+   * settings page that renames the assistant everywhere except the four
+   * places somebody actually reads.
+   */
+  for (const spot of document.querySelectorAll(".ai-name")) {
+    spot.textContent = who.name;
+  }
+
+  /*
+   * And the view registry, which is where the note dialog and the breadcrumbs
+   * get their page names from. Somebody writing a note on this page was being
+   * told "This page is Lookout" long after it had been renamed.
+   */
+  if (VIEWS["sys-ai"]) VIEWS["sys-ai"].label = who.name;
+  if (VIEWS["sys-ai-data"]) VIEWS["sys-ai-data"].label = `${who.name}'s data`;
 
   const box = $("chatText");
   if (box && box.value === "") {
@@ -7054,10 +7137,17 @@ async function loadNoteMarks(view) {
   }
 }
 
-/** The marks for one chart: the page-wide ones plus any pinned to it. */
+/**
+ * The marks for one chart: the page-wide ones plus any pinned to it.
+ *
+ * A pinned note names a comma-separated list of charts, because one event
+ * frequently bends two of them and writing the note twice is not a thing
+ * anybody was ever going to do.
+ */
 function marksForChart(chartId) {
   return noteState.marks
-    .filter(mark => mark.scope !== "chart" || mark.chart === chartId)
+    .filter(mark => mark.scope !== "chart"
+      || String(mark.chart ?? "").split(",").includes(chartId))
     .map(mark => ({ at: mark.at, label: mark.body }));
 }
 
@@ -7095,6 +7185,7 @@ async function showNoteDialog(preset = {}) {
   body.rows = 5;
   body.className = "wide";
   body.placeholder = "Upgraded PHP to 8.4 on the host. The memory step at 14:20 is that.";
+  body.value = preset.body ?? "";
   parts.push(fieldRow("What happened", body, ""));
 
   /*
@@ -7117,10 +7208,12 @@ async function showNoteDialog(preset = {}) {
 
   const scopes = noteState.data.scopes;
 
+  const charts = chartsOnPage();
+
   for (const [key, meta] of Object.entries(scopes)) {
-    // Pinning to one chart needs a chart to pin to, and that is only knowable
-    // from a page that has some.
-    if (key === "chart" && !chartsOnPage().length) continue;
+    // Pinning to particular charts needs charts to pin to, and that is only
+    // knowable from a page that has some.
+    if (key === "chart" && !charts.length) continue;
     const option = document.createElement("option");
     option.value = key;
     option.textContent = meta.label;
@@ -7130,14 +7223,23 @@ async function showNoteDialog(preset = {}) {
   parts.push(fieldRow("Where it shows", scope, ""));
   parts.push(scopeNote);
 
-  const chart = document.createElement("select");
-  for (const [id, label] of chartsOnPage()) {
-    const option = document.createElement("option");
-    option.value = id;
-    option.textContent = label;
-    chart.appendChild(option);
-  }
-  const chartRow = fieldRow("Which chart", chart, "");
+  /*
+   * Which charts the mark goes on - more than one, if that is the truth.
+   *
+   * It was a single-choice list, which forced "the network chart and the disk
+   * chart both bent here" to be written twice or flattened to the whole page.
+   * The "every chart there is" tick at the top is the same thing as choosing
+   * "Mark it everywhere" above, offered where somebody is already looking for
+   * it rather than requiring them to go back up and change their mind.
+   */
+  const chartPick = tickList(
+    "noteChart",
+    [["*", "Every chart there is — the whole dashboard", true]]
+      .concat(charts.map(([id, label]) => [id, label, false])),
+    preset.chart ? String(preset.chart).split(",") : (charts[0] ? [charts[0][0]] : [])
+  );
+  const chartRow = fieldRow("Which charts", chartPick.node,
+    "Ticking more than one puts the same mark on each of them.");
   parts.push(chartRow);
 
   const snapshot = document.createElement("select");
@@ -7149,13 +7251,126 @@ async function showNoteDialog(preset = {}) {
     const option = document.createElement("option");
     option.value = key;
     option.textContent = meta.label;
+    option.selected = (preset.snapshot ?? "none") === key;
     snapshot.appendChild(option);
   }
   parts.push(fieldRow("Also capture", snapshot, ""));
   parts.push(snapshotNote);
 
+  /*
+   * Pictures of the charts, as they look right now.
+   *
+   * Separate from where the mark goes, and it took somebody being confused by
+   * the old dialog to see that they were two different questions wearing one
+   * label. A mark is a line on a future chart; an image is what this chart
+   * looked like at the moment somebody thought it was worth keeping - which
+   * survives retention rolling the readings up underneath it.
+   */
+  let shots = null;
+  if (charts.length) {
+    shots = tickList("noteShot", charts.map(([id, label]) => [id, label, false]), []);
+    parts.push(fieldRow("Keep pictures of", shots.node,
+      "Saved with the note exactly as they are drawn now, so the picture still shows "
+      + "what you saw after retention has rolled the readings up underneath it."));
+  } else {
+    /*
+     * Said out loud rather than left as an empty list.
+     *
+     * An empty control reads as something that failed to load, and the person
+     * looking at it cannot tell the difference between "this page has no
+     * charts" and "the charts have not arrived yet".
+     */
+    parts.push(fieldRow("Keep pictures of", (() => {
+      const said = document.createElement("div");
+      said.className = "muted";
+      said.textContent = "There are no charts on this page.";
+      return said;
+    })(), "The note itself is saved either way, and a mark on this page will show on "
+      + "any chart added here later."));
+  }
+
+  /*
+   * A picture of the page, taken with this dialog out of the way.
+   *
+   * The obvious problem with screenshotting from inside a modal is that the
+   * modal is the biggest thing on the screen. Everything typed so far is put
+   * back afterwards, so this is not a decision that has to be made before
+   * starting to write.
+   */
+  const shotRow = document.createElement("div");
+  shotRow.className = "settings-row";
+  const shotHolder = document.createElement("div");
+  let pageShot = preset.shot ?? null;
+
+  const takeShot = document.createElement("button");
+  takeShot.type = "button";
+  takeShot.textContent = pageShot ? "Take another" : "Take a screenshot";
+  takeShot.addEventListener("click", async () => {
+    const typed = {
+      body: body.value,
+      scope: scope.value,
+      at: Math.floor(new Date(when.value).getTime() / 1000),
+      chart: chartPick.chosen().join(","),
+      link: link.value,
+      broadcast: broadcast.checked,
+      snapshot: snapshot.value,
+    };
+
+    $("noteDialog").close();
+
+    try {
+      // A frame, so the dialog is actually gone before the capture starts.
+      await new Promise(resolve => requestAnimationFrame(
+        () => requestAnimationFrame(resolve)));
+
+      const shot = await editScreenshot(await captureScreen(), "for a note");
+      showNoteDialog({ ...typed, view, shot: shot ?? pageShot });
+    } catch (error) {
+      notice(String(error.message || error));
+      showNoteDialog({ ...typed, view, shot: pageShot });
+    }
+  });
+  shotHolder.appendChild(takeShot);
+
+  if (pageShot) {
+    const thumb = document.createElement("img");
+    thumb.className = "note-shot";
+    thumb.src = pageShot;
+    thumb.alt = "the screenshot that will be saved with this note";
+    shotHolder.appendChild(thumb);
+
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.className = "link danger";
+    drop.textContent = "Do not keep it";
+    drop.addEventListener("click", () => {
+      pageShot = null;
+      thumb.remove();
+      drop.remove();
+      takeShot.textContent = "Take a screenshot";
+    });
+    shotHolder.appendChild(drop);
+  }
+
+  const shotLabel = document.createElement("label");
+  shotLabel.className = "settings-label";
+  shotLabel.textContent = "Screenshot";
+  shotRow.appendChild(shotLabel);
+
+  const shotWrap = document.createElement("div");
+  shotWrap.appendChild(shotHolder);
+  const shotHint = document.createElement("div");
+  shotHint.className = "muted small";
+  shotHint.textContent = "This dialog closes while the picture is taken and everything "
+    + "you have typed comes back with it. You can crop and black out anything before it "
+    + "is kept.";
+  shotWrap.appendChild(shotHint);
+  shotRow.appendChild(shotWrap);
+  parts.push(shotRow);
+
   const broadcast = document.createElement("input");
   broadcast.type = "checkbox";
+  broadcast.checked = preset.broadcast === true;
   parts.push(fieldRow("Tell everyone", broadcast,
     "Shows this at the top of every page for anyone who opens the dashboard, until "
     + "somebody clears it. This is the difference between one person knowing about the "
@@ -7165,11 +7380,22 @@ async function showNoteDialog(preset = {}) {
   link.type = "text";
   link.className = "wide";
   link.placeholder = "https://your-tracker/issue/412";
+  link.value = preset.link ?? "";
   parts.push(fieldRow("Link", link, "Optional. A ticket, a changelog, a pull request."));
 
-  const where = document.createElement("p");
-  where.className = "muted small";
-  where.textContent = `This page is ${VIEWS[view]?.label ?? view}.`;
+  /*
+   * Which page this is about, as a labelled value.
+   *
+   * It was the sentence "This page is Over time." - which reads as a broken
+   * template rather than a fact, because a page name is a name and does not
+   * belong in the middle of a sentence. It is a row like every other row now.
+   */
+  const where = fieldRow("Page", (() => {
+    const said = document.createElement("div");
+    said.className = "muted";
+    said.textContent = VIEWS[view]?.label ?? view;
+    return said;
+  })(), "Where the mark will be drawn.");
   parts.push(where);
 
   const actions = document.createElement("div");
@@ -7201,11 +7427,20 @@ async function showNoteDialog(preset = {}) {
     save.textContent = snapshot.value === "none" ? "Saving…" : "Saving and capturing…";
 
     try {
+      /*
+       * "Every chart there is" is the site-wide scope by another name, so it
+       * is turned into one here rather than being a second way of storing the
+       * same fact.
+       */
+      const everywhere = scope.value === "chart" && chartPick.chosen().includes("*");
+
       const fields = {
         body: body.value,
-        scope: scope.value,
+        scope: everywhere ? "site" : scope.value,
         view,
-        chart: scope.value === "chart" ? chart.value : "",
+        chart: everywhere || scope.value !== "chart"
+          ? ""
+          : chartPick.chosen().join(","),
         link: link.value.trim(),
         at: String(Math.floor(new Date(when.value).getTime() / 1000)),
         broadcast: broadcast.checked ? "1" : "0",
@@ -7220,6 +7455,25 @@ async function showNoteDialog(preset = {}) {
        * is wanted is what was on the screen.
        */
       if (snapshot.value === "page") fields.payload = pageSnapshot();
+
+      /*
+       * The pictures are taken here, from the live canvases, at the moment of
+       * saving - not from anything cached. What is wanted is what is on the
+       * screen.
+       */
+      const pictures = shots ? chartPictures(shots.chosen()) : [];
+      if (pageShot) {
+        pictures.push({
+          chart: "",
+          name: `The ${VIEWS[view]?.label ?? view} page`,
+          width: 0,
+          height: 0,
+          range: state.range,
+          at: Math.floor(Date.now() / 1000),
+          data: pageShot,
+        });
+      }
+      if (pictures.length) fields.images = JSON.stringify(pictures);
 
       const result = await post("note-save", fields);
       $("noteDialog").close();
@@ -7397,9 +7651,21 @@ function renderNotes(data) {
       {
         label: "Holding",
         className: "size",
-        render: row => (row.snapshots
-          ? `${count(row.snapshots, "capture")} · ${humanBytes(row.snapshot_bytes)}`
-          : "—"),
+        render: row => {
+          if (!row.snapshots) return "—";
+          const said = document.createElement("span");
+          said.textContent =
+            `${count(row.snapshots, "capture")} · ${humanBytes(row.snapshot_bytes)}`;
+          // A camera, so a note carrying pictures can be picked out of the list
+          // without opening each one to find out.
+          if (row.images) {
+            const mark = document.createElement("span");
+            mark.textContent = ` 📷${row.images > 1 ? `×${row.images}` : ""}`;
+            mark.title = `${count(row.images, "picture")} kept with this note`;
+            said.appendChild(mark);
+          }
+          return said;
+        },
       },
       { label: "", className: "row-actions", render: row => noteActions(row) },
     ], null, row => (row.broadcast && !row.cleared_at ? "row-bad" : ""), row => String(row.id));
@@ -7513,6 +7779,7 @@ async function showNoteSnapshots(row) {
       page: "The data behind one page",
       site: "The data behind every page",
       databases: "A copy of both databases",
+      image: "A picture",
     }[snapshot.kind] || snapshot.kind;
     item.appendChild(title);
 
@@ -7537,6 +7804,29 @@ async function showNoteSnapshots(row) {
       where.className = "muted small";
       where.textContent = "Written beside the databases. Listed under Database copies below.";
       actions.appendChild(where);
+    } else if (snapshot.kind === "image") {
+      /*
+       * A picture is shown, not linked to.
+       *
+       * "Open it" for an image is a link to a thing you already have; the
+       * whole reason for keeping one is being able to look at it, and making
+       * somebody click through to a second tab to do that is why the feature
+       * looked, reasonably, like it was missing.
+       */
+      const picture = document.createElement("img");
+      picture.className = "note-picture";
+      picture.src = `noteimage.php?id=${encodeURIComponent(snapshot.id)}`;
+      picture.alt = `${snapshot.label}, as it was drawn when this note was written`;
+      picture.loading = "lazy";
+      item.appendChild(picture);
+
+      const full = document.createElement("a");
+      full.className = "link";
+      full.href = picture.src;
+      full.target = "_blank";
+      full.rel = "noopener";
+      full.textContent = "Full size";
+      actions.appendChild(full);
     } else {
       const open = document.createElement("a");
       open.className = "link";
@@ -8005,6 +8295,310 @@ function purgeButton(entry) {
 /* --------------------------------------------------------------- symlinks -- */
 
 /** What each finding means, in the order that matters. */
+/* ------------------------------------------------- the assistant's store -- */
+
+const aiStoreState = { data: null };
+
+async function refreshAiStore() {
+  const body = $("aiDataBody");
+  if (!body) return;
+
+  if (!state.signedIn) {
+    body.replaceChildren(note("Sign in to see this."));
+    return;
+  }
+
+  if (!aiStoreState.data) body.replaceChildren(spinner("Measuring…"));
+
+  try {
+    renderAiStore(await api("ai-store"));
+  } catch (error) {
+    body.replaceChildren(note(String(error.message || error)));
+  }
+}
+
+function renderAiStore(data) {
+  aiStoreState.data = data;
+  const body = $("aiDataBody");
+  const parts = [];
+  const who = data.who?.name ?? chatState.who.name;
+
+  if (!data.file.exists) {
+    body.replaceChildren(note(
+      `Nothing has been asked yet, so ${who} has no database. One is made the first time `
+      + "a conversation starts, next to the account's own."
+    ));
+    $("aiCompact").hidden = true;
+    return;
+  }
+
+  $("aiCompact").hidden = false;
+  parts.push(section("The file", databaseCard(data.file, null)));
+
+  if (data.why) parts.push(note(data.why));
+
+  /*
+   * What it holds, in the terms somebody deciding what to delete would use.
+   *
+   * Table names are in the section below this one. Nobody chooses to keep or
+   * discard six months of history by reading the words "ai_tool_runs".
+   */
+  const holds = document.createElement("div");
+  holds.id = "aiHoldsTable";
+  parts.push(section(`What ${who} is keeping`, holds));
+
+  if (data.measured) {
+    const tables = document.createElement("div");
+    tables.id = "aiTablesTable";
+    parts.push(section("Where the space goes", tables));
+  } else if (data.table_why) {
+    parts.push(note(data.table_why));
+  }
+
+  parts.push(section("Forget old conversations", aiForgetForm(who)));
+
+  body.replaceChildren(...parts);
+
+  renderTable("aiHoldsTable", data.holds, [
+    { label: "", render: row => row.label },
+    { label: "Rows", className: "size", render: row => humanCount(row.rows) },
+    {
+      label: "Oldest",
+      render: row => (row.oldest ? ago(row.oldest) : "—"),
+    },
+    {
+      label: "Newest",
+      render: row => (row.newest ? ago(row.newest) : "—"),
+    },
+    { label: "What it is", className: "muted", render: row => row.note },
+  ], null, null, row => row.key);
+
+  if (data.measured) {
+    /*
+     * storeTables keys its answer by table name, so this arrives as an object
+     * rather than a list - the same shape the account page reshapes for itself.
+     */
+    const tableRows = Object.entries(data.tables)
+      .map(([table, facts]) => ({ table, ...facts }))
+      .sort((a, b) => b.total_bytes - a.total_bytes);
+
+    renderTable("aiTablesTable", tableRows, [
+      { label: "Table", className: "name", render: row => row.table },
+      { label: "Rows", className: "size", render: row => humanCount(row.rows) },
+      { label: "Data", className: "size", render: row => humanBytes(row.bytes) },
+      { label: "Indexes", className: "size", render: row => humanBytes(row.index_bytes) },
+      { label: "Total", className: "size", render: row => humanBytes(row.total_bytes) },
+    ], null, null, row => row.table);
+  }
+}
+
+/**
+ * Deleting conversations past a certain age.
+ *
+ * Whole conversations, and the file is compacted straight afterwards - deleting
+ * rows from SQLite frees space inside the file without making the file smaller,
+ * and somebody who has just removed six months of transcripts to get disk back
+ * will reasonably conclude nothing happened.
+ */
+function aiForgetForm(who) {
+  const wrap = document.createElement("div");
+
+  const said = document.createElement("p");
+  said.className = "muted small";
+  said.textContent =
+    `Removes whole conversations that have been finished longer than this, with their `
+    + "messages, their tool runs and their cost records. The running totals on the "
+    + `${who} settings page are added up from those records, so they will drop too — `
+    + "this is deleting history, not tidying it.";
+  wrap.appendChild(said);
+
+  const row = document.createElement("div");
+  row.className = "pattern-row";
+
+  const days = document.createElement("select");
+  for (const [value, label] of [
+    [7, "older than a week"],
+    [30, "older than a month"],
+    [90, "older than three months"],
+    [365, "older than a year"],
+    [0, "every finished conversation"],
+  ]) {
+    const option = document.createElement("option");
+    option.value = String(value);
+    option.textContent = label;
+    option.selected = value === 90;
+    days.appendChild(option);
+  }
+  row.appendChild(days);
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "danger";
+  go.textContent = "Forget them";
+  go.addEventListener("click", async () => {
+    const chose = days.options[days.selectedIndex].textContent;
+    if (!confirm(
+      `Delete ${chose}?\n\n`
+      + "The transcripts, the tool results and what each one cost all go. This cannot be "
+      + "undone from here."
+    )) return;
+
+    go.disabled = true;
+    try {
+      const result = await post("ai-forget", { days: days.value });
+      notice(
+        result.sessions
+          ? `${count(result.sessions, "conversation")} forgotten, `
+            + `${humanBytes(result.reclaimed)} reclaimed.`
+          : "There was nothing that old to forget.",
+        true
+      );
+      renderAiStore(result);
+    } catch (error) {
+      notice(String(error.message || error));
+    } finally {
+      go.disabled = false;
+    }
+  });
+  row.appendChild(go);
+
+  wrap.appendChild(row);
+  return wrap;
+}
+
+/* ------------------------------------------------------------- long paths -- */
+
+/** Splits a path into segments, dropping the empties a leading slash makes. */
+function pathParts(path) {
+  return String(path || "").split("/").filter(part => part !== "");
+}
+
+/** How many leading segments two paths share. */
+function sharedDepth(a, b) {
+  let n = 0;
+  while (n < a.length && n < b.length && a[n] === b[n]) n++;
+  return n;
+}
+
+/** Most `..` steps allowed before a relative path stops being easier to read. */
+const PATH_MAX_UPS = 3;
+
+/**
+ * A link's target written relative to the link, when that is shorter to read.
+ *
+ * `/home/you/.cpanel/ea-php-cli/php.d` tells you almost nothing when the link
+ * sits in the directory next door; `../php.d` tells you the whole story in nine
+ * characters. Past three steps up the relative form stops helping - counting
+ * `../../../../..` is worse than reading the path - so it gives up and lets the
+ * caller dim the shared part instead.
+ *
+ * Returns null when the relative form would not be an improvement.
+ */
+function relativeTarget(linkPath, target) {
+  if (!target || !target.startsWith("/")) return null;
+
+  const from = pathParts(linkPath).slice(0, -1);   // the directory holding the link
+  const to = pathParts(target);
+  const shared = sharedDepth(from, to);
+  const ups = from.length - shared;
+
+  if (ups > PATH_MAX_UPS) return null;
+
+  const rest = to.slice(shared).join("/");
+  if (ups === 0) return rest === "" ? "." : `./${rest}`;
+
+  const climb = "../".repeat(ups);
+  const relative = rest === "" ? climb.slice(0, -1) : climb + rest;
+
+  // No point showing a "shorter" form that is longer than what it replaces.
+  return relative.length < target.length ? relative : null;
+}
+
+/**
+ * The longest directory prefix a set of paths all share.
+ *
+ * The scan root is the obvious thing to dim against and it is not enough. A
+ * list of thirty dangling thumbnails all sitting in the same six-deep directory
+ * shares that whole directory, and greying out only `/home/you/` leaves every
+ * row still ninety per cent identical - which is the complaint this came from.
+ * Dimming what the rows on screen actually have in common leaves the file name,
+ * which is the only part that differs.
+ */
+function commonHead(paths) {
+  if (!paths.length) return "";
+
+  let shared = pathParts(paths[0]);
+  for (const path of paths.slice(1)) {
+    const parts = pathParts(path);
+    shared = shared.slice(0, sharedDepth(shared, parts));
+    if (!shared.length) break;
+  }
+
+  return shared.length ? `/${shared.join("/")}` : "";
+}
+
+/**
+ * A path drawn with its uninteresting head greyed out.
+ *
+ * Every path on this page starts with the same forty characters, and reading
+ * forty identical characters to find the eight that differ is the actual work
+ * of looking at a list of symlinks. The shared head stays - it is still where
+ * the file is - but it stops competing for attention.
+ *
+ * @param {string} path      the path to draw
+ * @param {string} [against] the path it shares a head with, if any
+ */
+function dimmedPath(path, against) {
+  const span = document.createElement("span");
+  span.className = "path";
+
+  const parts = pathParts(path);
+  const shared = against ? sharedDepth(parts, pathParts(against)) : 0;
+
+  /*
+   * The last segment is never dimmed.
+   *
+   * Two paths that differ only in the file name would otherwise be drawn
+   * entirely in grey, which is the one case where the whole line matters.
+   */
+  const dim = Math.min(shared, parts.length - 1);
+  if (dim > 0) {
+    const head = document.createElement("span");
+    head.className = "path-dim";
+    head.textContent = `/${parts.slice(0, dim).join("/")}/`;
+    span.appendChild(head);
+  }
+
+  const tail = document.createElement("span");
+  tail.textContent = dim > 0 ? parts.slice(dim).join("/") : path;
+  span.appendChild(tail);
+
+  span.title = path;
+  return span;
+}
+
+/**
+ * Where a link points, written as briefly as it can be said without lying.
+ *
+ * Relative when that is clearer, dimmed against the link when it is not, and
+ * the full path is always one hover away - a shortened path that cannot be
+ * expanded is a path you have to go and look up somewhere else.
+ */
+function targetPath(row) {
+  if (!row.target) return document.createTextNode("—");
+
+  const relative = relativeTarget(row.path, row.target);
+  if (relative !== null) {
+    const span = document.createElement("span");
+    span.className = "path";
+    span.textContent = relative;
+    span.title = row.target;
+    return span;
+  }
+
+  return dimmedPath(row.target, row.path);
+}
+
 const SYMLINK_KINDS = {
   loop: ["Loop", "grew"],
   ancestor: ["Endless directory", "grew"],
@@ -8018,7 +8612,22 @@ const SYMLINK_KINDS = {
  * On a button rather than on the poll: it is a whole extra walk of the tree,
  * and the answer only changes when somebody makes a link.
  */
-const linkState = { data: null, sweep: null, at: null };
+const linkState = { data: null, sweep: null, at: null, show: "all" };
+
+/**
+ * The four ways of looking at the list.
+ *
+ * Grouped by what somebody is here to do, not by the four kinds the walk
+ * reports: a loop and an endless directory are one job - something follows
+ * links and never comes back - and splitting them makes the operator do the
+ * translation.
+ */
+const SYMLINK_VIEWS = {
+  all: { label: "All", kinds: null },
+  broken: { label: "Broken", kinds: ["broken"] },
+  looped: { label: "Looped", kinds: ["loop", "ancestor"] },
+  external: { label: "External", kinds: ["outside"] },
+};
 
 /**
  * Checks the tree for symlinks that will send something into a loop.
@@ -8114,6 +8723,8 @@ function renderSymlinks() {
     return;
   }
 
+  parts.push(symlinkFilter(data));
+
   const table = document.createElement("div");
   table.id = "symlinkTable";
   parts.push(table);
@@ -8132,7 +8743,40 @@ function renderSymlinks() {
 
   const fresh = new Set((data.new || []).map(problem => `${problem.path} ${problem.kind}`));
 
-  renderTable("symlinkTable", data.problems, [
+  const kinds = SYMLINK_VIEWS[linkState.show]?.kinds ?? null;
+  const rows = kinds
+    ? data.problems.filter(problem => kinds.includes(problem.kind))
+    : data.problems;
+
+  /*
+   * How much of each row's path to grey out.
+   *
+   * The whole list's shared head is the floor, and it is a weak floor: one
+   * stray link somewhere else in the account drags what thirty thumbnails have
+   * in common all the way back to /home/you, and the thirty rows go back to
+   * being ninety per cent identical. So each row is also compared against the
+   * one above it, the way a file listing is read, and takes whichever gives
+   * more. Rows that sit together in a directory then show their file name and
+   * nothing else, and the odd row out still gets the floor rather than the
+   * neighbour's unrelated path.
+   */
+  const floor = commonHead(rows.map(problem => problem.path)) || data.root;
+  const dimAgainst = new Map();
+  rows.forEach((problem, i) => {
+    const beside = i > 0 ? commonHead([rows[i - 1].path, problem.path]) : "";
+    dimAgainst.set(problem.path, beside.length > floor.length ? beside : floor);
+  });
+
+  if (!rows.length) {
+    $("symlinkTable").replaceChildren(note(
+      `Nothing in this check is ${SYMLINK_VIEWS[linkState.show].label.toLowerCase()}. `
+      + "The other kinds are still there — the buttons above only change what is drawn."
+    ));
+    $("linkSweepPanel").hidden = !data.problems.some(problem => problem.kind === "broken");
+    return;
+  }
+
+  renderTable("symlinkTable", rows, [
     {
       label: "",
       render: row => {
@@ -8148,7 +8792,7 @@ function renderSymlinks() {
       className: "name",
       render: row => {
         const span = document.createElement("span");
-        span.textContent = row.path;
+        span.appendChild(dimmedPath(row.path, dimAgainst.get(row.path) ?? floor));
         if (fresh.has(`${row.path} ${row.kind}`)) {
           const mark = document.createElement("span");
           mark.className = "band-crit small";
@@ -8158,14 +8802,54 @@ function renderSymlinks() {
         return span;
       },
     },
-    { label: "Points at", className: "name", render: row => row.target || "—" },
+    { label: "Points at", className: "name", render: row => targetPath(row) },
     { label: "Why it matters", className: "muted", render: row => row.note },
     { label: "", className: "row-actions", render: row => linkActions(row) },
   ], null, row => (fresh.has(`${row.path} ${row.kind}`) ? "row-bad" : ""),
      row => `${row.path}|${row.kind}`);
 
+  if (data.total > data.shown) {
+    $("symlinkTable").appendChild(note(
+      `Showing ${humanCount(data.shown)} of ${humanCount(data.total)} problems. `
+      + "The rest are real and were counted — only the drawing is capped. Clearing out "
+      + "a path below works on all of them, not just the ones on screen."
+    ));
+  }
+
   // Only worth offering once there is something a sweep could take.
   $("linkSweepPanel").hidden = !data.problems.some(problem => problem.kind === "broken");
+}
+
+/**
+ * The All / Broken / Looped / External buttons.
+ *
+ * With counts on them, because "External: 188" answers the question the button
+ * was going to be pressed to ask. A kind with nothing in it is drawn disabled
+ * rather than hidden - a button that comes and goes is worse than one that is
+ * plainly empty.
+ */
+function symlinkFilter(data) {
+  const wrap = document.createElement("div");
+  wrap.className = "seg-row";
+
+  for (const [key, view] of Object.entries(SYMLINK_VIEWS)) {
+    const n = view.kinds === null
+      ? data.problems.length
+      : view.kinds.reduce((sum, kind) => sum + (data.kinds?.[kind] ?? 0), 0);
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "seg" + (linkState.show === key ? " on" : "");
+    button.textContent = `${view.label} ${humanCount(n)}`;
+    button.disabled = n === 0 && key !== "all";
+    button.addEventListener("click", () => {
+      linkState.show = key;
+      renderSymlinks();
+    });
+    wrap.appendChild(button);
+  }
+
+  return wrap;
 }
 
 /**
@@ -8351,10 +9035,10 @@ async function sweepLinks(pattern, confirmed = false) {
 
   if (!result.matched) {
     parts.push(note(
-      "No link with a problem matches that. The pattern is matched against the whole path "
-      + "and * does not cross a slash, so previews/* matches what is directly in it \u2014 "
-      + "use previews/*/* to go a level deeper. Healthy links are never matched, so a "
-      + "pattern over a directory of working links finds nothing here by design."
+      "No link with a problem is under that path. Everything below what you type is "
+      + "included, however deep, so there is no need to add \u2014 or count \u2014 any "
+      + "stars. Healthy links are never matched, so a path over a directory of working "
+      + "links finds nothing here by design."
     ));
     body.replaceChildren(...parts);
     return;
@@ -8373,11 +9057,12 @@ async function sweepLinks(pattern, confirmed = false) {
      * Saying "6 links match" would imply the pattern had been tested against
      * every link in the tree, which it has not been.
      */
-    : `${count(result.matched, "link with a problem")} under that pattern. `
-      + `${count(result.deleted.length, "broken")} would be removed`
+    : `${count(result.matched, "link with a problem", "links with a problem")} `
+      + "under that path. "
+      + `${count(result.deleted.length, "broken one", "broken ones")} would be removed`
       + (result.skipped
         ? `, and ${result.skipped} with other problems left alone \u2014 `
-          + "a loop or an escape is never removed on a pattern alone."
+          + "a loop or an escape is never removed on a path alone."
         : ".");
   parts.push(said);
 
@@ -8402,12 +9087,15 @@ async function sweepLinks(pattern, confirmed = false) {
     ));
   }
 
+  // Shortened the same way as the table above, for the same reason.
+  const root = commonHead(result.deleted.map(row => row.path))
+    || linkState.data?.root
+    || "";
+
   if (result.deleted.length) {
-    parts.push(simpleTable(
-      ["Link", "Pointed at"],
-      result.deleted.slice(0, 200).map(row => [row.path, row.target || "—"]),
-      ["name", "name"]
-    ));
+    const shown = document.createElement("div");
+    shown.id = "linkSweepList";
+    parts.push(shown);
 
     if (result.deleted.length > 200) {
       parts.push(note(`Showing the first 200 of ${result.deleted.length}.`));
@@ -8436,6 +9124,13 @@ async function sweepLinks(pattern, confirmed = false) {
   }
 
   body.replaceChildren(...parts);
+
+  if (result.deleted.length) {
+    renderTable("linkSweepList", result.deleted.slice(0, 200), [
+      { label: "Link", className: "name", render: row => dimmedPath(row.path, root) },
+      { label: "Pointed at", className: "name", render: row => targetPath(row) },
+    ], null, null, row => row.path);
+  }
 }
 
 async function refreshLinks() {
@@ -16235,7 +16930,7 @@ function renderFetchHeaders(data) {
   wrap.appendChild(table);
 
   wrap.appendChild(note(
-    "Hover a \u2753 for what a header is for. You can write your own meanings for "
+    "Point at or click a \u2753 for what a header is for. You can write your own meanings for "
     + "headers under Settings \u2192 Your own names, which is where the house ones "
     + "nobody documents belong."
   ));
@@ -16243,17 +16938,122 @@ function renderFetchHeaders(data) {
   return wrap;
 }
 
-/** The little question mark that carries a header's meaning. */
+/**
+ * The one floating box every help mark shares.
+ *
+ * One element rather than one per mark, because there is only ever one open and
+ * because a page with two hundred header rows should not carry two hundred
+ * hidden boxes around with it.
+ */
+let helpBubble = null;
+
+function ensureHelpBubble() {
+  if (helpBubble) return helpBubble;
+
+  helpBubble = document.createElement("div");
+  helpBubble.className = "help-bubble";
+  helpBubble.hidden = true;
+  helpBubble.setAttribute("role", "tooltip");
+  document.body.appendChild(helpBubble);
+
+  // Anywhere else, and Escape, put it away.
+  document.addEventListener("pointerdown", event => {
+    if (!helpBubble.contains(event.target) && !event.target.closest?.(".help-icon")) {
+      hideHelp();
+    }
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") hideHelp();
+  });
+  window.addEventListener("scroll", () => hideHelp(), true);
+
+  return helpBubble;
+}
+
+function hideHelp() {
+  if (helpBubble) {
+    helpBubble.hidden = true;
+    helpBubble.dataset.pinned = "";
+  }
+}
+
+/**
+ * Puts the box beside a mark, without letting it fall off the screen.
+ *
+ * Positioned through the style object rather than a style attribute: the
+ * content policy here has no style-src, so an inline attribute is blocked
+ * outright while the CSSOM is not.
+ */
+function showHelp(mark, text, pinned) {
+  const bubble = ensureHelpBubble();
+  bubble.textContent = text;
+  bubble.hidden = false;
+  bubble.dataset.pinned = pinned ? "yes" : "";
+
+  const box = mark.getBoundingClientRect();
+  const width = Math.min(340, window.innerWidth - 24);
+  bubble.style.setProperty("--w", `${width}px`);
+
+  let left = box.left;
+  if (left + width > window.innerWidth - 12) left = window.innerWidth - width - 12;
+  bubble.style.setProperty("--x", `${Math.max(12, left)}px`);
+
+  // Below the mark, or above it when there is no room below.
+  const height = bubble.offsetHeight;
+  const below = box.bottom + 8;
+  bubble.style.setProperty(
+    "--y",
+    `${below + height > window.innerHeight - 12 && box.top > height + 12
+      ? box.top - height - 8
+      : below}px`
+  );
+}
+
+/**
+ * The little question mark that carries a meaning.
+ *
+ * It used to be a `title`, which is to say it did nothing for the first second
+ * or so of pointing at it and nothing at all when clicked. A mark whose cursor
+ * changes and which then appears not to respond reads as broken, and by the
+ * time the browser's tooltip arrives the person has already moved on and
+ * concluded it is. This shows on contact - hover, focus or click - and clicking
+ * pins it open so the text can be read at leisure or copied.
+ */
 function helpIcon(header) {
   const mark = document.createElement("span");
   mark.className = "help-icon";
-  mark.textContent = header.mine ? "\u{1F4DD}" : "\u2753";
+  mark.textContent = header.mine ? "\u{1F4DD}" : "❓";
   mark.tabIndex = 0;
-  mark.setAttribute("role", "note");
+  mark.setAttribute("role", "button");
 
-  const text = [header.title, header.note].filter(Boolean).join(" \u2014 ");
-  mark.title = header.mine ? `${text} (your own note)` : text;
-  mark.setAttribute("aria-label", text);
+  const text = [header.title, header.note].filter(Boolean).join(" — ");
+  const full = header.mine ? `${text} (your own note)` : text;
+  mark.setAttribute("aria-label", full);
+
+  mark.addEventListener("pointerenter", () => {
+    if (helpBubble?.dataset.pinned !== "yes") showHelp(mark, full, false);
+  });
+  mark.addEventListener("pointerleave", () => {
+    if (helpBubble?.dataset.pinned !== "yes") hideHelp();
+  });
+  mark.addEventListener("focus", () => showHelp(mark, full, false));
+  mark.addEventListener("blur", () => {
+    if (helpBubble?.dataset.pinned !== "yes") hideHelp();
+  });
+
+  mark.addEventListener("click", event => {
+    event.stopPropagation();
+    const open = helpBubble && !helpBubble.hidden && helpBubble.dataset.pinned === "yes";
+    if (open && helpBubble.textContent === full) hideHelp();
+    else showHelp(mark, full, true);
+  });
+
+  mark.addEventListener("keydown", event => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      showHelp(mark, full, true);
+    }
+  });
 
   return mark;
 }
@@ -18294,6 +19094,7 @@ async function refreshSelf() {
     const value = document.createElement("div");
     value.className = "value";
     value.textContent = c.last_at ? `${humanDuration(c.age)} ago` : "never";
+    if (c.last_at) value.dataset.agoFrom = String(c.last_at);
     card.appendChild(value);
 
     const sub = document.createElement("div");
@@ -18906,6 +19707,105 @@ const UNIT_WORDS = {
 /** A number without trailing zeros, for putting in a field. */
 function trimNumber(value) {
   return String(Number(value.toFixed(4)));
+}
+
+/**
+ * A list of tick boxes that behaves like a multiple-choice field.
+ *
+ * A `<select multiple>` would be fewer lines and is the wrong control: it
+ * scrolls, it loses the selection to a stray click, and on a touch screen it is
+ * close to unusable. Tick boxes are what people expect from "choose any of
+ * these".
+ *
+ * @param {string} name      id prefix, so the labels can point at the boxes
+ * @param {Array} items      [value, label, isSpecial][]
+ * @param {string[]} chosen  what starts ticked
+ * @returns {{node: HTMLElement, chosen: () => string[]}}
+ */
+function tickList(name, items, chosen) {
+  const wrap = document.createElement("div");
+  wrap.className = "tick-list";
+
+  const boxes = [];
+
+  for (const [value, label, special] of items) {
+    const row = document.createElement("label");
+    row.className = "tick" + (special ? " tick-wide" : "");
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = value;
+    box.id = `${name}-${String(value).replace(/[^A-Za-z0-9_-]/g, "")}`;
+    box.checked = chosen.includes(value);
+    boxes.push(box);
+    row.appendChild(box);
+
+    const text = document.createElement("span");
+    text.textContent = label;
+    row.appendChild(text);
+
+    wrap.appendChild(row);
+  }
+
+  /*
+   * The wide option and the rest are mutually exclusive.
+   *
+   * "Every chart there is, and also this one" is not a thing anybody means, and
+   * silently keeping both would store a scope that contradicts itself.
+   */
+  const special = boxes.find(box => items.find(item => item[0] === box.value)?.[2]);
+  if (special) {
+    special.addEventListener("change", () => {
+      if (special.checked) {
+        for (const box of boxes) if (box !== special) box.checked = false;
+      }
+    });
+    for (const box of boxes) {
+      if (box === special) continue;
+      box.addEventListener("change", () => {
+        if (box.checked) special.checked = false;
+      });
+    }
+  }
+
+  return {
+    node: wrap,
+    chosen: () => boxes.filter(box => box.checked).map(box => box.value),
+  };
+}
+
+/**
+ * Pictures of named charts, as they are drawn on screen this second.
+ *
+ * PNG rather than JPEG: a chart is flat colour and thin lines, which is the
+ * case JPEG is worst at - the ringing around a one-pixel plot line makes a
+ * chart look like a photograph of a chart. Nothing is resized. A note that
+ * keeps a picture keeps the picture.
+ */
+function chartPictures(ids) {
+  const out = [];
+
+  for (const id of ids) {
+    const canvas = document.getElementById(id);
+    if (!canvas || typeof canvas.toDataURL !== "function") continue;
+
+    try {
+      out.push({
+        chart: id,
+        name: chartNames.known?.[id]?.name ?? id,
+        width: canvas.width,
+        height: canvas.height,
+        range: state.range,
+        at: state.frozenAt || Math.floor(Date.now() / 1000),
+        data: canvas.toDataURL("image/png"),
+      });
+    } catch {
+      // A canvas that refuses to be read is skipped rather than failing the
+      // save. The note is the thing being written; the picture is extra.
+    }
+  }
+
+  return out;
 }
 
 function fieldRow(label, control, hint) {
@@ -20307,6 +21207,12 @@ const VIEWS = {
     parent: "system",
     refresh: () => refreshStore(),
   },
+  "sys-ai-data": {
+    // Renamed by renderChatIdentity along with everything else that says it.
+    label: "Mr. Radar's data",
+    parent: "system",
+    refresh: () => refreshAiStore(),
+  },
   "sys-retention": {
     // Rebuilds its form from the server's answer; see the note on sys-ai.
     manual: true,
@@ -20340,7 +21246,9 @@ const VIEWS = {
      * written.
      */
     manual: true,
-    label: "Lookout",
+    // Replaced by renderChatIdentity once the persona has loaded, because the
+    // operator can rename it and a menu that keeps the old name is a bug.
+    label: "Mr. Radar",
     parent: "system",
     refresh: () => refreshAiSettings(),
   },
@@ -21255,6 +22163,34 @@ $("retentionReset").addEventListener("click", () => {
   notice("Filled in with the recommended settings. Press Save to apply them.", true);
 });
 
+$("aiCompact").addEventListener("click", async () => {
+  const file = aiStoreState.data?.file;
+
+  if (!confirm(
+    `Rewrite the database to give back ${humanBytes(file?.free_bytes ?? 0)} of empty pages?\n\n`
+    + "It needs room for a second copy of the file while it runs. Nothing is deleted — this "
+    + "only returns space that deleted rows left behind."
+  )) return;
+
+  const button = $("aiCompact");
+  button.disabled = true;
+  button.textContent = "Rewriting\u2026";
+
+  try {
+    const result = await post("ai-compact");
+    notice(
+      `Reclaimed ${humanBytes(result.result.saved)} in ${result.result.seconds}s.`,
+      true
+    );
+    renderAiStore(result);
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    button.disabled = false;
+    button.textContent = "Reclaim empty space";
+  }
+});
+
 $("storeCompact").addEventListener("click", async () => {
   const data = storeState.data;
   const free = data ? data.account.file.free_bytes : 0;
@@ -21742,3 +22678,11 @@ syncLiveAvailability();
 applyRoute();
 writeRoute(true);
 schedule();
+
+/*
+ * The dials advance themselves from here on.
+ *
+ * Started once, after the first route is applied, because there is nothing to
+ * advance until something has been drawn.
+ */
+startDialTicker();

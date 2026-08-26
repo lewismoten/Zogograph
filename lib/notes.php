@@ -65,9 +65,9 @@ function noteScopes(): array
                 . 'nowhere else.',
         ],
         'chart' => [
-            'label' => 'Mark it on one chart',
-            'note' => 'Drawn on a single chart. Worth it when a page has several and only '
-                . 'one of them bent.',
+            'label' => 'Mark it on specific charts',
+            'note' => 'Drawn only on the charts you tick below. Worth it when a page has '
+                . 'several and only one or two of them bent.',
         ],
         'site' => [
             'label' => 'Mark it everywhere',
@@ -131,7 +131,7 @@ function noteSave(PDO $pdo, array $input, string $who): array
     $chart = trim((string)($input['chart'] ?? ''));
 
     if ($scope === 'chart' && $chart === '') {
-        throw new ActionRefused('pick which chart this is about');
+        throw new ActionRefused('tick at least one chart this is about');
     }
     if (($scope === 'page' || $scope === 'chart') && $view === '') {
         throw new ActionRefused('that scope needs to know which page this is about');
@@ -238,6 +238,8 @@ function noteList(PDO $pdo, array $config, int $limit = 300): array
         $rows = $pdo->query(
             'SELECT n.*,
                     (SELECT COUNT(*) FROM note_snapshots s WHERE s.note_id = n.id) AS snapshots,
+                    (SELECT COUNT(*) FROM note_snapshots s
+                      WHERE s.note_id = n.id AND s.kind = \'image\') AS images,
                     (SELECT SUM(bytes) FROM note_snapshots s WHERE s.note_id = n.id) AS snapshot_bytes
                FROM notes n ORDER BY n.at DESC LIMIT ' . max(1, $limit)
         )->fetchAll();
@@ -306,6 +308,104 @@ function noteSnapshotSave(
     )->execute([$noteId, $kind, $label, strlen($payload), $payload, time()]);
 
     return (int)$pdo->lastInsertId();
+}
+
+/** Most pictures one note will hold. Enough for a page of charts, not a gallery. */
+const NOTE_IMAGE_MAX = 12;
+
+/** Largest single picture. A chart PNG is tens of kilobytes; a page shot, a few hundred. */
+const NOTE_IMAGE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Stores pictures of charts alongside a note.
+ *
+ * The reason this exists rather than "the chart can be redrawn later" is
+ * retention. The readings behind a chart get rolled up and thinned as they age,
+ * which is the whole point of retention and also means the chart somebody
+ * thought was worth writing a note about cannot be drawn again at the
+ * resolution they saw. The picture can.
+ *
+ * Decoded to real bytes here rather than kept as a data URL: base64 in the
+ * database is a third larger for no benefit, and the browser can cache an
+ * <img src> pointing at a file it already knows how to fetch.
+ *
+ * A picture that will not decode is skipped and reported, never stored. A blob
+ * served with an image content type has to actually be an image.
+ *
+ * @return array{kept: list<string>, problems: list<string>}
+ */
+function noteImagesSave(PDO $pdo, int $noteId, string $json): array
+{
+    $kept = [];
+    $problems = [];
+
+    $items = json_decode($json, true);
+    if (!is_array($items)) {
+        return ['kept' => [], 'problems' => ['the pictures did not arrive in one piece']];
+    }
+
+    if (count($items) > NOTE_IMAGE_MAX) {
+        $problems[] = sprintf(
+            'only the first %d pictures were kept, of %d sent',
+            NOTE_IMAGE_MAX,
+            count($items)
+        );
+        $items = array_slice($items, 0, NOTE_IMAGE_MAX);
+    }
+
+    foreach ($items as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+
+        $name = trim((string)($item['name'] ?? 'a chart'));
+        $bytes = decodeDataImage((string)($item['data'] ?? ''));
+
+        if ($bytes === null) {
+            $problems[] = sprintf('%s was not a picture this could read', $name);
+            continue;
+        }
+        if (strlen($bytes) > NOTE_IMAGE_BYTES) {
+            $problems[] = sprintf(
+                '%s is %s, and the limit for one picture is %s',
+                $name,
+                humanBytes(strlen($bytes)),
+                humanBytes(NOTE_IMAGE_BYTES)
+            );
+            continue;
+        }
+
+        try {
+            noteSnapshotSave($pdo, $noteId, 'image', $name, $bytes);
+            $kept[] = $name;
+        } catch (ActionRefused $e) {
+            $problems[] = $e->getMessage();
+        }
+    }
+
+    return ['kept' => $kept, 'problems' => $problems];
+}
+
+/**
+ * The bytes behind a `data:image/png;base64,...` URL, or null.
+ *
+ * PNG only, and checked twice: the URL has to claim PNG, and the decoded bytes
+ * have to start with the PNG signature. The claim on its own is worth nothing -
+ * it is a string the browser wrote and anything could have written - and this
+ * blob is later served with an image content type.
+ */
+function decodeDataImage(string $url): ?string
+{
+    if (!str_starts_with($url, 'data:image/png;base64,')) {
+        return null;
+    }
+
+    $bytes = base64_decode(substr($url, strlen('data:image/png;base64,')), true);
+    if ($bytes === false || $bytes === '') {
+        return null;
+    }
+
+    return str_starts_with($bytes, "\x89PNG\r\n\x1a\n") ? $bytes : null;
 }
 
 /**

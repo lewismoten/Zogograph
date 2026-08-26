@@ -136,6 +136,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'urls' => urlsView($pdo, $signedIn),
         'fetch' => fetchView($pdo, $signedIn),
         'store' => storeView($config, $pdo, $signedIn),
+        'ai-store' => aiStoreView($config, $signedIn),
+        'ai-compact' => doAiCompact($config, $pdo, $post),
+        'ai-forget' => doAiForget($config, $pdo, $post),
         'store-save' => doStoreSave($config, $pdo, $post),
         'store-purge' => doStorePurge($config, $pdo, $post),
         'store-compact' => doStoreCompact($config, $pdo, $post),
@@ -2915,7 +2918,17 @@ function symlinkCheck(array $config, PDO $pdo, bool $signedIn): array
         raiseSymlinkAlert($pdo, $config, $change['added']);
     }
 
+    /*
+     * Sliced here, at the last possible moment, purely so the browser is not
+     * handed twenty thousand rows to draw. Everything above this line - the
+     * counts, the comparison against last time, the alert - saw all of them.
+     */
+    $total = count($found['problems']);
+    $found['problems'] = array_slice($found['problems'], 0, SYMLINK_SHOW_MAX);
+
     return $found + [
+        'total' => $total,
+        'shown' => count($found['problems']),
         'new' => $change['added'],
         'gone' => $change['gone'],
         'first_walk' => $change['first'],
@@ -4898,6 +4911,84 @@ function storeView(array $config, PDO $pdo, bool $signedIn): array
     return $out;
 }
 
+/** What the assistant's own database is holding. */
+function aiStoreView(array $config, bool $signedIn): array
+{
+    if (!$signedIn) {
+        throw new ActionRefused('sign in to see this');
+    }
+
+    return aiStoreReport($config) + ['who' => aiPersona($config)];
+}
+
+/** Reclaims the empty space in the assistant's database. */
+function doAiCompact(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('there is no database here to compact');
+    }
+
+    $result = compactNow($ai, $config, aiDatabasePath($config));
+
+    logAction($pdo, 'ai_compact', null, 'ok', 0, 0, sprintf(
+        'reclaimed %s',
+        humanBytes(max(0, $result['before']['bytes'] - $result['after']['bytes']))
+    ));
+
+    return ['ok' => true, 'result' => $result] + aiStoreView($config, true);
+}
+
+/** Forgets conversations older than a cut-off, and reclaims what they used. */
+function doAiForget(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+
+    $days = clampInt($_POST['days'] ?? 30, 0, 3650);
+
+    $ai = aiDb($config);
+    if ($ai === null) {
+        throw new ActionRefused('there is no database here to clear out');
+    }
+
+    $before = aiDatabaseFacts($config);
+    $gone = aiForget($ai, $days);
+
+    /*
+     * Compacted immediately, because deleting rows from SQLite does not make
+     * the file smaller - it makes the space inside it free for reuse. Somebody
+     * who has just deleted six months of transcripts to reclaim disk and finds
+     * the file exactly the same size will reasonably conclude nothing happened.
+     */
+    $reclaimed = 0;
+    if ($gone['sessions'] > 0) {
+        try {
+            $result = compactNow($ai, $config, aiDatabasePath($config));
+            $reclaimed = max(0, $result['before']['bytes'] - $result['after']['bytes']);
+        } catch (ActionRefused) {
+            // Not writable, or no room to write the copy. The rows are still
+            // gone; only the file size is unchanged, and the page says so.
+            $reclaimed = 0;
+        }
+    }
+
+    logAction($pdo, 'ai_forget', null, 'ok', $gone['sessions'], 0, sprintf(
+        '%d conversations older than %d days, %s reclaimed',
+        $gone['sessions'],
+        $days,
+        humanBytes($reclaimed)
+    ));
+
+    return [
+        'ok' => true,
+        'sessions' => $gone['sessions'],
+        'reclaimed' => $reclaimed,
+        'was' => $before['bytes'],
+    ] + aiStoreView($config, true);
+}
+
 /** New retention settings, written to the config file. */
 function doStoreSave(array $config, PDO $pdo, bool $post): array
 {
@@ -4973,11 +5064,23 @@ function doStoreRollup(array $config, PDO $pdo, bool $post): array
 
     $result = compactVitals($pdo, retentionRules($config));
 
+    /*
+     * The space goes back straight away, rather than at the next nightly cron.
+     *
+     * Somebody pressing "roll up old readings now" is doing it because they
+     * want the disk back now. Rolling up sixty thousand rows and reporting a
+     * file that is exactly the same size reads as a button that did nothing.
+     * reclaimSpace only rewrites when a quarter of the file is free pages, so
+     * a rollup that freed very little correctly does not pay for a VACUUM.
+     */
+    $result['space'] = reclaimSpace($pdo);
+
     logAction($pdo, 'retention_rollup', null, 'ok', 0, 0, sprintf(
-        '%d rows became %d, %d protected',
+        '%d rows became %d, %d protected, %s',
         $result['removed'] + $result['compacted'],
         $result['compacted'],
-        $result['protected']
+        $result['protected'],
+        $result['space']
     ));
 
     return ['ok' => true, 'result' => $result] + storeView($config, $pdo, true);
@@ -5186,6 +5289,23 @@ function doNoteSave(array $config, PDO $pdo, bool $post): array
         [$captured, $problems] = captureWholeSite($config, $pdo, $saved['id']);
     } elseif ($kind === 'databases') {
         [$captured, $problems] = captureDatabases($config, $pdo, $saved['id']);
+    }
+
+    /*
+     * Pictures are independent of the snapshot kind.
+     *
+     * Somebody keeping a picture of a chart is not thereby asking for the whole
+     * site's data, and making the two one control would force that choice.
+     */
+    $images = (string)($_POST['images'] ?? '');
+    if (trim($images) !== '') {
+        $result = noteImagesSave($pdo, $saved['id'], $images);
+        if ($result['kept'] !== []) {
+            $captured[] = count($result['kept']) === 1
+                ? 'a picture of ' . $result['kept'][0]
+                : count($result['kept']) . ' pictures';
+        }
+        $problems = array_merge($problems, $result['problems']);
     }
 
     logAction($pdo, 'note_save', null, 'ok', 0, 0,
@@ -5823,7 +5943,7 @@ function doRdnsNow(array $config, PDO $pdo, bool $post): array
 function aiView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
-        throw new ActionRefused('sign in to ask Lookout');
+        throw new ActionRefused('sign in to ask ' . aiPersona($config)['name']);
     }
 
     $ready = aiReady($config);
@@ -5902,7 +6022,7 @@ function doAiSay(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('Lookout is not available');
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
     }
 
     $text = trim((string)($_POST['text'] ?? ''));
@@ -5941,7 +6061,7 @@ function doAiStep(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('Lookout is not available');
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
     }
 
     $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
@@ -5957,7 +6077,7 @@ function doAiStep(array $config, PDO $pdo, bool $post): array
 function aiPollView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
-        throw new ActionRefused('sign in to ask Lookout');
+        throw new ActionRefused('sign in to ask ' . aiPersona($config)['name']);
     }
 
     $ai = aiDb($config, false);
@@ -5976,7 +6096,7 @@ function doAiPermit(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('Lookout is not available');
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
     }
 
     $runId = clampInt($_POST['run'] ?? 0, 1, PHP_INT_MAX);
@@ -6069,7 +6189,7 @@ function doAiToolResult(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('Lookout is not available');
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
     }
 
     $runId = clampInt($_POST['run'] ?? 0, 1, PHP_INT_MAX);
@@ -6276,7 +6396,7 @@ function doAiStop(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('Lookout is not available');
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
     }
 
     $id = clampInt($_POST['session'] ?? 0, 1, PHP_INT_MAX);
@@ -7018,7 +7138,7 @@ function aiTestHint(string $error, array $settings): string
     }
 
     if (str_contains($said, 'tool') || str_contains($said, 'function')) {
-        return 'The provider accepted the request but not the tools. Lookout needs tool '
+        return 'The provider accepted the request but not the tools. This needs tool '
             . 'calling; a model without it cannot look anything up.';
     }
 
@@ -7044,7 +7164,7 @@ function doAiReaction(array $config, PDO $pdo, bool $post): array
 
     $ai = aiDb($config);
     if ($ai === null) {
-        throw new ActionRefused('Lookout is not available');
+        throw new ActionRefused(aiPersona($config)['name'] . ' is not available');
     }
 
     $mood = trim((string)($_POST['mood'] ?? ''));

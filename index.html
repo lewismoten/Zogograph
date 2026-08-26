@@ -338,8 +338,13 @@
     </a>
     <a class="nav-item nav-sub" href="#/sys-ai" data-nav="sys-ai" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
-      <span class="nav-label">Lookout</span>
+      <span class="nav-label">Mr. Radar</span>
       <span class="nav-badge" data-badge="sys-ai" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/sys-ai-data" data-nav="sys-ai-data" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label"><span class="ai-name">Mr. Radar</span>&rsquo;s data</span>
+      <span class="nav-badge" data-badge="sys-ai-data" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/sys-changed" data-nav="sys-changed" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
@@ -1949,10 +1954,10 @@
 <section class="view" data-view="sys-ai" hidden>
 <section class="panel" id="aiSettingsPanel">
   <div class="panel-head">
-    <h2>Lookout</h2>
+    <h2><span class="ai-name">Mr. Radar</span></h2>
   </div>
   <p class="muted small sub-note">
-    Lookout is a model you configure, given a fixed set of read-only tools for
+    <span class="ai-name">Mr. Radar</span> is a model you configure, given a fixed set of read-only tools for
     looking at this machine — the name is the job: somebody on watch who tells
     you what they can see. It is off until you set it up, and when it is on this tool
     sends parts of your logs, your disk figures and your process list to
@@ -1986,7 +1991,7 @@
 
 <section class="panel" id="aiSessionsPanel">
   <div class="panel-head">
-    <h2>What Lookout has cost</h2>
+    <h2>What <span class="ai-name">Mr. Radar</span> has cost</h2>
     <button id="aiSessionsRefresh" class="link">Refresh</button>
   </div>
   <p class="muted small sub-note">
@@ -2088,6 +2093,27 @@
 </section>
 </section>
 
+<section class="view" data-view="sys-ai-data" hidden>
+<section class="panel" id="aiDataPanel">
+  <div class="panel-head">
+    <h2><span class="ai-name">Mr. Radar</span>&rsquo;s database</h2>
+    <div class="panel-controls">
+      <button id="aiCompact" class="link">Reclaim empty space</button>
+    </div>
+  </div>
+  <p class="muted small sub-note">
+    Kept apart from the account&rsquo;s own database on purpose: everything here
+    is a record of what was sent to somebody else&rsquo;s service and what came
+    back, and that is worth being able to read, export or delete without
+    touching the readings. It is also the one database here that grows by
+    conversation rather than by schedule &mdash; a long session with a few
+    screenshots in it can outweigh a week of measurements &mdash; so what it is
+    holding is worth being able to see.
+  </p>
+  <div id="aiDataBody"></div>
+</section>
+</section>
+
 <section class="view" data-view="sys-account" hidden>
 <section class="panel" id="accountDataPanel">
   <div class="panel-head">
@@ -2170,15 +2196,17 @@
   </div>
   <p class="muted small sub-note">
     When a directory of dangling links is the problem, ticking four hundred
-    boxes is not a workflow. Give a pattern and everything <em>broken</em> under
-    it goes. Working links matching the same pattern are left alone and counted
-    — the destructive half is bounded by a fact about each link, not by how
-    carefully the pattern was written. You are always shown exactly what would
-    go before anything does.
+    boxes is not a workflow. Name a directory and everything <em>broken</em>
+    under it goes, however deep — you do not need to know how many levels there
+    are, and you should not have to add a <code>*</code> until the count comes
+    out right. Working links under the same path are left alone and counted: the
+    destructive half is bounded by a fact about each link, not by how carefully
+    the path was typed. You are always shown exactly what would go before
+    anything does.
   </p>
   <form id="linkSweepForm" class="pattern-row">
     <input type="text" id="linkSweepPattern" spellcheck="false" autocomplete="off"
-           placeholder="/home/you/public_html/previews/*">
+           placeholder="/home/you/public_html/previews">
     <button type="submit">Show me what matches</button>
   </form>
   <div id="linkSweepBody"></div>
@@ -2196,11 +2224,11 @@
   <div class="corner-menu" id="cornerMenu">
     <div class="corner-choices" id="cornerChoices" hidden>
       <button type="button" id="cornerNote">✎ Write a note</button>
-      <button type="button" id="cornerChat">🔭 Ask Lookout</button>
+      <button type="button" id="cornerChat">📡 Ask Mr. Radar</button>
     </div>
-    <button id="noteButton" class="note-button" title="Write a note, or ask Lookout"
+    <button id="noteButton" class="note-button" title="Write a note, or ask the assistant"
             aria-haspopup="true" aria-expanded="false"
-            aria-label="Write a note, or ask Lookout">✎</button>
+            aria-label="Write a note, or ask the assistant">✎</button>
   </div>
 
   <!--
@@ -2210,9 +2238,9 @@
     to take you somewhere and keep talking about what you are now looking at,
     and a chat that lived on its own page could not do that.
   -->
-  <aside id="chatPanel" class="chat-panel" hidden aria-label="Lookout, the troubleshooting assistant">
+  <aside id="chatPanel" class="chat-panel" hidden aria-label="The troubleshooting assistant">
     <div class="chat-head">
-      <strong id="chatTitle">Lookout</strong>
+      <strong id="chatTitle">Mr. Radar</strong>
       <span class="muted small" id="chatCost"></span>
       <button id="chatNew" class="link" title="Start a fresh conversation">New</button>
       <button id="chatStop" class="link danger" title="Stop this conversation">Stop</button>

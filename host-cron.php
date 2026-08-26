@@ -43,6 +43,8 @@ require_once __DIR__ . '/lib/hostdisk.php';
 require_once __DIR__ . '/lib/backups.php';
 require_once __DIR__ . '/lib/mountinfo.php';
 require_once __DIR__ . '/lib/capabilities.php';
+// reclaimSpace, so a prune gives the disk back rather than only marking pages free.
+require_once __DIR__ . '/lib/retention.php';
 // The outbound budget, so registries are not asked twenty things at once.
 require_once __DIR__ . '/lib/external.php';
 
@@ -650,6 +652,19 @@ try {
             hostPruneServices($pdo, $serviceDays),
             $serviceDays
         ));
+
+        /*
+         * And give the space back, which deleting rows does not do.
+         *
+         * SQLite marks freed pages for reuse and leaves the file the size it
+         * was. On a database pruned every night that is fine for a while and
+         * then is not: the file settles at the size of the largest it has ever
+         * been, which is the wrong number to have on a host somebody is
+         * watching for disk space. reclaimSpace declines unless a quarter of
+         * the file is free pages, so this is usually a couple of PRAGMAs and
+         * no rewrite at all.
+         */
+        $say('Space:  ' . reclaimSpace($pdo));
     }
 
     if ($want('--show')) {
