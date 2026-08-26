@@ -731,7 +731,7 @@ function aiNetworkSummary(array $config, PDO $pdo): array
 
     try {
         $capture = $host->query(
-            'SELECT taken_at, interface, filter, seconds, packets, bytes, distinct_peers,
+            'SELECT id, taken_at, interface, filter, seconds, packets, bytes, distinct_peers,
                     in_packets, out_packets, in_bytes, out_bytes, hit_limit
                FROM host_captures WHERE ok = 1 ORDER BY taken_at DESC LIMIT 1'
         )->fetch();
@@ -754,6 +754,56 @@ function aiNetworkSummary(array $config, PDO $pdo): array
             if ($capture['hit_limit']) {
                 $out['last_capture']['warning'] = 'This capture stopped at its packet '
                     . 'ceiling, so the figures are a floor rather than a total.';
+            }
+
+            /*
+             * What the traffic was asking for, when the capture read it.
+             *
+             * Address counts answer "who" and never "what", and "what" is
+             * almost always the question. These rows only exist for a capture
+             * that was taken with reading turned on, so their absence is not a
+             * fault - and saying so is the difference between "nothing was
+             * looked up" and "nobody asked to find out".
+             */
+            $rollup = $host->prepare(
+                'SELECT kind, label, packets FROM host_capture_rows
+                  WHERE capture_id = ? AND kind IN (?, ?)
+                  ORDER BY packets DESC LIMIT 40'
+            );
+            $rollup->execute([(int)$capture['id'], 'asked', 'visited']);
+
+            $asked = [];
+            $visited = [];
+            foreach ($rollup->fetchAll() as $row) {
+                // Stored as "A git.example.com" - the sub-kind and the name in
+                // one label, split back apart here for reading.
+                [$how, $what] = array_pad(explode(' ', (string)$row['label'], 2), 2, '');
+                $entry = ['kind' => $how, 'name' => $what, 'times' => (int)$row['packets']];
+                if ($row['kind'] === 'asked') {
+                    $asked[] = $entry;
+                } else {
+                    $visited[] = $entry;
+                }
+            }
+
+            if ($asked === [] && $visited === []) {
+                $out['last_capture']['what_it_asked_for'] = 'Not read. This capture '
+                    . 'counted packets and addresses only. Reading what the traffic '
+                    . 'asked for is a tick box on the capture form, off by default, '
+                    . 'because it means looking at the start of other people\'s '
+                    . 'traffic. Tell the user it is there if they want names rather '
+                    . 'than addresses; you cannot turn it on yourself.';
+            } else {
+                $out['last_capture']['names_looked_up'] = $asked;
+                $out['last_capture']['asked_them_for'] = $visited;
+                $out['last_capture']['how_to_read_those'] = 'names_looked_up is DNS: '
+                    . 'the record type and the name, with how many times it was '
+                    . 'asked. asked_them_for is where traffic actually went: "https" '
+                    . 'and "http" are host names, "page" is a method and path. '
+                    . 'Query strings are cut off before counting, so a path here is '
+                    . 'never the whole URL. A name looked up many times but never '
+                    . 'connected to is a resolution failure; a name connected to '
+                    . 'without a lookup was cached or is a hard-coded address.';
             }
         }
     } catch (Throwable) {
