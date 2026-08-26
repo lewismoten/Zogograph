@@ -1850,6 +1850,45 @@ function drawLineChart(canvas, rows, series, options = {}) {
     ctx.closePath();
     ctx.fill();
     ctx.restore();
+
+    /*
+     * What it changed to, on the chart.
+     *
+     * A dashed line says when something changed and nothing else, which leaves
+     * the reader scrolling to a table to find out what - and then scrolling
+     * back. The value goes on the mark. Ten characters, because that is enough
+     * to tell 1.22.0 from 1.23.1 and short enough that four of them in a row
+     * are still readable.
+     *
+     * Solid black behind it with a border rather than a tint: this sits on top
+     * of plotted lines, and a label you have to read through a chart is worse
+     * than no label.
+     */
+    if (mark.label) {
+      const short = String(mark.label).slice(0, 10)
+        + (String(mark.label).length > 10 ? "…" : "");
+
+      ctx.save();
+      ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+      const width = ctx.measureText(short).width + 8;
+
+      // Flipped to the left of the line when it would run off the right edge.
+      const left = mx + width > pad.left + plotW
+        ? mx - width - 2
+        : mx + 2;
+
+      ctx.fillStyle = "#000";
+      ctx.fillRect(left, pad.top + 8, width, 14);
+      ctx.strokeStyle = "rgba(120, 170, 255, 0.9)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(left + .5, pad.top + 8.5, width - 1, 13);
+
+      ctx.fillStyle = "rgba(190, 215, 255, 1)";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText(short, left + 4, pad.top + 15);
+      ctx.restore();
+    }
   }
 
   /*
@@ -18651,7 +18690,17 @@ function renderUrlHistory(data) {
     failed: Number(r.ok) === 1 ? null : Number(r.ms),
   }));
 
-  const changes = data.changes || [];
+  const history_ = data.value_history ?? { first: null, changes: [] };
+  const changes = history_.changes ?? [];
+
+  /*
+   * The mark carries what the value became.
+   *
+   * The chart draws the label; this is where it learns what to write. Only the
+   * changes get one - the first value is where the window starts rather than
+   * something that happened, so it belongs in the list and not on the line.
+   */
+  const marks = changes.map(change => ({ at: change.at, label: change.to }));
 
   drawLineChart($("urlChart"), rows, [
     { key: "ms", label: "Response time" },
@@ -18660,7 +18709,7 @@ function renderUrlHistory(data) {
     xKey: "at", axis: msAxis, zeroBased: true, empty: "No checks in this range yet",
     // Blue marks are the moments the watched value changed, which is usually
     // the explanation for whatever the response time does next.
-    notes: changes,
+    notes: marks,
   });
 
   $("urlChartNote").textContent = history.checks
@@ -18679,20 +18728,59 @@ function renderUrlHistory(data) {
    * sentence that explains the rest of the page.
    */
   const changeBox = $("urlChanges");
-  if (changes.length) {
+
+  if (changes.length || history_.first) {
     changeBox.hidden = false;
+
+    /*
+     * The first value is a row, marked as the starting point.
+     *
+     * Without it the list begins mid-story: "became 1.23.1" with nothing
+     * before it leaves the reader unable to tell a first sighting from a
+     * change, which is the difference between "it was upgraded" and "we only
+     * started watching on Tuesday".
+     */
+    const rows = [];
+
+    if (history_.first) {
+      rows.push({
+        at: history_.first.at,
+        from: null,
+        to: history_.first.value,
+        first: true,
+      });
+    }
+
+    rows.push(...changes);
+
+    const holder = document.createElement("div");
+    holder.id = "urlChangeTable";
+
     changeBox.replaceChildren(section(
-      count(changes.length, "change") + " in this range",
-      simpleTable(
-        ["When", "Was", "Became"],
-        [...changes].reverse().slice(0, 50).map(change => [
-          humanTime(change.at),
-          change.from ?? "—",
-          change.to,
-        ]),
-        [null, "cmd", "cmd"]
-      )
+      changes.length
+        ? `${count(changes.length, "change")} in this range`
+        : "What it has been reporting",
+      holder
     ));
+
+    renderTable("urlChangeTable", [...rows].reverse().slice(0, 60), [
+      { label: "When", render: row => whenSpan(row.at) },
+      {
+        label: "",
+        render: row => {
+          const span = document.createElement("span");
+          span.className = "muted small";
+          span.textContent = row.first ? "first seen" : "changed";
+          if (row.first) {
+            span.title = "The earliest reading in this range, not something that "
+              + "happened — it may have been saying this for far longer.";
+          }
+          return span;
+        },
+      },
+      { label: "Was", className: "cmd", render: row => row.from ?? "—" },
+      { label: "Became", className: "cmd", render: row => row.to },
+    ], null, row => (row.first ? "muted-row" : ""), row => `${row.at}-${row.to}`);
   } else {
     changeBox.hidden = true;
     changeBox.replaceChildren();
@@ -18723,7 +18811,7 @@ function renderUrlHistory(data) {
     holder.id = "urlFailureTable";
     $("urlFailures").replaceChildren(holder);
     renderTable("urlFailureTable", failures.slice(-40).reverse(), [
-      { label: "When", render: row => humanTime(row.at) },
+      { label: "When", render: row => whenSpan(row.at) },
       { label: "Status", className: "size", render: row => row.status || "no answer" },
       { label: "Took", className: "size", render: row => `${row.ms} ms` },
       { label: "Why", className: "cmd", render: row => row.error || "" },
@@ -21478,9 +21566,126 @@ function renderDnsAnswer(answer) {
   return box;
 }
 
+/**
+ * The four ways of narrowing two hundred units down to the interesting ones.
+ *
+ * State, category, what it does at boot, and what systemd itself says. The last
+ * two are dropdowns rather than buttons because their values are open-ended -
+ * `active/running`, `inactive/dead`, `failed/failed` and a dozen others - and a
+ * row of twelve buttons is not a filter, it is a wall.
+ */
+function unitFilters(data, problems) {
+  const wrap = document.createElement("div");
+  wrap.className = "unit-filters";
+
+  /* ---- state, as buttons ---- */
+
+  const states = document.createElement("div");
+  states.className = "seg-row";
+
+  const attention = data.rows.filter(row => problems.includes(row.state)).length;
+
+  const choices = [
+    ["attention", `Needs attention ${humanCount(attention)}`,
+      "Failed, masked, or running when it is not meant to be — chosen by state, never "
+      + "by name."],
+    ["all", `All ${humanCount(data.rows.length)}`, "Everything systemd knows about."],
+  ];
+
+  for (const [state, n] of Object.entries(data.summary)) {
+    choices.push([state, `${state.replace(/-/g, " ")} ${humanCount(n)}`,
+                  data.notes[state] ?? ""]);
+  }
+
+  for (const [value, label, why] of choices) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "seg" + (unitState.show === value ? " on" : "");
+    button.textContent = label;
+    button.title = why;
+    button.disabled = value === "attention" && attention === 0;
+    button.addEventListener("click", () => {
+      unitState.show = value;
+      renderUnits();
+    });
+    states.appendChild(button);
+  }
+  wrap.appendChild(states);
+
+  /* ---- category, boot and systemd, as dropdowns ---- */
+
+  const row = document.createElement("div");
+  row.className = "unit-picks";
+
+  const pick = (label, current, values, onChange, notes) => {
+    const holder = document.createElement("label");
+    holder.className = "pill";
+
+    const said = document.createElement("span");
+    said.textContent = `${label} `;
+    holder.appendChild(said);
+
+    const select = document.createElement("select");
+
+    const any = document.createElement("option");
+    any.value = "";
+    any.textContent = "any";
+    select.appendChild(any);
+
+    for (const [value, n] of Object.entries(values)) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = `${value} (${n})`;
+      option.selected = current === value;
+      if (notes?.[value]) option.title = notes[value];
+      select.appendChild(option);
+    }
+
+    select.value = current;
+    select.addEventListener("change", () => {
+      onChange(select.value);
+      renderUnits();
+    });
+
+    holder.appendChild(select);
+    return holder;
+  };
+
+  row.appendChild(pick("For", unitState.category, data.categories ?? {},
+    value => { unitState.category = value; }, data.category_notes));
+  row.appendChild(pick("At boot", unitState.boot, data.enabled_values ?? {},
+    value => { unitState.boot = value; }));
+  row.appendChild(pick("systemd says", unitState.says, data.says_values ?? {},
+    value => { unitState.says = value; }));
+
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "link";
+  clear.textContent = "Clear the filters";
+  clear.hidden = !unitState.category && !unitState.boot && !unitState.says;
+  clear.addEventListener("click", () => {
+    unitState.category = "";
+    unitState.boot = "";
+    unitState.says = "";
+    renderUnits();
+  });
+  row.appendChild(clear);
+
+  wrap.appendChild(row);
+  return wrap;
+}
+
+
 /* -------------------------------------------------------------- services -- */
 
-const unitState = { problemsOnly: false, data: null };
+/*
+ * `show` starts undefined on purpose.
+ *
+ * That is the signal for "nobody has chosen yet", which is what lets the first
+ * draw open on whatever is broken without overriding a choice on every poll
+ * afterwards.
+ */
+const unitState = { show: undefined, category: "", boot: "", says: "", data: null };
 
 async function refreshUnits() {
   const body = $("unitsBody");
@@ -21513,10 +21718,33 @@ function renderUnits() {
     return;
   }
 
-  const problems = ["failed", "masked", "running-not-enabled", "enabled-not-running"];
-  const rows = unitState.problemsOnly
-    ? data.rows.filter(r => problems.includes(r.state))
-    : data.rows;
+  const problems = data.worth_looking
+    ?? ["failed", "masked", "running-not-enabled", "enabled-not-running"];
+
+  /*
+   * Opens on what is broken, when anything is.
+   *
+   * Chosen once, the first time this page is drawn, rather than on every
+   * refresh - re-deciding on a poll would drag somebody back to the failed
+   * filter every few seconds while they were reading something else.
+   */
+  if (unitState.show === undefined) {
+    const broken = data.rows.some(row => problems.includes(row.state));
+    unitState.show = broken ? "attention" : "all";
+    unitState.category = "";
+    unitState.boot = "";
+    unitState.says = "";
+  }
+
+  const rows = data.rows.filter(row => {
+    if (unitState.show === "attention" && !problems.includes(row.state)) return false;
+    if (unitState.show !== "attention" && unitState.show !== "all"
+        && row.state !== unitState.show) return false;
+    if (unitState.category && row.category !== unitState.category) return false;
+    if (unitState.boot && (row.enabled || "unknown") !== unitState.boot) return false;
+    if (unitState.says && `${row.active}/${row.sub}` !== unitState.says) return false;
+    return true;
+  });
 
   const wrap = document.createDocumentFragment();
 
@@ -21543,18 +21771,36 @@ function renderUnits() {
   wrap.appendChild(cards);
   wrap.appendChild(note(`From the host reading of ${humanTime(data.taken_at)}.`));
 
+  wrap.appendChild(unitFilters(data, problems));
+
   const holder = document.createElement("div");
   holder.id = "unitsTable";
   wrap.appendChild(holder);
   body.replaceChildren(wrap);
 
   if (!rows.length) {
-    $("unitsTable").replaceChildren(note("Nothing in a state worth looking at."));
+    $("unitsTable").replaceChildren(note(
+      unitState.show === "attention"
+        ? "Nothing is failed, masked, or running when it should not be. That is the "
+          + "answer this page exists to give."
+        : "Nothing matches those filters. The services are still there — only what is "
+          + "drawn has changed."
+    ));
     return;
   }
 
   renderTable("unitsTable", rows, [
     { label: "Service", className: "name", render: row => row.name },
+    {
+      label: "For",
+      render: row => {
+        const span = document.createElement("span");
+        span.className = "muted";
+        span.textContent = row.category ?? "other";
+        span.title = data.category_notes?.[row.category] ?? "";
+        return span;
+      },
+    },
     {
       label: "State",
       render: row => {
@@ -25684,11 +25930,6 @@ $("networkRefresh").addEventListener("click",
 $("portsPublicOnly").addEventListener("change", event => {
   networkState.publicOnly = event.target.checked;
   if (networkState.data) renderPorts(networkState.data);
-});
-
-$("unitsProblemsOnly").addEventListener("change", event => {
-  unitState.problemsOnly = event.target.checked;
-  renderUnits();
 });
 
 $("streamLines").addEventListener("change",

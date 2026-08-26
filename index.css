@@ -2498,3 +2498,27 @@ tr.row-silenced:hover { opacity: 1; }
 
 /* Prose, so it gets a readable measure rather than the panel's full width. */
 .report-body { max-width: 62em; }
+
+/* --------------------------------------------------------------- services -- */
+
+.unit-filters { margin: 0 0 12px; }
+
+.unit-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+
+.unit-picks select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 4px;
+  font-size: .85rem;
+}
+
+/* The "first seen" row in a value history: context, not an event. */
+tr.muted-row { opacity: .7; }

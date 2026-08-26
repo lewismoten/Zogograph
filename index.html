@@ -1508,7 +1508,6 @@
 <section class="panel" id="unitsPanel">
   <div class="panel-head">
     <h2>Every service</h2>
-    <label class="pill"><input type="checkbox" id="unitsProblemsOnly"> Only the ones worth looking at</label>
   </div>
   <p class="muted small sub-note">
     The whole list, not just the watched ones. <strong>Failed</strong> and
@@ -1516,6 +1515,12 @@
     are silently wrong: a failed unit uses no memory and no CPU, so it is absent
     from every other panel here rather than standing out in one, and a masked
     one cannot be started at all until somebody unmasks it.
+  </p>
+  <p class="muted small sub-note">
+    &ldquo;Needs attention&rdquo; is chosen by state and never by name &mdash; no
+    service here is more important than another, only more broken. It opens on
+    that when anything has failed, because a page that opens on two hundred
+    working units when one has failed has buried the only line that mattered.
   </p>
   <div id="unitsBody"></div>
 </section>

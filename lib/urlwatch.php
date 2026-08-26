@@ -893,7 +893,8 @@ function urlWatchNoteChange(PDO $pdo, array $config, array $check, array $result
  * that turning the notification on does not retroactively invent markers that
  * were never raised.
  *
- * @return list<array{at: int, from: ?string, to: string}>
+ * @return array{first: ?array{at: int, value: string},
+ *               changes: list<array{at: int, from: ?string, to: string}>}
  */
 function urlWatchChanges(PDO $pdo, int $id, int $since, int $limit = 200): array
 {
@@ -906,19 +907,32 @@ function urlWatchChanges(PDO $pdo, int $id, int $since, int $limit = 200): array
 
     $out = [];
     $previous = null;
+    $first = null;
 
     foreach ($stmt->fetchAll() as $row) {
         $text = (string)$row['text_value'];
 
-        // The first value in a window is not a change - it is where the window
-        // starts, and marking it would put a line on every chart.
-        if ($previous !== null && $text !== $previous) {
+        /*
+         * The first value in a window is not a change.
+         *
+         * It is where the window starts, and marking it on the chart would put
+         * a line on every chart at its left edge. It IS worth reporting though
+         * - "it has said 1.22.0 since Tuesday and then became 1.23.1" needs
+         * both halves - so it comes back separately rather than not at all.
+         */
+        if ($previous === null) {
+            $first = ['at' => (int)$row['at'], 'value' => $text];
+        } elseif ($text !== $previous) {
             $out[] = ['at' => (int)$row['at'], 'from' => $previous, 'to' => $text];
         }
+
         $previous = $text;
     }
 
-    return count($out) > $limit ? array_slice($out, -$limit) : $out;
+    return [
+        'first' => $first,
+        'changes' => count($out) > $limit ? array_slice($out, -$limit) : $out,
+    ];
 }
 
 /**

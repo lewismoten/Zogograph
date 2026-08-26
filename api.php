@@ -1827,7 +1827,9 @@ function urlsView(PDO $pdo, bool $signedIn): array
         'history' => $selected === null ? null : urlWatchHistory($pdo, $selected, $from, $to),
         // The moments a watched value changed, for marking on the chart. A
         // deploy at 04:12 is the explanation for the response time after it.
-        'changes' => $selected === null ? [] : urlWatchChanges($pdo, $selected, $from),
+        'value_history' => $selected === null
+            ? ['first' => null, 'changes' => []]
+            : urlWatchChanges($pdo, $selected, $from),
         'intervals' => urlWatchIntervals(),
         'checks' => urlWatchChecks(),
         'max' => URLWATCH_MAX,
@@ -2153,10 +2155,43 @@ function unitsView(array $config, bool $signedIn): array
     usort($all, fn(array $a, array $b): int =>
         (($rank[$a['state']] ?? 9) <=> ($rank[$b['state']] ?? 9)) ?: strcmp($a['name'], $b['name']));
 
+    /*
+     * What each unit is for, from its name.
+     *
+     * A list of two hundred units sorted by state answers "what is broken" and
+     * nothing else. Grouping them means "is the mail working" is one glance
+     * rather than knowing that the answer lives in `dovecot`, `postfix` and
+     * `exim` - which is knowledge about this machine that the machine already
+     * has and was not sharing.
+     *
+     * Matched on the name because that is all there is: systemd's own
+     * categories are a description field, and units are named by convention
+     * far more consistently than they are described.
+     */
+    foreach ($all as $i => $row) {
+        $all[$i]['category'] = serviceCategory((string)$row['name'],
+            (string)($row['description'] ?? ''));
+    }
+
     $summary = [];
+    $categories = [];
+    $enabled = [];
+    $says = [];
+
     foreach ($all as $row) {
         $summary[$row['state']] = ($summary[$row['state']] ?? 0) + 1;
+        $categories[$row['category']] = ($categories[$row['category']] ?? 0) + 1;
+
+        $boot = (string)($row['enabled'] ?? '') ?: 'unknown';
+        $enabled[$boot] = ($enabled[$boot] ?? 0) + 1;
+
+        $said = (string)($row['active'] ?? '') . '/' . (string)($row['sub'] ?? '');
+        $says[$said] = ($says[$said] ?? 0) + 1;
     }
+
+    ksort($categories);
+    ksort($enabled);
+    arsort($says);
 
     $notes = [];
     foreach (array_keys($rank) as $state) {
@@ -2170,6 +2205,113 @@ function unitsView(array $config, bool $signedIn): array
     return [
         'available' => true, 'reason' => '', 'rows' => $all,
         'summary' => $summary, 'notes' => $notes, 'taken_at' => $takenAt,
+        'categories' => $categories,
+        'enabled_values' => $enabled,
+        'says_values' => $says,
+        'worth_looking' => array_keys(array_filter(
+            $notes,
+            fn(string $note, string $state): bool => serviceWorthLooking($state),
+            ARRAY_FILTER_USE_BOTH
+        )),
+        'category_notes' => serviceCategoryNotes(),
+    ];
+}
+
+/**
+ * Which states are the ones "worth looking at".
+ *
+ * Written down rather than left implicit, because the checkbox that used to
+ * filter on this said nothing about what it filtered on - and the answer is not
+ * obvious. It is by STATE, never by name: no service is more important than
+ * another here, only more broken.
+ */
+function serviceWorthLooking(string $state): bool
+{
+    return in_array(
+        $state,
+        ['failed', 'masked', 'running-not-enabled', 'enabled-not-running'],
+        true
+    );
+}
+
+/**
+ * A category for one unit, from its name.
+ *
+ * Ordered longest-match-first in spirit: `php-fpm` must be tested before `php`
+ * would match something else, and `cpanel` before `cron` catches `cpanel-cron`.
+ * Anything unrecognised is "other", which on a full machine is most of them and
+ * is an honest answer rather than a guessed one.
+ */
+function serviceCategory(string $name, string $description): string
+{
+    $unit = strtolower($name);
+    $said = strtolower($description);
+
+    $groups = [
+        'web' => ['httpd', 'apache', 'nginx', 'lshttpd', 'litespeed', 'openlitespeed',
+                  'php-fpm', 'php_fpm', 'ea-php', 'lsphp', 'tomcat', 'varnish'],
+        'database' => ['mysql', 'mariadb', 'postgres', 'redis', 'mongod', 'memcached',
+                       'elasticsearch'],
+        'mail' => ['exim', 'postfix', 'dovecot', 'sendmail', 'spamd', 'spamassassin',
+                   'opendkim', 'mailman'],
+        'dns' => ['named', 'bind', 'pdns', 'unbound', 'nsd', 'systemd-resolved'],
+        'ftp and shell' => ['sshd', 'pure-ftpd', 'proftpd', 'vsftpd', 'ssh'],
+        'security' => ['firewalld', 'iptables', 'nftables', 'fail2ban', 'lfd', 'csf',
+                       'clamd', 'auditd', 'imunify', 'selinux'],
+        'control panel' => ['cpanel', 'whm', 'cpsrvd', 'cpdavd', 'cphulk', 'plesk',
+                            'directadmin', 'cagefs', 'lvestats', 'lve'],
+        'scheduling' => ['cron', 'crond', 'atd', 'anacron', 'systemd-timer'],
+        'storage' => ['nfs', 'rpcbind', 'smb', 'nmb', 'iscsi', 'lvm', 'mdmonitor',
+                      'multipath', 'quota'],
+        'logging' => ['rsyslog', 'syslog', 'journald', 'logrotate', 'auditbeat'],
+        'backups' => ['jetbackup', 'r1soft', 'acronis', 'backup', 'restic', 'borg'],
+        'the system itself' => ['systemd-', 'dbus', 'polkit', 'chronyd', 'ntpd', 'tuned',
+                                'irqbalance', 'kdump', 'udev', 'getty', 'network',
+                                'sysstat'],
+    ];
+
+    foreach ($groups as $category => $needles) {
+        foreach ($needles as $needle) {
+            if (str_contains($unit, $needle)) {
+                return $category;
+            }
+        }
+    }
+
+    /*
+     * The description, as a fallback only.
+     *
+     * It catches a few - "Apache Web Server" on a unit called something else -
+     * and is checked second because a description is prose and prose about a
+     * database will mention the web often enough to be misleading.
+     */
+    foreach (['web server' => 'web', 'database' => 'database', 'mail' => 'mail',
+              'firewall' => 'security', 'backup' => 'backups'] as $phrase => $category) {
+        if (str_contains($said, $phrase)) {
+            return $category;
+        }
+    }
+
+    return 'other';
+}
+
+/** What each category covers, for the filter's tooltip. */
+function serviceCategoryNotes(): array
+{
+    return [
+        'web' => 'Whatever serves the site, and the PHP behind it.',
+        'database' => 'Anything the site stores things in.',
+        'mail' => 'Sending, receiving and filtering.',
+        'dns' => 'Answering name lookups.',
+        'ftp and shell' => 'Ways in.',
+        'security' => 'Firewalls, scanners and intrusion blocking.',
+        'control panel' => 'cPanel, Plesk and their many daemons.',
+        'scheduling' => 'What runs things on a timer.',
+        'storage' => 'Mounts, arrays and quotas.',
+        'logging' => 'What writes the logs everything else is read from.',
+        'backups' => 'Whatever copies this machine somewhere else.',
+        'the system itself' => 'systemd and the machinery underneath everything.',
+        'other' => 'Not recognised by name. On a full machine this is most of them.',
     ];
 }
 
