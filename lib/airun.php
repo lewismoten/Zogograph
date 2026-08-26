@@ -1326,37 +1326,6 @@ function aiCronRhythm(array $config, PDO $pdo): array
     ];
 }
 
-/** The middle gap between a list of timestamps, or null if there are too few. */
-function medianGap(array $times): ?int
-{
-    if (count($times) < 3) {
-        return null;
-    }
-
-    sort($times);
-    $gaps = [];
-    for ($i = 1; $i < count($times); $i++) {
-        $gap = $times[$i] - $times[$i - 1];
-        if ($gap > 0) {
-            $gaps[] = $gap;
-        }
-    }
-
-    if ($gaps === []) {
-        return null;
-    }
-
-    sort($gaps);
-
-    /*
-     * The median, not the mean.
-     *
-     * One four-hour gap where the machine was rebooted would drag an average
-     * into uselessness, and the question here is "how often does this normally
-     * happen" rather than "what was the average over the last week".
-     */
-    return (int)$gaps[intdiv(count($gaps), 2)];
-}
 
 /* --------------------------------------------------------------- memory -- */
 
