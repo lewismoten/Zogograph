@@ -10889,6 +10889,468 @@ function purgeButton(entry) {
  * makes a command that prints for ten minutes cost the same per poll as one
  * that printed a line - and is why this can be pointed at a `tail -f`.
  */
+/* -------------------------------------------------------- terminal output -- */
+
+/**
+ * The sixteen colours a terminal names, plus the 256-colour cube.
+ *
+ * Named rather than taken from a palette image so that they can sit against
+ * this page's background: a terminal's own black on this panel would be
+ * invisible, and its bright white would be the only pure white on the site.
+ */
+const ANSI_COLOURS = [
+  "#3c3c3c", "#e06c6c", "#98c379", "#e5c07b", "#61afef", "#c678dd", "#56b6c2", "#c8c8c8",
+  "#6b6b6b", "#ff8080", "#b6e07f", "#ffd68a", "#82c6ff", "#dd9ff0", "#6fd4de", "#f0f0f0",
+];
+
+/* Written as codes rather than as themselves: a literal escape in a source file
+   is invisible in every diff and every review that will ever be done on it. */
+const ESC = String.fromCharCode(27);
+const BEL = String.fromCharCode(7);
+
+/** One of the 216 cube colours or 24 greys, by index. */
+function ansi256(n) {
+  if (n < 16) return ANSI_COLOURS[n];
+
+  if (n < 232) {
+    const c = n - 16;
+    const step = v => [0, 95, 135, 175, 215, 255][v];
+    return `rgb(${step(Math.floor(c / 36))},${step(Math.floor(c / 6) % 6)},${step(c % 6)})`;
+  }
+
+  const grey = 8 + (n - 232) * 10;
+  return `rgb(${grey},${grey},${grey})`;
+}
+
+/**
+ * Turns a run of terminal output into nodes, honouring what it can.
+ *
+ * Colour, bold, dim, underline, inverse and reset are rendered. Everything else
+ * an escape sequence can ask for - move the cursor to row 12, switch to the
+ * alternate screen, set the window title - is dropped rather than shown,
+ * because this is a transcript rather than a screen: there is no cursor to move
+ * and nothing to move it over. Printing the raw bytes instead is what produced
+ * the wall of escape codes in the report about vi.
+ *
+ * A carriage return without a newline rewrites the current line, which is how
+ * every progress bar and percentage counter works. Getting that wrong turns a
+ * download into two hundred lines of the same message.
+ */
+function ansiToNodes(text) {
+  const frag = document.createDocumentFragment();
+
+  let style = { fg: null, bg: null, bold: false, dim: false, underline: false, inverse: false };
+  let line = document.createElement("span");
+  line.className = "term-line";
+  frag.appendChild(line);
+
+  let buffer = "";
+
+  const flush = () => {
+    if (buffer === "") return;
+    line.appendChild(styledPiece(buffer, style));
+    buffer = "";
+  };
+
+  const newLine = () => {
+    flush();
+    line = document.createElement("span");
+    line.className = "term-line";
+    frag.appendChild(line);
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (ch === ESC) {
+      /*
+       * CSI sequences, and everything else skipped whole.
+       *
+       * The point of parsing the ones that are not understood is to remove
+       * them: a sequence printed literally is noise that looks like corruption,
+       * and the reader has no way to tell the difference.
+       *
+       * Sliced from after the escape, so none of these patterns has to carry a
+       * control character of its own.
+       */
+      const rest = text.slice(i + 1);
+
+      const csi = /^\[([0-9;?]*)([A-Za-z])/.exec(rest);
+      if (csi) {
+        i += csi[0].length;
+        if (csi[2] === "m") {
+          /*
+           * What has been collected so far belongs to the OLD style.
+           *
+           * Changing the style first and flushing afterwards paints the text
+           * before the escape with the colour the escape asked for - so
+           * "red<reset> plain" came out entirely plain, because the reset had
+           * already landed by the time "red" was written.
+           */
+          flush();
+          style = ansiStyle(style, csi[1]);
+        } else if (csi[2] === "K" || csi[2] === "J") {
+          // Erase-in-line and erase-in-display: the visible effect in a
+          // transcript is that what was on this line so far is gone.
+          flush();
+          line.replaceChildren();
+        }
+        continue;
+      }
+
+      // OSC - window titles, and the hyperlinks some tools emit. Runs to a BEL
+      // or an escape-backslash, and neither belongs on the page.
+      const osc = new RegExp("^\\][\\s\\S]*?(" + BEL + "|" + ESC + "\\\\)").exec(rest);
+      if (osc) {
+        i += osc[0].length;
+        continue;
+      }
+
+      // A two-character sequence, or a stray escape. Either way, not text.
+      i += 1;
+      continue;
+    }
+
+    if (ch === "\n") { newLine(); continue; }
+
+    if (ch === "\r") {
+      /*
+       * Back to the start of the line, rewriting what is there.
+       *
+       * A carriage return with no newline is how a progress counter updates in
+       * place. Treating it as a line break turns one line into hundreds;
+       * ignoring it runs them all together. Clearing the line is what the
+       * terminal itself does.
+       */
+      flush();
+      line.replaceChildren();
+      continue;
+    }
+
+    if (ch === "\t") {
+      /*
+       * A tab stops at the next multiple of eight, which is what makes columns
+       * line up. A literal tab in HTML collapses, so the spaces are counted.
+       */
+      flush();
+      const at = (line.textContent || "").length;
+      buffer = " ".repeat(8 - (at % 8));
+      flush();
+      continue;
+    }
+
+    if (ch === BEL) {
+      // Shown rather than sounded: a page that beeps is a page people mute,
+      // and the fact that something rang is the useful part.
+      flush();
+      const bell = document.createElement("span");
+      bell.className = "term-bell";
+      bell.textContent = "\u{1F514}";
+      bell.title = "The command rang the terminal bell";
+      line.appendChild(bell);
+      continue;
+    }
+
+    // Anything else unprintable is dropped; a control character rendered as a
+    // box is indistinguishable from a corrupt file.
+    if (ch < " " && ch !== " ") continue;
+
+    buffer += ch;
+  }
+
+  flush();
+  return frag;
+}
+
+/** One run of text in whatever style is in force. */
+function styledPiece(text, style) {
+  const span = document.createElement("span");
+  span.textContent = text;
+
+  const fg = style.inverse ? style.bg : style.fg;
+  const bg = style.inverse ? style.fg : style.bg;
+
+  if (fg) span.style.color = fg;
+  if (bg) span.style.backgroundColor = bg;
+  if (style.bold) span.style.fontWeight = "700";
+  if (style.dim) span.style.opacity = ".6";
+  if (style.underline) span.style.textDecoration = "underline";
+
+  // Inverse with nothing set still has to swap something, or the sequence
+  // every menu uses to show a selection does nothing at all.
+  if (style.inverse && !fg && !bg) {
+    span.style.color = "var(--bg)";
+    span.style.backgroundColor = "var(--text)";
+  }
+
+  return span;
+}
+
+/** Applies one SGR sequence to the running style. */
+function ansiStyle(style, params) {
+  const next = { ...style };
+  const codes = (params === "" ? "0" : params).split(";").map(Number);
+
+  for (let i = 0; i < codes.length; i++) {
+    const code = codes[i];
+
+    if (code === 0) {
+      next.fg = null; next.bg = null;
+      next.bold = false; next.dim = false;
+      next.underline = false; next.inverse = false;
+    } else if (code === 1) next.bold = true;
+    else if (code === 2) next.dim = true;
+    else if (code === 4) next.underline = true;
+    else if (code === 7) next.inverse = true;
+    else if (code === 22) { next.bold = false; next.dim = false; }
+    else if (code === 24) next.underline = false;
+    else if (code === 27) next.inverse = false;
+    else if (code >= 30 && code <= 37) next.fg = ANSI_COLOURS[code - 30];
+    else if (code >= 90 && code <= 97) next.fg = ANSI_COLOURS[code - 90 + 8];
+    else if (code >= 40 && code <= 47) next.bg = ANSI_COLOURS[code - 40];
+    else if (code >= 100 && code <= 107) next.bg = ANSI_COLOURS[code - 100 + 8];
+    else if (code === 39) next.fg = null;
+    else if (code === 49) next.bg = null;
+    else if (code === 38 || code === 48) {
+      // 38;5;n is one of 256; 38;2;r;g;b is direct colour. Both consume the
+      // parameters that follow them, which is why this loop reads ahead.
+      const where = code === 38 ? "fg" : "bg";
+      if (codes[i + 1] === 5) { next[where] = ansi256(codes[i + 2] || 0); i += 2; }
+      else if (codes[i + 1] === 2) {
+        next[where] = `rgb(${codes[i + 2] || 0},${codes[i + 3] || 0},${codes[i + 4] || 0})`;
+        i += 4;
+      }
+    }
+  }
+
+  return next;
+}
+
+/* ------------------------------------------------------ the scrollback -- */
+
+/**
+ * How many entries the visible buffer keeps.
+ *
+ * Not how much is kept - every command's output is on disk and the sessions
+ * page can read all of it. This is how much is drawn, because a page holding
+ * eight megabytes of spans is a page that stops responding, which is what
+ * happened.
+ */
+const TERM_BUFFER_ENTRIES = 60;
+
+/** How much of one command's output is drawn before it is folded. */
+const TERM_ENTRY_BYTES = 128 * 1024;
+
+/**
+ * Draws the whole session: every command, marked, with its output under it.
+ *
+ * The transcript is the point. A terminal that shows only the last command's
+ * output is a worse `ls` - what makes one useful is being able to look back at
+ * what you did three commands ago and what it said, without hunting through a
+ * table of past commands to find it.
+ */
+function renderTerminalBuffer() {
+  const out = $("terminalOut");
+  if (!out) return;
+
+  const entries = termState.buffer.slice(-TERM_BUFFER_ENTRIES);
+  const dropped = termState.buffer.length - entries.length;
+
+  const frag = document.createDocumentFragment();
+
+  if (dropped > 0) {
+    const said = document.createElement("div");
+    said.className = "term-folded";
+    said.textContent = `${count(dropped, "earlier command")} not drawn. `
+      + "They are still in this session — open it under Sessions to read them.";
+    frag.appendChild(said);
+  }
+
+  for (const entry of entries) {
+    frag.appendChild(terminalEntry(entry));
+  }
+
+  out.replaceChildren(frag);
+}
+
+/** One command and what it printed. */
+function terminalEntry(entry) {
+  const wrap = document.createElement("div");
+  wrap.className = "term-entry";
+  if (entry.running) wrap.classList.add("running");
+
+  /*
+   * The command, with a prompt in front of it.
+   *
+   * This is the whole answer to "find each command in a sea of noisy results".
+   * A prompt character, a colour and a rule down the left are what the eye
+   * lands on when scrolling, and none of them can be confused with output
+   * because output does not get them.
+   */
+  const said = document.createElement("div");
+  said.className = "term-prompt";
+
+  const mark = document.createElement("span");
+  mark.className = "term-mark";
+  mark.textContent = "$";
+  said.appendChild(mark);
+
+  const what = document.createElement("span");
+  what.className = "term-command";
+  what.textContent = entry.command;
+  said.appendChild(what);
+
+  said.appendChild(terminalVerdictChip(entry));
+  wrap.appendChild(said);
+
+  if (entry.text) {
+    const body = document.createElement("div");
+    body.className = "term-body";
+
+    /*
+     * A single command's output is capped too.
+     *
+     * One `find /` can print more than the whole rest of the session, and the
+     * browser does not care that it came from one command rather than sixty.
+     * The end is kept rather than the beginning: what a command was doing when
+     * it stopped is almost always the interesting half.
+     */
+    const text = entry.text.length > TERM_ENTRY_BYTES
+      ? entry.text.slice(-TERM_ENTRY_BYTES)
+      : entry.text;
+
+    if (text !== entry.text) {
+      const said = document.createElement("div");
+      said.className = "term-folded";
+      said.textContent = `${humanBytes(entry.text.length - text.length)} earlier in this `
+        + "command is not drawn. Copy it to get all of it.";
+      body.appendChild(said);
+    }
+
+    body.appendChild(ansiToNodes(text));
+    wrap.appendChild(body);
+  }
+
+  return wrap;
+}
+
+/** How it ended, as a small chip beside the command. */
+function terminalVerdictChip(entry) {
+  const chip = document.createElement("span");
+  chip.className = "term-chip";
+
+  if (entry.running) {
+    chip.classList.add("live");
+    chip.textContent = "running";
+    return chip;
+  }
+
+  const bits = [];
+  if (entry.took !== null && entry.took !== undefined) bits.push(humanSpan(entry.took));
+
+  if (entry.stopped_by) {
+    chip.classList.add("bad");
+    bits.push("stopped");
+  } else if (entry.timed_out) {
+    chip.classList.add("bad");
+    bits.push("timed out");
+  } else if (entry.capped) {
+    chip.classList.add("bad");
+    bits.push("hit the output ceiling");
+  } else if (entry.exit_code === 0) {
+    bits.push("ok");
+  } else if (entry.exit_code !== null && entry.exit_code !== undefined) {
+    chip.classList.add("bad");
+    /*
+     * The number, and what killed it where a signal did.
+     *
+     * A shell reports a signal as 128 plus the signal number, which is a fact
+     * nobody should have to remember - "killed (SIGKILL)" is the same
+     * information without the arithmetic.
+     */
+    bits.push(entry.exit_code > 128
+      ? `killed (${SIGNAL_NAMES[entry.exit_code - 128] ?? `signal ${entry.exit_code - 128}`})`
+      : `exit ${entry.exit_code}`);
+  }
+
+  chip.textContent = bits.join(" · ");
+  return chip;
+}
+
+/** The signals a command is likely to die of, by number. */
+const SIGNAL_NAMES = {
+  1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 6: "SIGABRT", 9: "SIGKILL",
+  11: "SIGSEGV", 13: "SIGPIPE", 15: "SIGTERM",
+};
+
+/**
+ * Three things worth copying, and they are genuinely different.
+ *
+ * The commands alone is what you paste into a ticket or a runbook. The last
+ * output is what you paste into a search. The whole buffer is what you send
+ * somebody who asked what happened.
+ */
+function terminalCopyRow() {
+  const row = document.createElement("div");
+  row.className = "term-copy";
+
+  const copies = [
+    ["Copy the last output", () => (termState.buffer.at(-1)?.text ?? "")],
+    ["Copy everything", () => termState.buffer.map(entryAsText).join("\n")],
+    ["Copy just the commands", () => termState.buffer.map(e => e.command).join("\n")],
+  ];
+
+  for (const [label, take] of copies) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "link";
+    button.textContent = label;
+    button.addEventListener("click", async () => {
+      const text = take();
+      if (!text.trim()) {
+        notice("There is nothing to copy yet.");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(text);
+        notice(`Copied ${humanBytes(text.length)}.`, true);
+      } catch {
+        // Refused by the browser, usually because the page is not on https.
+        // Falling back to selecting it is worse than saying so.
+        notice("This browser would not let the page write to the clipboard.");
+      }
+    });
+    row.appendChild(button);
+  }
+
+  return row;
+}
+
+/** One entry as plain text, the way a transcript reads. */
+function entryAsText(entry) {
+  const verdict = entry.running
+    ? "(running)"
+    : [
+      entry.took === null || entry.took === undefined ? "" : humanSpan(entry.took),
+      entry.stopped_by ? "stopped" : "",
+      entry.exit_code === null || entry.exit_code === undefined ? "" : `exit ${entry.exit_code}`,
+    ].filter(Boolean).join(" · ");
+
+  // The escape codes come out, because a transcript pasted into a ticket with
+  // colour sequences in it is a transcript nobody can read.
+  const clean = stripAnsi(entry.text || "");
+
+  return `$ ${entry.command}${verdict ? `   [${verdict}]` : ""}\n${clean}`;
+}
+
+/** The same text with every escape sequence removed. */
+function stripAnsi(text) {
+  const csi = new RegExp(ESC + "\\[[0-9;?]*[A-Za-z]", "g");
+  const osc = new RegExp(ESC + "\\][\\s\\S]*?(" + BEL + "|" + ESC + "\\\\)", "g");
+
+  return text.replace(osc, "").replace(csi, "").replace(new RegExp(BEL, "g"), "");
+}
+
 const termState = {
   data: null,
   running: null,
@@ -10898,6 +11360,16 @@ const termState = {
   // Consecutive polls that brought nothing, so the interval can back off
   // gradually rather than the instant one read comes back empty.
   quiet: 0,
+  /*
+   * Everything run in this session, in order, with what it printed.
+   *
+   * On the page rather than on the server: it is what this browser has seen,
+   * and the sessions page is where the durable record lives. Cleared by
+   * reloading, which is what somebody clearing a terminal expects.
+   */
+  buffer: [],
+  // Where the up-arrow has walked back to, or null for "not walking".
+  recall: null,
 };
 
 async function refreshTerminal() {
@@ -10960,9 +11432,9 @@ function renderTerminal(data) {
   /*
    * What the assistant has asked somebody to run.
    *
-   * Above the box rather than below it, because it is the reason most people
-   * will be on this page, and it is a suggestion to read rather than a button
-   * to press: it fills the box in and waits.
+   * Above everything else because it is the reason most people will be on this
+   * page, and it is a suggestion to read rather than a button to press: it
+   * fills the box in and waits.
    */
   if (data.suggestions.length) {
     parts.push(section(
@@ -10972,12 +11444,43 @@ function renderTerminal(data) {
   }
 
   /*
-   * Where the next command will run.
+   * The transcript, then the box you type in.
    *
-   * Shown rather than remembered silently. `cd` carrying over is only honest if
-   * the directory it carried to is somewhere you can see - otherwise a command
-   * that behaves differently from the last one has no visible reason to.
+   * This was the other way round, which is the one arrangement no terminal has
+   * ever used: what you just ran appeared below the thing you ran it with, so
+   * every command pushed its own answer further from your eye. Output above,
+   * prompt at the bottom, the way every shell has done it.
    */
+  const out = document.createElement("div");
+  out.className = "term-out";
+  out.id = "terminalOut";
+  parts.push(out);
+
+  /*
+   * The running strip sits between the transcript and the box.
+   *
+   * Directly under the output it belongs to and directly above the hand that
+   * wants to stop it - the header button is three hundred pixels away, which on
+   * a long command means scrolling up to find out that it exists.
+   */
+  const running = document.createElement("div");
+  running.className = "term-running";
+  running.id = "terminalRunning";
+  running.hidden = true;
+
+  const runningSaid = document.createElement("span");
+  runningSaid.id = "terminalRunningSaid";
+  running.appendChild(runningSaid);
+
+  const breakIt = document.createElement("button");
+  breakIt.type = "button";
+  breakIt.className = "link danger";
+  breakIt.textContent = "Stop it";
+  breakIt.addEventListener("click", () => stopTerminal());
+  running.appendChild(breakIt);
+
+  parts.push(running);
+
   const where = document.createElement("div");
   where.className = "term-cwd";
   where.id = "terminalCwd";
@@ -11014,17 +11517,58 @@ function renderTerminal(data) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       form.requestSubmit();
+      return;
+    }
+
+    /*
+     * Up and down walk back through what has been run.
+     *
+     * Not a shell's history - there is no shell holding one - but the same
+     * gesture over this session's own commands, which is what the muscle
+     * memory is reaching for. Only while the box is empty or showing a recalled
+     * line, so it never eats an arrow press in the middle of editing.
+     */
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      const commands = termState.buffer.map(entry => entry.command);
+      if (!commands.length) return;
+
+      const showing = termState.recall === null ? "" : commands[termState.recall];
+      if (box.value !== "" && box.value !== showing) return;
+
+      event.preventDefault();
+
+      if (termState.recall === null) {
+        if (event.key === "ArrowDown") return;
+        termState.recall = commands.length - 1;
+      } else {
+        termState.recall += event.key === "ArrowUp" ? -1 : 1;
+        if (termState.recall < 0) termState.recall = 0;
+        if (termState.recall >= commands.length) termState.recall = null;
+      }
+
+      box.value = termState.recall === null ? "" : commands[termState.recall];
+      box.setSelectionRange(box.value.length, box.value.length);
     }
   });
 
+  // Typing anything of your own leaves the recalled line behind.
+  box.addEventListener("input", () => { termState.recall = null; });
+
   parts.push(form);
+  parts.push(terminalCopyRow());
 
   const said = document.createElement("p");
   said.className = "muted small";
   said.id = "terminalSaid";
   said.textContent = `Runs as this account with ${data.shell}. Anything still going after `
-    + `${humanSpan(data.max_seconds, true)} is stopped.`;
+    + `${humanSpan(data.max_seconds, true)} is stopped, and output stops at `
+    + `${humanBytes(data.cap || 8388608)}.`;
   parts.push(said);
+
+  const actions = document.createElement("div");
+  actions.className = "inspect-actions";
+  actions.id = "terminalActions";
+  parts.push(actions);
 
   /*
    * Off, as opposed to locked.
@@ -11056,52 +11600,34 @@ function renderTerminal(data) {
   });
   parts.push(off);
 
-  /*
-   * A second Stop, beside the output.
-   *
-   * The one in the panel header is three hundred pixels above the line
-   * somebody watching a command is actually reading, which on a long command
-   * means scrolling up to find out that it exists. A command you cannot stop
-   * without hunting for the button is one you cannot stop.
-   */
-  const running = document.createElement("div");
-  running.className = "term-running";
-  running.id = "terminalRunning";
-  running.hidden = true;
-
-  const runningSaid = document.createElement("span");
-  runningSaid.id = "terminalRunningSaid";
-  running.appendChild(runningSaid);
-
-  const breakIt = document.createElement("button");
-  breakIt.type = "button";
-  breakIt.className = "link danger";
-  breakIt.textContent = "Stop it";
-  breakIt.addEventListener("click", () => stopTerminal());
-  running.appendChild(breakIt);
-
-  parts.push(running);
-
-  const out = document.createElement("pre");
-  out.className = "term-out";
-  out.id = "terminalOut";
-  out.textContent = termState.text;
-  parts.push(out);
-
-  const actions = document.createElement("div");
-  actions.className = "inspect-actions";
-  actions.id = "terminalActions";
-  parts.push(actions);
-
   if (data.history.length) {
     const holder = document.createElement("div");
     holder.id = "terminalHistory";
     parts.push(section("Earlier commands", holder));
   }
+  /*
+   * What was being typed, and where the cursor was, survive the rebuild.
+   *
+   * replaceChildren throws away the box along with everything else, and the
+   * box is the one element on this page somebody may have their hands in. A
+   * refresh landing mid-sentence used to empty it and take the focus with it,
+   * so a command typed while something else was running was simply gone.
+   */
+  const wasTyping = document.activeElement === $("terminalInput");
+  const typed = $("terminalInput")?.value ?? "";
+  const at = $("terminalInput")?.selectionStart ?? typed.length;
 
   body.replaceChildren(...parts);
   renderTerminalActions();
+  renderTerminalBuffer();
   if (data.cwd) showTerminalCwd(data.cwd);
+
+  const restored = $("terminalInput");
+  if (restored && typed !== "") {
+    restored.value = typed;
+    restored.setSelectionRange(at, at);
+  }
+  if (restored && wasTyping) restored.focus();
 
   if (data.history.length) {
     renderTable("terminalHistory", data.history, [
@@ -11115,13 +11641,21 @@ function renderTerminal(data) {
         render: row => (row.bytes > 0 ? humanBytes(row.bytes) : "nothing"),
       },
       {
-        label: "",
-        render: row => {
-          const span = document.createElement("span");
-          span.textContent = row.running ? "running" : "";
-          span.className = row.running ? "chat-thinking" : "muted";
-          return span;
-        },
+        label: "Took",
+        className: "size",
+        render: row => (row.took === null || row.took === undefined
+          ? "" : humanSpan(row.took)),
+      },
+      {
+        label: "How it ended",
+        render: row => terminalVerdictChip({
+          running: row.running,
+          took: null,
+          exit_code: row.exit_code,
+          timed_out: row.timed_out,
+          stopped_by: row.stopped_by,
+          capped: row.capped,
+        }),
       },
       {
         label: "",
@@ -11142,6 +11676,30 @@ function renderTerminal(data) {
             open.textContent = "Show it";
             open.addEventListener("click", () => watchTerminal(row.id, true));
             wrap.appendChild(open);
+          }
+
+          /*
+           * A way to kill something left running from a previous visit.
+           *
+           * Reloading the page loses the follower, not the process: the list
+           * said "running" and offered no way to stop it, so the only way out
+           * was to wait for the time limit. The button acts on the row rather
+           * than on whatever this page happens to be following.
+           */
+          if (row.running) {
+            const kill = document.createElement("button");
+            kill.className = "link danger";
+            kill.textContent = "Stop it";
+            kill.addEventListener("click", async () => {
+              try {
+                const result = await post("terminal-stop", { id: row.id });
+                notice(result.killed ? "Stopped." : "It had already finished.", true);
+                await refreshTerminal();
+              } catch (error) {
+                notice(String(error.message || error));
+              }
+            });
+            wrap.appendChild(kill);
           }
 
           const again = document.createElement("button");
@@ -11399,11 +11957,47 @@ async function runTerminal(command) {
 
   delete box.dataset.suggestion;
   box.value = "";
+  termState.recall = null;
   termState.text = "";
   termState.from = 0;
   termState.data = result;
 
+  /*
+   * A new entry on the end of the transcript, not a fresh page.
+   *
+   * The buffer is what makes this a terminal rather than a form that shows one
+   * answer at a time: everything run in this session stays above the prompt,
+   * in order, with what it printed under it.
+   */
+  termState.buffer.push({
+    id: result.run.id,
+    command,
+    at: Math.floor(Date.now() / 1000),
+    text: "",
+    running: true,
+    took: null,
+    exit_code: null,
+  });
+  renderTerminalBuffer();
+  scrollTerminalToEnd();
+
   watchTerminal(result.run.id, false);
+}
+
+/**
+ * Keeps the transcript pinned to the bottom, unless somebody scrolled up.
+ *
+ * Following output is the default and reading back through it is the reason
+ * the buffer exists, so the one must not fight the other: if the view is
+ * already at the bottom it stays there, and if it is not, new output does not
+ * yank it away from whatever is being read.
+ */
+function scrollTerminalToEnd(force = true) {
+  const out = $("terminalOut");
+  if (!out) return;
+
+  const atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+  if (force || atEnd) out.scrollTop = out.scrollHeight;
 }
 
 /** Follows one command's output until it stops. */
@@ -11431,21 +12025,32 @@ async function pollTerminal() {
     return;
   }
 
-  if (data.text) {
-    termState.text += data.text;
-    termState.from = data.to;
+  /*
+   * The entry this poll belongs to, found rather than assumed.
+   *
+   * A poll can land after somebody has already run the next command, and
+   * appending its output to whatever happens to be last would put one
+   * command's output under another command's prompt.
+   */
+  const entry = termState.buffer.find(row => row.id === id);
 
-    const out = $("terminalOut");
-    if (out) {
-      out.textContent = termState.text;
-      /*
-       * Only follow the tail if the reader is already at it.
-       *
-       * Scrolling somebody back to the bottom while they are reading something
-       * further up is the single most annoying thing a log view can do.
-       */
-      const atEnd = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
-      if (atEnd) out.scrollTop = out.scrollHeight;
+  if (entry) {
+    if (data.text) {
+      entry.text += data.text;
+      termState.text += data.text;
+      termState.from = data.to;
+    }
+
+    entry.running = Boolean(data.running);
+    entry.took = data.took ?? null;
+    entry.exit_code = data.exit_code ?? null;
+    entry.timed_out = Boolean(data.timed_out);
+    entry.stopped_by = data.stopped_by ?? null;
+    entry.capped = Boolean(data.capped);
+
+    if (data.text || !data.running) {
+      renderTerminalBuffer();
+      scrollTerminalToEnd(false);
     }
   }
 
@@ -11508,8 +12113,10 @@ async function pollTerminal() {
     refreshTerminal().then(() => {
       const said = $("terminalSaid");
       if (said) said.textContent = terminalVerdict(verdict);
-      const out = $("terminalOut");
-      if (out) out.textContent = termState.text;
+      // The whole page was rebuilt, so the transcript has to be put back -
+      // and it is the buffer, not just this command's output.
+      renderTerminalBuffer();
+      scrollTerminalToEnd(false);
       renderTerminalActions();
     }).catch(() => {});
   }
