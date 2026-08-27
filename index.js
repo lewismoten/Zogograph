@@ -11628,6 +11628,41 @@ async function refreshPeers() {
   }
 }
 
+async function refreshMarketplace() {
+  const body = $("marketplaceBody");
+  if (!body) return;
+  if (!state.signedIn) { body.replaceChildren(note("Sign in to view local marketplace packages.")); return; }
+  try { renderMarketplace(await api("marketplace")); }
+  catch (error) { body.replaceChildren(note(String(error.message || error))); }
+}
+
+function renderMarketplace(data) {
+  const body = $("marketplaceBody");
+  const parts = [note("Packages are discovered from the configured local marketplace directory. Remote downloads and executable hooks are not supported.")];
+  if (data.errors?.length) parts.push(note(`Ignored manifests: ${data.errors.join("; ")}`));
+  if (!data.packages.length) { parts.push(note("No valid local package manifests were found.")); body.replaceChildren(...parts); return; }
+  const holder = document.createElement("div"); holder.id = "marketplaceTable"; parts.push(holder); body.replaceChildren(...parts);
+  renderTable("marketplaceTable", data.packages, [
+    { label: "Package", className: "name", render: row => `${row.name} · ${row.version}` },
+    { label: "Publisher", render: row => row.publisher },
+    { label: "What it offers", className: "cmd", render: row => row.summary },
+    { label: "Capabilities", render: row => row.capabilities.join(", ") },
+    { label: "License", render: row => row.license },
+    { label: "Status", render: row => row.enabled ? "enabled" : "not enabled" },
+    { label: "", className: "row-actions", render: row => {
+      if (!data.can_change) return "";
+      const button = document.createElement("button"); button.className = row.enabled ? "link danger" : "link";
+      button.textContent = row.enabled ? "Disable" : "Enable";
+      button.addEventListener("click", async () => {
+        if (!(await confirmDialog(`${row.enabled ? "Disable" : "Enable"} ${row.name}?\n\nCapabilities: ${row.capabilities.join(", ")}`, row.enabled ? "Disable package" : "Enable package"))) return;
+        try { await post("marketplace-enable", { id: row.id, enabled: row.enabled ? "0" : "1" }); await refreshMarketplace(); notice(`${row.name} ${row.enabled ? "disabled" : "enabled"}.`, true); }
+        catch (error) { notice(String(error.message || error)); }
+      });
+      return button;
+    }},
+  ], null, row => row.enabled ? "row-ok" : "", row => row.id);
+}
+
 function renderPeers(data) {
   const body = $("peersAdminBody");
   const parts = [];
@@ -31227,6 +31262,12 @@ const VIEWS = {
     label: "Trusted servers",
     parent: "system",
     refresh: () => refreshPeers(),
+  },
+  "sys-marketplace": {
+    manual: true,
+    label: "Marketplace",
+    parent: "system",
+    refresh: () => refreshMarketplace(),
   },
   "sys-changed": {
     /*

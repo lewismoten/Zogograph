@@ -451,6 +451,10 @@
       <span class="nav-label">Trusted servers</span>
       <span class="nav-badge" data-badge="sys-peers" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/sys-marketplace" data-nav="sys-marketplace" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Marketplace</span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-notes" data-nav="sys-notes" data-parent="system">
       <span class="nav-icon" aria-hidden="true">⌕</span>
       <span class="nav-label">Forensics</span>
@@ -2568,6 +2572,14 @@
   <div class="panel-head"><h2>Trusted HostScope servers</h2></div>
   <p class="muted small sub-note">A trusted server is explicitly configured here and checked through HTTPS OpenID Connect discovery. Saving it does not share data or sign anyone in; those authorization-code steps are deliberately separate.</p>
   <div id="peersAdminBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="sys-marketplace" hidden>
+<section class="panel">
+  <div class="panel-head"><h2>Marketplace</h2></div>
+  <p class="muted small sub-note">Local package manifests only. Enabling a package records approval but does not execute package code; requested capabilities remain visible for review.</p>
+  <div id="marketplaceBody"></div>
 </section>
 </section>
 
