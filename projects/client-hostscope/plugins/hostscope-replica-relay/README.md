@@ -28,6 +28,11 @@ readiness projection: artifact count, ciphertext bytes, configured ceilings,
 and whether another artifact can be stored. It has no authority to list,
 download, delete, manage, or bill the relay account.
 
+The adapter's `health()` method calls the unauthenticated `/v1/health` probe
+with the same HTTPS and optional SPKI pin configuration, but sends no bearer,
+signature, or ciphertext. A package setup screen can use it as a connection
+test before scheduling a ciphertext transfer.
+
 The package remains a design preview until the isolated runtime can enforce its
 capabilities and the core replication ledger can prove upload, remote digest
 verification, retry, retention, deletion acknowledgement, and recovery.

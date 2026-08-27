@@ -37,6 +37,25 @@ final class ReplicaRelayHttpClient
         finally { fclose($stream); }
     }
 
+    /** Tests only service liveness; it sends no bearer, signature, or ciphertext. */
+    public function health(): array
+    {
+        $handle = curl_init(rtrim($this->baseUrl, '/') . '/v1/health'); if ($handle === false) throw new \RuntimeException('could not initialize replica relay health request');
+        try {
+            $options = [CURLOPT_CUSTOMREQUEST => 'GET', CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_TIMEOUT => 30, CURLOPT_FOLLOWLOCATION => false, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_HTTPHEADER => ['Accept: application/json']];
+            if ($this->tlsSpkiPin !== null) $options[CURLOPT_PINNEDPUBLICKEY] = $this->tlsSpkiPin;
+            curl_setopt_array($handle, $options); $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+            $response = is_string($raw) ? json_decode($raw, true) : null;
+            if ($status !== 200 || !is_array($response) || ($response['status'] ?? null) !== 'ok'
+                || ($response['service'] ?? null) !== 'replica-relay' || ($response['api_version'] ?? null) !== 'v1') {
+                throw new \RuntimeException('replica relay health request was refused');
+            }
+            return $response;
+        } finally { curl_close($handle); }
+    }
+
     /** Reads only this enrolled deployment's ciphertext capacity. It does not
      * grant artifact listing, deletion, download, or billing authority. */
     public function storageEntitlement(): array

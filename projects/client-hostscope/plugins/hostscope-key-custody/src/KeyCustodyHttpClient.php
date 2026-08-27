@@ -42,6 +42,26 @@ final class KeyCustodyHttpClient
         return strtoupper($method) . "\n" . $path . "\n" . $timestamp . "\n" . $nonce . "\n" . base64_encode(hash('sha256', $body, true));
     }
 
+    /** Tests only service liveness; it sends no bearer, signature, or key material. */
+    public function health(): array
+    {
+        $handle = curl_init(rtrim($this->baseUrl, '/') . '/v1/health');
+        if ($handle === false) throw new \RuntimeException('could not initialize custody health request');
+        try {
+            $options = [CURLOPT_CUSTOMREQUEST => 'GET', CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_TIMEOUT => 30, CURLOPT_FOLLOWLOCATION => false, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_HTTPHEADER => ['Accept: application/json']];
+            if ($this->tlsSpkiPin !== null) $options[CURLOPT_PINNEDPUBLICKEY] = $this->tlsSpkiPin;
+            curl_setopt_array($handle, $options); $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+            $response = is_string($raw) ? json_decode($raw, true) : null;
+            if ($status !== 200 || !is_array($response) || ($response['status'] ?? null) !== 'ok'
+                || ($response['service'] ?? null) !== 'key-custody' || ($response['api_version'] ?? null) !== 'v1') {
+                throw new \RuntimeException('key custody health request was refused');
+            }
+            return $response;
+        } finally { curl_close($handle); }
+    }
+
     public function storeEnvelope(string $keyId, string $artifactId, string $envelope): array
     {
         self::validateIdentity($keyId, $artifactId);

@@ -47,7 +47,8 @@ try {
         && str_contains($custodySource, "'requested_ttl_seconds' => \$requestedTtl")
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYPEER => true')
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYHOST => 2')
-        && str_contains($custodySource, 'CURLOPT_PINNEDPUBLICKEY'), 'custody client does not enforce its secure transport defaults');
+        && str_contains($custodySource, 'CURLOPT_PINNEDPUBLICKEY') && str_contains($custodySource, "'/v1/health'")
+        && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::class, 'health'), 'custody client does not enforce its secure transport defaults');
     $custodyDirectory = __DIR__ . '/../plugins/hostscope-key-custody';
     $custodyManifest = json_decode((string)file_get_contents($custodyDirectory . '/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
     packageExpect(is_array($custodyManifest) && packageVerifyIntegrity($custodyManifest, $custodyDirectory)['ok'],
@@ -62,7 +63,8 @@ try {
     $relaySource = file_get_contents(__DIR__ . '/../plugins/hostscope-replica-relay/src/ReplicaRelayHttpClient.php');
     packageExpect($relaySource !== false && str_contains($relaySource, 'CURLOPT_UPLOAD => true')
         && str_contains($relaySource, 'CURLOPT_SSL_VERIFYPEER => true') && str_contains($relaySource, 'CURLOPT_SSL_VERIFYHOST => 2')
-        && str_contains($relaySource, 'CURLOPT_PINNEDPUBLICKEY'),
+        && str_contains($relaySource, 'CURLOPT_PINNEDPUBLICKEY') && str_contains($relaySource, "'/v1/health'")
+        && method_exists(\HostScope\Plugin\ReplicaRelay\ReplicaRelayHttpClient::class, 'health'),
         'relay client does not stream ciphertext with secure transport defaults');
     $relayDirectory = __DIR__ . '/../plugins/hostscope-replica-relay';
     $relayManifest = json_decode((string)file_get_contents($relayDirectory . '/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
