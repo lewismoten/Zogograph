@@ -40,6 +40,10 @@ See `openapi.json` for the API contract. The companion client integration will
 be the optional `hostscope-key-custody` package. Until it is installed and
 enabled, HostScope uses the local key file or self-managed fleet options.
 
+For the SQLite-first VPS deployment, private-path layout, tenant provisioning,
+credential separation, billing boundary, and recovery procedure, start with
+[SETUP.md](SETUP.md).
+
 `GET /v1/health` is the unauthenticated deployment probe. It opens the private
 SQLite service store and returns only service liveness/version metadata; it
 does not reveal tenants, plans, keys, envelopes, credentials, or artifacts.
