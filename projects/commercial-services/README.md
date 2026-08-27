@@ -20,3 +20,17 @@ versioned and optional; a failure here must not stop local collection.
 Key custody and replica storage must remain distinct roles by default. A hosted
 service must not receive both a decryptable artifact and the material needed to
 unwrap it.
+
+## Recommended launch order
+
+Do not launch HostScope-operated key custody with the first commercial service
+release. Begin, if needed, with an optional ciphertext-only replica relay after
+tenant isolation, rate limits, retention/deletion controls, verification,
+support escalation, and incident response are proven. A relay must not receive
+a data-encryption key or unwrap authorization.
+
+Reconsider optional key custody only after self-managed fleet custody has passed
+recovery and outage drills, the service has independent security review,
+short-lived authorization and revocation work, and clear recovery/deletion and
+privacy terms exist. The service's base URL, price, retention, and availability
+policy must be commercial settings, never compiled into a client package.

@@ -38,6 +38,41 @@ authenticated website/API.
 | Commercial key hosting | before pricing or customer onboarding | commercial-services/key-custody package | Keep key custody and ciphertext replication as separate tenant-isolated roles; establish recovery, deletion, audit, and incident terms. |
 | Product/domain naming | before public launch or rebrand | commercial-site deployment settings | Domains and labels must not change encrypted artifact identifiers, peer identities, signing keys, or stored customer data. |
 
+## Recommended initial product direction
+
+These are deliberate starting policies for the first public release. They
+belong in the product-settings database and commercial website administration
+interface, not in client source code. Changing one later requires an audited
+configuration migration and updated customer-facing terms, not a protocol fork.
+
+| area | recommended initial policy | reason and later change trigger |
+| --- | --- | --- |
+| Commercial review | Free private signing/testing; manual review for every executable package; no automatic publication. | Early review volume should be manageable and security-sensitive packages need human inspection. Add paid expedited review only after measured review time and a published SLA. |
+| Marketplace price | $0 to submit/open-source packages; charge only for commercial package sales through a configurable revenue share. | Avoid charging before the marketplace creates distribution value. Set the percentage, payout threshold, refund window, and tax handling in commercial marketplace settings after legal/accounting review. |
+| SQLCipher support | Support only tested PHP/OS/container images published by HostScope; report all other environments as unavailable. | SQLCipher builds and PDO driver behavior vary. Expand the support matrix only after automated WAL, migration, backup, crash-recovery, and performance results pass for that image. |
+| Local retention | Daily sealed copy, 30-day target; never automatically prune until recovery proof and safe-pruning are implemented. | This provides a usable baseline without silently deleting recovery data. Recommended future minimum: retain 7 daily, 4 weekly, and 12 monthly verified artifacts, all configurable per policy. |
+| Fleet replication | Off by default; recommend 2 encrypted replicas when at least 3 independently administered hosts are enrolled. | One remote copy improves availability but is not redundancy; two replicas tolerate one failure. Do not count the owner as a remote replica. |
+| Fleet custody | Off at launch; self-managed custody first, with two-of-three threshold recovery only after independent review. | Custody is harder to recover safely than ciphertext replication. A single remote key service becomes a critical availability and trust dependency. |
+| HostScope key hosting | Do not launch with key hosting. Launch optional ciphertext replica storage first; reconsider custody only after mature fleet custody, incident response, recovery drills, tenant isolation, and legal/privacy terms exist. | Hosting both encrypted artifacts and unwrap capability increases blast radius and operational obligations. Keep those roles separate even if both services are later sold. |
+| MySQL/MariaDB | Do not ship as an encryption substitute. Offer only as an advanced storage-backend package after the package runtime is stable. | It adds server operations and credentials without automatically solving key custody or at-rest encryption. |
+| Redis | Do not offer as metric storage. Offer later only as a bounded cache/queue package with TLS, authentication, eviction policy, and no secrets by default. | Redis is easy to expose accidentally and is not a durable replacement for the metric database. |
+
+## Recommended support matrix
+
+The commercial site should publish a database-backed support matrix with an
+expiry/review date for every entry. Start with the following categories, not an
+unbounded list of host distributions:
+
+- **Portable:** standard PHP 8.1+ with PDO SQLite; sealed-copy package and
+  operator-managed volume protection only.
+- **Verified SQLCipher:** HostScope-published container images and selected VPS
+  images where the exact PHP/PDO SQLCipher driver build is continuously tested.
+- **Unsupported but detectable:** any other environment; show why the package
+  cannot activate and offer sealed copies or host-volume guidance.
+
+This avoids promising that a generic `pdo_sqlite` installation has encrypted
+SQLite support when it does not.
+
 ## Service and API design decisions
 
 Use one versioned service namespace, independent of a provisional domain:

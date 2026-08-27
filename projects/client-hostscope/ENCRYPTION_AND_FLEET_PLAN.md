@@ -174,6 +174,12 @@ healthy only after the remote peer verifies the ciphertext hash. The requested
 replication count is a per-database policy, bounded by the enrolled peers and
 edition capacity; zero means local-only.
 
+Initial product policy: replication is off by default. Recommend two encrypted
+remote replicas only when at least three independently administered peers are
+available; the owner does not count as a remote replica. Automatic retention
+must preserve at least one verified recoverable copy and every copy required by
+the configured recovery and replica policy.
+
 Multi-custodian threshold recovery (for example, two of three custodians) is a
 separate cryptographic feature. Do not approximate it by copying the complete
 key to three servers. It needs a reviewed threshold/envelope design, a defined

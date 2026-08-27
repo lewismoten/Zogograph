@@ -30,3 +30,24 @@ Suggested lifecycle: `received`, `signature_verified`, `reviewing`,
 `changes_requested`, `approved`, `published`, `rejected`, `withdrawn`.
 Marketplace publication is opt-in and does not grant an installed client any
 additional filesystem, database, network, or key capability.
+
+## Recommended launch policy
+
+Start with free private package signing/testing and free submission for
+open-source or private-review packages. Every executable package receives
+manual security and compatibility review; no customer package is automatically
+published, even when its signature verifies. Reviewers publish an independent
+HostScope approval record and never replace the publisher signature.
+
+Do not set a submission fee or expedited-review promise at launch. Revisit
+pricing after tracking review effort and published package demand. For paid
+packages, use marketplace settings—not package code—to configure the revenue
+share, payout minimum, refund period, regional tax handling, and whether a
+publisher is eligible to sell. Keep the private testing path free so customers
+can validate packages without a commercial dependency.
+
+The review interface should capture a source URL or attached source,
+reproducible build/test instructions, requested capabilities, data and network
+flows, license, support contact, and security disclosure contact. Encryption,
+key-custody, storage, network, shell, or database-migration capabilities require
+an additional security review and published compatibility evidence.
