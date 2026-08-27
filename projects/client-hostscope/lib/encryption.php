@@ -316,7 +316,7 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     $settings = (array)($config['encryption'] ?? []);
     $mode = (string)($settings['mode'] ?? 'none');
     $stores = encryptionSelectedStores($settings);
-    $status = ['mode' => $mode, 'stores' => $stores, 'waiting_stores' => [], 'superseded_artifacts' => [], 'retired_artifacts' => [], 'ready' => false, 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null];
+    $status = ['mode' => $mode, 'stores' => $stores, 'policy' => encryptionPolicySummary($settings), 'waiting_stores' => [], 'superseded_artifacts' => [], 'retired_artifacts' => [], 'ready' => false, 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null];
     if ($mode === 'none') {
         $status['warnings'][] = 'Encryption is off. Live SQLite files and copies remain unencrypted unless host storage protection is configured separately.';
         return $status;
@@ -424,6 +424,18 @@ function encryptionRecoveryDrillMaximumAge(array $settings): ?int
     $days = $settings['recovery_drill_max_age_days'] ?? 90;
     if (!is_int($days) && !(is_string($days) && ctype_digit($days))) return 90 * 86400;
     return (int)$days <= 0 ? null : min(36500, (int)$days) * 86400;
+}
+
+/** Safe policy facts for the signed-in Protection view; never paths or keys. */
+function encryptionPolicySummary(array $settings): array
+{
+    $days = $settings['retention_days'] ?? 0;
+    $days = (is_int($days) || (is_string($days) && ctype_digit($days))) ? min(36500, max(0, (int)$days)) : 0;
+    $schedule = (string)($settings['backup_schedule'] ?? 'manual');
+    $maximumDrillAge = encryptionRecoveryDrillMaximumAge($settings);
+    return ['backup_schedule' => in_array($schedule, ['manual', 'daily', 'weekly'], true) ? $schedule : 'manual',
+        'retention_days' => $days, 'retention_tiers' => encryptionRetentionTiers($settings),
+        'recovery_drill_review_days' => $maximumDrillAge === null ? 0 : intdiv($maximumDrillAge, 86400)];
 }
 
 /** @return list<string> */
@@ -569,13 +581,7 @@ function encryptionRetentionDays(array $settings, string $store): int
 /** Keeps a bounded set of representative older recovery copies per store. */
 function encryptionRetentionPreservedArtifactIds(array $artifacts, array $settings): array
 {
-    $tiers = (array)($settings['retention_recovery_tiers'] ?? []);
-    if ($tiers === []) $tiers = ['daily' => $settings['retention_keep_daily'] ?? 0, 'weekly' => $settings['retention_keep_weekly'] ?? 0, 'monthly' => $settings['retention_keep_monthly'] ?? 0];
-    $limits = [];
-    foreach (['daily', 'weekly', 'monthly'] as $tier) {
-        $value = $tiers[$tier] ?? 0;
-        $limits[$tier] = (is_int($value) || (is_string($value) && ctype_digit($value))) ? min(36500, max(0, (int)$value)) : 0;
-    }
+    $limits = encryptionRetentionTiers($settings);
     $seen = []; $preserved = [];
     foreach ($artifacts as $artifact) {
         $store = (string)$artifact['store'];
@@ -587,6 +593,19 @@ function encryptionRetentionPreservedArtifactIds(array $artifacts, array $settin
         }
     }
     return $preserved;
+}
+
+/** Normalizes configured long-term recovery tiers, including old hand-written keys. */
+function encryptionRetentionTiers(array $settings): array
+{
+    $tiers = (array)($settings['retention_recovery_tiers'] ?? []);
+    if ($tiers === []) $tiers = ['daily' => $settings['retention_keep_daily'] ?? 0, 'weekly' => $settings['retention_keep_weekly'] ?? 0, 'monthly' => $settings['retention_keep_monthly'] ?? 0];
+    $limits = [];
+    foreach (['daily', 'weekly', 'monthly'] as $tier) {
+        $value = $tiers[$tier] ?? 0;
+        $limits[$tier] = (is_int($value) || (is_string($value) && ctype_digit($value))) ? min(36500, max(0, (int)$value)) : 0;
+    }
+    return $limits;
 }
 
 /** Decrypts a sealed artifact into a new destination file after authenticating every chunk. */

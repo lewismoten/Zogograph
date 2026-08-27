@@ -11743,6 +11743,12 @@ function renderEncryptionStatus(data) {
     const free = data.storage_estimate.free_bytes == null ? "free space unavailable" : `${humanBytes(data.storage_estimate.free_bytes)} free`;
     overview.push(["Space for next seal", `${humanBytes(data.storage_estimate.required_bytes)} estimated · ${free}`]);
   }
+  if (data.mode === "sealed_copies_local" && data.policy) {
+    overview.push(["Copy schedule", data.policy.backup_schedule || "manual"]);
+    const tiers = Object.entries(data.policy.retention_tiers || {}).filter(([, copies]) => Number(copies) > 0).map(([tier, copies]) => `${copies} ${tier}`);
+    overview.push(["Local retention", Number(data.policy.retention_days) === 0 ? "Keep every copy" : `${data.policy.retention_days} days${tiers.length ? ` · plus ${tiers.join(", ")}` : ""}`]);
+    overview.push(["Recovery-drill review", Number(data.policy.recovery_drill_review_days) === 0 ? "Initial drill only" : `Every ${data.policy.recovery_drill_review_days} days`]);
+  }
   if (data.waiting_stores?.length) overview.push(["Waiting until present", data.waiting_stores.join(", ")]);
   const drilled = (data.artifacts || []).filter(row => Number(row.last_recovery_drill_at || 0) > 0).length;
   if (data.mode === "sealed_copies_local") overview.push(["Recovery drill", data.artifacts?.length ? `${drilled}/${data.artifacts.length} stores recorded` : "Run after the first seal"]);

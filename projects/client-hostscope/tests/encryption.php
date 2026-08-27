@@ -35,6 +35,7 @@ try {
         'encryption status is not protected by its dashboard page access rule');
     encryptionExpect($dashboard !== false && str_contains($dashboard, 'function renderEncryptionStatus')
         && str_contains($dashboard, 'Verified encrypted copies protect backup artifacts')
+        && str_contains($dashboard, 'Recovery-drill review')
         && str_contains($dashboard, 'Optional remote key custody and ciphertext replica storage are not selectable yet'),
         'dashboard does not explain encrypted-copy limitations');
     encryptionExpect($page !== false && str_contains($page, 'data-view="sys-encryption"')
@@ -158,6 +159,12 @@ try {
             'recovery drill did not record current selected-store recovery evidence');
         $status = encryptionStatus($live, $config, $web);
         encryptionExpect($status['ready'] && count($status['artifacts']) === 2, 'sealed-copy status did not report verified coverage');
+        $policyConfig = $config; $policyConfig['encryption'] += ['backup_schedule' => 'daily', 'retention_days' => 30,
+            'retention_recovery_tiers' => ['daily' => 7, 'weekly' => 4, 'monthly' => 12], 'recovery_drill_max_age_days' => 90];
+        $policyStatus = encryptionStatus($live, $policyConfig, $web);
+        encryptionExpect($policyStatus['policy'] === ['backup_schedule' => 'daily', 'retention_days' => 30,
+            'retention_tiers' => ['daily' => 7, 'weekly' => 4, 'monthly' => 12], 'recovery_drill_review_days' => 90],
+            'protection status did not expose a safe effective recovery policy summary');
         $overdueDrill = $config; $overdueDrill['encryption']['recovery_drill_max_age_days'] = 1;
         $live->prepare('UPDATE encryption_artifacts SET last_recovery_drill_at = ?')->execute([time() - 2 * 86400]);
         $overdueStatus = encryptionStatus($live, $overdueDrill, $web);
