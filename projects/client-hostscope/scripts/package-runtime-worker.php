@@ -16,7 +16,7 @@ if (!is_string($input) || strlen($input) > 65536) { fwrite(STDERR, "Worker reque
 try {
     $request = json_decode($input, true, 16, JSON_THROW_ON_ERROR);
     $manifest = json_decode((string)file_get_contents($root . '/manifest.json'), true, 64, JSON_THROW_ON_ERROR);
-    $expectedFields = in_array($request['operation'] ?? null, ['custody_endpoint_probe', 'custody_enrollment_check', 'custody_store_envelope'], true)
+    $expectedFields = in_array($request['operation'] ?? null, ['custody_endpoint_probe', 'custody_enrollment_check', 'custody_store_envelope', 'custody_unwrap_artifact'], true)
         ? ['api', 'invocation_id', 'operation', 'package_id', 'input'] : ['api', 'invocation_id', 'operation', 'package_id'];
     if (!is_array($request) || array_diff(array_keys($request), $expectedFields) !== [] || count($request) !== count($expectedFields)
         || ($request['api'] ?? null) !== '1.0' || !is_string($request['invocation_id'] ?? null)
@@ -57,6 +57,15 @@ try {
         $dataKey = base64_decode($input['data_key'], true);
         if (!is_string($dataKey) || strlen($dataKey) !== 32) throw new RuntimeException('Custody envelope data key is invalid.');
         $result = $provider->storeEnvelope($input['service_base_url'], $input['client_credential'], $input['client_signing_key'], $input['custody_key_id'], $input['artifact_id'], $dataKey, $input['tls_spki_pin'] ?? null);
+    } elseif ($request['operation'] === 'custody_unwrap_artifact') {
+        $input = $request['input'] ?? null;
+        if (!is_array($input) || array_diff(array_keys($input), ['service_base_url', 'tls_spki_pin', 'client_credential', 'client_signing_key', 'custody_key_id', 'artifact_id']) !== []
+            || !is_string($input['service_base_url'] ?? null) || (($input['tls_spki_pin'] ?? null) !== null && !is_string($input['tls_spki_pin']))
+            || !is_string($input['client_credential'] ?? null) || !is_string($input['client_signing_key'] ?? null)
+            || !is_string($input['custody_key_id'] ?? null) || !is_string($input['artifact_id'] ?? null)) {
+            throw new RuntimeException('Custody recovery input is invalid.');
+        }
+        $result = $provider->unwrapArtifact($input['service_base_url'], $input['client_credential'], $input['client_signing_key'], $input['custody_key_id'], $input['artifact_id'], $input['tls_spki_pin'] ?? null);
     } else $result = $provider->preflight();
     if (!is_array($result) || !is_string($result['id'] ?? null) || !is_string($result['state'] ?? null) || !is_string($result['reason'] ?? null)
         || strlen(json_encode($result, JSON_THROW_ON_ERROR)) > 4096) throw new RuntimeException('Package capability response is invalid.');
