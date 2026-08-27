@@ -37,9 +37,12 @@ the product is complete.
   capability restrictions, and direct-file denial rules.
 - [ ] Full per-host enrollment, signed/replay-protected remote transport, fleet
   lifecycle, and commercial entitlement verification.
-- [ ] Optional at-rest encryption, self-managed key custody, encrypted fleet
-  replicas, and key-expiry/rotation recovery. See
-  `ENCRYPTION_AND_FLEET_PLAN.md`; no encryption is currently implemented.
+- [ ] Optional at-rest encryption packages, self-managed key custody,
+  encrypted fleet replicas, and key-expiry/rotation recovery. The current
+  core has opt-in local sealed-copy primitives and setup choices, but the
+  executable package runtime, restore/retention workflow, fleet custody, and
+  live encrypted SQLite support remain incomplete. See
+  `ENCRYPTION_AND_FLEET_PLAN.md` and `ENCRYPTION_REVIEW.md`.
 - [ ] Complete browser editor safety/recovery workflow.
 - [ ] Authentication recovery, MFA, OIDC verification, commercial entitlement,
   hosted-service boundary, and release/update workflow verification.

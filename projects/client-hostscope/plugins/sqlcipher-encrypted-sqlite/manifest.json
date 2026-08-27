@@ -1,0 +1,29 @@
+{
+  "id": "sqlcipher-encrypted-sqlite",
+  "version": "0.1.0",
+  "name": "SQLCipher encrypted SQLite",
+  "publisher": "HostScope",
+  "summary": "Provides live encrypted SQLite storage when a verified SQLCipher-compatible PDO driver is installed.",
+  "license": "Proprietary preview",
+  "capabilities": [
+    "storage_backend",
+    "live_database_encryption",
+    "package_private_database"
+  ],
+  "runtime": {
+    "kind": "hostscope-isolated-php-package",
+    "entrypoint": "src/SqlcipherStorageProvider.php",
+    "minimum_api": "1.0"
+  },
+  "settings_schema": "settings.schema.json",
+  "data": {
+    "directory": "data",
+    "migration_namespace": "sqlcipher_encrypted_sqlite"
+  },
+  "compatibility": {
+    "min_php": "8.1.0",
+    "requires_extensions": ["pdo", "pdo_sqlite"],
+    "requires_runtime_capability": "encrypted_sqlite_driver"
+  },
+  "state": "design-preview"
+}

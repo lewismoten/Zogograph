@@ -37,12 +37,15 @@ encryption, upload a key, or contact another HostScope server.
 
 ## Architecture decisions
 
-### 1. Core owns the cryptographic format and local custody interface
+### 1. Core owns the safety contracts; packages provide encryption methods
 
-HostScope core needs a versioned sealed-artifact format, authenticated metadata,
-key identifiers, algorithm-agility rules, auditing, recovery, and a key-provider
-interface. These are compatibility and data-recovery contracts, so they cannot
-be delegated to a marketplace add-on.
+HostScope core needs versioned artifact metadata, key identifiers,
+algorithm-agility rules, authorization, auditing, recovery evidence, package
+signatures, a settings/secrets interface, and a key-provider interface. These
+are compatibility and data-recovery contracts, so they cannot be delegated to
+a marketplace add-on. The cipher implementation, encrypted storage engine,
+custody adapter, and replica transport are packages loaded only after an
+administrator installs and enables them.
 
 Each sealed artifact uses a fresh random data-encryption key (DEK). The DEK
 encrypts the artifact with an authenticated cipher. The DEK is then wrapped by
@@ -56,7 +59,7 @@ well-tested core implementation and deterministic test vectors. Do not invent
 an encryption algorithm, use unauthenticated encryption, derive a key directly
 from a short password, or put a key in `.htaccess`.
 
-### 2. Full live-SQLite encryption is a storage-engine capability
+### 2. Full live-SQLite encryption is a storage-engine package
 
 The current `pdo_sqlite` driver opens normal SQLite files. It cannot make an
 encrypted SQLite database behave as a live WAL database. Therefore:
@@ -65,12 +68,14 @@ encrypted SQLite database behave as a live WAL database. Therefore:
   “database encryption”; that spool remains an at-rest disclosure.
 - Do not offer table, row, or whole-file checkboxes until their precise storage
   guarantees are implemented and tested.
-- A true encrypted live `stats.db`/`host.db`/`ai.db` needs a supported encrypted
-  SQLite engine distribution (for example a SQLCipher-compatible PDO build) or
-  volume encryption supplied by the operator.
-- The core feature detects and names the available storage modes: `none`,
-  `sealed-copies`, `volume-protected`, and `encrypted-sqlite`. It must report
-  the actual mode instead of treating a setting as evidence.
+- A true encrypted live `stats.db`/`host.db`/`ai.db` needs the
+  `sqlcipher-encrypted-sqlite` package plus a supported encrypted SQLite engine
+  distribution (for example a SQLCipher-compatible PDO build), or volume
+  encryption supplied by the operator.
+- Core reports an installed package's verified capability, not merely its
+  setting: `none`, `sealed-copies`, `operator-managed-volume`, or
+  `encrypted-sqlite`. An operator-managed-volume selection is a statement of
+  local policy, not proof that the hosting platform encrypts a disk.
 
 `sealed-copies` is the first portable core mode: it makes consistent SQLite
 snapshots, seals them, verifies them, records the result, and only then offers
@@ -196,40 +201,40 @@ loss/rotation procedure, and interoperability tests before it is exposed.
 
 ## Core versus marketplace boundary
 
-Core must provide the cryptographic format, local custody, operator interface,
-artifact ledger, fleet protocol, recovery verification, and a stable provider
-API. These provide the safety promise and must work with no third party.
+Core provides the safety format, operator interface, artifact ledger, package
+authorization, recovery verification, and stable provider/storage APIs. It
+must work with no third party. Settings live in the setup database behind the
+authenticated website/API after bootstrap; packages may have a private database
+and migrations but do not get broad access to core or other-package data.
 
-Marketplace add-ons are appropriate only for optional provider adapters (cloud
-KMS, HSM, commercial HostScope key hosting) and policy/reporting packs. The
-current marketplace intentionally accepts data-only manifests and cannot run
-provider code; executable provider plugins require a separately designed,
-sandboxed plugin runtime, signed distribution, capability grants, secret
-isolation, revocation, and compatibility tests. Commercial key hosting is a
-hosted-service product decision and must use that future optional provider API;
-it must not become a hidden dependency of local encryption.
+Marketplace packages provide encryption methods: sealed copies, SQLCipher,
+self-managed fleet custody, ciphertext replicas, cloud KMS/HSM adapters,
+commercial HostScope key hosting, storage backends, and optional caches. The
+current marketplace intentionally accepts data-only manifests, so it must be
+upgraded to a signed isolated runtime with capability grants, secret references,
+per-package storage, revocation, compatibility tests, and audit logging before
+any of these packages can execute. Commercial key hosting remains optional and
+must not become a hidden dependency of local encryption.
 
 ## Delivery order and evidence
 
-1. Define the sealed-artifact format and local key-provider interface; add
-   deterministic encrypt/decrypt/tamper test vectors.
-2. Add setup inventory, explicit opt-in policy, path and permissions checks,
-   audit records, and recovery-proof workflow.
-3. Implement verified local sealed snapshots for `setup.db`, `stats.db`,
-   `host.db`, and `ai.db`, including WAL-safe copy, retention, restore, and
-   rotation tests.
-4. Add encryption state and artifact-ledger schema migrations, then storage UI
-   and alerting for expiry, failed verification, and insufficient replicas.
-5. Extend the peer protocol for scoped ciphertext replica storage and verified
-   coverage ledger entries. Test outage, retry, replay, tampering, partial
-   upload, and replica deletion.
-6. Implement fleet custodians with short-lived unwrap authorization and bounded
-   in-memory cache. Test expiry, failover, revocation, rotation, and recovery.
-7. Evaluate encrypted-SQLite engine support as a separately packaged core
-   storage backend. Do not declare live database encryption until WAL, backup,
-   migration, crash recovery, and performance guards pass.
-8. Define a plugin runtime only if external KMS or commercial key hosting is
-   approved; otherwise retain a documented provider boundary without adapters.
+1. Add the signed isolated marketplace runtime, package settings/secrets store,
+   capability grants, private package migrations, and audit/revocation model.
+2. Move the current sealed-copy implementation behind a built-in disabled
+   `sealed-copies` package; add setup inventory, recovery proof, restore,
+   retention, status, and alerting.
+3. Add encryption state and artifact-ledger migrations that support packages
+   without exposing plaintext keys or package-private settings.
+4. Implement the `fleet-replica` package for scoped ciphertext storage and
+   verified coverage ledger entries; test outage, retry, replay, tampering,
+   partial upload, and replica deletion.
+5. Implement `fleet-custody` with short-lived unwrap authorization and bounded
+   in-memory cache; test expiry, failover, revocation, rotation, and recovery.
+6. Implement the scaffolded `sqlcipher-encrypted-sqlite` package. Do not
+   declare live database encryption until WAL, backup, migration, crash
+   recovery, and performance guards pass.
+7. Add optional provider and storage packages only after the stable interfaces
+   are tested. See `ENCRYPTION_REVIEW.md` for the defaults and later decisions.
 
 Every stage needs tests proving that a ciphertext-only copy cannot be read with
 no key, that tampering is detected, that keys never appear in logs/exported

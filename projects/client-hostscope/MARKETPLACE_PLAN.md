@@ -15,7 +15,9 @@ browser.
 - Administrators review and explicitly enable each package.
 - Package capabilities are allowlisted and shown before enablement.
 - Remote discovery, payment, telemetry, automatic updates, and executable
-  package hooks are not part of the local marketplace and remain disabled.
+  package hooks are not part of the current local marketplace and remain
+  disabled. An isolated executable runtime is planned for encryption, storage,
+  and service packages; it must not be enabled merely by accepting a manifest.
 
 ## Delivery sequence
 
@@ -26,7 +28,12 @@ browser.
 4. [x] First data-only package type: alert-rule recommendations.
 5. [x] Signed package verification, compatibility checks, install/rollback,
    and release provenance before any remote package source.
-6. [ ] Publisher workflow, commercial terms, moderation, payments, and hosted
+6. [ ] Signed isolated executable-package runtime: explicit capability grants,
+   package-private settings/database/migrations, secret references, sandboxed
+   entry points, compatibility checks, audit, rollback, and revocation.
+7. [ ] First executable packages: sealed-copy encryption and SQLCipher live
+   SQLite. The SQLCipher scaffold is in `plugins/sqlcipher-encrypted-sqlite/`.
+8. [ ] Publisher workflow, commercial terms, moderation, payments, and hosted
    marketplace service only after legal and business-owner decisions.
 
 ## Completion evidence
@@ -54,7 +61,8 @@ Set `marketplace.directory` in `lib/config.php` (it defaults to the protected
 `data/marketplace/` directory), then add one `<package-id>.json` file per package.
 Only `alert_recommendations` is currently accepted. A recommendation is shown
 for administrator review only; enabling it neither changes an alert rule nor
-executes package code.
+executes package code. The planned executable package format is intentionally
+separate until its isolation and authorization contract is implemented.
 
 ## Signatures and revisions
 
