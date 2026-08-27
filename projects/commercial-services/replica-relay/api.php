@@ -15,7 +15,8 @@ function relayReply(int $status, array $body): never { http_response_code($statu
 try {
     $pdo = replicaRelayOpen($config);
     if ($path === '/v1/artifacts' && $method === 'GET') { $auth = replicaRelayAuthenticate($pdo, $bearer, 'management'); relayReply(200, ['artifacts' => replicaRelayListArtifacts($pdo, $auth['tenant_id'])]); }
-    if (preg_match('#^/v1/artifacts/([A-Za-z0-9._:-]{1,200})$#', $path, $match) && $method === 'PUT') {
+    if (preg_match('#^/v1/artifacts/([^/]{1,600})$#', $path, $match) && $method === 'PUT') {
+        $artifactId = rawurldecode($match[1]);
         $digest = strtolower(trim((string)($_SERVER['HTTP_X_HOSTSCOPE_CIPHERTEXT_SHA256'] ?? '')));
         $digestBytes = ctype_xdigit($digest) ? hex2bin($digest) : false;
         if (!is_string($digestBytes) || strlen($digestBytes) !== 32) throw new InvalidArgumentException('relay ciphertext digest is invalid');
@@ -23,20 +24,22 @@ try {
         if ($maximum < 1 || ($length !== null && (!ctype_digit((string)$length) || (int)$length < 1 || (int)$length > $maximum))) throw new InvalidArgumentException('relay artifact exceeds its configured size limit');
         $auth = replicaRelayAuthenticateClientDigestRequest($pdo, $bearer, $method, $path, $timestamp, $nonce, $signature, $digestBytes);
         $stream = fopen('php://input', 'rb'); if ($stream === false) throw new RuntimeException('could not receive relay ciphertext');
-        try { $stored = replicaRelayStoreArtifactStream($pdo, $config, $auth['tenant_id'], $match[1], $stream, $digest); }
+        try { $stored = replicaRelayStoreArtifactStream($pdo, $config, $auth['tenant_id'], $artifactId, $stream, $digest); }
         finally { fclose($stream); }
         relayReply(201, ['artifact' => $stored]);
     }
-    if (preg_match('#^/v1/artifacts/([A-Za-z0-9._:-]{1,200})$#', $path, $match) && $method === 'GET') {
+    if (preg_match('#^/v1/artifacts/([^/]{1,600})$#', $path, $match) && $method === 'GET') {
+        $artifactId = rawurldecode($match[1]);
         $auth = replicaRelayAuthenticateClientRequest($pdo, $bearer, $method, $path, $timestamp, $nonce, $signature, $body);
-        $records = array_filter(replicaRelayListArtifacts($pdo, $auth['tenant_id']), fn(array $record): bool => $record['artifact_id'] === $match[1]);
-        $record = array_shift($records); $file = replicaRelayArtifactPath($config, $auth['tenant_id'], $match[1]);
+        $records = array_filter(replicaRelayListArtifacts($pdo, $auth['tenant_id']), fn(array $record): bool => $record['artifact_id'] === $artifactId);
+        $record = array_shift($records); $file = replicaRelayArtifactPath($config, $auth['tenant_id'], $artifactId);
         if (!is_array($record) || is_link($file) || !is_file($file) || hash_file('sha256', $file) !== $record['sha256']) throw new InvalidArgumentException('relay artifact is unavailable or failed verification');
         header('Content-Type: application/octet-stream'); header('Content-Length: ' . $record['bytes']); header('X-HostScope-Ciphertext-SHA256: ' . $record['sha256']); readfile($file); exit;
     }
-    if (preg_match('#^/v1/artifacts/([A-Za-z0-9._:-]{1,200})$#', $path, $match) && $method === 'DELETE') {
-        $auth = replicaRelayAuthenticate($pdo, $bearer, 'management'); replicaRelayDeleteArtifact($pdo, $config, $auth['tenant_id'], $match[1]);
-        relayReply(200, ['artifact_id' => $match[1], 'state' => 'deleted', 'warning' => 'Deletion is irreversible at this relay. Verify another recovery copy before removing ciphertext.']);
+    if (preg_match('#^/v1/artifacts/([^/]{1,600})$#', $path, $match) && $method === 'DELETE') {
+        $artifactId = rawurldecode($match[1]);
+        $auth = replicaRelayAuthenticate($pdo, $bearer, 'management'); replicaRelayDeleteArtifact($pdo, $config, $auth['tenant_id'], $artifactId);
+        relayReply(200, ['artifact_id' => $artifactId, 'state' => 'deleted', 'warning' => 'Deletion is irreversible at this relay. Verify another recovery copy before removing ciphertext.']);
     }
     relayReply(404, ['error' => 'unknown replica relay API operation']);
 } catch (InvalidArgumentException $error) { relayReply(403, ['error' => $error->getMessage()]); }

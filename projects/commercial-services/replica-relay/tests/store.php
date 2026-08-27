@@ -9,6 +9,7 @@ try {
     $management = replicaRelayAuthenticate($pdo, $tenant['management_token'], 'management');
     $private = base64_decode($tenant['client_signing_private_key'], true); relayExpect(is_string($private), 'relay enrollment signing key is invalid');
     $artifact = 'account:20260827'; $ciphertext = random_bytes(256); $path = '/v1/artifacts/' . $artifact; $timestamp = (string)time(); $nonce = 'nonce_' . bin2hex(random_bytes(12));
+    relayExpect(rawurldecode(rawurlencode($artifact)) === $artifact, 'relay artifact identity is not safe for its signed URL path');
     $signature = base64_encode(sodium_crypto_sign_detached(replicaRelayClientPayload('PUT', $path, $timestamp, $nonce, $ciphertext), $private));
     $client = replicaRelayAuthenticateClientRequest($pdo, $tenant['client_token'], 'PUT', $path, $timestamp, $nonce, $signature, $ciphertext);
     $stored = replicaRelayStoreArtifact($pdo, $config, $client['tenant_id'], $artifact, $ciphertext, hash('sha256', $ciphertext));
