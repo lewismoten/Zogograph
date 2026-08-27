@@ -99,6 +99,16 @@ try {
     packageRuntimePrivateDatabase($pdo, $config, 'test-runtime');
     runtimeExpect((int)$private->query('SELECT COUNT(*) FROM package_runtime_migrations')->fetchColumn() === 1,
         'private migration was applied more than once');
+    if (function_exists('symlink')) {
+        $unsafeData = $config['package_runtime']['directory'] . '/unsafe-runtime-data'; $outside = $root . '/outside-data';
+        mkdir($outside, 0700, true); @symlink($outside, $unsafeData);
+        $pdo->prepare("INSERT INTO runtime_packages (package_id, version, publisher, manifest_json, manifest_sha256, install_path, installed_at, enabled_at, changed_at, changed_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            ->execute(['unsafe-runtime', '1.0.0', 'Test publisher', json_encode($signed, JSON_THROW_ON_ERROR), hash_file('sha256', $installed['install_path'] . '/manifest.json'), $installed['install_path'], time(), time(), time(), 'administrator']);
+        $pdo->prepare('INSERT INTO runtime_package_grants (package_id, capability, granted_at, granted_by) VALUES (?, ?, ?, ?)')->execute(['unsafe-runtime', 'package_private_database', time(), 'administrator']);
+        try { packageRuntimePrivateDatabase($pdo, $config, 'unsafe-runtime'); throw new RuntimeException('package data directory symlink was accepted'); }
+        catch (RuntimeException $error) { runtimeExpect($error->getMessage() !== 'package data directory symlink was accepted', $error->getMessage()); }
+        @unlink($unsafeData); @rmdir($outside);
+    }
     $reference = packageRuntimeSecretStore($pdo, $config, 'test-runtime', 'remote-client-credential', 'administrator');
     runtimeExpect(str_starts_with($reference, 'secret_ref:test-runtime:'), 'package secret reference is not package-scoped');
     runtimeExpect(packageRuntimeSecretValue($pdo, $config, 'test-runtime', $reference) === 'remote-client-credential', 'encrypted package secret could not be recovered');

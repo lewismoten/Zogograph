@@ -313,8 +313,16 @@ function packageRuntimePrivateDatabase(PDO $registry, array $config, string $id)
     $grant = $registry->prepare('SELECT COUNT(*) FROM runtime_package_grants WHERE package_id = ? AND capability = ?');
     $grant->execute([$id, 'package_private_database']);
     if ((int)$grant->fetchColumn() !== 1) throw new InvalidArgumentException('package lacks private database permission');
-    $directory = packageRuntimeDirectory($config) . '/' . $id . '-data';
-    if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) throw new RuntimeException('could not create package data directory');
+    $base = packageRuntimeDirectory($config);
+    $directory = $base . '/' . $id . '-data';
+    if (is_link($directory) || (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory))) {
+        throw new RuntimeException('could not create package data directory');
+    }
+    $directory = realpath($directory);
+    if ($directory === false || is_link($directory) || !str_starts_with($directory, rtrim($base, '/') . '/')) {
+        throw new RuntimeException('package data directory is unavailable or unsafe');
+    }
+    @chmod($directory, 0700);
     $path = $directory . '/package.db';
     $previousUmask = umask(0077);
     try {
