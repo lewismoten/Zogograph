@@ -200,6 +200,14 @@ function alertCatalogue(): array
             'why' => 'Compared against this machine\'s own history rather than a threshold '
                 . 'somebody guessed.',
         ],
+        'encryption_recovery' => [
+            'label' => 'Encrypted-copy recovery needs attention',
+            'severity' => 'warning',
+            'cooldown' => 6 * SPAN_HOUR,
+            'view' => 'sys-encryption',
+            'why' => 'A sealed copy that is missing, stale, or failed verification is not
+                reliable recovery evidence when it is needed.',
+        ],
     ];
 }
 

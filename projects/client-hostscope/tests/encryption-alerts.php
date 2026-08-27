@@ -1,0 +1,28 @@
+<?php
+declare(strict_types=1);
+require_once __DIR__ . '/../lib/alerts.php';
+
+function encryptionAlertExpect(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
+if (!encryptionAvailable()) { echo "encryption alert checks skipped: OpenSSL AES-256-GCM is unavailable\n"; exit(0); }
+$root = sys_get_temp_dir() . '/hostscope-encryption-alerts-' . bin2hex(random_bytes(4)); mkdir($root, 0700, true);
+try {
+    $key = $root . '/local.key'; encryptionCreateLocalKey($key, dirname(__DIR__));
+    $pdo = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $pdo->exec('CREATE TABLE encryption_artifacts (store TEXT, created_at INTEGER, state TEXT)');
+    $config = ['encryption' => ['mode' => 'sealed_copies_local', 'local_key_file' => $key, 'stores' => ['account'], 'backup_schedule' => 'daily']];
+    encryptionAlertExpect(isset(alertCatalogue()['encryption_recovery']), 'encryption recovery rule is not configurable in the alert catalogue');
+    $missing = encryptionRecoveryAlerts($config, $pdo);
+    encryptionAlertExpect(count($missing) === 1 && $missing[0]['severity'] === 'warning' && str_contains($missing[0]['detail'], 'No verified encrypted copy'),
+        'missing encrypted-copy evidence did not raise a warning');
+    $pdo->prepare("INSERT INTO encryption_artifacts VALUES ('account', ?, 'verified')")->execute([time() - 3 * 86400]);
+    $stale = encryptionRecoveryAlerts($config, $pdo);
+    encryptionAlertExpect(count($stale) === 1 && str_contains($stale[0]['detail'], 'older than the selected schedule'),
+        'stale encrypted-copy evidence did not raise a warning');
+    $pdo->exec("UPDATE encryption_artifacts SET state = 'verification_failed'");
+    $failed = encryptionRecoveryAlerts($config, $pdo);
+    encryptionAlertExpect(count($failed) === 1 && $failed[0]['severity'] === 'error' && str_contains($failed[0]['detail'], 'failed verification'),
+        'failed encrypted-copy evidence did not raise an error');
+    $config['encryption']['mode'] = 'operator_managed_volume';
+    encryptionAlertExpect(encryptionRecoveryAlerts($config, $pdo) === [], 'unverifiable volume protection raised an encryption recovery alert');
+    echo "encryption alert checks passed\n";
+} finally { @unlink($root . '/local.key'); @rmdir($root); }

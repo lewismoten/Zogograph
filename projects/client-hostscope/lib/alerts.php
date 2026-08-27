@@ -34,6 +34,7 @@ require_once __DIR__ . '/events.php';
 // databases/modules, but loading them here keeps evaluateAlerts self-contained.
 require_once __DIR__ . '/hostdb.php';
 require_once __DIR__ . '/updates.php';
+require_once __DIR__ . '/encryption.php';
 
 /**
  * How far back a projection looks.
@@ -233,6 +234,7 @@ function evaluateAlerts(array $config, PDO $pdo): array
          */
         ...dateAlerts($config, $pdo),
         ...updateAlerts($config),
+        ...encryptionRecoveryAlerts($config, $pdo),
     ]);
 
     foreach ($candidates as $alert) {
@@ -297,6 +299,38 @@ function evaluateAlerts(array $config, PDO $pdo): array
     }
 
     return $raised;
+}
+
+/** Emits one evidence-based alert for a configured portable encryption policy.
+ * It intentionally says nothing for protection modes HostScope cannot verify. */
+function encryptionRecoveryAlerts(array $config, PDO $pdo): array
+{
+    $settings = (array)($config['encryption'] ?? []);
+    if (($settings['mode'] ?? 'none') !== 'sealed_copies_local') return [];
+    $stores = encryptionSelectedStores($settings);
+    if ($stores === []) return [];
+    try {
+        $rows = $pdo->query("SELECT store, MAX(created_at) AS created_at FROM encryption_artifacts WHERE state = 'verified' GROUP BY store")->fetchAll();
+        $failed = $pdo->query("SELECT store FROM encryption_artifacts WHERE state = 'verification_failed' GROUP BY store")->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Throwable) {
+        // An older database has no ledger to assess. Do not turn an upgrade into
+        // a false encryption incident; the Protection page still explains it.
+        return [];
+    }
+    $latest = []; foreach ($rows as $row) $latest[(string)$row['store']] = (int)$row['created_at'];
+    $problems = [];
+    try { encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), dirname(__DIR__)); }
+    catch (Throwable) { $problems[] = 'The private local key is unavailable to HostScope.'; }
+    foreach ($failed as $store) $problems[] = "A retained encrypted copy for {$store} failed verification.";
+    $maximumAge = encryptionScheduleMaximumAge((string)($settings['backup_schedule'] ?? 'manual'));
+    foreach ($stores as $store) {
+        if (!isset($latest[$store])) { $problems[] = "No verified encrypted copy exists for {$store}."; continue; }
+        if ($maximumAge !== null && $latest[$store] < time() - $maximumAge) $problems[] = "The newest verified encrypted copy for {$store} is older than the selected schedule.";
+    }
+    if ($problems === []) return [];
+    $critical = $failed !== [] || str_starts_with($problems[0], 'The private local key');
+    return [['rule' => 'encryption_recovery', 'severity' => $critical ? 'error' : 'warning',
+        'subject' => 'Encrypted-copy recovery needs attention', 'detail' => implode("\n", $problems)]];
 }
 
 /** Latest failed or available-update result from the root-only collector. */
