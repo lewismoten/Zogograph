@@ -11662,6 +11662,7 @@ function renderPackageRuntime(data) {
   renderTable("packageRuntimeTable", data.packages, [
     { label: "Package", render: row => `${row.id} · ${row.version}` },
     { label: "Publisher", render: row => row.publisher },
+    { label: "Integrity", render: row => row.integrity ? "Verified" : "Failed" },
     { label: "Requested capabilities", render: row => row.capabilities.join(", ") },
     { label: "Granted", render: row => row.grants.length ? row.grants.join(", ") : "None" },
     { label: "Status", render: row => row.state },
@@ -11687,6 +11688,10 @@ function packageRuntimeActions(row, canChange) {
   }
   const revoke = document.createElement("button"); revoke.className = "link danger"; revoke.textContent = "Revoke";
   revoke.addEventListener("click", () => showPackageRuntimeRevoke(row)); wrap.appendChild(revoke);
+  if (!row.integrity) {
+    const failed = document.createElement("span"); failed.className = "muted small"; failed.textContent = "Review or remove altered files before enabling.";
+    wrap.appendChild(failed); return wrap;
+  }
   const toggle = document.createElement("button"); toggle.className = row.enabled ? "link danger" : "link";
   toggle.textContent = row.enabled ? "Disable" : "Grant & enable";
   toggle.addEventListener("click", async () => {

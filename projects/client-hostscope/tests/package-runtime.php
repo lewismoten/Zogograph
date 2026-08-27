@@ -23,7 +23,7 @@ try {
         && str_contains($api, "'package-runtime-secret-create' => 'sys-packages'")
         && str_contains($api, "'package-runtime-revoke' => 'sys-packages'"), 'package runtime writes are not page-access gated');
     runtimeExpect($dashboard !== false && str_contains($dashboard, 'function renderPackageRuntime')
-        && str_contains($dashboard, 'does not run package code'), 'dashboard does not explain the package execution boundary');
+        && str_contains($dashboard, 'does not run package code') && str_contains($dashboard, 'Review or remove altered files before enabling.'), 'dashboard does not explain the package execution boundary');
     runtimeExpect($page !== false && str_contains($page, 'data-view="sys-packages"')
         && str_contains($page, 'id="packageRuntimeBody"'), 'package runtime dashboard view is unavailable');
     $pair = sodium_crypto_sign_keypair();
@@ -96,6 +96,11 @@ try {
     packageRuntimeSecretDelete($pdo, $config, 'test-runtime', $reference);
     try { packageRuntimeSecretValue($pdo, $config, 'test-runtime', $reference); throw new RuntimeException('deleted package secret was recovered'); }
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'deleted package secret was recovered', $error->getMessage()); }
+    file_put_contents($installed['install_path'] . '/src/Provider.php', "<?php declare(strict_types=1); /* altered */\n");
+    $altered = packageRuntimePackages($pdo)[0];
+    runtimeExpect(!$altered['integrity'] && str_starts_with($altered['state'], 'integrity failed:'), 'changed package file was not flagged by runtime status');
+    try { packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator'); throw new RuntimeException('altered package was enabled'); }
+    catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'altered package was enabled', $error->getMessage()); }
     echo "package runtime checks passed\n";
 } finally {
     foreach (glob($root . '/*') ?: [] as $path) {

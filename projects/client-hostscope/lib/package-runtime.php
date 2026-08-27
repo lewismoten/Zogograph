@@ -156,7 +156,7 @@ function packageRuntimeRemoveDirectory(string $directory): void
     @rmdir($directory);
 }
 
-/** @return list<array{id:string,version:string,publisher:string,enabled:bool,revoked:bool,capabilities:list<string>,grants:list<string>,state:string}> */
+/** @return list<array{id:string,version:string,publisher:string,enabled:bool,revoked:bool,integrity:bool,integrity_detail:string,capabilities:list<string>,grants:list<string>,state:string}> */
 function packageRuntimePackages(PDO $pdo): array
 {
     $grants = [];
@@ -164,27 +164,30 @@ function packageRuntimePackages(PDO $pdo): array
         $grants[$row['package_id']][] = $row['capability'];
     }
     $out = [];
-    foreach ($pdo->query('SELECT packages.package_id, packages.version, packages.publisher, packages.manifest_json, packages.enabled_at, revocations.reason AS revocation_reason
+    foreach ($pdo->query('SELECT packages.package_id, packages.version, packages.publisher, packages.manifest_json, packages.install_path, packages.enabled_at, revocations.reason AS revocation_reason
         FROM runtime_packages packages LEFT JOIN runtime_package_revocations revocations ON revocations.package_id = packages.package_id ORDER BY packages.package_id')->fetchAll() as $row) {
         $manifest = json_decode((string)$row['manifest_json'], true) ?: [];
         $required = (array)($manifest['capabilities'] ?? []);
         $given = $grants[$row['package_id']] ?? [];
         sort($given, SORT_STRING);
         $revoked = $row['revocation_reason'] !== null;
-        $enabled = !$revoked && $row['enabled_at'] !== null && $required === $given;
+        $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$row['install_path']);
+        $enabled = $integrity['ok'] && !$revoked && $row['enabled_at'] !== null && $required === $given;
         $out[] = ['id' => $row['package_id'], 'version' => $row['version'], 'publisher' => $row['publisher'],
-            'enabled' => $enabled, 'revoked' => $revoked, 'capabilities' => $required, 'grants' => $given,
-            'state' => $revoked ? 'revoked: ' . $row['revocation_reason'] : ($enabled ? 'registered; execution runtime pending' : 'needs explicit capability grants')];
+            'enabled' => $enabled, 'revoked' => $revoked, 'integrity' => $integrity['ok'], 'integrity_detail' => $integrity['detail'], 'capabilities' => $required, 'grants' => $given,
+            'state' => !$integrity['ok'] ? 'integrity failed: ' . $integrity['detail'] : ($revoked ? 'revoked: ' . $row['revocation_reason'] : ($enabled ? 'registered; execution runtime pending' : 'needs explicit capability grants'))];
     }
     return $out;
 }
 
 function packageRuntimeSetEnabled(PDO $pdo, string $id, array $grants, bool $enabled, string $actor): void
 {
-    $row = $pdo->prepare('SELECT manifest_json FROM runtime_packages WHERE package_id = ?');
-    $row->execute([$id]); $manifest = json_decode((string)$row->fetchColumn(), true);
+    $row = $pdo->prepare('SELECT manifest_json, install_path FROM runtime_packages WHERE package_id = ?');
+    $row->execute([$id]); $package = $row->fetch(); $manifest = is_array($package) ? json_decode((string)$package['manifest_json'], true) : null;
     if (!is_array($manifest)) throw new InvalidArgumentException('package is not installed');
     if ($enabled) {
+        $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$package['install_path']);
+        if (!$integrity['ok']) throw new InvalidArgumentException('installed package integrity failed: ' . $integrity['detail']);
         $revoked = $pdo->prepare('SELECT COUNT(*) FROM runtime_package_revocations WHERE package_id = ?'); $revoked->execute([$id]);
         if ((int)$revoked->fetchColumn() !== 0) throw new InvalidArgumentException('package is revoked; lift the revocation only after review');
     }
@@ -201,6 +204,14 @@ function packageRuntimeSetEnabled(PDO $pdo, string $id, array $grants, bool $ena
             ->execute([$enabled ? time() : null, time(), mb_substr($actor, 0, 120), $id]);
         $pdo->commit();
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
+}
+
+/** @return array{ok:bool,detail:string} */
+function packageRuntimeVerifyInstalledPackage(array $manifest, string $directory): array
+{
+    $root = realpath($directory);
+    if ($root === false || is_link($directory) || !is_dir($root)) return ['ok' => false, 'detail' => 'installed package directory is unavailable'];
+    return packageVerifyIntegrity($manifest, $root);
 }
 
 function packageRuntimeRevoke(PDO $pdo, string $id, string $reason, string $actor): void
