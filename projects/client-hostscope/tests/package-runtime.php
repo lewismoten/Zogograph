@@ -69,6 +69,14 @@ try {
     packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator');
     $after = packageRuntimePackages($pdo)[0];
     runtimeExpect($after['enabled'] && str_starts_with($after['state'], 'registered; platform requirements are met'), 'package was not registered after explicit grant');
+    $incompatibleManifest = $signed; $incompatibleManifest['compatibility'] = ['requires_runtime_capability' => 'isolated_package_runtime'];
+    $pdo->prepare('UPDATE runtime_packages SET manifest_json = ? WHERE package_id = ?')->execute([json_encode($incompatibleManifest, JSON_THROW_ON_ERROR), 'test-runtime']);
+    $incompatible = packageRuntimePackages($pdo)[0];
+    runtimeExpect(!$incompatible['enabled'] && str_starts_with($incompatible['state'], 'platform unavailable:'),
+        'unavailable package platform remained enabled');
+    try { packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator'); throw new RuntimeException('unavailable package platform was enabled'); }
+    catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'unavailable package platform was enabled', $error->getMessage()); }
+    $pdo->prepare('UPDATE runtime_packages SET manifest_json = ? WHERE package_id = ?')->execute([json_encode($signed, JSON_THROW_ON_ERROR), 'test-runtime']);
     runtimeExpect(packageRuntimeIntegrityAlerts($pdo) === [], 'verified package raised an integrity alert');
     packageRuntimeRevoke($pdo, 'test-runtime', 'test compromise response', 'administrator');
     $revoked = packageRuntimePackages($pdo)[0];

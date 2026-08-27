@@ -229,11 +229,12 @@ function packageRuntimePackages(PDO $pdo): array
         $revoked = $row['revocation_reason'] !== null;
         $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$row['install_path'], (string)($row['manifest_sha256'] ?? ''));
         $compatibility = packageRuntimeCompatibility($manifest);
-        $enabled = $integrity['ok'] && !$revoked && $row['enabled_at'] !== null && $required === $given;
+        $enabled = $integrity['ok'] && !$revoked && $compatibility['status'] === 'ready'
+            && $row['enabled_at'] !== null && $required === $given;
         $out[] = ['id' => $row['package_id'], 'version' => $row['version'], 'publisher' => $row['publisher'],
             'enabled' => $enabled, 'revoked' => $revoked, 'integrity' => $integrity['ok'], 'integrity_detail' => $integrity['detail'], 'capabilities' => $required, 'grants' => $given,
             'compatibility' => $compatibility,
-            'state' => !$integrity['ok'] ? 'integrity failed: ' . $integrity['detail'] : ($revoked ? 'revoked: ' . $row['revocation_reason'] : ($enabled ? 'registered; ' . $compatibility['detail'] : 'needs explicit capability grants'))];
+            'state' => !$integrity['ok'] ? 'integrity failed: ' . $integrity['detail'] : ($revoked ? 'revoked: ' . $row['revocation_reason'] : ($compatibility['status'] !== 'ready' ? 'platform unavailable: ' . $compatibility['detail'] : ($enabled ? 'registered; ' . $compatibility['detail'] : 'needs explicit capability grants')))];
     }
     return $out;
 }
@@ -248,6 +249,8 @@ function packageRuntimeSetEnabled(PDO $pdo, string $id, array $grants, bool $ena
         if (!$integrity['ok']) throw new InvalidArgumentException('installed package integrity failed: ' . $integrity['detail']);
         $revoked = $pdo->prepare('SELECT COUNT(*) FROM runtime_package_revocations WHERE package_id = ?'); $revoked->execute([$id]);
         if ((int)$revoked->fetchColumn() !== 0) throw new InvalidArgumentException('package is revoked; lift the revocation only after review');
+        $compatibility = packageRuntimeCompatibility($manifest);
+        if ($compatibility['status'] !== 'ready') throw new InvalidArgumentException('package platform is unavailable: ' . $compatibility['detail']);
     }
     $required = (array)($manifest['capabilities'] ?? []);
     $grants = array_values(array_unique(array_intersect(PACKAGE_RUNTIME_CAPABILITIES, array_map('strval', $grants))));
