@@ -105,3 +105,16 @@ set, data boundary, deployment decision, and safe rollout order for the next
 implementation step. The container template keeps standard input open for a
 single bounded JSON request; feed only the core-generated request through that
 channel and do not pass values through command arguments or environment.
+
+For the SQLCipher package's disposable preflight, run the copied template from
+its private deployment directory after replacing its paths:
+
+```bash
+printf '%s\n' '{"api":"1.0","operation":"sqlcipher_preflight","package_id":"sqlcipher-encrypted-sqlite"}' \
+  | docker compose -f package-worker.compose.yml run --rm -T package-worker
+```
+
+The only successful responses are a bounded `unavailable` driver explanation
+or `preflight-ready` evidence from a random temporary sandbox database. Neither
+response enables a package, opens a HostScope database, changes a live store,
+or proves a migration/recovery procedure.
