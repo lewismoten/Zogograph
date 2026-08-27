@@ -11654,7 +11654,7 @@ async function refreshPackageRuntime() {
 
 function renderPackageRuntime(data) {
   const body = $("packageRuntimeBody");
-  const parts = [note("A package must have a trusted publisher, a valid signed file manifest, and every requested capability granted explicitly. The current runtime does not load package PHP; this is a deliberate safety boundary.")];
+  const parts = [note("A package must have a trusted publisher, a valid signed file manifest, and every requested capability granted explicitly. The dashboard never loads package PHP. A separate worker can only perform a no-secret capability probe inside an operator-attested OS/container sandbox; it does not enable provider operations.")];
   if (data.trusted_publishers?.length) parts.push(factGrid(data.trusted_publishers.map(row => ["Trusted publisher", `${row.publisher} (${row.key_id})`])));
   else parts.push(note("No executable-package publisher keys are trusted yet. Add a publisher key in setup before installing a signed package."));
   if (!data.packages?.length) { parts.push(note("No signed executable packages are installed.")); body.replaceChildren(...parts); return; }
