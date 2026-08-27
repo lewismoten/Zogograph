@@ -11,7 +11,20 @@ $path = '/' . trim((string)($_SERVER['PATH_INFO'] ?? $_GET['path'] ?? ''), '/');
 $bearer = preg_match('/^Bearer\s+(.+)$/i', (string)($_SERVER['HTTP_AUTHORIZATION'] ?? ''), $match) ? $match[1] : '';
 $timestamp = (string)($_SERVER['HTTP_X_HOSTSCOPE_TIMESTAMP'] ?? ''); $nonce = (string)($_SERVER['HTTP_X_HOSTSCOPE_NONCE'] ?? ''); $signature = (string)($_SERVER['HTTP_X_HOSTSCOPE_SIGNATURE'] ?? '');
 $body = '';
+if ($method === 'DELETE') {
+    $length = $_SERVER['CONTENT_LENGTH'] ?? null;
+    if ($length !== null && (!ctype_digit((string)$length) || (int)$length > 1024)) { http_response_code(413); echo json_encode(['error' => 'delete confirmation is too large']); exit; }
+    $body = (string)file_get_contents('php://input', false, null, 0, 1025);
+    if (strlen($body) > 1024) { http_response_code(413); echo json_encode(['error' => 'delete confirmation is too large']); exit; }
+}
 function relayReply(int $status, array $body): never { http_response_code($status); header('Content-Type: application/json'); echo json_encode($body, JSON_UNESCAPED_SLASHES); exit; }
+function relayDeleteConfirmation(string $body): void
+{
+    $value = json_decode($body, true);
+    if (!is_array($value) || ($value['confirm_recovery'] ?? false) !== true || count($value) !== 1) {
+        throw new InvalidArgumentException('confirm_recovery must be true after verifying another recovery copy');
+    }
+}
 try {
     $pdo = replicaRelayOpen($config, __DIR__);
     if ($path === '/v1/health' && $method === 'GET') relayReply(200, ['status' => 'ok', 'service' => 'replica-relay', 'api_version' => 'v1']);
@@ -43,6 +56,7 @@ try {
     }
     if (preg_match('#^/v1/artifacts/([^/]{1,600})$#', $path, $match) && $method === 'DELETE') {
         $artifactId = rawurldecode($match[1]);
+        relayDeleteConfirmation($body);
         $auth = replicaRelayAuthenticate($pdo, $bearer, 'management'); replicaRelayDeleteArtifact($pdo, $config, $auth['tenant_id'], $artifactId);
         relayReply(200, ['artifact_id' => $artifactId, 'state' => 'deleted', 'warning' => 'Deletion is irreversible at this relay. Verify another recovery copy before removing ciphertext.']);
     }

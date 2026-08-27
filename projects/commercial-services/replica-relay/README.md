@@ -51,8 +51,9 @@ metadata, streams it to a private temporary file under the configured size
 ceiling, and atomically replaces the ciphertext file. A signed client can later
 `GET` that artifact; the relay rehashes it before delivery. Management
 may list metadata with `GET /v1/artifacts` or delete one artifact. Deletion is
-irreversible at this relay, so the management UI must require confirmation of
-another verified recovery copy first.
+irreversible at this relay. The management request must carry
+`{"confirm_recovery":true}` after the operator verifies another recovery
+copy; the relay cannot make that recovery decision on the customer's behalf.
 
 The request signature covers method, path, timestamp, nonce, and SHA-256 of the
 exact binary body. The relay accepts timestamps within five minutes and stores

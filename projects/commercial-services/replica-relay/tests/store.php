@@ -4,8 +4,13 @@ require_once __DIR__ . '/../lib/store.php';
 function relayExpect(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
 $contract = json_decode((string)file_get_contents(__DIR__ . '/../openapi.json'), true);
 relayExpect(($contract['paths']['/health']['get']['security'] ?? null) === [], 'published relay health endpoint is not safely unauthenticated');
+relayExpect(($contract['paths']['/artifacts/{artifactId}']['delete']['requestBody']['required'] ?? false) === true
+    && (($contract['components']['schemas']['RecoveryDeleteConfirmation']['properties']['confirm_recovery']['const'] ?? false) === true),
+    'published relay API does not require explicit recovery confirmation before ciphertext deletion');
 $api = file_get_contents(__DIR__ . '/../api.php');
 relayExpect($api !== false && str_contains($api, "'/v1/health'"), 'relay API does not provide the documented health endpoint');
+relayExpect(str_contains((string)$api, 'relayDeleteConfirmation($body)') && str_contains((string)$api, 'confirm_recovery must be true'),
+    'relay API does not enforce explicit recovery confirmation before ciphertext deletion');
 $root = sys_get_temp_dir() . '/hostscope-relay-' . bin2hex(random_bytes(4)); mkdir($root, 0700, true);
 try {
     $config = ['database' => $root . '/service.db', 'artifact_directory' => $root . '/artifacts', 'maximum_artifact_bytes' => 1024, 'maximum_tenant_bytes' => 512, 'maximum_tenant_artifacts' => 1];
