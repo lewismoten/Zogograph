@@ -148,14 +148,17 @@ function keyCustodyCreateKey(PDO $pdo, string $tenant, string $name, int $ttl, s
     return ['id' => $id, 'name' => $name, 'authorization_ttl' => $ttl, 'state' => 'active'];
 }
 
-function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $master): string
+function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artifactId, string $master): string
 {
-    if (strlen($master) !== 32) throw new InvalidArgumentException('custody master key is unavailable');
+    if (strlen($master) !== 32 || $artifactId === '' || strlen($artifactId) > 200) throw new InvalidArgumentException('custody key authorization is invalid');
+    $envelope = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE envelopes.key_id = ? AND keys.tenant_id = ? AND envelopes.artifact_id = ?');
+    $envelope->execute([$id, $tenant, $artifactId]);
+    if ((int)$envelope->fetchColumn() !== 1) throw new InvalidArgumentException('the requested artifact envelope is unavailable');
     $stmt = $pdo->prepare("SELECT wrapped_key, wrap_nonce, wrap_tag FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'"); $stmt->execute([$id, $tenant]); $row = $stmt->fetch();
     if (!is_array($row)) throw new InvalidArgumentException('custody key is unavailable');
     $plain = openssl_decrypt($row['wrapped_key'], 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $row['wrap_nonce'], $row['wrap_tag'], $id);
     if (!is_string($plain) || strlen($plain) !== 32) throw new RuntimeException('custody key could not be unwrapped');
-    keyCustodyAudit($pdo, $tenant, 'key_unwrap_authorized', $id, 'client authorization');
+    keyCustodyAudit($pdo, $tenant, 'key_unwrap_authorized', $id, 'artifact=' . $artifactId);
     return $plain;
 }
 

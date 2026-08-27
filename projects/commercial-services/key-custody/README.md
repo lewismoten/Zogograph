@@ -27,8 +27,9 @@ enabled, HostScope uses the local key file or self-managed fleet options.
   minutes, a one-time nonce, and the signature; the service retains used
   nonces for ten minutes to reject replayed unwrap or envelope requests.
 - Return key identifiers and policy only to management endpoints. The enrolled
-  client unwrap endpoint may return the requested key over HTTPS after scoped
-  authorization; it never exposes a key through billing or management APIs.
+  client unwrap endpoint may return a key over HTTPS only after a scoped,
+  signed request names a registered envelope belonging to that tenant; it never
+  exposes a key through billing or management APIs.
 - Log every enrollment, policy, authorization, rotation, disablement, and
   billing state change without recording plaintext keys, envelopes, or tokens.
 - Default to disabled remote custody, one tenant per account, 15-minute unwrap
@@ -59,6 +60,11 @@ reverse proxy before exposing it publicly. Envelope storage, key rotation, and
 timestamp/nonce replay protection with signed client requests are included.
 mTLS enrollment and payment-provider integration remain the next service
 increments.
+
+The reference API can recommend a short in-memory cache duration, but it
+cannot revoke key material after a client has received it. Keep the client
+cache at zero by default, rotate a suspected key, and use an HSM/KMS-backed
+provider package when an environment needs stronger non-exportable-key policy.
 
 If an enrolled client is replaced or its credentials might have been exposed,
 an account-management client can `POST /v1/client-credentials/rotate`. The

@@ -36,11 +36,13 @@ try {
     custodyExpect($change['state'] === 'pending' && $change['requested_plan'] === 'pro', 'subscription change request was not retained');
     $envelope = keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:20260827', random_bytes(80));
     custodyExpect(keyCustodyListEnvelopes($pdo, $management['tenant_id'], $key['id'])[0]['id'] === $envelope['id'], 'envelope metadata was not retained');
-    custodyExpect(strlen(keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], $master)) === 32, 'client unwrap did not recover an active custody key');
+    custodyExpect(strlen(keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)) === 32, 'client unwrap did not recover an active custody key');
+    try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:missing', $master); throw new RuntimeException('unknown artifact envelope was authorized'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'unknown artifact envelope was authorized', $error->getMessage()); }
     $replacement = keyCustodyRotateKey($pdo, $management['tenant_id'], $key['id'], $master);
     custodyExpect($replacement['id'] !== $key['id'] && keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $replacement['id'], 'custody key rotation did not create a replacement');
     keyCustodyDisableKey($pdo, $management['tenant_id'], $replacement['id']);
-    try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $replacement['id'], $master); throw new RuntimeException('disabled custody key was unwrapped'); }
+    try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $replacement['id'], 'account:20260827', $master); throw new RuntimeException('disabled custody key was unwrapped'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'disabled custody key was unwrapped', $error->getMessage()); }
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'cancelled', 0, null);
     try { keyCustodyCreateKey($pdo, $management['tenant_id'], 'second', 300, $master); throw new RuntimeException('cancelled subscription created a key'); }
