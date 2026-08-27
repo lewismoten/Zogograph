@@ -19,9 +19,10 @@ try {
     custodyExpect((int)$pdo->query('SELECT COUNT(*) FROM client_nonces')->fetchColumn() === 0, 'expired client replay nonce was not pruned during service open');
     $management = keyCustodyAuthenticate($pdo, $tenant['management_token'], 'management');
     $client = keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client');
-    $additionalClient = keyCustodyCreateAdditionalClientCredential($pdo, $client['tenant_id']);
+    $additionalClient = keyCustodyCreateAdditionalClientCredential($pdo, $client['tenant_id'], 'second server');
     custodyExpect(keyCustodyAuthenticate($pdo, $additionalClient['token'], 'client')['tenant_id'] === $client['tenant_id'], 'additional enrolled-client credential did not authenticate');
-    custodyExpect(count(keyCustodyListClientCredentials($pdo, $client['tenant_id'])) === 2, 'enrolled-client metadata did not list both deployments');
+    $credentialList = keyCustodyListClientCredentials($pdo, $client['tenant_id']);
+    custodyExpect(count($credentialList) === 2 && $credentialList[0]['label'] === 'second server', 'enrolled-client metadata did not list both labeled deployments');
     keyCustodyRevokeClientCredential($pdo, $client['tenant_id'], $additionalClient['id']);
     try { keyCustodyAuthenticate($pdo, $additionalClient['token'], 'client'); throw new RuntimeException('revoked individual enrolled-client credential remained active'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'revoked individual enrolled-client credential remained active', $error->getMessage()); }

@@ -29,7 +29,7 @@
     },
     "/client-credentials": {
       "get": {"summary": "List enrolled-client credential metadata", "security": [{"accountSession": []}], "responses": {"200": {"description": "Credential identifiers, states, and creation times only; no tokens or private keys."}}},
-      "post": {"summary": "Create one enrolled-client credential for one deployment", "security": [{"accountSession": []}], "responses": {"201": {"description": "One-time credential id, bearer token, and Ed25519 private signing key."}}}
+      "post": {"summary": "Create one enrolled-client credential for one deployment", "security": [{"accountSession": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClientCredentialCreate"}}}}, "responses": {"201": {"description": "One-time credential id, bearer token, and Ed25519 private signing key."}}}
     },
     "/client-credentials/{credentialId}": {
       "delete": {"summary": "Revoke one enrolled-client credential", "security": [{"accountSession": []}], "parameters": [{"name": "credentialId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^tok_[a-f0-9]{20}$"}}], "responses": {"200": {"description": "Credential revoked; other enrolled clients remain unchanged."}}}
@@ -72,6 +72,7 @@
     "schemas": {
       "KeyCreate": {"type": "object", "additionalProperties": false, "required": ["name", "authorization_ttl_seconds"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 120}, "authorization_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 900}}},
       "KeyAction": {"type": "object", "additionalProperties": false, "required": ["action"], "properties": {"action": {"enum": ["disable", "rotate", "retire", "update_policy"]}, "name": {"type": "string", "minLength": 1, "maxLength": 120}, "authorization_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 900}}, "allOf": [{"if": {"properties": {"action": {"const": "update_policy"}}}, "then": {"required": ["authorization_ttl_seconds"]}}]},
+      "ClientCredentialCreate": {"type": "object", "additionalProperties": false, "required": ["label"], "properties": {"label": {"type": "string", "minLength": 1, "maxLength": 120, "description": "Administrator label for one customer deployment; not an authentication value."}}},
       "EnvelopeStore": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "envelope_base64"], "properties": {"artifact_id": {"type": "string", "minLength": 1, "maxLength": 200}, "envelope_base64": {"type": "string", "minLength": 1, "maxLength": 1398104}}},
       "SubscriptionApply": {"type": "object", "additionalProperties": false, "required": ["plan", "state", "key_quota"], "properties": {"plan": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,62}$"}, "state": {"enum": ["active", "past_due", "cancelled"]}, "key_quota": {"type": "integer", "minimum": 0, "maximum": 10000}, "renews_at": {"type": ["integer", "null"], "minimum": 0, "maximum": 4102444800}}},
       "UnwrapRequest": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "nonce"], "properties": {"artifact_id": {"type": "string", "minLength": 1, "maxLength": 200}, "nonce": {"type": "string", "minLength": 1, "maxLength": 200}, "requested_ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 900, "default": 0}}}

@@ -14,6 +14,7 @@ function keyCustodyOpen(array $config): PDO
     $pdo->exec('CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS access_tokens (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, scope TEXT NOT NULL, token_hash TEXT NOT NULL, public_key BLOB, created_at INTEGER NOT NULL, revoked_at INTEGER)');
     if (!keyCustodyTableHasColumn($pdo, 'access_tokens', 'public_key')) $pdo->exec('ALTER TABLE access_tokens ADD COLUMN public_key BLOB');
+    if (!keyCustodyTableHasColumn($pdo, 'access_tokens', 'label')) $pdo->exec('ALTER TABLE access_tokens ADD COLUMN label TEXT');
     $pdo->exec('CREATE INDEX IF NOT EXISTS access_tokens_tenant_scope ON access_tokens (tenant_id, scope, revoked_at)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS client_nonces (token_id TEXT NOT NULL REFERENCES access_tokens(id) ON DELETE CASCADE, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (token_id, nonce))');
     $pdo->exec('CREATE INDEX IF NOT EXISTS client_nonces_expiry ON client_nonces (expires_at)');
@@ -44,7 +45,7 @@ function keyCustodyCreateTenant(PDO $pdo, string $name): array
     try {
     $pdo->prepare('INSERT INTO tenants (id, name, active, created_at) VALUES (?, ?, 1, ?)')->execute([$tenant, $name, $now]);
     $management = keyCustodyCreateToken($pdo, $tenant, 'management');
-    $client = keyCustodyCreateClientCredential($pdo, $tenant);
+    $client = keyCustodyCreateClientCredential($pdo, $tenant, 'initial enrollment');
     $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, renews_at, changed_at) VALUES (?, ?, ?, ?, NULL, ?)')->execute([$tenant, 'free', 'active', 2, $now]);
     keyCustodyAudit($pdo, $tenant, 'tenant_create', $tenant, 'initial free plan');
     $pdo->commit();
@@ -52,23 +53,24 @@ function keyCustodyCreateTenant(PDO $pdo, string $name): array
     return ['tenant_id' => $tenant, 'management_token' => $management, 'client_token' => $client['token'], 'client_signing_private_key' => $client['signing_private_key']];
 }
 
-function keyCustodyCreateToken(PDO $pdo, string $tenant, string $scope, ?string $publicKey = null): string
+function keyCustodyCreateToken(PDO $pdo, string $tenant, string $scope, ?string $publicKey = null, ?string $label = null): string
 {
     if (!in_array($scope, ['management', 'client'], true)) throw new InvalidArgumentException('token scope is invalid');
     if ($scope === 'client' && (!is_string($publicKey) || strlen($publicKey) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES)) throw new InvalidArgumentException('client signing public key is invalid');
     if ($scope === 'management' && $publicKey !== null) throw new InvalidArgumentException('management tokens cannot have a signing key');
+    if ($label !== null && ($label === '' || mb_strlen($label) > 120)) throw new InvalidArgumentException('credential label is invalid');
     $id = 'tok_' . bin2hex(random_bytes(10)); $secret = base64_encode(random_bytes(KEY_CUSTODY_TOKEN_BYTES));
-    $pdo->prepare('INSERT INTO access_tokens (id, tenant_id, scope, token_hash, public_key, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, NULL)')
-        ->execute([$id, $tenant, $scope, password_hash($secret, PASSWORD_DEFAULT), $publicKey, time()]);
+    $pdo->prepare('INSERT INTO access_tokens (id, tenant_id, scope, token_hash, public_key, label, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)')
+        ->execute([$id, $tenant, $scope, password_hash($secret, PASSWORD_DEFAULT), $publicKey, $label, time()]);
     return $id . '.' . $secret;
 }
 
 /** @return array{id:string,token:string,signing_private_key:string} */
-function keyCustodyCreateClientCredential(PDO $pdo, string $tenant): array
+function keyCustodyCreateClientCredential(PDO $pdo, string $tenant, ?string $label = null): array
 {
     if (!function_exists('sodium_crypto_sign_keypair')) throw new RuntimeException('libsodium is required for enrolled-client credentials');
     $pair = sodium_crypto_sign_keypair();
-    $token = keyCustodyCreateToken($pdo, $tenant, 'client', sodium_crypto_sign_publickey($pair));
+    $token = keyCustodyCreateToken($pdo, $tenant, 'client', sodium_crypto_sign_publickey($pair), $label);
     [$id] = explode('.', $token, 2);
     return [
         'id' => $id, 'token' => $token,
@@ -78,21 +80,21 @@ function keyCustodyCreateClientCredential(PDO $pdo, string $tenant): array
 }
 
 /** @return array{id:string,token:string,signing_private_key:string} */
-function keyCustodyCreateAdditionalClientCredential(PDO $pdo, string $tenant): array
+function keyCustodyCreateAdditionalClientCredential(PDO $pdo, string $tenant, string $label): array
 {
     $tenantCheck = $pdo->prepare('SELECT active FROM tenants WHERE id = ?'); $tenantCheck->execute([$tenant]);
     if ($tenantCheck->fetchColumn() !== 1) throw new InvalidArgumentException('tenant is unavailable');
-    $credential = keyCustodyCreateClientCredential($pdo, $tenant);
-    keyCustodyAudit($pdo, $tenant, 'client_credential_create', $credential['id'], 'additional enrolled-client credential');
+    $credential = keyCustodyCreateClientCredential($pdo, $tenant, trim($label));
+    keyCustodyAudit($pdo, $tenant, 'client_credential_create', $credential['id'], 'additional enrolled-client credential; label=' . trim($label));
     return $credential;
 }
 
-/** @return list<array{id:string,state:string,created_at:int}> */
+/** @return list<array{id:string,label:?string,state:string,created_at:int}> */
 function keyCustodyListClientCredentials(PDO $pdo, string $tenant): array
 {
-    $stmt = $pdo->prepare("SELECT id, created_at, revoked_at FROM access_tokens WHERE tenant_id = ? AND scope = 'client' ORDER BY created_at DESC");
+    $stmt = $pdo->prepare("SELECT id, label, created_at, revoked_at FROM access_tokens WHERE tenant_id = ? AND scope = 'client' ORDER BY created_at DESC");
     $stmt->execute([$tenant]);
-    return array_map(fn(array $row): array => ['id' => $row['id'], 'state' => $row['revoked_at'] === null ? 'active' : 'revoked', 'created_at' => (int)$row['created_at']], $stmt->fetchAll());
+    return array_map(fn(array $row): array => ['id' => $row['id'], 'label' => $row['label'], 'state' => $row['revoked_at'] === null ? 'active' : 'revoked', 'created_at' => (int)$row['created_at']], $stmt->fetchAll());
 }
 
 function keyCustodyRevokeClientCredential(PDO $pdo, string $tenant, string $id): void
@@ -113,7 +115,7 @@ function keyCustodyRotateClientCredential(PDO $pdo, string $tenant): array
     $pdo->beginTransaction();
     try {
         $pdo->prepare("UPDATE access_tokens SET revoked_at = ? WHERE tenant_id = ? AND scope = 'client' AND revoked_at IS NULL")->execute([time(), $tenant]);
-        $credential = keyCustodyCreateClientCredential($pdo, $tenant);
+        $credential = keyCustodyCreateClientCredential($pdo, $tenant, 'emergency replacement');
         keyCustodyAudit($pdo, $tenant, 'client_credential_rotate', $tenant, 'prior enrolled-client credentials revoked');
         $pdo->commit();
         return $credential;

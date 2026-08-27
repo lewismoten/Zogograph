@@ -121,7 +121,7 @@ returned material expires or is remotely revocable.
 
 Use one enrolled-client credential per customer deployment. Account management
 can `GET` or `POST /v1/client-credentials` to list metadata or create a new
-one-time bearer/signing-key pair, and can revoke only one old deployment with
+one-time bearer/signing-key pair with a clear deployment label, and can revoke only one old deployment with
 `DELETE /v1/client-credentials/{credentialId}`. If credentials might be
 widely exposed, `POST /v1/client-credentials/rotate` creates one replacement
 pair and immediately revokes **all** existing enrolled-client credentials for

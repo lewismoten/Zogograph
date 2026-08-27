@@ -80,9 +80,11 @@ try {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['credentials' => keyCustodyListClientCredentials($pdo, $auth['tenant_id'])]);
     }
     if ($path === '/v1/client-credentials' && $method === 'POST') {
-        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $credential = keyCustodyCreateAdditionalClientCredential($pdo, $auth['tenant_id']);
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody);
+        if (!is_string($body['label'] ?? null)) throw new InvalidArgumentException('enrolled-client credential label is required');
+        $credential = keyCustodyCreateAdditionalClientCredential($pdo, $auth['tenant_id'], $body['label']);
         custodyReply(201, ['client_credential_id' => $credential['id'], 'client_token' => $credential['token'], 'client_signing_private_key' => $credential['signing_private_key'],
-            'warning' => 'Store both values now for exactly one deployment. The service cannot show them again.']);
+            'warning' => 'Store both values now for exactly one labeled deployment. The service cannot show them again.']);
     }
     if (preg_match('#^/v1/client-credentials/(tok_[a-f0-9]{20})$#', $path, $match) && $method === 'DELETE') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); keyCustodyRevokeClientCredential($pdo, $auth['tenant_id'], $match[1]);
