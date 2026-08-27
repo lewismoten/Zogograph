@@ -40,6 +40,12 @@ The commercial website sets plans, prices, quotas, invoices, payment-provider
 references, and cancellation/retention policy. The custody API reports those
 states but does not receive card or bank details.
 
+Only an active subscription can create a new custody key or store a new
+envelope. An inactive subscription does not erase existing envelopes or
+automatically block their recovery: billing must not become a way to hold an
+operator's encrypted data hostage. Retention/deletion terms remain explicit
+commercial policy and must provide notice and recovery export procedures.
+
 ## Current reference API
 
 Copy `config.sample.php` to `config.php`, create a private Base64 256-bit

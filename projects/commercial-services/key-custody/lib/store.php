@@ -165,6 +165,7 @@ function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artif
 /** @return array{id:string,artifact_id:string,created_at:int} */
 function keyCustodyStoreEnvelope(PDO $pdo, string $tenant, string $keyId, string $artifactId, string $envelope): array
 {
+    keyCustodySubscriptionAllows($pdo, $tenant);
     if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200 || $envelope === '' || strlen($envelope) > 1048576) {
         throw new InvalidArgumentException('key envelope request is invalid');
     }
