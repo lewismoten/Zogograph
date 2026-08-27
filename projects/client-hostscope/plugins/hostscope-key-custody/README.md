@@ -38,6 +38,14 @@ the raw bearer and private signing key never belong in normal package settings.
 Changing the service URL or TLS pin clears that endpoint evidence and requires
 the test again; rotating only the encrypted references preserves it.
 
+The next staged operation is an explicitly approved, short-lived
+`custody_enrollment_check`. It sends the enrolled-client pair only to signed
+`GET /v1/client/subscription` request handling and returns whether a future
+envelope write is allowed. It cannot create a key or envelope, request an
+unwrap, or receive a HostScope database path. Core will expose it only after a
+deployment has configured a reviewed network-restricted sandbox launcher and
+the administrator has granted both `key_provider` and `network_client`.
+
 It first reads only the custody key's X25519 public wrapping key, generates a
 fresh artifact data key locally, and sends that key only as a sealed envelope
 with its artifact identifier and authenticated request metadata. It must not

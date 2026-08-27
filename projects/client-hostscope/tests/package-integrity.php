@@ -61,7 +61,7 @@ try {
         && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::class, 'healthEndpoint'), 'custody client does not enforce its secure transport defaults');
     $custodyDirectory = __DIR__ . '/../plugins/hostscope-key-custody';
     $custodyManifest = json_decode((string)file_get_contents($custodyDirectory . '/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
-    packageExpect(is_array($custodyManifest) && ($custodyManifest['runtime']['operations'] ?? null) === ['capability', 'custody_endpoint_probe']
+    packageExpect(is_array($custodyManifest) && ($custodyManifest['runtime']['operations'] ?? null) === ['capability', 'custody_endpoint_probe', 'custody_enrollment_check']
         && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyProvider::class, 'preflight') && packageVerifyIntegrity($custodyManifest, $custodyDirectory)['ok'],
         'key custody package manifest does not cover its installed files');
     $relayPair = sodium_crypto_sign_keypair(); $relaySecret = sodium_crypto_sign_secretkey($relayPair);

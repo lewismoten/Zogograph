@@ -66,7 +66,7 @@ function packageRuntimeManifest(string $directory, array $trustedKeys): array
     $operations = array_values(array_unique((array)($runtime['operations'] ?? [])));
     $allowedOperations = match ($id) {
         'sqlcipher-encrypted-sqlite' => ['capability', 'sqlcipher_preflight'],
-        'hostscope-key-custody' => ['capability', 'custody_endpoint_probe'],
+        'hostscope-key-custody' => ['capability', 'custody_endpoint_probe', 'custody_enrollment_check'],
         default => ['capability'],
     };
     if (($runtime['kind'] ?? '') !== 'hostscope-isolated-php-package'
