@@ -182,6 +182,13 @@ try {
         encryptionExpect(encryptionRetentionDays(['retention_days' => 30, 'retention_days_by_store' => ['setup' => 365]], 'setup') === 365
             && encryptionRetentionDays(['retention_days' => 30, 'retention_days_by_store' => ['setup' => 365]], 'account') === 30,
             'per-store retention policy did not fall back to the normal retention target');
+        $tiered = encryptionRetentionPreservedArtifactIds([
+            ['artifact_id' => 'account:new', 'store' => 'account', 'created_at' => strtotime('2026-08-27 12:00:00 UTC')],
+            ['artifact_id' => 'account:old', 'store' => 'account', 'created_at' => strtotime('2026-08-26 12:00:00 UTC')],
+            ['artifact_id' => 'setup:new', 'store' => 'setup', 'created_at' => strtotime('2026-08-27 12:00:00 UTC')],
+        ], ['retention_recovery_tiers' => ['daily' => 1]]);
+        encryptionExpect(isset($tiered['account:new']) && !isset($tiered['account:old']) && isset($tiered['setup:new']),
+            'tiered recovery retention did not preserve one newest distinct day per store');
         $overridePath = $root . '/sealed/account.override.sealed';
         copy((string)$copies[1]['local_path'], $overridePath);
         $overrideHash = hash_file('sha256', $overridePath);
@@ -195,6 +202,18 @@ try {
         $overrideConfig['encryption']['retention_days_by_store'] = ['account' => 1];
         encryptionExpect(encryptionPruneConfiguredCopies($overrideConfig, $live)['removed'] === 1 && !is_file($overridePath),
             'per-store retention override did not prune the old encrypted artifact');
+        $tierPath = $root . '/sealed/account.monthly.sealed';
+        copy((string)$copies[1]['local_path'], $tierPath);
+        $tierHash = hash_file('sha256', $tierPath);
+        $live->prepare("INSERT INTO encryption_artifacts (artifact_id, store, created_at, last_verified_at, local_path, ciphertext_bytes, ciphertext_sha256, state)
+            VALUES (?, 'account', ?, ?, ?, ?, ?, 'verified')")
+            ->execute(['account:monthly', time() - 40 * 86400, time() - 40 * 86400, $tierPath, filesize($tierPath), $tierHash]);
+        $tierConfig = $retentionConfig; $tierConfig['encryption']['retention_recovery_tiers'] = ['monthly' => 2];
+        encryptionExpect(encryptionPruneConfiguredCopies($tierConfig, $live)['removed'] === 0 && is_file($tierPath),
+            'monthly recovery tier did not retain a representative old encrypted artifact');
+        $tierConfig['encryption']['retention_recovery_tiers'] = ['monthly' => 1];
+        encryptionExpect(encryptionPruneConfiguredCopies($tierConfig, $live)['removed'] === 1 && !is_file($tierPath),
+            'reduced monthly recovery tier did not release the old encrypted artifact');
         file_put_contents((string)$copies[0]['local_path'], 'tampered ciphertext');
         $failedVerification = encryptionVerifyConfiguredCopies($retentionConfig, $live, $web);
         encryptionExpect($failedVerification['failed'] === 1 && (int)$live->query("SELECT COUNT(*) FROM encryption_artifacts WHERE state = 'verification_failed'")->fetchColumn() === 1,

@@ -174,6 +174,13 @@ when the setup database or bootstrap configuration needs a longer recovery
 window than metrics. A value of `0` retains every verified copy of that one
 store; omitted stores continue to use the normal retention target.
 
+For longer-term recovery without keeping every daily artifact, use **Long-term
+recovery copies** only when needed. For example,
+`{"daily":7,"weekly":4,"monthly":12}` keeps the newest verified copy from
+each of the last seven distinct UTC days, four distinct UTC weeks, and twelve
+distinct UTC months for every store, even after its normal retention target.
+It is off by default so the quick-install 30-day policy stays easy to predict.
+
 If the host, VM, container volume, or managed database storage is already
 encrypted at rest, select **My host/VM encrypts the selected live stores** and
 choose the protected stores. This records the operator's policy but does not

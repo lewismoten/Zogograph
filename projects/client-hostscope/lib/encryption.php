@@ -502,6 +502,7 @@ function encryptionPruneConfiguredCopies(array $config, PDO $pdo): array
     foreach ($pdo->query("SELECT store, MAX(created_at) AS created_at FROM encryption_artifacts WHERE state = 'verified' GROUP BY store")->fetchAll() as $row) {
         $latest[$row['store']] = (int)$row['created_at'];
     }
+    $preserved = encryptionRetentionPreservedArtifactIds($pdo->query("SELECT artifact_id, store, created_at FROM encryption_artifacts WHERE state = 'verified' ORDER BY store, created_at DESC, artifact_id DESC")->fetchAll(), $settings);
     $candidates = $pdo->query("SELECT artifact_id, store, created_at, local_path, ciphertext_sha256 FROM encryption_artifacts
         WHERE state = 'verified' ORDER BY created_at ASC");
     $mark = $pdo->prepare("UPDATE encryption_artifacts SET state = 'pruned' WHERE artifact_id = ? AND state = 'verified'");
@@ -509,6 +510,7 @@ function encryptionPruneConfiguredCopies(array $config, PDO $pdo): array
     foreach ($candidates->fetchAll() as $artifact) {
         $days = encryptionRetentionDays($settings, (string)$artifact['store']);
         if ($days <= 0 || (int)$artifact['created_at'] >= time() - $days * 86400) continue;
+        if (isset($preserved[(string)$artifact['artifact_id']])) continue;
         if (($latest[$artifact['store']] ?? 0) <= (int)$artifact['created_at']) continue;
         $configured = (string)$artifact['local_path'];
         $path = realpath($configured);
@@ -536,6 +538,29 @@ function encryptionRetentionDays(array $settings, string $store): int
     if (is_array($overrides) && array_key_exists($store, $overrides)) $days = $overrides[$store];
     if (!is_int($days) && !(is_string($days) && ctype_digit($days))) return 0;
     return min(36500, max(0, (int)$days));
+}
+
+/** Keeps a bounded set of representative older recovery copies per store. */
+function encryptionRetentionPreservedArtifactIds(array $artifacts, array $settings): array
+{
+    $tiers = (array)($settings['retention_recovery_tiers'] ?? []);
+    if ($tiers === []) $tiers = ['daily' => $settings['retention_keep_daily'] ?? 0, 'weekly' => $settings['retention_keep_weekly'] ?? 0, 'monthly' => $settings['retention_keep_monthly'] ?? 0];
+    $limits = [];
+    foreach (['daily', 'weekly', 'monthly'] as $tier) {
+        $value = $tiers[$tier] ?? 0;
+        $limits[$tier] = (is_int($value) || (is_string($value) && ctype_digit($value))) ? min(36500, max(0, (int)$value)) : 0;
+    }
+    $seen = []; $preserved = [];
+    foreach ($artifacts as $artifact) {
+        $store = (string)$artifact['store'];
+        foreach ($limits as $tier => $limit) {
+            if ($limit <= 0) continue;
+            $bucket = gmdate(match ($tier) {'daily' => 'Y-m-d', 'weekly' => 'o-W', default => 'Y-m'}, (int)$artifact['created_at']);
+            if (isset($seen[$tier][$store][$bucket]) || count($seen[$tier][$store] ?? []) >= $limit) continue;
+            $seen[$tier][$store][$bucket] = true; $preserved[(string)$artifact['artifact_id']] = true;
+        }
+    }
+    return $preserved;
 }
 
 /** Decrypts a sealed artifact into a new destination file after authenticating every chunk. */
