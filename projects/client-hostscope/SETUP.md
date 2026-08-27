@@ -200,6 +200,24 @@ that plaintext file when you finish:
 php scripts/encryption-key.php decrypt /secure/hostscope/primary.key account.sealed restored-account.db
 ```
 
+To restore an account database from a sealed copy, stop the web server and all
+HostScope cron jobs first. The restore command requires that acknowledgement,
+fully authenticates and checks the decrypted SQLite candidate, snapshots the
+current account database, replaces it atomically, and removes stale WAL/SHM
+files. The short-lived decrypted candidate is removed even when the restore is
+refused. It must be run from the deployed HostScope directory as the account
+that owns the files:
+
+```bash
+php scripts/restore-account.php --sealed /secure/account.sealed \
+  --key /secure/hostscope/primary.key --writers-stopped
+```
+
+Do not restart HostScope until that command exits successfully. This restores
+only the account database; configuration, host, and assistant artifacts are
+intentionally separate recovery operations because they have different owners
+and availability contracts.
+
 To replace a key, create the replacement key, write a separate rotated copy,
 verify that it decrypts, and only then retire the old sealed copy and key:
 

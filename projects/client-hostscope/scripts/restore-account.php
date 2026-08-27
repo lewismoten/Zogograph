@@ -12,8 +12,14 @@ if (PHP_SAPI !== 'cli') {
     exit("This recovery command is CLI-only.\n");
 }
 
-if ($argc !== 4 || $argv[1] !== '--from' || $argv[3] !== '--writers-stopped') {
-    fwrite(STDERR, "Usage: php scripts/restore-account.php --from /secure/known-good.db --writers-stopped\n");
+if ($argc === 4 && $argv[1] === '--from' && $argv[3] === '--writers-stopped') {
+    $sourceArgument = $argv[2]; $sealedKey = null;
+} elseif ($argc === 6 && $argv[1] === '--sealed' && $argv[3] === '--key' && $argv[5] === '--writers-stopped') {
+    $sourceArgument = $argv[2]; $sealedKey = $argv[4];
+} else {
+    fwrite(STDERR, "Usage:\n"
+        . "  php scripts/restore-account.php --from /secure/known-good.db --writers-stopped\n"
+        . "  php scripts/restore-account.php --sealed /secure/account.sealed --key /secure/hostscope.key --writers-stopped\n");
     exit(64);
 }
 
@@ -32,20 +38,27 @@ require_once __DIR__ . '/../lib/alerts.php';
 require_once __DIR__ . '/../lib/retention.php';
 require_once __DIR__ . '/../lib/storekeep.php';
 require_once __DIR__ . '/../lib/notes.php';
+require_once __DIR__ . '/../lib/encryption.php';
 
-$source = realpath($argv[2]);
+$source = realpath($sourceArgument);
 $target = (string)($config['database'] ?? '');
 if ($source === false || !is_file($source) || $target === '') {
-    fwrite(STDERR, "The source must be a readable SQLite export and the account database must be configured.\n");
+    fwrite(STDERR, "The source must be a readable export/artifact and the account database must be configured.\n");
     exit(1);
 }
-if (realpath($target) === $source) {
+if ($sealedKey === null && realpath($target) === $source) {
     fwrite(STDERR, "The source is already the live account database; refusing to replace it with itself.\n");
     exit(1);
 }
 
 $temporary = $target . '.restore-' . bin2hex(random_bytes(8));
+$decrypted = null;
 try {
+    if ($sealedKey !== null) {
+        $decrypted = $target . '.sealed-restore-' . bin2hex(random_bytes(8)) . '.db';
+        encryptionOpenFile($source, $decrypted, encryptionReadLocalKey($sealedKey, dirname(__DIR__)));
+        $source = $decrypted;
+    }
     $candidate = new PDO('sqlite:' . $source, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     $integrity = databaseFullIntegrity($candidate);
     if (!$integrity['ok']) {
@@ -81,4 +94,6 @@ try {
     @unlink($temporary);
     fwrite(STDERR, 'Restore refused: ' . $e->getMessage() . "\n");
     exit(1);
+} finally {
+    if ($decrypted !== null) @unlink($decrypted);
 }

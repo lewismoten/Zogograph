@@ -170,6 +170,11 @@ foreach ([
         throw new RuntimeException('missing account restore safeguard: ' . $required);
     }
 }
+foreach (['--sealed', '--key', 'encryptionOpenFile', 'encryptionReadLocalKey', 'sealed-restore-'] as $required) {
+    if (!str_contains($restore, $required)) {
+        throw new RuntimeException('missing sealed account restore safeguard: ' . $required);
+    }
+}
 
 $api = file_get_contents(__DIR__ . '/../api.php');
 if ($api === false || !str_contains($api, "'peer-transport-rotate' => doPeerTransportRotate")) {
