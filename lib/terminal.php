@@ -50,6 +50,77 @@ const TERMINAL_MAX_BYTES = 4 * 1024 * 1024;
 
 /** Most finished commands kept on disk. */
 const TERMINAL_KEEP = 40;
+/** Largest text file opened in the browser editor. */
+const TERMINAL_EDITOR_MAX_BYTES = 1024 * 1024;
+
+/** Resolves one browser-editable file without letting a path escape scan_root. */
+function terminalEditorPath(array $config, PDO $pdo, string $asked, bool $forWrite = false): string
+{
+    $settings = terminalSettings($config, $pdo);
+    if (!$settings['enabled']) {
+        throw new ActionRefused('unlock the terminal before opening its web editor');
+    }
+    $asked = trim($asked);
+    if ($asked === '') throw new ActionRefused('name a file to edit');
+
+    $root = realpath((string)($config['scan_root'] ?? ''));
+    if ($root === false) throw new ActionRefused('the watched root is not available');
+    $candidate = str_starts_with($asked, '/') ? $asked : terminalCwd($config, $pdo) . '/' . $asked;
+    $existing = realpath($candidate);
+    if ($existing !== false) {
+        $path = $existing;
+    } else {
+        $parent = realpath(dirname($candidate));
+        if ($parent === false) throw new ActionRefused('the file’s parent directory does not exist');
+        $path = $parent . '/' . basename($candidate);
+    }
+    if ($path !== $root && !str_starts_with($path, rtrim($root, '/') . '/')) {
+        throw new ActionRefused('the web editor is limited to the watched directory');
+    }
+    if (file_exists($path) && !is_file($path)) throw new ActionRefused('that is not a regular file');
+    if (!$forWrite && (!is_file($path) || !is_readable($path))) {
+        throw new ActionRefused('that file cannot be read');
+    }
+    if ($forWrite && is_file($path) && !is_writable($path)) {
+        throw new ActionRefused('that file is not writable by this account');
+    }
+    if ($forWrite && !is_file($path) && !is_writable(dirname($path))) {
+        throw new ActionRefused('its parent directory is not writable by this account');
+    }
+    return $path;
+}
+
+/** @return array{path:string,text:string,exists:bool,bytes:int,writable:bool} */
+function terminalEditorRead(array $config, PDO $pdo, string $asked): array
+{
+    $path = terminalEditorPath($config, $pdo, $asked);
+    $bytes = (int)filesize($path);
+    if ($bytes > TERMINAL_EDITOR_MAX_BYTES) {
+        throw new ActionRefused('that file is larger than the web editor limit of 1 MB');
+    }
+    $text = file_get_contents($path);
+    if ($text === false || str_contains($text, "\0")) {
+        throw new ActionRefused('the web editor only opens readable text files');
+    }
+    return ['path' => $path, 'text' => $text, 'exists' => true, 'bytes' => $bytes,
+        'writable' => is_writable($path)];
+}
+
+/** @return array{path:string,bytes:int} */
+function terminalEditorSave(array $config, PDO $pdo, string $asked, string $text): array
+{
+    if (strlen($text) > TERMINAL_EDITOR_MAX_BYTES) {
+        throw new ActionRefused('the web editor cannot save more than 1 MB at once');
+    }
+    if (str_contains($text, "\0")) throw new ActionRefused('text files cannot contain NUL bytes');
+    $path = terminalEditorPath($config, $pdo, $asked, true);
+    $temporary = $path . '.hostscope-edit-' . bin2hex(random_bytes(4));
+    if (file_put_contents($temporary, $text, LOCK_EX) === false || !rename($temporary, $path)) {
+        @unlink($temporary);
+        throw new ActionRefused('could not save that file');
+    }
+    return ['path' => $path, 'bytes' => strlen($text)];
+}
 
 /** Is it turned on, and can this machine actually do it? */
 function terminalSettings(array $config, ?PDO $pdo = null): array
@@ -527,6 +598,9 @@ function terminalNeedsKeyboard(): array
     return [
         'nano' => 'To read a file, `cat file` or `sed -n 1,80p file`. To change one, '
             . '`printf %s "new contents" > file`, or edit it somewhere with a keyboard.',
+        'micro' => 'Use the browser editor for this file instead.',
+        'joe' => 'Use the browser editor for this file instead.',
+        'nvim' => 'Use the browser editor for this file instead.',
         'pico' => 'Same as nano: `cat` to read, a redirect to write.',
         'vi' => 'To read a file, `sed -n 1,80p file` or `cat file`. For scripted edits, '
             . '`sed -i` makes them without a screen, and `ex -s` runs vi commands from a '

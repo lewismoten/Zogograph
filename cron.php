@@ -30,7 +30,8 @@ if (!is_file($configFile)) {
     exit(1);
 }
 
-$config = require $configFile;
+require_once __DIR__ . '/lib/setupstore.php';
+$config = loadConfiguredSettings($configFile);
 date_default_timezone_set($config['timezone'] ?? 'UTC');
 
 require_once __DIR__ . '/lib/scans.php';

@@ -29,7 +29,8 @@ if (!is_file($configFile)) {
     exit('Not configured.');
 }
 
-$config = require $configFile;
+require_once __DIR__ . '/lib/setupstore.php';
+$config = loadConfiguredSettings($configFile);
 define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
 require_once __DIR__ . '/lib/db.php';

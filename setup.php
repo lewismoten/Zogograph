@@ -52,6 +52,7 @@ if (!is_file($samplePath)) {
 }
 
 require_once $root . '/lib/configure.php';
+require_once $root . '/lib/setupstore.php';
 // For hostCronLine/hostCronCommand, shown after a successful write.
 require_once $root . '/lib/hostdb.php';
 
@@ -92,7 +93,7 @@ function readExistingSecrets(string $targetPath): ?array
     }
 
     try {
-        $current = require $targetPath;
+        $current = loadConfiguredSettings($targetPath);
     } catch (Throwable) {
         // A config too broken to load cannot authorise anything, but it is
         // still a file, so it still may not be overwritten.
@@ -127,7 +128,7 @@ function mayOverwrite(?array $existing, string $supplied): bool
 function readExistingConfig(string $targetPath): ?array
 {
     try {
-        $current = require $targetPath;
+        $current = loadConfiguredSettings($targetPath);
     } catch (Throwable) {
         return null;
     }
@@ -191,7 +192,7 @@ function runWeb(
     header('X-Frame-Options: DENY');
 
     $posted = $_SERVER['REQUEST_METHOD'] === 'POST';
-    $configured = $existing !== null;
+    $configured = $existing !== null && is_file(setupStorePath(require $targetPath));
 
     /*
      * Unlocking, and why it needs a session at all.
@@ -241,7 +242,7 @@ function runWeb(
      * the mask secret is not a form field at all.
      */
     $values = [];
-    $current = $unlocked ? readExistingConfig($targetPath) : null;
+    $current = ($unlocked || !$configured) ? readExistingConfig($targetPath) : null;
     foreach ($fields as $field) {
         $values[$field['key']] = $current !== null
             ? valueAtPath($current, $field['path'], $field['default'])
@@ -315,8 +316,7 @@ function runWeb(
             $errors['password'] = 'Choose a password. The current one cannot be carried over '
                 . 'into text shown to somebody who has not entered it.';
         } else {
-            // A fresh install may legitimately choose to have no sign-in.
-            $hash = '';
+            $errors['password'] = 'Create a password before continuing.';
         }
 
         if (!$errors) {
@@ -336,7 +336,7 @@ function runWeb(
             $rendered = renderConfig($config, $root . '/lib');
 
             if ($authorised) {
-                [$written, $writeError] = writeConfig($targetPath, $rendered, $configured);
+                [$written, $writeError] = writeConfig($targetPath, $config, $root . '/lib');
             }
         }
     }
@@ -361,33 +361,14 @@ function runWeb(
  *
  * @return array{0: bool, 1: ?string} written, and why not
  */
-function writeConfig(string $targetPath, string $text, bool $replacing): array
+function writeConfig(string $targetPath, array $config, string $libDir): array
 {
-    if (!$replacing) {
-        $handle = @fopen($targetPath, 'x');
-        if ($handle === false) {
-            return [false, is_file($targetPath)
-                ? 'Something created lib/config.php while you were filling this in. Nothing was overwritten.'
-                : 'Could not create lib/config.php. The web server may not be allowed to write '
-                  . 'into lib/. Copy the text below into the file instead.'];
-        }
-        fwrite($handle, $text);
-        fclose($handle);
-        @chmod($targetPath, 0600);
+    try {
+        saveConfiguredSettings($config, $targetPath, $libDir);
         return [true, null];
+    } catch (Throwable $error) {
+        return [false, 'Could not save setup.db and the bootstrap config: ' . $error->getMessage()];
     }
-
-    $temporary = $targetPath . '.new';
-    if (@file_put_contents($temporary, $text, LOCK_EX) === false) {
-        return [false, 'Could not write into lib/. Copy the text below into the file instead.'];
-    }
-    @chmod($temporary, 0600);
-    if (!@rename($temporary, $targetPath)) {
-        @unlink($temporary);
-        return [false, 'Could not replace lib/config.php. Copy the text below into it instead.'];
-    }
-
-    return [true, null];
 }
 
 function webPage(
@@ -411,7 +392,12 @@ function webPage(
     $out[] = '<title>Disk Usage Monitor — setup</title>';
     $out[] = '<link rel="stylesheet" href="index.css">';
     $out[] = '<style>'
-        . 'body{max-width:880px}'
+        . 'body{max-width:1180px}'
+        . '.setup-layout{display:grid;grid-template-columns:210px minmax(0,1fr);gap:24px;align-items:start}'
+        . '.setup-nav{position:sticky;top:16px;border:1px solid var(--line);border-radius:10px;padding:10px}'
+        . '.setup-nav a{display:block;padding:7px 8px;border-radius:6px;color:var(--muted);text-decoration:none;font-size:.86rem}'
+        . '.setup-nav a:hover{background:var(--panel);color:var(--text)}'
+        . '.setup-main{min-width:0}'
         . '.wiz label{display:grid;gap:6px;margin-bottom:16px}'
         . '.wiz input[type=text],.wiz input[type=password],.wiz input[type=email]{width:100%}'
         . '.wiz .help{color:var(--muted);font-size:.82rem}'
@@ -440,12 +426,13 @@ function webPage(
         . 'textarea[name]{min-height:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'
         . 'font-size:.85rem;background:#111;color:#eee;border:1px solid var(--line);'
         . 'border-radius:8px;padding:8px}'
+        . '@media(max-width:700px){.setup-layout{display:block}.setup-nav{position:static;display:flex;overflow-x:auto;gap:3px;margin-bottom:16px;white-space:nowrap}.setup-nav a{flex:0 0 auto}}'
         . '</style></head><body class="wiz">';
 
     $out[] = '<h1>Disk Usage Monitor — setup</h1>';
 
     if ($written) {
-        $out[] = '<div class="banner ok"><strong>Written to <code>lib/config.php</code>.</strong>'
+        $out[] = '<div class="banner ok"><strong>Settings saved in <code>data/setup.db</code>.</strong>'
             . '<p>Take the first readings, then open the dashboard:</p>'
             . '<pre><code>php cron.php --vitals' . "\n" . 'php cron.php --scan</code></pre>'
             . '<p><strong>Now delete <code>setup.php</code>.</strong> It will not let anybody '
@@ -497,7 +484,18 @@ function webPage(
         $out[] = '<div class="banner crit">Some answers need another look.</div>';
     }
 
-    $out[] = '<form method="post">';
+    $sections = [];
+    foreach ($fields as $field) {
+        if (!empty($field['generated'])) {
+            $sections[$field['section']] = true;
+        }
+    }
+    $out[] = '<div class="setup-layout"><aside class="setup-nav" aria-label="Setup sections">'
+        . '<a href="#section-basics">Basics</a>';
+    foreach (array_keys($sections) as $name) {
+        $out[] = '<a href="#section-' . h($name) . '">' . h(sectionTitle($name)) . '</a>';
+    }
+    $out[] = '</aside><main class="setup-main"><form method="post">';
 
     if ($configured && $existing['password_hash'] !== '' && !$unlocked) {
         // Its own form, so pressing enter in the password box unlocks rather
@@ -516,7 +514,7 @@ function webPage(
     if ($unlocked) {
         $out[] = '<fieldset><legend>Unlocked</legend>'
             . '<span class="help">These are the settings this install is running with. '
-            . 'Saving replaces <code>lib/config.php</code>.</span>'
+            . 'Saving updates <code>data/setup.db</code>.</span>'
             . '<label class="row" style="margin:10px 0 0"><input type="checkbox" name="rotate_mask" '
             . 'value="1"> Also generate a new mask secret</label>'
             . '<span class="help">Only on purpose: it renames every masked path at once.</span>'
@@ -536,6 +534,7 @@ function webPage(
      * every one is in the form, submits with it, and keeps its current value
      * whether or not anybody opened the group it is in.
      */
+    $out[] = '<section id="section-basics">';
     $sections = [];
     foreach ($fields as $field) {
         if (empty($field['generated'])) {
@@ -544,6 +543,8 @@ function webPage(
         }
         $sections[$field['section']][] = $field;
     }
+
+    $out[] = '</section>';
 
     if ($sections) {
         $out[] = '<h2 style="margin-top:30px">Everything else in the file</h2>';
@@ -564,7 +565,7 @@ function webPage(
                 }
             }
 
-            $out[] = '<details' . ($broken ? ' open' : '') . '>';
+            $out[] = '<details id="section-' . h($name) . '"' . ($broken ? ' open' : '') . '>';
             $out[] = '<summary>' . h(sectionTitle($name)) . ' — '
                 . count($group) . ' option' . (count($group) === 1 ? '' : 's')
                 . ($broken ? ' <strong>(needs another look)</strong>' : '') . '</summary>';
@@ -581,9 +582,9 @@ function webPage(
     }
 
     $out[] = '<button type="submit">'
-        . (!$configured || $unlocked ? 'Write lib/config.php' : 'Show me the config')
+        . (!$configured || $unlocked ? 'Save settings' : 'Show me the config')
         . '</button>';
-    $out[] = '</form>';
+    $out[] = '</form></main></div>';
 
     if ($rendered !== null) {
         $out[] = '<h2 style="margin-top:28px">Copy this into <code>lib/config.php</code></h2>';
@@ -721,7 +722,7 @@ function runCli(
     array $flags
 ): void {
     $has = fn(string $flag): bool => in_array($flag, $flags, true);
-    $configured = $existing !== null;
+    $configured = $existing !== null && is_file(setupStorePath(require $targetPath));
 
     if ($has('--help') || $has('-h')) {
         echo <<<TEXT
@@ -794,7 +795,7 @@ function runCli(
     say('');
 
     if ($has('--write') && $authorised) {
-        [$written, $problem] = writeConfig($targetPath, $text, $configured);
+        [$written, $problem] = writeConfig($targetPath, $config, $root . '/lib');
         if ($written) {
             say('  Written to lib/config.php (mode 600).');
             say('');

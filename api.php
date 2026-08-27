@@ -19,6 +19,7 @@ declare(strict_types=1);
  * nothing in the body to read.
  */
 require_once __DIR__ . '/lib/boot.php';
+require_once __DIR__ . '/lib/setupstore.php';
 installErrorBoundary('json');
 
 $configFile = __DIR__ . '/lib/config.php';
@@ -29,7 +30,7 @@ if (!is_file($configFile)) {
     exit;
 }
 
-$config = require $configFile;
+$config = loadConfiguredSettings($configFile);
 date_default_timezone_set($config['timezone'] ?? 'UTC');
 
 // Now that the config is known, problems go beside the database rather than to
@@ -127,7 +128,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'offenders' => offenders($config, $pdo, $signedIn),
         'history' => pathHistory($config, $pdo, $signedIn),
         'alerts' => alertList($config, $pdo, $signedIn),
-        'alert-email' => alertEmailView($pdo, $signedIn),
+        'alert-email' => alertEmailView($config, $pdo, $signedIn),
         'actions' => actionLog($config, $pdo, $signedIn),
         'incident' => incidentView($config, $pdo, $signedIn),
         'treemap' => treemapView($config, $signedIn),
@@ -151,6 +152,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-store' => aiStoreView($config, $signedIn),
         'terminal' => terminalView($config, $pdo, $signedIn),
         'terminal-run' => doTerminalRun($config, $pdo, $post),
+        'terminal-editor' => terminalEditorView($config, $pdo, $signedIn),
+        'terminal-editor-save' => doTerminalEditorSave($config, $pdo, $post),
         'terminal-read' => terminalReadView($config, $pdo, $signedIn),
         'terminal-stop' => doTerminalStop($config, $pdo, $post),
         'terminal-unlock' => doTerminalUnlock($config, $pdo, $post),
@@ -1059,7 +1062,7 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
  * refuses to show a signed-out visitor, and reconstructing it here for one
  * would be the same leak by a different door.
  */
-function alertEmailView(PDO $pdo, bool $signedIn): array
+function alertEmailView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn || !accessAllows($config, 'notes')) {
         throw new ActionRefused('sign in to read a sent message');
@@ -1785,14 +1788,26 @@ function doDomainCheck(array $config, PDO $pdo, bool $post): array
 
 function calendarView(array $config, PDO $pdo, bool $signedIn): array
 {
+    $calendar = calendarEntries($config, $pdo);
     if (!$signedIn) {
-        throw new ActionRefused('sign in to see the calendar');
+        // Public calendar is only machine-derived facts. Personal reminders
+        // and their notes remain visible only to signed-in users.
+        $calendar['days'] = array_filter(array_map(
+            fn(array $rows): array => array_values(array_filter(
+                $rows, fn(array $row): bool => ($row['kind'] ?? '') !== 'event'
+            )),
+            $calendar['days']
+        ));
+        $calendar['upcoming'] = array_values(array_filter(
+            $calendar['upcoming'], fn(array $row): bool => ($row['kind'] ?? '') !== 'event'
+        ));
     }
 
-    return calendarEntries($config, $pdo) + [
-        'events' => $pdo->query('SELECT * FROM events ORDER BY at')->fetchAll(),
+    return $calendar + [
+        'events' => $signedIn ? $pdo->query('SELECT * FROM events ORDER BY at')->fetchAll() : [],
         'repeats' => eventRepeats(),
         'now' => time(),
+        'writable' => $signedIn && accessAllows($config, 'write'),
     ];
 }
 
@@ -4326,14 +4341,14 @@ function scheduleRead(array $config, PDO $pdo, bool $signedIn): array
 function doUpdatesSave(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
-    if (!is_writable(__DIR__ . '/lib/config.php')) {
+    if (!configuredSettingsWritable(__DIR__ . '/lib/config.php')) {
         throw new ActionRefused('lib/config.php is not writable, so the update policy cannot be saved');
     }
     $modes = $_POST['modes'] ?? [];
     if (!is_array($modes)) $modes = [];
     $modes = array_values(array_intersect(UPDATE_STAGES, array_unique(array_map('strval', $modes))));
     $interval = max(3600, min(31 * 86400, (int)($_POST['interval_seconds'] ?? 86400)));
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     $current['updates'] = ['modes' => $modes, 'interval_seconds' => $interval];
     writeConfigFile($current);
     logAction($pdo, 'updates_policy', null, 'ok', 0, 0,
@@ -4632,7 +4647,7 @@ function emailSettings(array $config, PDO $pdo, bool $signedIn): array
         // arrives and is not something the settings above can fix.
         'mail_available' => function_exists('mail'),
         'recent' => $last,
-        'writable' => is_writable(__DIR__ . '/lib/config.php'),
+        'writable' => configuredSettingsWritable(__DIR__ . '/lib/config.php'),
     ];
 }
 
@@ -4661,24 +4676,10 @@ function writeConfigFile(array $config): void
 {
     $file = __DIR__ . '/lib/config.php';
 
-    if (!is_writable($file)) {
-        throw new ActionRefused(
-            'lib/config.php is not writable by the web server, so this cannot save. '
-            . 'Change it in setup.php, or edit the file directly.'
-        );
-    }
-
-    $rendered = renderConfig($config, __DIR__ . '/lib');
-
-    $temporary = $file . '.new';
-    if (@file_put_contents($temporary, $rendered, LOCK_EX) === false) {
-        throw new ActionRefused('could not write into lib/');
-    }
-    @chmod($temporary, 0600);
-
-    if (!@rename($temporary, $file)) {
-        @unlink($temporary);
-        throw new ActionRefused('could not replace lib/config.php');
+    try {
+        saveConfiguredSettings($config, $file, __DIR__ . '/lib');
+    } catch (Throwable $e) {
+        throw new ActionRefused('could not save setup.db: ' . $e->getMessage());
     }
 
     clearstatcache(true, $file);
@@ -4690,7 +4691,7 @@ function doEmailSave(array $config, PDO $pdo, bool $post): array
 
     // Refused before anything is validated, so the form does not walk somebody
     // through a dozen fields to fail on the write.
-    if (!is_writable(__DIR__ . '/lib/config.php')) {
+    if (!configuredSettingsWritable(__DIR__ . '/lib/config.php')) {
         throw new ActionRefused(
             'lib/config.php is not writable by the web server, so this cannot save. '
             . 'Change it in setup.php, or edit the file directly.'
@@ -4725,7 +4726,7 @@ function doEmailSave(array $config, PDO $pdo, bool $post): array
     }
 
     // $file went when writeConfigFile() was extracted; this needs the path too.
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     $current['alerts']['enabled'] = $enabled;
     $current['alerts']['to'] = $to;
     $current['alerts']['from'] = $from;
@@ -4935,7 +4936,7 @@ function diagnoseView(array $config, PDO $pdo, bool $signedIn): array
 function doDiagnosisIgnore(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
-    if (!is_writable(__DIR__ . '/lib/config.php')) {
+    if (!configuredSettingsWritable(__DIR__ . '/lib/config.php')) {
         throw new ActionRefused('lib/config.php is not writable, so this exception cannot be saved');
     }
 
@@ -4944,7 +4945,7 @@ function doDiagnosisIgnore(array $config, PDO $pdo, bool $post): array
         throw new ActionRefused('that is not a diagnostic finding');
     }
 
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     $ignored = array_values(array_unique(array_filter(
         $current['diagnostic_ignores'] ?? [],
         fn(mixed $entry): bool => is_string($entry) && preg_match('/^[a-f0-9]{40}$/', $entry)
@@ -4963,7 +4964,7 @@ function doDiagnosisIgnore(array $config, PDO $pdo, bool $post): array
 function doDiagnosisUnignore(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
-    if (!is_writable(__DIR__ . '/lib/config.php')) {
+    if (!configuredSettingsWritable(__DIR__ . '/lib/config.php')) {
         throw new ActionRefused('lib/config.php is not writable, so this exception cannot be removed');
     }
 
@@ -4972,7 +4973,7 @@ function doDiagnosisUnignore(array $config, PDO $pdo, bool $post): array
         throw new ActionRefused('that is not a diagnostic finding');
     }
 
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     $current['diagnostic_ignores'] = array_values(array_filter(
         $current['diagnostic_ignores'] ?? [],
         fn(mixed $entry): bool => $entry !== $key
@@ -5734,7 +5735,7 @@ function peersView(array $config, bool $signedIn): array
             ? (string)($token['subject'] ?? '') : null;
     }
     unset($row);
-    return ['rows' => $rows, 'writable' => is_writable(__DIR__ . '/lib/config.php')];
+    return ['rows' => $rows, 'writable' => configuredSettingsWritable(__DIR__ . '/lib/config.php')];
 }
 
 function peerName(string $name): string
@@ -5750,7 +5751,7 @@ function doPeerSave(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
     $name = peerName((string)($_POST['name'] ?? ''));
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     $prior = (array)($current['peers'][$name] ?? []);
     $secret = trim((string)($_POST['client_secret'] ?? ''));
     $peer = [
@@ -5777,7 +5778,7 @@ function doPeerDelete(array $config, PDO $pdo, bool $post): array
     if (!isset($config['peers'][$name])) {
         throw new ActionRefused('that trusted server does not exist');
     }
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     unset($current['peers'][$name]);
     writeConfigFile($current);
     logAction($pdo, 'peer_delete', $name, 'ok', 0, 0, null);
@@ -5931,7 +5932,7 @@ function storeView(array $config, PDO $pdo, bool $signedIn): array
         'account' => retentionReport($pdo, $config),
         'host' => null,
         'host_why' => null,
-        'writable' => is_writable(__DIR__ . '/lib/config.php'),
+        'writable' => configuredSettingsWritable(__DIR__ . '/lib/config.php'),
     ];
 
     // hostDatabasePath() lives in lib/hostdb.php and already knows the default.
@@ -6059,7 +6060,7 @@ function doStoreSave(array $config, PDO $pdo, bool $post): array
         throw new ActionRefused('nothing was changed');
     }
 
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     foreach ($wanted as $key => $value) {
         $current['retention'][$key] = $value;
     }
@@ -8201,7 +8202,7 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         'toolsets' => aiToolsets($config),
         'ready' => $ready['ok'],
         'why' => $ready['why'],
-        'writable' => is_writable(__DIR__ . '/lib/config.php'),
+        'writable' => configuredSettingsWritable(__DIR__ . '/lib/config.php'),
         'database' => aiDatabaseFacts($config),
         'views' => $views,
     ];
@@ -8261,7 +8262,7 @@ function doAiToolsetSave(array $config, PDO $pdo, bool $post): array
     if ($label === '' || mb_strlen($label) > 80) {
         throw new ActionRefused('a preset needs a label of at most 80 characters');
     }
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     $current['ai']['toolsets'][$name] = ['label' => $label, 'tools' => toolsetFromRequest()];
     writeConfigFile($current);
     logAction($pdo, 'ai_toolset_save', $name, 'ok', 0, 0, $label);
@@ -8275,7 +8276,7 @@ function doAiToolsetDelete(array $config, PDO $pdo, bool $post): array
     if ($name === 'diagnostic' || $name === 'operator' || !isset($config['ai']['toolsets'][$name])) {
         throw new ActionRefused('that saved toolset does not exist');
     }
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     unset($current['ai']['toolsets'][$name]);
     writeConfigFile($current);
     logAction($pdo, 'ai_toolset_delete', $name, 'ok', 0, 0, null);
@@ -8588,7 +8589,7 @@ function doAiPriceSave(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
 
-    if (!is_writable(__DIR__ . '/lib/config.php')) {
+    if (!configuredSettingsWritable(__DIR__ . '/lib/config.php')) {
         throw new ActionRefused('lib/config.php is not writable, so this cannot save.');
     }
 
@@ -8602,7 +8603,7 @@ function doAiPriceSave(array $config, PDO $pdo, bool $post): array
         throw new ActionRefused('which model are these prices for?');
     }
 
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     $current['ai']['known_prices'][$provider . '/' . $model] = [
         'in' => max(0.0, (float)($_POST['price_in'] ?? 0)),
         'out' => max(0.0, (float)($_POST['price_out'] ?? 0)),
@@ -8620,12 +8621,12 @@ function doAiPriceForget(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
 
-    if (!is_writable(__DIR__ . '/lib/config.php')) {
+    if (!configuredSettingsWritable(__DIR__ . '/lib/config.php')) {
         throw new ActionRefused('lib/config.php is not writable, so this cannot save.');
     }
 
     $key = (string)($_POST['key'] ?? '');
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
 
     if (!isset($current['ai']['known_prices'][$key])) {
         throw new ActionRefused('nothing is remembered for that');
@@ -8643,13 +8644,13 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
 
     $wasPersona = aiPersona($config);
 
-    if (!is_writable(__DIR__ . '/lib/config.php')) {
+    if (!configuredSettingsWritable(__DIR__ . '/lib/config.php')) {
         throw new ActionRefused(
             'lib/config.php is not writable by the web server, so this cannot save.'
         );
     }
 
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     $providers = aiProviders();
 
     $provider = (string)($_POST['provider'] ?? 'openai');
@@ -9181,6 +9182,25 @@ function doTerminalRun(array $config, PDO $pdo, bool $post): array
     return ['ok' => true, 'run' => $started] + terminalView($config, $pdo, true);
 }
 
+/** Reads a text file for the browser-based replacement for vi/nano. */
+function terminalEditorView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) throw new ActionRefused('sign in to use the web editor');
+    $file = terminalEditorRead($config, $pdo, (string)($_GET['path'] ?? ''));
+    logAction($pdo, 'terminal_editor_open', $file['path'], 'ok', 0, 0, currentAccountName());
+    return $file;
+}
+
+/** Writes a browser-edited text file, with the same terminal gate and audit trail. */
+function doTerminalEditorSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $saved = terminalEditorSave($config, $pdo, (string)($_POST['path'] ?? ''),
+        (string)($_POST['text'] ?? ''));
+    logAction($pdo, 'terminal_editor_save', $saved['path'], 'ok', 0, $saved['bytes'], currentAccountName());
+    return ['ok' => true] + $saved;
+}
+
 /** Opens the terminal for a while, or extends how long it has left. */
 function doTerminalUnlock(array $config, PDO $pdo, bool $post): array
 {
@@ -9598,7 +9618,7 @@ function scansView(array $config, PDO $pdo, bool $signedIn): array
         'intervals' => scanIntervals(),
         'browsing' => someoneIsBrowsing($pdo),
         'last_browsed_at' => lastSeenBrowsing($pdo),
-        'writable' => is_writable(__DIR__ . '/lib/config.php'),
+        'writable' => configuredSettingsWritable(__DIR__ . '/lib/config.php'),
         'host_enabled' => (bool)($config['host']['enabled'] ?? false),
         'throttle' => throttleSettings($config),
     ];
@@ -9700,11 +9720,11 @@ function doScansSave(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
 
-    if (!is_writable(__DIR__ . '/lib/config.php')) {
+    if (!configuredSettingsWritable(__DIR__ . '/lib/config.php')) {
         throw new ActionRefused('lib/config.php is not writable, so this cannot save.');
     }
 
-    $current = require __DIR__ . '/lib/config.php';
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     $current['scans'] = scanSettingsFrom($_POST);
 
     /*

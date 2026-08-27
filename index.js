@@ -13617,6 +13617,12 @@ function suggestionList(suggestions) {
 async function runTerminal(command) {
   if (command === "") return;
 
+  const editor = terminalEditorCommand(command);
+  if (editor) {
+    await openTerminalEditor(editor);
+    return;
+  }
+
   const box = $("terminalInput");
   const result = await post("terminal-run", {
     command,
@@ -13658,6 +13664,32 @@ async function runTerminal(command) {
   renderTerminalBuffer();
 
   watchTerminal(result.run.id, false);
+}
+
+/* vi/nano own the screen and require a keyboard. Use a real browser editor. */
+function terminalEditorCommand(command) {
+  const match = command.trim().match(/^(?:vi|vim|nvim|nano|pico|emacs|micro|joe)\s+(?:-[\w-]+\s+)*(.+)$/);
+  if (!match) return null;
+  const path = match[1].trim().replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2");
+  return path && !/[|;&\n]/.test(path) ? path : null;
+}
+
+async function openTerminalEditor(path) {
+  const data = await api("terminal-editor", { path });
+  const location = document.createElement("code");
+  location.textContent = data.path;
+  const text = document.createElement("textarea");
+  text.className = "wide terminal-editor";
+  text.rows = 22;
+  text.spellcheck = false;
+  text.value = data.text;
+  const note_ = document.createElement("p");
+  note_.className = "muted small";
+  note_.textContent = `${humanBytes(data.bytes)} · changes are saved as this web account · text files up to 1 MB.`;
+  showFormDialog(`Edit ${data.path.split("/").pop()}`, [location, note_, text], async () => {
+    const saved = await post("terminal-editor-save", { path: data.path, text: text.value });
+    notice(`Saved ${saved.path} (${humanBytes(saved.bytes)}).`, true);
+  });
 }
 
 /**
@@ -20286,13 +20318,16 @@ async function refreshAlerts() {
 
   drawAlertTimeline(data.rows);
 
-  const columns = [
-    { label: "", render: alertPicker },
+  const columns = [];
+  if (state.signedIn && state.access?.write) {
+    columns.push({ label: "", render: alertPicker });
+  }
+  columns.push(
     { label: "When", render: row => whenSpan(row.raised_at) },
     { label: "Severity", render: alertSeverity },
-    { label: "What", className: "name", render: alertWhat },
-    { label: "Emailed", render: alertEmailed },
-  ];
+    { label: "What", className: "name", render: row => alertWhat(row, state.signedIn) },
+    { label: "Emailed", render: row => alertEmailed(row, state.signedIn) },
+  );
 
   /*
    * The assistant's column only exists when it has said something.
@@ -20300,18 +20335,23 @@ async function refreshAlerts() {
    * An empty column on every row of an install that has never turned this on
    * is a column that has to be explained, and there is nothing to explain.
    */
-  if (rows.some(row => row.ai_summary)) {
+  if (state.signedIn && rows.some(row => row.ai_summary)) {
     columns.push({ label: `${chatState.who.name} says`, className: "cmd",
                    render: alertOpinion });
   }
 
-  columns.push({ label: "", render: alertRowActions });
+  if (state.signedIn && state.access?.write) {
+    columns.push({ label: "", render: alertRowActions });
+  }
 
   renderTable("alerts", rows, columns, null, row => {
     if (row.silenced) return "row-silenced";
     return row.acknowledged_at ? "read" : "unread";
   });
 
+  for (const id of ["alertAckAll", "alertAckSome", "alertDeleteSome"]) {
+    $(id).hidden = !state.signedIn || !state.access?.write;
+  }
   syncAlertTools();
 }
 
@@ -20363,7 +20403,12 @@ function alertSeverity(row) {
  * "no" on its own invites the question this column exists to answer, and the
  * answer is one click away rather than nowhere.
  */
-function alertEmailed(row) {
+function alertEmailed(row, interactive = state.signedIn) {
+  if (!interactive) {
+    const said = document.createElement("span");
+    said.textContent = row.emailed_at ? "yes" : "no";
+    return said;
+  }
   if (row.emailed_at) {
     /*
      * The message itself is one click away.
@@ -20799,7 +20844,7 @@ function drawAlertTimeline(rows) {
  * string - which would escape the whole thing, newlines included, into one
  * run-on line.
  */
-function alertWhat(row) {
+function alertWhat(row, detailed = state.signedIn) {
   const cell = document.createDocumentFragment();
 
   const subject = document.createElement("div");
@@ -20807,7 +20852,7 @@ function alertWhat(row) {
   subject.textContent = row.subject;
   cell.appendChild(subject);
 
-  if (row.detail) {
+  if (detailed && row.detail) {
     const why = document.createElement("div");
     why.className = "alert-why";
     why.textContent = row.detail;
@@ -21285,6 +21330,18 @@ function syncNavigationSearch() {
 function applyAccessChrome() {
   syncNavigationSearch();
   syncIpPrivacy();
+
+  const corner = $("cornerMenu");
+  if (corner) {
+    const mayWriteNote = Boolean(state.signedIn && state.access?.notes);
+    const mayAskAi = Boolean(state.signedIn && state.access?.ai);
+    const mayDiagnose = Boolean(state.signedIn
+      && (state.access?.pages?.includes("*") || state.access?.pages?.includes("diagnose")));
+    $("cornerDiagnose").hidden = !mayDiagnose;
+    $("cornerNote").hidden = !mayWriteNote;
+    $("cornerChat").hidden = !mayAskAi;
+    corner.hidden = !mayDiagnose && !mayWriteNote && !mayAskAi;
+  }
 
   const privacy = $("ipPrivacy");
   if (privacy) {
@@ -24428,11 +24485,6 @@ const calendarState = { data: null };
 
 async function refreshCalendar() {
   const grid = $("calendarGrid");
-  if (!state.signedIn) {
-    grid.replaceChildren(note("Sign in to see the calendar."));
-    return;
-  }
-
   if (!grid.childElementCount) grid.replaceChildren(spinner());
 
   let data;
@@ -24448,6 +24500,10 @@ async function refreshCalendar() {
 
 function renderCalendar(data) {
   calendarState.data = data;
+  const writable = Boolean(data.writable && state.access?.write);
+  $("eventAdd").hidden = !writable;
+  $("eventFormPanel").hidden = true;
+  $("eventListPanel").hidden = !state.signedIn;
   renderUpcoming(data);
   renderMonths(data);
   renderEventList(data);
@@ -31139,6 +31195,11 @@ document.addEventListener("keydown", event => {
 $("cornerNote").addEventListener("click", () => {
   $("cornerChoices").hidden = true;
   showNoteDialog();
+});
+
+$("cornerDiagnose").addEventListener("click", () => {
+  $("cornerChoices").hidden = true;
+  location.hash = "#/diagnose";
 });
 
 $("cornerChat").addEventListener("click", () => {

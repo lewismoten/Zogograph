@@ -24,6 +24,7 @@ if (PHP_SAPI !== 'cli') {
 require_once __DIR__ . '/lib/scans.php';
 require_once __DIR__ . '/lib/rdns.php';
 require_once __DIR__ . '/lib/boot.php';
+require_once __DIR__ . '/lib/setupstore.php';
 
 $configFile = __DIR__ . '/lib/config.php';
 if (!is_file($configFile)) {
@@ -31,7 +32,7 @@ if (!is_file($configFile)) {
     exit(1);
 }
 
-$config = require $configFile;
+$config = loadConfiguredSettings($configFile);
 date_default_timezone_set($config['timezone'] ?? 'UTC');
 define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
