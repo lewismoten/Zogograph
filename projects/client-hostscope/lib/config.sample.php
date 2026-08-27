@@ -44,6 +44,8 @@ return [
         // their cron/host scheduler responsibility.
         'backup_schedule' => 'daily', // manual, daily, or weekly
         'retention_days' => 30, // 0 keeps every local sealed artifact
+        // Optional per-store overrides: config, setup, account, host, ai => 0..36500 days.
+        'retention_days_by_store' => [],
     ],
 
     /* Local-only marketplace catalog. Packages are data manifests; copying a

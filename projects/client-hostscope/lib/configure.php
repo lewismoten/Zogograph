@@ -184,6 +184,23 @@ function configFields(array $sample): array
             'when' => ['encryption_mode' => 'sealed_copies_local'],
         ],
         [
+            'key' => 'encryption_retention_days_by_store',
+            'path' => ['encryption', 'retention_days_by_store'],
+            'type' => 'json',
+            'label' => 'Per-store retention overrides (advanced)',
+            'help' => 'Optional JSON object, for example {"setup":365,"account":30}. Zero keeps every copy for that store. Stores not listed use the normal retention target.',
+            'default' => (array)($sample['encryption']['retention_days_by_store'] ?? []),
+            'validate' => function (array $value): ?string {
+                $stores = ['config', 'setup', 'account', 'host', 'ai'];
+                foreach ($value as $store => $days) {
+                    if (!is_string($store) || !in_array($store, $stores, true)) return 'Use only config, setup, account, host, or ai as store names.';
+                    if (!is_int($days) || $days < 0 || $days > 36500) return 'Each retention value must be a whole number from 0 to 36500.';
+                }
+                return null;
+            },
+            'when' => ['encryption_mode' => 'sealed_copies_local'],
+        ],
+        [
             'key' => 'password',
             'path' => ['password_hash'],
             'type' => 'password',

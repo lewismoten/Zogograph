@@ -168,6 +168,12 @@ explicit `--seal` run, HostScope prunes only old verified artifacts whose hash
 still matches and never removes the newest verified artifact for a store. Set
 retention to zero to retain every local encrypted copy.
 
+The advanced **Per-store retention overrides** field is an optional JSON object
+for exceptions to that default, such as `{"setup":365,"account":30}`. Use it
+when the setup database or bootstrap configuration needs a longer recovery
+window than metrics. A value of `0` retains every verified copy of that one
+store; omitted stores continue to use the normal retention target.
+
 If the host, VM, container volume, or managed database storage is already
 encrypted at rest, select **My host/VM encrypts the selected live stores** and
 choose the protected stores. This records the operator's policy but does not

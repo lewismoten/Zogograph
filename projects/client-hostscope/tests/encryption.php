@@ -164,6 +164,22 @@ try {
         $accountEvidence = array_values(array_filter($afterPrune['artifacts'], fn(array $artifact): bool => $artifact['store'] === 'account'));
         encryptionExpect(count($accountEvidence) === 1 && $accountEvidence[0]['copies'] === 1,
             'pruned encrypted artifacts were reported as current verified copies');
+        encryptionExpect(encryptionRetentionDays(['retention_days' => 30, 'retention_days_by_store' => ['setup' => 365]], 'setup') === 365
+            && encryptionRetentionDays(['retention_days' => 30, 'retention_days_by_store' => ['setup' => 365]], 'account') === 30,
+            'per-store retention policy did not fall back to the normal retention target');
+        $overridePath = $root . '/sealed/account.override.sealed';
+        copy((string)$copies[1]['local_path'], $overridePath);
+        $overrideHash = hash_file('sha256', $overridePath);
+        $live->prepare("INSERT INTO encryption_artifacts (artifact_id, store, created_at, last_verified_at, local_path, ciphertext_bytes, ciphertext_sha256, state)
+            VALUES (?, 'account', ?, ?, ?, ?, ?, 'verified')")
+            ->execute(['account:override', time() - 31 * 86400, time() - 31 * 86400, $overridePath, filesize($overridePath), $overrideHash]);
+        $overrideConfig = $retentionConfig;
+        $overrideConfig['encryption']['retention_days_by_store'] = ['account' => 0];
+        encryptionExpect(encryptionPruneConfiguredCopies($overrideConfig, $live)['removed'] === 0 && is_file($overridePath),
+            'zero per-store retention override did not preserve the old encrypted artifact');
+        $overrideConfig['encryption']['retention_days_by_store'] = ['account' => 1];
+        encryptionExpect(encryptionPruneConfiguredCopies($overrideConfig, $live)['removed'] === 1 && !is_file($overridePath),
+            'per-store retention override did not prune the old encrypted artifact');
         file_put_contents((string)$copies[0]['local_path'], 'tampered ciphertext');
         $failedVerification = encryptionVerifyConfiguredCopies($retentionConfig, $live, $web);
         encryptionExpect($failedVerification['failed'] === 1 && (int)$live->query("SELECT COUNT(*) FROM encryption_artifacts WHERE state = 'verification_failed'")->fetchColumn() === 1,

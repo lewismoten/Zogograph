@@ -449,23 +449,22 @@ function encryptionVerifyConfiguredCopies(array $config, PDO $pdo, string $webRo
 function encryptionPruneConfiguredCopies(array $config, PDO $pdo): array
 {
     $settings = (array)($config['encryption'] ?? []);
-    $days = (int)($settings['retention_days'] ?? 0);
-    if (($settings['mode'] ?? '') !== 'sealed_copies_local' || $days <= 0) return ['removed' => 0, 'warnings' => []];
+    if (($settings['mode'] ?? '') !== 'sealed_copies_local') return ['removed' => 0, 'warnings' => []];
     $directory = (string)($settings['artifact_directory'] ?? '');
     if ($directory === '') $directory = dirname((string)$config['database']) . '/sealed';
     $root = realpath($directory);
     if ($root === false || !is_dir($root) || is_link($directory)) return ['removed' => 0, 'warnings' => ['encrypted artifact directory is unavailable or unsafe']];
-    $cutoff = time() - $days * 86400;
     $latest = [];
     foreach ($pdo->query("SELECT store, MAX(created_at) AS created_at FROM encryption_artifacts WHERE state = 'verified' GROUP BY store")->fetchAll() as $row) {
         $latest[$row['store']] = (int)$row['created_at'];
     }
-    $candidates = $pdo->prepare("SELECT artifact_id, store, created_at, local_path, ciphertext_sha256 FROM encryption_artifacts
-        WHERE state = 'verified' AND created_at < ? ORDER BY created_at ASC");
-    $candidates->execute([$cutoff]);
+    $candidates = $pdo->query("SELECT artifact_id, store, created_at, local_path, ciphertext_sha256 FROM encryption_artifacts
+        WHERE state = 'verified' ORDER BY created_at ASC");
     $mark = $pdo->prepare("UPDATE encryption_artifacts SET state = 'pruned' WHERE artifact_id = ? AND state = 'verified'");
     $removed = 0; $warnings = [];
     foreach ($candidates->fetchAll() as $artifact) {
+        $days = encryptionRetentionDays($settings, (string)$artifact['store']);
+        if ($days <= 0 || (int)$artifact['created_at'] >= time() - $days * 86400) continue;
         if (($latest[$artifact['store']] ?? 0) <= (int)$artifact['created_at']) continue;
         $configured = (string)$artifact['local_path'];
         $path = realpath($configured);
@@ -483,6 +482,16 @@ function encryptionPruneConfiguredCopies(array $config, PDO $pdo): array
         $removed++;
     }
     return ['removed' => $removed, 'warnings' => array_values(array_unique($warnings))];
+}
+
+/** Returns the active local-copy retention policy for one recognized store. */
+function encryptionRetentionDays(array $settings, string $store): int
+{
+    $days = $settings['retention_days'] ?? 0;
+    $overrides = $settings['retention_days_by_store'] ?? [];
+    if (is_array($overrides) && array_key_exists($store, $overrides)) $days = $overrides[$store];
+    if (!is_int($days) && !(is_string($days) && ctype_digit($days))) return 0;
+    return min(36500, max(0, (int)$days));
 }
 
 /** Decrypts a sealed artifact into a new destination file after authenticating every chunk. */
