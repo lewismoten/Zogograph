@@ -841,6 +841,15 @@ function packageRuntimeStoreCustodyEnvelope(PDO $registry, array $config, string
 function packageRuntimeVerifyCustodyEnvelope(PDO $registry, array $config, string $webRoot, string $artifactId): array
 {
     $id = 'hostscope-key-custody'; $settings = packageRuntimeSettings($registry, $config, $id);
+    $readiness = packageRuntimeProviderReadiness($registry, $config, $id);
+    if (($readiness['state'] ?? '') !== 'awaiting-isolated-runtime') throw new InvalidArgumentException($readiness['reason'] ?? 'custody enrollment is not ready');
+    $enrollment = packageRuntimeProbeOperationEvidence($config, $id, 'custody_enrollment_check');
+    if ($enrollment === null || $enrollment['state'] !== 'enrollment-ready' || $enrollment['probed_at'] < time() - 86400) {
+        throw new InvalidArgumentException('run a successful custody enrollment-readiness check within the last 24 hours before a remote recovery drill');
+    }
+    $grant = $registry->prepare('SELECT capability FROM runtime_package_grants WHERE package_id = ? AND capability IN (?, ?)');
+    $grant->execute([$id, 'key_provider', 'network_client']); $granted = array_values(array_unique(array_column($grant->fetchAll(), 'capability'))); sort($granted, SORT_STRING);
+    if ($granted !== ['key_provider', 'network_client']) throw new InvalidArgumentException('explicitly approve custody key-provider and network-client permissions before a remote recovery drill');
     $keyId = (string)($settings['custody_key_id'] ?? '');
     $row = $registry->prepare("SELECT a.store, a.local_path, a.ciphertext_sha256 FROM encryption_artifacts a JOIN encryption_remote_envelopes r ON r.artifact_id = a.artifact_id WHERE a.artifact_id = ? AND a.state = 'verified' AND r.provider_package = ? AND r.provider_key_id = ? AND r.state = 'stored'");
     $row->execute([$artifactId, $id, $keyId]); $artifact = $row->fetch();
