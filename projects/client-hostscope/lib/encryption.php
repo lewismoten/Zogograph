@@ -84,6 +84,59 @@ function encryptionKeyPath(string $path, string $webRoot, bool $mustExist): stri
     return $real;
 }
 
+/** Resolves a custom encrypted-artifact directory. The built-in data/sealed
+ * destination remains the portable default; an explicit override must be a
+ * private absolute directory outside the web root. */
+function encryptionArtifactDirectory(array $config, string $webRoot): string
+{
+    $settings = (array)($config['encryption'] ?? []);
+    $configured = (string)($settings['artifact_directory'] ?? '');
+    if ($configured === '') return dirname((string)$config['database']) . '/sealed';
+    encryptionValidateArtifactDirectory($configured, $webRoot);
+    $root = realpath($webRoot);
+    if (!is_dir($configured) && !@mkdir($configured, 0700, true) && !is_dir($configured)) throw new RuntimeException('could not create the sealed-artifact directory');
+    $real = realpath($configured);
+    if ($real === false || is_link($configured) || !is_dir($real) || !is_writable($real)
+        || (is_string($root) && ($real === $root || str_starts_with($real, rtrim($root, '/') . '/')))) {
+        throw new RuntimeException('custom encrypted-copy directory is unavailable or unsafe');
+    }
+    @chmod($real, 0700);
+    return $real;
+}
+
+/** Validates an operator-provided directory without creating it. */
+function encryptionValidateArtifactDirectory(string $directory, string $webRoot): void
+{
+    if ($directory === '') return;
+    if ($directory[0] !== '/' || is_link($directory)) throw new RuntimeException('custom encrypted-copy directory must be an absolute non-symlink path');
+    $root = realpath($webRoot);
+    $candidate = encryptionCanonicalPotentialPath($directory);
+    if (is_string($root) && is_string($candidate) && ($candidate === $root || str_starts_with($candidate, rtrim($root, '/') . '/'))) {
+        throw new RuntimeException('custom encrypted-copy directory must be outside the web root');
+    }
+    if (file_exists($directory)) {
+        $real = realpath($directory);
+        if ($real === false || !is_dir($real) || is_link($directory)
+            || (is_string($root) && ($real === $root || str_starts_with($real, rtrim($root, '/') . '/')))) {
+            throw new RuntimeException('custom encrypted-copy directory is unavailable or unsafe');
+        }
+    }
+}
+
+/** Resolves the nearest existing parent so `/var` aliases and a not-yet-created
+ * final directory cannot bypass a private-path boundary check. */
+function encryptionCanonicalPotentialPath(string $path): ?string
+{
+    $tail = []; $probe = $path;
+    while (!file_exists($probe)) {
+        $parent = dirname($probe);
+        if ($parent === $probe) return null;
+        array_unshift($tail, basename($probe)); $probe = $parent;
+    }
+    $real = realpath($probe);
+    return $real === false ? null : rtrim($real, '/') . ($tail === [] ? '' : '/' . implode('/', $tail));
+}
+
 /**
  * Seals a file with a fresh data key wrapped by `$kek`.
  *
@@ -194,9 +247,8 @@ function encryptionSealConfiguredCopies(array $config, PDO $account, string $web
         throw new RuntimeException('the selected encryption mode is unavailable in this HostScope release');
     }
     $key = encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot);
-    $directory = (string)($settings['artifact_directory'] ?? '');
-    if ($directory === '') $directory = dirname((string)$config['database']) . '/sealed';
-    if (!is_dir($directory) && !@mkdir($directory, 0700, true) && !is_dir($directory)) {
+    try { $directory = encryptionArtifactDirectory($config, $webRoot); }
+    catch (RuntimeException $error) {
         throw new RuntimeException('could not create the sealed-artifact directory');
     }
     @chmod($directory, 0700);
@@ -340,6 +392,7 @@ function encryptionValidateSettings(array $config, string $webRoot): void
     if (($settings['key_custody'] ?? 'local_private_file') !== 'local_private_file') {
         throw new InvalidArgumentException('the selected key-custody method is unavailable in this HostScope release');
     }
+    encryptionValidateArtifactDirectory((string)($settings['artifact_directory'] ?? ''), $webRoot);
     encryptionValidateRetentionSettings($settings);
     encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot);
 }
@@ -527,8 +580,8 @@ function encryptionVerifyConfiguredCopies(array $config, PDO $pdo, string $webRo
     $settings = (array)($config['encryption'] ?? []);
     if (($settings['mode'] ?? '') !== 'sealed_copies_local') return ['verified' => 0, 'failed' => 0, 'warnings' => []];
     $key = encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot);
-    $directory = (string)($settings['artifact_directory'] ?? '');
-    if ($directory === '') $directory = dirname((string)$config['database']) . '/sealed';
+    try { $directory = encryptionArtifactDirectory($config, dirname(__DIR__)); }
+    catch (RuntimeException $error) { return ['removed' => 0, 'warnings' => [$error->getMessage()]]; }
     $root = realpath($directory);
     if ($root === false || !is_dir($root) || is_link($directory)) throw new RuntimeException('encrypted artifact directory is unavailable or unsafe');
     $rows = $pdo->query("SELECT artifact_id, store, local_path, ciphertext_sha256 FROM encryption_artifacts WHERE state = 'verified' ORDER BY created_at ASC")->fetchAll();
@@ -763,8 +816,7 @@ function encryptionRotateConfiguredArtifacts(array &$config, PDO $pdo, string $w
     $oldKey = encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot);
     $newKey = encryptionReadLocalKey($newKeyPath, $webRoot);
     if (hash_equals($oldKey, $newKey)) throw new RuntimeException('the replacement key differs from the configured key');
-    $directory = (string)($settings['artifact_directory'] ?? '') ?: dirname((string)$config['database']) . '/sealed';
-    $directory = realpath($directory);
+    $directory = encryptionArtifactDirectory($config, $webRoot);
     if ($directory === false || is_link($directory) || !is_dir($directory)) throw new RuntimeException('the sealed-artifact directory is unavailable');
     $rows = $pdo->query("SELECT artifact_id, store, local_path FROM encryption_artifacts WHERE state = 'verified' ORDER BY created_at, artifact_id")->fetchAll();
     if ($rows === []) throw new RuntimeException('no verified sealed artifacts are available to rotate');
@@ -813,8 +865,7 @@ function encryptionRetireSupersededArtifacts(array $config, PDO $pdo, string $we
     $oldKey = encryptionReadLocalKey($oldKeyPath, $webRoot);
     $checked = encryptionVerifyConfiguredCopies($config, $pdo, $webRoot);
     if ($checked['failed'] > 0) throw new RuntimeException('current sealed copies must verify before superseded copies can be retired');
-    $directory = (string)($settings['artifact_directory'] ?? '') ?: dirname((string)$config['database']) . '/sealed';
-    $directory = realpath($directory);
+    $directory = encryptionArtifactDirectory($config, $webRoot);
     if ($directory === false || is_link($directory) || !is_dir($directory)) throw new RuntimeException('the sealed-artifact directory is unavailable');
     $rows = $pdo->query("SELECT artifact_id, store, local_path FROM encryption_artifacts WHERE state = 'superseded' ORDER BY created_at, artifact_id")->fetchAll();
     if ($rows === []) return 0;

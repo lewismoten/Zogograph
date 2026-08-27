@@ -145,6 +145,11 @@ function configFields(array $sample): array
             'label' => 'Encrypted-copy directory',
             'help' => 'Leave blank for data/sealed. Use an absolute private path to keep encrypted copies elsewhere.',
             'default' => $sample['encryption']['artifact_directory'] ?? null,
+            'validate' => function (?string $value): ?string {
+                if ($value === null || $value === '') return null;
+                try { encryptionValidateArtifactDirectory($value, dirname(__DIR__)); return null; }
+                catch (Throwable $error) { return $error->getMessage(); }
+            },
             'when' => ['encryption_mode' => 'sealed_copies_local'],
         ],
         [

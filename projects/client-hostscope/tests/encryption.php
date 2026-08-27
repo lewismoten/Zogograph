@@ -76,6 +76,13 @@ try {
     encryptionValidateSettings(['encryption' => ['mode' => 'operator_managed_volume',
         'stores' => ['setup']]], $web);
     try {
+        encryptionValidateSettings(['encryption' => ['mode' => 'sealed_copies_local', 'local_key_file' => $keyPath,
+            'artifact_directory' => $web . '/public-sealed', 'stores' => ['account']]], $web);
+        throw new RuntimeException('web-root encrypted-copy directory was accepted');
+    } catch (RuntimeException $error) {
+        encryptionExpect($error->getMessage() !== 'web-root encrypted-copy directory was accepted', $error->getMessage());
+    }
+    try {
         encryptionValidateSettings(['encryption' => ['mode' => 'sealed_copies_local',
             'local_key_file' => '', 'stores' => []]], $web);
         throw new RuntimeException('invalid encryption setup policy was accepted');
