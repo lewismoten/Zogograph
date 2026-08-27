@@ -35,7 +35,7 @@ function packageRuntimeTrustedKeys(array $keys): array
     return $out;
 }
 
-/** @return array{id:string,version:string,publisher:string,capabilities:list<string>,runtime:array,integrity:array,signature:array} */
+/** @return array{id:string,version:string,publisher:string,capabilities:list<string>,runtime:array,data:array,integrity:array,signature:array} */
 function packageRuntimeManifest(string $directory, array $trustedKeys): array
 {
     $root = realpath($directory);
@@ -66,6 +66,19 @@ function packageRuntimeManifest(string $directory, array $trustedKeys): array
             throw new InvalidArgumentException('package settings declaration is invalid');
         }
     }
+    $data = (array)($raw['data'] ?? []);
+    $migrations = array_values((array)($data['migrations'] ?? []));
+    if (count($migrations) > 100 || count($migrations) !== count(array_unique($migrations))) {
+        throw new InvalidArgumentException('package private migrations are invalid');
+    }
+    foreach ($migrations as $migration) {
+        if (!is_string($migration) || !preg_match('#^migrations/[0-9]{3,}[-_][a-z0-9._-]+\.sql$#', $migration)
+            || !packageRuntimeRelativePath($migration) || !is_file($root . '/' . $migration)
+            || !isset($raw['integrity']['files'][$migration])) {
+            throw new InvalidArgumentException('package private migrations are invalid');
+        }
+    }
+    sort($migrations, SORT_STRING); $data['migrations'] = $migrations;
     $integrity = packageVerifyIntegrity($raw, $root);
     if (!$integrity['ok']) throw new InvalidArgumentException($integrity['detail']);
     $signature = packageVerifySignature($raw, $trustedKeys);
@@ -73,7 +86,7 @@ function packageRuntimeManifest(string $directory, array $trustedKeys): array
         throw new InvalidArgumentException($signature['ok'] ? 'package publisher does not match its trusted key' : $signature['detail']);
     }
     return ['id' => $id, 'version' => $version, 'publisher' => $publisher, 'capabilities' => $capabilities,
-        'runtime' => $runtime, 'integrity' => (array)$raw['integrity'], 'signature' => (array)$raw['signature']];
+        'runtime' => $runtime, 'data' => $data, 'integrity' => (array)$raw['integrity'], 'signature' => (array)$raw['signature']];
 }
 
 function packageRuntimeRelativePath(string $path): bool
@@ -197,7 +210,42 @@ function packageRuntimePrivateDatabase(PDO $registry, array $config, string $id)
     $path = $directory . '/package.db';
     $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA busy_timeout = 5000'); @chmod($path, 0600);
+    packageRuntimeApplyPrivateMigrations($registry, $pdo, $id);
     return $pdo;
+}
+
+/** Applies only signed declarative SQL to the package's own SQLite file. */
+function packageRuntimeApplyPrivateMigrations(PDO $registry, PDO $private, string $id): void
+{
+    $row = $registry->prepare('SELECT manifest_json, install_path FROM runtime_packages WHERE package_id = ?');
+    $row->execute([$id]); $package = $row->fetch();
+    if (!is_array($package)) throw new InvalidArgumentException('package is not installed');
+    $manifest = json_decode((string)$package['manifest_json'], true);
+    $root = realpath((string)$package['install_path']);
+    if (!is_array($manifest) || $root === false || is_link((string)$package['install_path'])) throw new RuntimeException('installed package is unavailable');
+    $integrity = packageVerifyIntegrity($manifest, $root);
+    if (!$integrity['ok']) throw new RuntimeException('installed package integrity failed: ' . $integrity['detail']);
+    $migrations = (array)(($manifest['data'] ?? [])['migrations'] ?? []);
+    $private->exec('CREATE TABLE IF NOT EXISTS package_runtime_migrations (migration TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
+    $applied = $private->query('SELECT migration FROM package_runtime_migrations')->fetchAll(PDO::FETCH_COLUMN);
+    foreach ($migrations as $migration) {
+        if (in_array($migration, $applied, true)) continue;
+        $path = $root . '/' . $migration; $real = realpath($path);
+        if ($real === false || is_link($path) || !is_file($real) || !str_starts_with($real, rtrim($root, '/') . '/')) {
+            throw new RuntimeException('package migration path is unsafe');
+        }
+        $sql = (string)file_get_contents($real);
+        if (strlen($sql) === 0 || strlen($sql) > 131072 || str_contains($sql, "\0")
+            || preg_match('/\b(?:attach|detach|vacuum|pragma|load_extension|begin|commit|rollback)\b/i', $sql)) {
+            throw new RuntimeException('package migration uses an unsupported SQLite operation');
+        }
+        $private->beginTransaction();
+        try {
+            $private->exec($sql);
+            $private->prepare('INSERT INTO package_runtime_migrations (migration, applied_at) VALUES (?, ?)')->execute([$migration, time()]);
+            $private->commit();
+        } catch (Throwable $error) { $private->rollBack(); throw $error; }
+    }
 }
 
 /** Package settings live in setup.db, not the package's metric/database file.

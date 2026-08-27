@@ -11,6 +11,13 @@ administrator grants, create its private storage, and audit enablement before
 loading the entry point. A package must not be loaded directly by PHP include
 paths or by copying its files into the web tree.
 
+Packages may declare an ordered `data.migrations` list of signed
+`migrations/NNN-name.sql` files. Core re-verifies installed hashes before it
+applies those files transactionally to that package's private SQLite database
+and records each applied migration. The declarative runner rejects attachment,
+pragma, vacuum, extension-loading, and transaction-control statements; it is
+not a way to run package PHP or reach core/other-package data.
+
 Package settings may refer to credentials only as package-scoped `secret_ref:`
 values. Core encrypts the referenced value in `setup.db` using a key file kept
 outside the web root; it never returns the plaintext through the settings API.
