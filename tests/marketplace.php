@@ -21,5 +21,10 @@ marketplaceExpect($disabled['enabled'] === false && marketplaceAlertRecommendati
     'disabled recommendation package remained active');
 try { marketplaceManifest(['id'=>'Bad','version'=>'1','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['shell']]); throw new RuntimeException('unsafe manifest was accepted'); } catch (InvalidArgumentException) {}
 try { marketplaceManifest(['id'=>'bad-guidance','version'=>'1.0.0','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['alert_recommendations'], 'recommendations'=>[['rule'=>'same_rule','severity'=>'warning','reason'=>'x'], ['rule'=>'same_rule','severity'=>'error','reason'=>'y']]]); throw new RuntimeException('duplicate package guidance was accepted'); } catch (InvalidArgumentException) {}
+$api = file_get_contents(__DIR__ . '/../api.php');
+marketplaceExpect($api !== false && str_contains($api, "'marketplace' => 'sys-marketplace'")
+    && str_contains($api, "'marketplace-enable' => doMarketplaceEnable")
+    && str_contains($api, "function doMarketplaceEnable(array \$config, PDO \$pdo, bool \$post): array\n{\n    requireWrite(\$post);"),
+    'marketplace administration route is missing its write authorization');
 unlink($root . '/uptime-pack.json'); unlink($root . '/bad.json'); rmdir($root);
 echo "marketplace checks passed\n";
