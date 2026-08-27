@@ -144,6 +144,14 @@ retention, recovery contacts, and supported-package matrix in commercial
 database-backed settings. A rebrand or domain migration then changes content
 and endpoint configuration, never an artifact identity or key format.
 
+Its three credentials remain separate: a customer management token for key
+policy and subscription requests, an enrolled-client bearer plus Ed25519
+signing key for a named envelope operation, and an optional private commercial
+billing-control token that can apply entitlement state only. None substitutes
+for another, and none should be stored as normal client configuration. The
+client's future provider package receives only the enrolled-client pair through
+encrypted package secret references.
+
 The detailed encryption design and implementation state live in
 [`client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md`](client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md).
 The operator-facing review checklist is

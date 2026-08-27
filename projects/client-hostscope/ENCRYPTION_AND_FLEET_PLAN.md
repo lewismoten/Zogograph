@@ -276,7 +276,12 @@ replication, self-managed custody, third-party KMS/HSM packages, MySQL/MariaDB
 storage, and Redis remain design/package work. The commercial key-custody
 reference service is separately testable and requires signed enrollment plus
 an active service entitlement for new envelopes; it is not connected to a
-client runtime or needed for local recovery.
+client runtime or needed for local recovery. Its customer-management API can
+create/list/update policy, stage rotation, retire, and delete envelopes; its
+enrolled-client API is separately signed and can only store envelopes or unwrap
+a registered artifact. Subscription requests use management credentials, while
+an optional private billing-control token may apply an entitlement without any
+ability to manage or unwrap keys.
 
 Before enabling any one of these gated capabilities, record the exact package
 version, supported platform image, recovery drill result, responsible operator,
