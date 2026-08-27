@@ -750,7 +750,11 @@ function packageRuntimeCustodyCredentialInvoker(array $config, string $id, strin
 {
     $entry = (array)(((array)($config['package_runtime'] ?? []))['custody_credential_check_invokers'][$id] ?? []);
     $command = array_values((array)($entry['command'] ?? [])); $profile = trim((string)($entry['isolation_profile'] ?? ''));
-    $hash = strtolower(trim((string)($entry['package_manifest_sha256'] ?? ''))); $origin = strtolower(rtrim((string)($entry['network_egress_origin'] ?? ''), '/'));
+    $hash = strtolower(trim((string)($entry['package_manifest_sha256'] ?? ''))); $originParts = parse_url((string)($entry['network_egress_origin'] ?? ''));
+    $originScheme = is_array($originParts) ? strtolower((string)($originParts['scheme'] ?? '')) : '';
+    $originPort = is_array($originParts) && isset($originParts['port']) ? (int)$originParts['port'] : 0;
+    $origin = is_array($originParts) ? $originScheme . '://' . strtolower((string)($originParts['host'] ?? ''))
+        . ($originPort !== 0 && !($originScheme === 'https' && $originPort === 443) ? ':' . $originPort : '') : '';
     $parts = parse_url($serviceBaseUrl); $scheme = is_array($parts) ? strtolower((string)($parts['scheme'] ?? '')) : '';
     $port = is_array($parts) && isset($parts['port']) ? (int)$parts['port'] : 0;
     $expected = is_array($parts) ? $scheme . '://' . strtolower((string)($parts['host'] ?? ''))
