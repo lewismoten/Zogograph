@@ -8564,7 +8564,7 @@ const chatState = {
   who: { name: "Assistant", emoji: "✦", portrait: null },
 };
 
-const voiceState = { speak: false, listen: false, listenMode: "never", recognition: null, spoken: new Set() };
+const voiceState = { speak: false, listen: false, listenMode: "never", recognition: null, utterance: null, spoken: new Set() };
 
 function speakAssistantReply(session) {
   if (!voiceState.speak || !window.speechSynthesis) return;
@@ -8573,6 +8573,22 @@ function speakAssistantReply(session) {
   voiceState.spoken.add(last.id);
   const utterance = new SpeechSynthesisUtterance(String(last.content || "").slice(0, 6000));
   utterance.lang = navigator.language || "en-US";
+  /* Do not let the microphone transcribe HostScope's own reply. Stop rather
+   * than merely ignoring results: recognition engines can queue audio and
+   * submit it after speech has finished. */
+  const resumeListening = voiceState.listen && voiceState.listenMode === "always";
+  if (voiceState.listen) {
+    voiceState.listen = false;
+    voiceState.recognition?.stop();
+  }
+  voiceState.utterance = utterance;
+  utterance.onend = utterance.onerror = () => {
+    if (voiceState.utterance !== utterance) return;
+    voiceState.utterance = null;
+    if (resumeListening && voiceState.listenMode === "always" && !voiceState.listen) {
+      try { toggleRecognition(); } catch (error) { notice(String(error.message || error)); }
+    }
+  };
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(utterance);
 }
