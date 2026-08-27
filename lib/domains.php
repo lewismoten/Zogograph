@@ -133,6 +133,11 @@ function domainCheck(PDO $pdo, array $domain, ?callable $runner = null, array $c
 {
     $name = (string)$domain['name'];
     $answer = whoisLookup($name, $runner);
+    // A caller supplying a WHOIS runner is a deterministic test or import,
+    // not a request to open an unrelated live HTTPS connection.
+    $certificate = $runner === null
+        ? domainCertificate($name)
+        : ['expires_at' => null, 'error' => null];
 
     /*
      * When whois is missing here, use whatever root's collector found.
@@ -158,7 +163,8 @@ function domainCheck(PDO $pdo, array $domain, ?callable $runner = null, array $c
     $pdo->prepare(
         'UPDATE domains SET last_checked_at = ?, expires_at = ?, registrar = ?, status = ?,
                 nameservers = ?, created_at = ?, updated_at = ?, auto_renew = ?,
-                last_error = ?, whois = ?
+                last_error = ?, whois = ?, certificate_expires_at = COALESCE(?, certificate_expires_at), certificate_checked_at = ?,
+                certificate_error = ?
           WHERE id = ?'
     )->execute([
         time(),
@@ -171,6 +177,9 @@ function domainCheck(PDO $pdo, array $domain, ?callable $runner = null, array $c
         $parsed['auto_renew'] ?? null,
         $answer['ok'] ? null : $answer['error'],
         $answer['ok'] ? substr($answer['text'], 0, WHOIS_MAX_BYTES) : null,
+        $certificate['expires_at'],
+        time(),
+        $certificate['error'],
         (int)$domain['id'],
     ]);
 
@@ -179,6 +188,49 @@ function domainCheck(PDO $pdo, array $domain, ?callable $runner = null, array $c
         'error' => $answer['error'],
         'name' => $name,
     ];
+}
+
+/**
+ * Reads a leaf HTTPS certificate's expiry alongside the weekly domain check.
+ *
+ * This is inventory, not HTTPS health verification: the URL monitor remains
+ * strict. Accepting an invalid chain here lets an already-expired certificate
+ * report the date the calendar needs to show.
+ *
+ * @return array{expires_at: ?int, error: ?string}
+ */
+function domainCertificate(string $name): array
+{
+    if (!function_exists('openssl_x509_parse')) {
+        return ['expires_at' => null, 'error' => 'the PHP OpenSSL extension is unavailable'];
+    }
+
+    $context = stream_context_create(['ssl' => [
+        'capture_peer_cert' => true,
+        'peer_name' => $name,
+        'SNI_enabled' => true,
+        'SNI_server_name' => $name,
+        'verify_peer' => false,
+        'verify_peer_name' => false,
+    ]]);
+    $errno = 0;
+    $error = '';
+    $socket = @stream_socket_client('ssl://' . $name . ':443', $errno, $error, 8,
+        STREAM_CLIENT_CONNECT, $context);
+    if ($socket === false) {
+        return ['expires_at' => null, 'error' => $error !== '' ? $error : 'HTTPS did not answer'];
+    }
+
+    $params = stream_context_get_params($socket);
+    fclose($socket);
+    $cert = $params['options']['ssl']['peer_certificate'] ?? null;
+    $parsed = $cert === null ? false : @openssl_x509_parse($cert);
+    $expires = $parsed['validTo_time_t'] ?? null;
+    if (!is_int($expires) && !is_numeric($expires)) {
+        return ['expires_at' => null, 'error' => 'the certificate did not contain an expiry date'];
+    }
+
+    return ['expires_at' => (int)$expires, 'error' => null];
 }
 
 /**

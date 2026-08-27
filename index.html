@@ -72,6 +72,7 @@
   </div>
 
   <div class="topbar-actions">
+    <button id="ipPrivacy" class="link" hidden title="Hide IP addresses in this browser session">Hide IPs</button>
     <button id="pageHelp" class="header-help" type="button" aria-label="Help for this page" title="Help for this page">?</button>
     <button id="signInOut" class="primary">Sign in</button>
   </div>
@@ -79,6 +80,10 @@
 
 <div class="shell">
   <nav class="sidebar" id="sidebar" aria-label="Sections">
+    <label class="nav-search" for="navSearch">
+      <span class="sr-only">Search sections</span>
+      <input id="navSearch" type="search" placeholder="Search sections" autocomplete="off">
+    </label>
     <a class="nav-item" href="#/overview" data-nav="overview">
       <span class="nav-icon" aria-hidden="true">◴</span>
       <span class="nav-label">Overview</span>
@@ -437,10 +442,19 @@
       <span class="nav-label">Data retention</span>
       <span class="nav-badge" data-badge="sys-retention" hidden></span>
     </a>
-    <a class="nav-item nav-sub" href="#/sys-notes" data-nav="sys-notes" data-parent="system">
+    <a class="nav-item" href="#/sys-notes" data-nav="sys-notes">
+      <span class="nav-icon" aria-hidden="true">⌕</span>
+      <span class="nav-label">Forensics</span>
+      <span class="nav-badge" data-badge="sys-notes" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/sys-notes" data-nav="sys-notes" data-parent="sys-notes">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Notes</span>
-      <span class="nav-badge" data-badge="sys-notes" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/sys-snapshots" data-nav="sys-snapshots" data-parent="sys-notes">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Database copies</span>
+      <span class="nav-badge" data-badge="sys-snapshots" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/sys-peers" data-nav="sys-peers" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
@@ -668,15 +682,17 @@
     </p>
     <div id="typeCards" class="cards type-cards"></div>
 
-    <div class="panel-head sub-head-row">
-      <h3 class="sub-head">Everything, side by side</h3>
-      <label class="pill">
-        <input type="checkbox" id="pieShowCategories" checked>
-        Show the watched categories too
-      </label>
+    <div id="typePieSection">
+      <div class="panel-head sub-head-row">
+        <h3 class="sub-head">Storage composition</h3>
+        <label class="pill">
+          <input type="checkbox" id="pieShowCategories" checked>
+          Show watched categories too
+        </label>
+      </div>
+      <p class="muted small sub-note" id="pieNote"></p>
+      <canvas id="typePie" class="pie"></canvas>
     </div>
-    <p class="muted small sub-note" id="pieNote"></p>
-    <canvas id="typePie" class="pie"></canvas>
 
     <h3 class="sub-head">What is inside <code>other</code></h3>
     <p class="muted small sub-note">
@@ -2096,6 +2112,7 @@
     <div class="panel-head">
       <h2>Everything this monitor has done</h2>
       <div class="panel-tools">
+        <button id="actionClear" class="link danger" title="Remove earlier audit entries and retain a record of this reset">Clear audit</button>
         <label class="pill">What
           <select id="actionKind"><option value="">everything</option></select>
         </label>
@@ -2515,7 +2532,9 @@
   </p>
   <div id="notesBody"></div>
 </section>
+</section>
 
+<section class="view" data-view="sys-snapshots" hidden>
 <section class="panel" id="snapshotPanel">
   <div class="panel-head">
     <h2>Database copies</h2>
@@ -2812,7 +2831,7 @@
   -->
   <div id="chatHome">
   <aside id="chatPanel" class="chat-panel" hidden aria-label="The troubleshooting assistant">
-    <div class="chat-head">
+    <div class="chat-head" id="chatDragHandle" title="Drag to move this chat window">
       <strong id="chatTitle">Mr. Radar</strong>
       <span class="muted small" id="chatCost"></span>
       <span class="chat-room" id="chatRoom" hidden></span>
@@ -2820,8 +2839,9 @@
       <button id="chatNew" class="link" title="Start a fresh conversation">New</button>
       <button id="chatInterrupt" class="link" hidden
               title="Stop what it is doing, keep the conversation">Interrupt</button>
-      <button id="chatStop" class="link danger" title="Stop this conversation">Stop</button>
-      <button id="chatClose" class="link" title="Hide this — the conversation carries on">Hide</button>
+      <button id="chatStop" class="link danger" title="End the current model turn">Stop</button>
+      <button id="chatClose" class="chat-close" title="Hide this — the conversation carries on"
+              aria-label="Close chat">×</button>
     </div>
     <!--
       Permission questions live here, above the log and outside it.

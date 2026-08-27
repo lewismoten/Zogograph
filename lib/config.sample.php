@@ -330,6 +330,22 @@ return [
         'package_manager' => 'auto',
     ],
 
+    /*
+     * Root's host collector can check for, download, or install operating
+     * system updates. Leave this empty until a server administrator has chosen
+     * a policy. Stages may be combined: Download and Auto-Update imply a fresh
+     * Detect first. Notify raises an ordinary dashboard alert when updates are
+     * found or a stage fails.
+     */
+    'updates' => [
+        'modes' => [], // detect, notify, download, auto-update
+        'interval_seconds' => 86400,
+    ],
+
+    // Stable keys from “What is wrong” findings intentionally accepted here.
+    // The dashboard writes this list when an operator presses Ignore.
+    'diagnostic_ignores' => [],
+
     /* Named, explicitly trusted Hostscope installations. A peer is tested
      * through OIDC discovery before it may be used. Leave it empty until the
      * remote server exposes its HTTPS issuer and this host has a client ID. */

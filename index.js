@@ -91,6 +91,53 @@ const state = {
 
 const $ = id => document.getElementById(id);
 
+/*
+ * Screenshot privacy is a browser-session view, not an access-control layer:
+ * the API still withholds IPs where it can. This catches addresses embedded in
+ * free prose, chart labels, and a future view that forgot to use a structured
+ * address field. It only runs when the user deliberately enters privacy mode,
+ * so ordinary polling never disturbs selection or scroll position.
+ */
+const IPV4_TEXT = /(?<![\w.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\w.])/g;
+const IPV6_TEXT = /(?<![A-Fa-f0-9:])(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{0,4}(?![A-Fa-f0-9:])/g;
+let ipPrivacyObserver = null;
+
+function redactIpText(text) {
+  return text.replace(IPV4_TEXT, "[IP hidden]").replace(IPV6_TEXT, "[IP hidden]");
+}
+
+function redactIpNodes(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) {
+    const parent = walker.currentNode.parentElement;
+    if (parent && !["SCRIPT", "STYLE", "TEXTAREA", "OPTION"].includes(parent.tagName)) {
+      nodes.push(walker.currentNode);
+    }
+  }
+  for (const node of nodes) {
+    const redacted = redactIpText(node.data);
+    if (redacted !== node.data) node.data = redacted;
+  }
+}
+
+function syncIpPrivacy() {
+  if (!state.access?.ip_privacy || ipPrivacyObserver) return;
+  redactIpNodes(document.body);
+  ipPrivacyObserver = new MutationObserver(records => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          node.data = redactIpText(node.data);
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          redactIpNodes(node);
+        }
+      }
+    }
+  });
+  ipPrivacyObserver.observe(document.body, { childList: true, subtree: true });
+}
+
 /* ----------------------------------------------------------------- format -- */
 
 function humanBytes(value, digits) {
@@ -3746,12 +3793,17 @@ function renderFileTypes(scans) {
         ? "The last scan ran before this was measured. The next one will fill it in."
         : "No completed scan in this range.",
     }));
-    drawPieChart($("typePie"), [], { empty: "Not measured yet" });
+    // A large empty chart says the scan failed even when it simply predates
+    // type collection. Keep the reason near the scan facts, not in a blank
+    // dashboard-sized hole.
+    $("typePieSection").hidden = true;
     renderOtherExtensions([]);
     $("typeWhen").textContent = "";
     $("pieNote").textContent = "";
     return;
   }
+
+  $("typePieSection").hidden = false;
 
   const total = types.reduce((sum, t) => sum + Number(t.bytes || 0), 0);
   const files = types.reduce((sum, t) => sum + Number(t.files || 0), 0);
@@ -8430,6 +8482,50 @@ function hideChat() {
    */
 }
 
+/*
+ * A dock is useful until it covers the thing being discussed. Desktop users
+ * can place and resize the same panel without creating a second chat layout;
+ * phones retain the safe edge-to-edge layout.
+ */
+function installChatDrag() {
+  const panel = $("chatPanel");
+  const handle = $("chatDragHandle");
+  if (!panel || !handle) return;
+
+  let moving = null;
+  handle.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || event.target.closest("button, select, input")) return;
+    if (panel.classList.contains("chat-wide") || window.matchMedia("(max-width: 620px)").matches) return;
+
+    const rect = panel.getBoundingClientRect();
+    moving = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    panel.style.left = `${Math.round(rect.left)}px`;
+    panel.style.top = `${Math.round(rect.top)}px`;
+    panel.style.right = "auto";
+    panel.style.bottom = "auto";
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+
+  handle.addEventListener("pointermove", event => {
+    if (!moving) return;
+    const left = Math.max(8, Math.min(window.innerWidth - panel.offsetWidth - 8,
+      event.clientX - moving.x));
+    const top = Math.max(8, Math.min(window.innerHeight - panel.offsetHeight - 8,
+      event.clientY - moving.y));
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+  });
+
+  const stop = event => {
+    if (!moving) return;
+    moving = null;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+  };
+  handle.addEventListener("pointerup", stop);
+  handle.addEventListener("pointercancel", stop);
+}
+
 async function refreshChat() {
   let data;
   try {
@@ -8924,7 +9020,10 @@ function renderChat() {
   $("chatSend").title = busy
     ? "It is working. This goes in now and it reads it on its next turn."
     : "";
-  $("chatStop").hidden = finished;
+  // Stop is meaningful only while PHP/the model is actually working. Leaving
+  // it visible on an idle conversation made it look like a broken emergency
+  // button rather than the way to halt an in-flight exchange.
+  $("chatStop").hidden = !busy;
   $("chatInterrupt").hidden = finished || !busy;
 }
 
@@ -10668,7 +10767,7 @@ function renderInstalled(data) {
  * the Tuesday, and it is not in any of the data - so it has to be written down,
  * attached to the moment, and drawn back on the charts it belongs to.
  */
-const noteState = { data: null, marks: [], forView: null };
+const noteState = { data: null, marks: [], forView: null, selected: new Set() };
 
 /**
  * The notes that belong on the charts of the view being shown.
@@ -11331,14 +11430,49 @@ function renderNotes(data) {
       + "page you are on."
     ));
   } else {
+    const controls = document.createElement("div");
+    controls.className = "table-tools note-batch-tools";
+    const selected = document.createElement("span");
+    selected.textContent = noteState.selected.size
+      ? `${count(noteState.selected.size, "note")} selected`
+      : "Select notes to dismiss or delete";
+    controls.appendChild(selected);
+    const clear = document.createElement("button");
+    clear.className = "link";
+    clear.textContent = "Dismiss selected";
+    clear.disabled = !state.access?.write || !noteState.selected.size;
+    clear.title = "Clears selected broadcast notes; ordinary notes are left alone.";
+    clear.addEventListener("click", () => batchNotes("clear"));
+    const remove = document.createElement("button");
+    remove.className = "link danger";
+    remove.textContent = "Delete selected";
+    remove.disabled = !state.access?.write || !noteState.selected.size;
+    remove.addEventListener("click", () => batchNotes("delete"));
+    controls.append(clear, remove);
     const holder = document.createElement("div");
     holder.id = "notesTable";
-    body.replaceChildren(holder);
+    body.replaceChildren(controls, holder);
 
     renderTable("notesTable", data.rows, [
-      { label: "About", render: row => whenSpan(row.at) },
       {
-        label: "",
+        label: "", render: row => {
+          const pick = document.createElement("input");
+          pick.type = "checkbox";
+          pick.checked = noteState.selected.has(row.id);
+          pick.setAttribute("aria-label", `Select note from ${whenSpan(row.at)}`);
+          pick.addEventListener("click", event => event.stopPropagation());
+          pick.addEventListener("change", () => {
+            if (pick.checked) noteState.selected.add(row.id);
+            else noteState.selected.delete(row.id);
+            TABLE_DREW.delete("notesTable");
+            renderNotes(noteState.data);
+          });
+          return pick;
+        },
+      },
+      { label: "Time", render: row => whenSpan(row.at) },
+      {
+        label: "Icons",
         render: row => {
           const span = document.createElement("span");
           span.textContent = row.broadcast
@@ -11352,14 +11486,9 @@ function renderNotes(data) {
           return span;
         },
       },
-      { label: "Note", className: "cmd", render: row => noteBody(row) },
+      { label: "Note", className: "note-preview", render: row => notePreview(row) },
       {
-        label: "Page",
-        render: row => (row.view ? (VIEWS[row.view]?.label ?? row.view) : "—"),
-      },
-      { label: "Written", render: row => `${ago(row.written_at)}${row.who ? ` by ${row.who}` : ""}` },
-      {
-        label: "Holding",
+        label: "Size",
         className: "size",
         render: row => {
           if (!row.snapshots) return "—";
@@ -11377,11 +11506,61 @@ function renderNotes(data) {
           return said;
         },
       },
-      { label: "", className: "row-actions", render: row => noteActions(row) },
-    ], null, row => (row.broadcast && !row.cleared_at ? "row-bad" : ""), row => String(row.id));
+      { label: "", className: "row-actions", render: row => noteDeleteButton(row) },
+    ], row => showNoteDetails(row), row => (row.broadcast && !row.cleared_at ? "row-bad" : ""), row => String(row.id));
   }
 
   renderSnapshotFiles(data);
+}
+
+function notePreview(row) {
+  const text = String(row.body || "").replace(/\s+/g, " ").trim();
+  return text.length > 180 ? `${text.slice(0, 177)}…` : text;
+}
+
+function noteDeleteButton(row) {
+  const remove = document.createElement("button");
+  remove.className = "link danger";
+  remove.textContent = "Delete";
+  remove.disabled = !state.access?.write;
+  remove.addEventListener("click", async event => {
+    event.stopPropagation();
+    if (!confirm(`Delete this note?${row.snapshots ? "\n\nWhatever it captured goes with it." : ""}`)) return;
+    try { await post("note-delete", { id: row.id }); noteState.selected.delete(row.id); await refreshNotes(); }
+    catch (error) { notice(String(error.message || error)); }
+  });
+  return remove;
+}
+
+async function batchNotes(kind) {
+  const ids = [...noteState.selected];
+  if (!ids.length) return;
+  if (kind === "delete" && !confirm(`Delete ${count(ids.length, "selected note")}?`)) return;
+  try {
+    const data = await post("note-batch", { kind, ids: ids.join(",") });
+    noteState.selected.clear();
+    renderNotes(data);
+    await refreshShared();
+    notice(kind === "delete" ? "Selected notes deleted." : "Selected broadcasts dismissed.", true);
+  } catch (error) { notice(String(error.message || error)); }
+}
+
+function showNoteDetails(row) {
+  const nodes = [note(row.body)];
+  const facts = [
+    ["About", whenSpan(row.at)], ["Written", `${ago(row.written_at)}${row.who ? ` by ${row.who}` : ""}`],
+    ["Page", row.view ? (VIEWS[row.view]?.label ?? row.view) : "—"],
+    ["Holding", row.snapshots ? `${count(row.snapshots, "capture")} · ${humanBytes(row.snapshot_bytes)}` : "—"],
+  ];
+  nodes.push(factGrid(facts));
+  if (row.link) nodes.push(externalLink(row.link));
+  if (row.snapshots) {
+    const captured = document.createElement("button");
+    captured.className = "link"; captured.textContent = "What it captured";
+    captured.addEventListener("click", () => showNoteSnapshots(row));
+    nodes.push(captured);
+  }
+  showListDialog(`Note from ${whenSpan(row.at)}`, nodes, "Click a note in the inbox to read it without stretching the table.");
 }
 
 function noteBody(row) {
@@ -11588,6 +11767,7 @@ function renderSnapshotFiles(data) {
         const remove = document.createElement("button");
         remove.className = "link danger";
         remove.textContent = "Delete";
+        remove.disabled = !state.access?.write;
         remove.addEventListener("click", async () => {
           if (!confirm(
             `Delete ${row.name}?\n\nIt is ${humanBytes(row.bytes)} and nothing else has a copy.`
@@ -11699,7 +11879,7 @@ function renderAccountData(data) {
       table
         .sort((a, b) => b.total_bytes - a.total_bytes)
         .map(row => [
-          row.table,
+          databaseTableName(row.table, false),
           humanCount(row.rows ?? 0),
           humanBytes(row.bytes),
           humanBytes(row.index_bytes),
@@ -11742,7 +11922,7 @@ function renderHostData(data) {
     parts.push(section("Where the space goes", simpleTable(
       ["Table", "Rows", "Data", "Indexes", "Total"],
       tables.map(row => [
-        row.table,
+        databaseTableName(row.table, true),
         humanCount(row.rows ?? 0),
         humanBytes(row.bytes),
         humanBytes(row.index_bytes),
@@ -11773,7 +11953,75 @@ function tableFactsFor(account, name) {
   return { table: name, rows: count, bytes: total, index_bytes: 0, total_bytes: total };
 }
 
+/*
+ * A raw SQLite name is not documentation.  The mark gives every listed table
+ * the same three useful answers: why it exists, which dashboard area reads it,
+ * and the exact harmless query for inspecting it at a shell.  Unknown tables
+ * still get an honest generic explanation, which matters after a migration
+ * adds a table before this UI learns its friendlier wording.
+ */
+function databaseTableName(name, host) {
+  const known = {
+    vitals: ["The time-series readings behind the overview gauges and charts.", "Overview, CPU, Memory, and Storage", "php cron.php --vitals"],
+    scans: ["One row per account filesystem scan.", "Storage overview and scan history", "php cron.php --scan"],
+    scan_totals: ["The category totals produced by each filesystem scan.", "Storage → watched categories", "php cron.php --scan"],
+    scan_file_types: ["File-type totals produced by each filesystem scan.", "Storage → Everything, side by side", "php cron.php --scan"],
+    scan_extensions: ["The less-common extensions from each filesystem scan.", "Storage → file-type details", "php cron.php --scan"],
+    paths: ["The stable directory and file names used by historical records.", "Storage history and growth views", "php cron.php --scan"],
+    path_sizes: ["Measured sizes for paths across scans.", "Storage → what changed", "php cron.php --scan"],
+    alerts: ["Every alert the monitor raised, including acknowledgement state.", "Alerts and Calendar", "php cron.php --alerts"],
+    actions: ["The audit trail for changes made through the dashboard.", "System → Audit", "written by dashboard actions; no collector command"],
+    incidents: ["Evidence snapshots captured when alerts fired.", "Alerts → incident evidence", "php cron.php --alerts"],
+    collector_runs: ["The account collector's duration and result ledger.", "System → Schedule", "written after each php cron.php run"],
+    process_samples: ["Account-process readings taken with vitals.", "Processes", "php cron.php --vitals"],
+    capabilities: ["Programs this account can use.", "System → capabilities", "php cron.php --vitals"],
+    capability_changes: ["Changes in what this account can run.", "Recent changes", "php cron.php --vitals"],
+    host_samples: ["One root-side host reading per collection.", "Host overview", "php host-cron.php --collect"],
+    host_users: ["Per-account memory and process totals at each host reading.", "Host → users", "php host-cron.php --collect"],
+    host_processes: ["The busiest processes retained from each host reading.", "CPU → What is burning it and Processes", "php host-cron.php --collect"],
+    host_slab: ["Kernel slab-cache measurements.", "Memory → kernel slab caches", "php host-cron.php --collect"],
+    host_files: ["Large or notable files found by host collection.", "Host disk details", "php host-cron.php --collect"],
+    host_services: ["Service health readings.", "Processes → Services", "php host-cron.php --collect"],
+    host_disks: ["Device I/O counters.", "Storage and Host I/O", "php host-cron.php --collect"],
+    host_boots: ["Observed host starts and restart evidence.", "Uptime and Calendar", "php host-cron.php --collect"],
+    host_daemons: ["Watched daemon state changes.", "Processes → Services", "php host-cron.php --collect"],
+    host_dirs: ["Directories measured by the root disk walk.", "Host disk walk", "php host-cron.php --disk"],
+    host_deleted: ["Open-but-deleted files that still occupy disk space.", "Host disk walk", "php host-cron.php --disk"],
+    host_mounts: ["Mounted filesystem facts.", "Host → mounts", "php host-cron.php --disk"],
+    host_cpus: ["Per-core counters from the root collector.", "CPU → each core", "php host-cron.php --collect"],
+    host_collector_runs: ["The root collector's duration and result ledger, including requested work.", "System → Schedule", "written after each php host-cron.php run"],
+    host_update_runs: ["Each configured package-update stage and its result.", "System → Schedule → System updates", "php host-cron.php --updates or the normal scheduled root run"],
+  };
+  const [what, where, collected] = known[name] || [
+    `A ${host ? "root collector" : "dashboard"} SQLite table retained for this installation.`,
+    host ? "Host collector data" : "Database and forensic views",
+    host ? "php host-cron.php --collect" : "maintained by the dashboard collector",
+  ];
+  const label = document.createElement("span");
+  label.append(document.createTextNode(name), helpIcon({
+    title: what,
+    note: `Used by: ${where}. Collected by: ${collected}. Inspect: sqlite3 <database> \"SELECT COUNT(*) FROM ${name};\"`,
+    mine: false,
+  }));
+  return label;
+}
+
 function databaseCard(file, projection) {
+  const meters = document.createElement("div");
+  meters.className = "database-gauges";
+  meters.appendChild(databaseGauge(
+    "Empty space", Number(file.free_share || 0) * 100, 25, 50,
+    `${humanBytes(file.free_bytes)} can be reused before the file grows`, null
+  ));
+  if (projection?.projected > 0) {
+    const ratio = (Number(file.bytes || 0) / Number(projection.projected)) * 100;
+    meters.appendChild(databaseGauge(
+      "File versus settles", ratio, 105, 125,
+      `${humanBytes(file.bytes)} now · settles near ${humanBytes(projection.projected)}`,
+      100
+    ));
+  }
+
   const facts = [
     ["File", `${humanBytes(file.bytes)}${file.wal_bytes
       ? ` + ${humanBytes(file.wal_bytes)} write-ahead log` : ""}`],
@@ -11791,7 +12039,21 @@ function databaseCard(file, projection) {
   }
 
   const wrap = document.createDocumentFragment();
+  wrap.appendChild(meters);
   wrap.appendChild(factGrid(facts));
+
+  if (String(file.journal).toLowerCase() === "wal") {
+    const journal = document.createElement("p");
+    journal.className = "muted small";
+    journal.append("Journal mode: write-ahead logging. ");
+    const link = document.createElement("a");
+    link.href = "https://www.sqlite.org/wal.html";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "How SQLite WAL works ↗";
+    journal.appendChild(link);
+    wrap.appendChild(journal);
+  }
 
   const where = document.createElement("p");
   where.className = "muted small";
@@ -11807,6 +12069,37 @@ function databaseCard(file, projection) {
   }
 
   return wrap;
+}
+
+/* A compact linear gauge with room beyond the expected settled size. */
+function databaseGauge(label, value, warn, crit, sub, tick) {
+  const box = document.createElement("div");
+  const band = bandOf(value, warn, crit);
+  box.className = `database-gauge band-${band || "ok"}`;
+  const head = document.createElement("div");
+  head.className = "database-gauge-head";
+  const name = document.createElement("strong");
+  name.textContent = label;
+  const number = document.createElement("span");
+  number.textContent = `${Math.round(value)}%`;
+  head.append(name, number);
+  const track = document.createElement("div");
+  track.className = "database-gauge-track";
+  // The track extends to 150%, so passing the expected settle point visibly
+  // enters the warning/error headroom instead of pinning at a misleading 100.
+  track.style.setProperty("--fill", `${Math.max(0, Math.min(100, value / 1.5))}%`);
+  if (tick != null) {
+    const marker = document.createElement("span");
+    marker.className = "database-gauge-tick";
+    marker.style.setProperty("--tick", `${tick / 1.5}%`);
+    marker.title = "Expected settled size";
+    track.appendChild(marker);
+  }
+  const said = document.createElement("div");
+  said.className = "muted small";
+  said.textContent = sub;
+  box.append(head, track, said);
+  return box;
 }
 
 /**
@@ -14620,6 +14913,16 @@ async function runAiTry(tool) {
 
     const parts = [];
 
+    if (result.picture?.url) {
+      const picture = document.createElement("img");
+      picture.className = "try-picture";
+      picture.src = result.picture.url;
+      picture.alt = result.picture.prompt || "the generated picture";
+      picture.loading = "lazy";
+      parts.push(section("Generated picture", picture));
+      parts.push(note(`Style: ${result.picture.style || "not reported"}. This is the image the tool just made.`));
+    }
+
     /*
      * What was actually sent, above what came back.
      *
@@ -16079,6 +16382,7 @@ async function refreshProcesses() {
     return;
   }
   panel.hidden = false;
+  $("actionClear").hidden = !state.access?.write;
 
   let data;
   try {
@@ -19180,6 +19484,111 @@ function drawSchedule(data) {
   }
   holder.appendChild(current);
 
+  const runs = [
+    ...(data.account_runs || []).map(row => ({ ...row, collector: "account" })),
+    ...(data.host_runs || []).map(row => ({ ...row, collector: "root" })),
+  ].sort((a, b) => Number(b.started_at) - Number(a.started_at));
+  if (runs.length) {
+    const runsHolder = document.createElement("div");
+    runsHolder.id = "scheduleRuns";
+    holder.appendChild(section("Recent collector runs", runsHolder,
+      "Normal and requested work share this ledger, so a new task can be compared with the work already scheduled."));
+    renderTable("scheduleRuns", runs, [
+      { label: "Started", render: row => whenSpan(row.started_at) },
+      { label: "Collector", render: row => row.collector },
+      { label: "Work", className: "cmd", render: row => row.jobs },
+      { label: "Took", className: "size", render: row => humanDuration(Number(row.seconds)) },
+      { label: "Result", render: row => row.ok ? "ok" : (row.error || "failed") },
+    ], null, row => row.ok ? "" : "row-bad", row => `${row.collector}:${row.started_at}:${row.jobs}`);
+  }
+
+  const updates = data.updates || { modes: [], interval_seconds: 86400, runs: [] };
+  const updateBox = document.createElement("div");
+  updateBox.className = "settings";
+  updateBox.appendChild(note(
+    "This is a root-only host-collector policy. The dashboard records your choices and "
+      + "shows the result; it never runs a package command itself."
+  ));
+  const stageRow = document.createElement("div");
+  stageRow.className = "settings-row";
+  const stageLabel = document.createElement("div");
+  stageLabel.className = "settings-label";
+  stageLabel.textContent = "Update stages";
+  stageRow.appendChild(stageLabel);
+  const stages = document.createElement("div");
+  stages.className = "row";
+  const none = document.createElement("button");
+  none.type = "button";
+  none.className = "link";
+  none.textContent = "None";
+  none.title = "Turn off every automatic update stage";
+  none.addEventListener("click", () => {
+    for (const input of stages.querySelectorAll("input")) input.checked = false;
+    state.scheduleDirty = true;
+  });
+  stages.appendChild(none);
+  const stageLabels = {
+    detect: "Detect", notify: "Notify", download: "Download", "auto-update": "Auto-Update",
+  };
+  for (const [value, label] of Object.entries(stageLabels)) {
+    const choice = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.name = "update-stage";
+    input.value = value;
+    input.checked = updates.modes.includes(value);
+    input.addEventListener("change", () => { state.scheduleDirty = true; });
+    choice.append(input, ` ${label}`);
+    stages.appendChild(choice);
+  }
+  stageRow.appendChild(stages);
+  updateBox.appendChild(stageRow);
+  const interval = document.createElement("input");
+  interval.type = "number";
+  interval.min = "1";
+  interval.max = "744";
+  interval.value = String(Math.round(Number(updates.interval_seconds || 86400) / 3600));
+  interval.addEventListener("input", () => { state.scheduleDirty = true; });
+  updateBox.appendChild(fieldRow("Check every (hours)", interval,
+    `Host package manager: ${updates.manager || "not detected"}. Download and Auto-Update always detect first.`));
+  if (state.access?.write) {
+    const saveUpdates = document.createElement("button");
+    saveUpdates.textContent = "Save update policy";
+    saveUpdates.addEventListener("click", async () => {
+      saveUpdates.disabled = true;
+      try {
+        const fields = new URLSearchParams();
+        for (const input of stages.querySelectorAll("input:checked")) fields.append("modes[]", input.value);
+        fields.set("interval_seconds", String(Math.max(1, Math.min(744, Number(interval.value) || 24)) * 3600));
+        await post("updates-save", fields);
+        state.scheduleDirty = false;
+        await refreshSchedule();
+        notice("Saved the update policy. The root collector will apply it on its next run.", true);
+      } catch (error) {
+        notice(String(error.message || error));
+      } finally {
+        saveUpdates.disabled = false;
+      }
+    });
+    updateBox.appendChild(saveUpdates);
+  } else {
+    updateBox.appendChild(note("You can view this policy but need write access to change it."));
+  }
+  if (updates.runs.length) {
+    const updateRuns = document.createElement("div");
+    updateRuns.id = "updateRuns";
+    updateBox.appendChild(updateRuns);
+    queueMicrotask(() => renderTable("updateRuns", updates.runs, [
+      { label: "Started", render: row => whenSpan(row.started_at) },
+      { label: "Stage", render: row => row.stage },
+      { label: "Manager", render: row => row.manager },
+      { label: "Available", className: "size", render: row => row.updates == null ? "—" : row.updates },
+      { label: "Took", className: "size", render: row => humanDuration(Number(row.seconds)) },
+      { label: "Result", render: row => row.ok ? "ok" : (row.error || "failed") },
+    ], null, row => row.ok ? "" : "row-bad", row => `update:${row.started_at}:${row.stage}`));
+  }
+  holder.appendChild(section("System updates", updateBox));
+
   const form = document.createElement("div");
   form.className = "row";
   form.append(
@@ -20731,8 +21140,12 @@ const ACTION_WORDS = {
   empty: "emptied a directory",
   scan_now: "ran a scan",
   schedule_save: "changed the schedule",
+  updates_policy: "changed the system update policy",
   test_email: "sent a test email",
   clear_problems: "cleared the problem log",
+  diagnosis_ignore: "ignored a diagnostic finding",
+  diagnosis_unignore: "restored a diagnostic finding",
+  audit_cleared: "cleared the audit trail",
   ack_alerts: "marked alerts read",
   delete_alerts: "deleted alerts",
   daemon_watch: "changed which services are watched",
@@ -20851,9 +21264,35 @@ function mayUsePage(view) {
   return !Array.isArray(pages) || pages.includes("*") || pages.includes(view);
 }
 
-function applyAccessChrome() {
+function navSearchMatches(link) {
+  const query = $("navSearch")?.value.trim().toLowerCase() ?? "";
+  if (!query) return true;
+  const parent = link.dataset.parent ? VIEWS[link.dataset.parent]?.label ?? "" : "";
+  return `${link.dataset.nav} ${link.textContent} ${parent}`.toLowerCase().includes(query);
+}
+
+function syncNavigationSearch() {
+  const query = $("navSearch")?.value.trim() ?? "";
+  const parent = VIEWS[state.view]?.parent || state.view;
   for (const link of document.querySelectorAll("[data-nav]")) {
-    link.hidden = !mayUsePage(link.dataset.nav);
+    const owner = link.dataset.parent;
+    link.hidden = !mayUsePage(link.dataset.nav)
+      || (!query && Boolean(owner && owner !== parent))
+      || (Boolean(query) && !navSearchMatches(link));
+  }
+}
+
+function applyAccessChrome() {
+  syncNavigationSearch();
+  syncIpPrivacy();
+
+  const privacy = $("ipPrivacy");
+  if (privacy) {
+    privacy.hidden = !state.signedIn || !state.access?.ips;
+    privacy.textContent = state.access?.ip_privacy ? "Show IPs" : "Hide IPs";
+    privacy.title = state.access?.ip_privacy
+      ? "Show IP addresses again in this browser session"
+      : "Hide IP addresses in this browser session";
   }
 
   if (!mayUsePage(state.view)) {
@@ -21896,6 +22335,24 @@ function findingRow(f) {
     row.appendChild(go);
   }
 
+  if (state.access?.write && f.key) {
+    const ignore = document.createElement("button");
+    ignore.className = "link muted";
+    ignore.textContent = "Ignore this finding";
+    ignore.title = "Hide this exact diagnostic on future checks until the configuration is changed.";
+    ignore.addEventListener("click", async () => {
+      if (!confirm(`Ignore “${f.title}” now and on future checks?\n\nUse this only for an intentional configuration.`)) return;
+      try {
+        await post("diagnosis-ignore", { key: f.key });
+        await refreshDiagnosis();
+        notice("Ignored for future checks. The decision is in the audit log.", true);
+      } catch (error) {
+        notice(String(error.message || error));
+      }
+    });
+    row.appendChild(ignore);
+  }
+
   return row;
 }
 
@@ -22030,6 +22487,31 @@ async function refreshDiagnosis() {
   wrap.appendChild(headline);
 
   for (const f of data.findings) wrap.appendChild(findingRow(f));
+
+  if (state.access?.write && data.ignored?.length) {
+    const list = document.createElement("div");
+    for (const finding of data.ignored) {
+      const row = document.createElement("div");
+      row.className = "inspect-actions";
+      row.appendChild(document.createTextNode(finding.title));
+      const restore = document.createElement("button");
+      restore.className = "link";
+      restore.textContent = "Restore";
+      restore.addEventListener("click", async () => {
+        try {
+          await post("diagnosis-unignore", { key: finding.key });
+          await refreshDiagnosis();
+          notice("The finding will be checked again.", true);
+        } catch (error) {
+          notice(String(error.message || error));
+        }
+      });
+      row.appendChild(restore);
+      list.appendChild(row);
+    }
+    wrap.appendChild(section("Ignored findings", list,
+      "These are intentional exceptions. Restore one to include it in later checks."));
+  }
 
   body.replaceChildren(wrap);
 }
@@ -24152,9 +24634,11 @@ function openCalendarDay(key, entries) {
     kind.className = "muted small";
     kind.textContent = {
       domain: "domain expiry",
+      certificate: "HTTPS certificate expiry",
       event: entry.repeats && entry.repeats !== "once" ? `repeats ${entry.repeats}` : "a date you keep",
       projection: "projected from the trend",
       alert: "an alert that fired",
+      reset: "the host restarted",
     }[entry.kind] || entry.kind;
     row.appendChild(kind);
 
@@ -25948,12 +26432,19 @@ function renderDomains(data) {
   const parts = [];
 
   if (!data.have_whois) {
-    parts.push(note(
-      "whois is not available to this account, so expiry dates are looked up by root's "
-      + "collector instead \u2014 a request is left for each domain as it comes due, and the "
-      + "answer arrives on its next run."
-    ));
-    if (data.missing) parts.push(missingCommandNote(data.missing, "this account or the host"));
+    const availability = document.createElement("button");
+    availability.className = "link domain-capability";
+    availability.textContent = "\u26a0 whois availability";
+    availability.title = "Explain how domain expiry lookups run";
+    availability.addEventListener("click", () => {
+      const detail = [note(data.host_has_whois
+        ? "The root collector can run whois. This web account cannot, so the collector fetches expiry details on its normal run."
+        : "This web account and the latest host capability sweep do not show whois as available.")];
+      if (data.missing) detail.push(missingCommandNote(data.missing, "this account or the host"));
+      showListDialog("WHOIS availability", detail,
+        "The dashboard separates the web account's permissions from the host collector's tools.");
+    });
+    parts.push(availability);
   }
 
   if (data.queue && data.queue.due > data.queue.per_run) {
@@ -26033,20 +26524,20 @@ function renderDomains(data) {
     },
     { label: "Registrar", render: row => row.registrar || "\u2014" },
     {
-      label: "Locks",
-      className: "cmd",
+      label: "Lock",
       render: row => {
         const span = document.createElement("span");
-        span.className = "lastline muted";
+        const meanings = (row.status_plain || []).map(entry => entry.plain);
+        const locked = meanings.some(text => /locked|prohibited/i.test(text));
+        span.className = "domain-lock";
         /*
          * Plain language, with the registry's own wording on hover.
          *
          * clientTransferProhibited is reassuring and pendingDelete is an
          * emergency; both live in this field and neither reads that way.
          */
-        span.textContent = (row.status_plain || []).map(entry => entry.plain).join(", ")
-          || row.status || "";
-        span.title = row.status || "";
+        span.textContent = meanings.length ? (locked ? "\ud83d\udd12" : "\ud83d\udd13") : "\u2014";
+        span.title = meanings.join("; ") || row.status || "No registry lock status was returned.";
         return span;
       },
     },
@@ -26061,7 +26552,8 @@ function renderDomains(data) {
 
         const now = document.createElement("button");
         now.className = "link";
-        now.textContent = "Check now";
+        now.textContent = "Check";
+        now.title = "Run a fresh registry lookup now";
         now.addEventListener("click", async () => {
           now.disabled = true;
           try {
@@ -26081,7 +26573,8 @@ function renderDomains(data) {
 
         const raw = document.createElement("button");
         raw.className = "link";
-        raw.textContent = "whois";
+        raw.textContent = "Details";
+        raw.title = "Show the last saved registry answer; this does not run a lookup";
         raw.addEventListener("click", async () => {
           try {
             const result = await api("domains", { id: row.id });
@@ -26098,7 +26591,8 @@ function renderDomains(data) {
 
         const remove = document.createElement("button");
         remove.className = "link danger";
-        remove.textContent = "Stop watching";
+        remove.textContent = "Stop";
+        remove.title = "Stop watching this domain";
         remove.addEventListener("click", async () => {
           if (!confirm(`Stop watching ${row.name}?`)) return;
           try {
@@ -29636,8 +30130,12 @@ const VIEWS = {
     refresh: () => refreshProblems(),
   },
   "sys-notes": {
-    label: "Notes",
-    parent: "system",
+    label: "Forensics",
+    refresh: () => refreshNotes(),
+  },
+  "sys-snapshots": {
+    label: "Database copies",
+    parent: "sys-notes",
     refresh: () => refreshNotes(),
   },
   "sys-peers": {
@@ -30018,7 +30516,10 @@ function showView(view, push = true) {
     if (id === view) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
 
-    link.hidden = !mayUsePage(id) || Boolean(owner && owner !== parent);
+    const query = $("navSearch")?.value.trim() ?? "";
+    link.hidden = !mayUsePage(id)
+      || (!query && Boolean(owner && owner !== parent))
+      || (Boolean(query) && !navSearchMatches(link));
   }
 
   document.title = `${VIEWS[view].label} · Hostscope`;
@@ -31331,6 +31832,18 @@ for (const link of document.querySelectorAll("[data-nav]")) {
   });
 }
 
+$("navSearch")?.addEventListener("input", syncNavigationSearch);
+
+$("actionClear")?.addEventListener("click", async () => {
+  if (!confirm("Clear every earlier audit entry?\n\nThis action stays as the first new audit entry.")) return;
+  try {
+    const result = await post("clear-audit");
+    actionState.kind = ""; actionState.who = ""; actionState.result = "";
+    await refreshActionLog();
+    notice(`Cleared ${count(result.removed, "earlier audit entry")}. The reset is recorded.`, true);
+  } catch (error) { notice(String(error.message || error)); }
+});
+
 $("navToggle").addEventListener("click", () => {
   document.body.classList.contains("nav-open") ? closeNav() : openNav();
 });
@@ -31572,6 +32085,17 @@ $("descriptionForm").addEventListener("submit", async event => {
 $("diagnoseRefresh").addEventListener("click",
   () => refreshDiagnosis().catch(error => notice(String(error.message || error))));
 
+$("ipPrivacy").addEventListener("click", async () => {
+  try {
+    await post("ip-privacy", { hide: state.access?.ip_privacy ? "0" : "1" });
+    // The filter is deliberately destructive to page text. A reload on this
+    // explicit user action restores the authoritative server-rendered view.
+    location.reload();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
 $("networkRefresh").addEventListener("click",
   () => refreshNetwork().catch(error => notice(String(error.message || error))));
 
@@ -31662,6 +32186,7 @@ $("shareLink").addEventListener("click", async () => {
 // The Live button starts disabled unless the page opens on the short range,
 // so it can never be lit while nothing is being sampled.
 syncLiveAvailability();
+installChatDrag();
 
 applyRoute();
 writeRoute(true);

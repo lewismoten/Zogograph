@@ -30,6 +30,10 @@ require_once __DIR__ . '/logwatch.php';
 require_once __DIR__ . '/actions.php';
 // Domains and dated events, which raise alerts of their own.
 require_once __DIR__ . '/events.php';
+// Update notifications read the root collector's ledger; these are optional
+// databases/modules, but loading them here keeps evaluateAlerts self-contained.
+require_once __DIR__ . '/hostdb.php';
+require_once __DIR__ . '/updates.php';
 
 /**
  * How far back a projection looks.
@@ -82,6 +86,7 @@ function evaluateAlerts(array $config, PDO $pdo): array
          * page nobody opened is not a warning.
          */
         ...dateAlerts($config, $pdo),
+        ...updateAlerts($config),
     ]);
 
     foreach ($candidates as $alert) {
@@ -143,6 +148,36 @@ function evaluateAlerts(array $config, PDO $pdo): array
     }
 
     return $raised;
+}
+
+/** Latest failed or available-update result from the root-only collector. */
+function updateAlerts(array $config): array
+{
+    if (!in_array('notify', updateStages($config), true)) return [];
+    try {
+        $host = hostDb($config, false);
+        if ($host === null) return [];
+        $last = $host->query('SELECT id, started_at, stage, manager, updates, ok, error
+            FROM host_update_runs ORDER BY id DESC LIMIT 1')->fetch();
+        if (!$last) return [];
+        if (!(bool)$last['ok']) {
+            return [['rule' => 'system_updates', 'severity' => 'warning',
+                'subject' => 'System update ' . $last['stage'] . ' failed',
+                'detail' => ($last['manager'] ?: 'package manager') . ': ' . ($last['error'] ?: 'unknown failure')]];
+        }
+        // Download and Auto-Update follow Detect, so the latest row is often
+        // not the row that says how many packages are waiting.
+        $row = $host->query("SELECT started_at, stage, manager, updates
+            FROM host_update_runs WHERE stage = 'detect' AND ok = 1 ORDER BY id DESC LIMIT 1")->fetch();
+        if ($row && (int)$row['updates'] > 0) {
+            return [['rule' => 'system_updates', 'severity' => 'info',
+                'subject' => (int)$row['updates'] . ' system update(s) available',
+                'detail' => 'Detected by ' . $row['manager'] . ' at ' . date('c', (int)$row['started_at']) . '.']];
+        }
+    } catch (Throwable) {
+        // The host collector is optional and must not make normal alerting fail.
+    }
+    return [];
 }
 
 /**

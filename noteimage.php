@@ -32,10 +32,12 @@ define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/actions.php';
+require_once __DIR__ . '/lib/access.php';
+require_once __DIR__ . '/lib/notes.php';
 
 startSession($config);
 
-if (!isSignedIn()) {
+if (!isSignedIn() || !accessAllows($config, 'notes')) {
     http_response_code(403);
     exit('Sign in to see this.');
 }
@@ -47,6 +49,10 @@ if ($id <= 0) {
 }
 
 $pdo = db($config);
+if (noteForSnapshot($pdo, $config, $id) === null) {
+    http_response_code(403);
+    exit('That picture is not available to your group.');
+}
 $stmt = $pdo->prepare("SELECT body, at FROM note_snapshots WHERE id = ? AND kind = 'image'");
 $stmt->execute([$id]);
 $row = $stmt->fetch();

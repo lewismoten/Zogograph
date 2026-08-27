@@ -18,6 +18,7 @@ function accessDefaults(): array
             'notes' => false,
             'live' => false,
             'ai' => false,
+            'ips' => false,
             'ranges' => [600, 3600, 21600, 86400, 604800, 2592000, 31536000],
             'write' => false,
         ],
@@ -32,6 +33,7 @@ function accessDefaults(): array
             'notes' => true,
             'live' => true,
             'ai' => true,
+            'ips' => true,
             'ranges' => [600, 3600, 21600, 86400, 604800, 2592000, 31536000],
             'write' => false,
         ],
@@ -42,6 +44,7 @@ function accessDefaults(): array
             'notes' => true,
             'live' => true,
             'ai' => true,
+            'ips' => true,
             'ranges' => ['*'],
             'write' => true,
         ],
@@ -103,7 +106,7 @@ function accessAllowsGroups(array $config, array $groups, string $surface, strin
         if (!is_array($policy)) {
             continue;
         }
-        if (in_array($surface, ['notes', 'live', 'ai', 'write'], true) && !empty($policy[$surface])) {
+        if (in_array($surface, ['notes', 'live', 'ai', 'ips', 'write'], true) && !empty($policy[$surface])) {
             return true;
         }
         if (in_array($surface, ['pages', 'charts', 'tools', 'ranges'], true)
@@ -130,6 +133,8 @@ function accessView(array $config): array
         'notes' => accessAllows($config, 'notes'),
         'live' => accessAllows($config, 'live'),
         'ai' => accessAllows($config, 'ai'),
+        'ips' => accessAllows($config, 'ips'),
+        'ip_privacy' => !empty($_SESSION['hide_ips']),
         'ranges' => $collect('ranges'),
         'write' => accessAllows($config, 'write'),
     ];

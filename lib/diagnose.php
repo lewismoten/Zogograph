@@ -43,6 +43,7 @@ const DIAGNOSIS_RANK = ['critical' => 0, 'warning' => 1, 'watch' => 2, 'unknown'
 function diagnose(array $config, PDO $pdo): array
 {
     $findings = [];
+    $ignored = [];
     $now = time();
 
     $vitals = $pdo->query(
@@ -75,7 +76,14 @@ function diagnose(array $config, PDO $pdo): array
         diagnoseDates($config, $pdo, $now),
     ] as $group) {
         foreach ($group as $finding) {
-            $findings[] = $finding;
+            if (!diagnosisIgnored($config, (string)$finding['key'])) {
+                $findings[] = $finding;
+            } else {
+                $ignored[] = [
+                    'key' => (string)$finding['key'],
+                    'title' => (string)$finding['title'],
+                ];
+            }
         }
     }
 
@@ -92,10 +100,17 @@ function diagnose(array $config, PDO $pdo): array
 
     return [
         'findings' => $findings,
+        'ignored' => $ignored,
         'checked' => count($findings),
         'worst' => $worst,
         'at' => $now,
     ];
+}
+
+/** A deliberate exception is configuration, not an acknowledged alert. */
+function diagnosisIgnored(array $config, string $key): bool
+{
+    return in_array($key, $config['diagnostic_ignores'] ?? [], true);
 }
 
 /**
@@ -115,6 +130,9 @@ function finding(
     string $view = ''
 ): array {
     return [
+        // Titles are fixed, human-readable rule identities. Hashing keeps the
+        // config compact and avoids turning prose into a public API key.
+        'key' => sha1($title),
         'level' => $level,
         'title' => $title,
         'measured' => $measured,

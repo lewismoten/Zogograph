@@ -88,6 +88,7 @@ require_once __DIR__ . '/lib/events.php';
 require_once __DIR__ . '/lib/whoami.php';
 require_once __DIR__ . '/lib/dnsrecords.php';
 require_once __DIR__ . '/lib/external.php';
+require_once __DIR__ . '/lib/updates.php';
 require_once __DIR__ . '/lib/peers.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
@@ -177,7 +178,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'tail' => tailLog($config, $pdo, $signedIn),
         'last-lines' => lastLines($config, $pdo, $signedIn),
         'log-stream' => logStreamView($config, $pdo, $signedIn),
-        'schedule' => scheduleRead($signedIn),
+        'schedule' => scheduleRead($config, $pdo, $signedIn),
         'host-setup' => hostSetup($config, $signedIn),
         'email' => emailSettings($config, $pdo, $signedIn),
         'processes' => processList($config, $pdo, $signedIn),
@@ -234,7 +235,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'note-save' => doNoteSave($config, $pdo, $post),
         'note-clear' => doNoteClear($pdo, $post),
         'note-delete' => doNoteDelete($pdo, $post),
-        'note-snapshot' => doNoteSnapshot($pdo, $signedIn),
+        'note-batch' => doNoteBatch($config, $pdo, $post),
+        'note-snapshot' => doNoteSnapshot($config, $pdo, $signedIn),
         'snapshot-delete' => doSnapshotDelete($config, $pdo, $post),
         'cpu' => cpuView($config, $signedIn, $pdo),
         'host' => hostView($config, $signedIn, $pdo),
@@ -252,11 +254,16 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'delete-dir' => doDeleteDir($config, $pdo, $post),
         'empty' => doEmpty($config, $pdo, $post),
         'schedule-save' => doScheduleSave($post, $pdo),
+        'updates-save' => doUpdatesSave($config, $pdo, $post),
         'scan-now' => doScanNow($pdo, $post),
         'test-email' => doTestEmail($config, $pdo, $post),
         'test-telegram' => doTestTelegram($config, $pdo, $post),
         'email-save' => doEmailSave($config, $pdo, $post),
         'clear-problems' => doClearProblems($config, $pdo, $post),
+        'ip-privacy' => doIpPrivacy($config, $post),
+        'diagnosis-ignore' => doDiagnosisIgnore($config, $pdo, $post),
+        'diagnosis-unignore' => doDiagnosisUnignore($config, $pdo, $post),
+        'clear-audit' => doClearAudit($pdo, $post),
         'alert-action' => doAlertAction($config, $pdo, $post),
         'daemon-watch' => doDaemonWatch($config, $pdo, $post),
         'request-host-walk' => doRequestHostWalk($config, $pdo, $post),
@@ -1540,27 +1547,62 @@ function domainsView(array $config, PDO $pdo, bool $signedIn): array
     $rows = domainList($pdo);
     $selected = isset($_GET['id']) ? clampInt($_GET['id'], 1, PHP_INT_MAX) : null;
 
-    $whois = null;
+    $storedWhois = null;
     if ($selected !== null) {
         $stmt = $pdo->prepare('SELECT whois FROM domains WHERE id = ?');
         $stmt->execute([$selected]);
-        $whois = $stmt->fetchColumn() ?: null;
+        $storedWhois = $stmt->fetchColumn() ?: null;
     }
+
+    $whois = domainWhoisAvailability($config);
 
     return [
         'rows' => $rows,
         'selected' => $selected,
-        'whois' => $whois,
+        'whois' => $storedWhois,
         'notes' => array_combine(
             ['expired', 'urgent', 'soon', 'ok', 'unknown', 'error'],
             array_map('domainStateNote', ['expired', 'urgent', 'soon', 'ok', 'unknown', 'error'])
         ),
         'max' => DOMAIN_MAX,
         'default_warn_days' => DOMAIN_WARN_DAYS,
-        'have_whois' => whichBinary('whois') !== null,
-        'missing' => whichBinary('whois') === null ? missingCommand($config, 'whois') : null,
+        'have_whois' => $whois['account'],
+        'host_has_whois' => $whois['host'],
+        'missing' => !$whois['account'] && !$whois['host'] ? missingCommand($config, 'whois') : null,
         'queue' => domainQueueState($config, $pdo),
     ];
+}
+
+/**
+ * WHOIS may be deliberately absent from the web account's CageFS view while
+ * remaining available to the root collector.  Keep the two answers separate:
+ * calling that installation "missing" sends an operator looking for a package
+ * that is already installed.
+ *
+ * @return array{account: bool, host: bool}
+ */
+function domainWhoisAvailability(array $config): array
+{
+    $account = whichBinary('whois') !== null;
+    $hostHas = false;
+
+    try {
+        $host = hostDb($config, false);
+        if ($host !== null) {
+            $stmt = $host->prepare(
+                'SELECT path, executable FROM host_capabilities WHERE name = ? LIMIT 1'
+            );
+            $stmt->execute(['whois']);
+            $row = $stmt->fetch();
+            $hostHas = $row !== false && (string)($row['path'] ?? '') !== ''
+                && (bool)($row['executable'] ?? false);
+        }
+    } catch (Throwable) {
+        // The host database is optional. Its absence is not evidence that the
+        // command is absent, only that the collector has not reported yet.
+    }
+
+    return ['account' => $account, 'host' => $hostHas];
 }
 
 /**
@@ -2976,6 +3018,12 @@ function actionLog(array $config, PDO $pdo, bool $signedIn): array
     }
 
     $rows = $pdo->query('SELECT * FROM actions ORDER BY at DESC LIMIT 500')->fetchAll();
+    if (!accessAllows($config, 'ips') || !empty($_SESSION['hide_ips'])) {
+        foreach ($rows as &$row) {
+            $row['remote_addr'] = null;
+        }
+        unset($row);
+    }
 
     /*
      * Who did it, as far as anything here can honestly say.
@@ -3007,6 +3055,19 @@ function actionLog(array $config, PDO $pdo, bool $signedIn): array
         'total' => (int)$pdo->query('SELECT COUNT(*) FROM actions')->fetchColumn(),
         'oldest_at' => (int)$pdo->query('SELECT MIN(at) FROM actions')->fetchColumn(),
     ];
+}
+
+/** Hides addresses for this browser session without changing group policy. */
+function doIpPrivacy(array $config, bool $post): array
+{
+    if (!$post || !isSignedIn() || !csrfValid($_POST['csrf'] ?? null)) {
+        throw new ActionRefused('sign in with a current form token to change session privacy');
+    }
+    if (!accessAllows($config, 'ips')) {
+        throw new ActionRefused('your group may not view IP addresses');
+    }
+    $_SESSION['hide_ips'] = ($_POST['hide'] ?? '0') === '1';
+    return ['ok' => true, 'access' => accessView($config)];
 }
 
 /**
@@ -4217,12 +4278,68 @@ function hostSetup(array $config, bool $signedIn): array
     ];
 }
 
-function scheduleRead(bool $signedIn): array
+function scheduleRead(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
         throw new ActionRefused('sign in to see the schedule');
     }
-    return scheduleState(__DIR__);
+    $state = scheduleState(__DIR__);
+    try {
+        $state['account_runs'] = $pdo->query(
+            'SELECT started_at, jobs, seconds, ok, error FROM collector_runs ORDER BY id DESC LIMIT 12'
+        )->fetchAll();
+    } catch (Throwable) {
+        $state['account_runs'] = [];
+    }
+
+    try {
+        $host = hostDb($config, false);
+        $state['host_runs'] = $host === null ? [] : $host->query(
+            'SELECT started_at, jobs, seconds, ok, error FROM host_collector_runs ORDER BY id DESC LIMIT 12'
+        )->fetchAll();
+        $state['updates'] = [
+            'modes' => updateStages($config),
+            'interval_seconds' => updateInterval($config),
+            'manager' => updateManager($config),
+            'runs' => [],
+        ];
+        if ($host !== null) {
+            try {
+                $state['updates']['runs'] = $host->query(
+                    'SELECT started_at, stage, manager, updates, seconds, ok, error, output
+                     FROM host_update_runs ORDER BY id DESC LIMIT 16'
+                )->fetchAll();
+            } catch (Throwable) {
+                // A collector which has not yet been upgraded still has useful run data.
+            }
+        }
+    } catch (Throwable) {
+        $state['host_runs'] = [];
+        $state['updates'] = ['modes' => updateStages($config), 'interval_seconds' => updateInterval($config),
+            'manager' => null, 'runs' => []];
+    }
+
+    return $state;
+}
+
+/** Saves staged OS-update policy; package commands remain root-only. */
+function doUpdatesSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    if (!is_writable(__DIR__ . '/lib/config.php')) {
+        throw new ActionRefused('lib/config.php is not writable, so the update policy cannot be saved');
+    }
+    $modes = $_POST['modes'] ?? [];
+    if (!is_array($modes)) $modes = [];
+    $modes = array_values(array_intersect(UPDATE_STAGES, array_unique(array_map('strval', $modes))));
+    $interval = max(3600, min(31 * 86400, (int)($_POST['interval_seconds'] ?? 86400)));
+    $current = require __DIR__ . '/lib/config.php';
+    $current['updates'] = ['modes' => $modes, 'interval_seconds' => $interval];
+    writeConfigFile($current);
+    logAction($pdo, 'updates_policy', null, 'ok', 0, 0,
+        $modes === [] ? 'disabled' : implode(', ', $modes) . ' every ' . $interval . ' seconds');
+    return ['ok' => true, 'updates' => ['modes' => $modes, 'interval_seconds' => $interval,
+        'manager' => updateManager($current)]];
 }
 
 function doScheduleSave(bool $post, PDO $pdo): array
@@ -4814,6 +4931,58 @@ function diagnoseView(array $config, PDO $pdo, bool $signedIn): array
     return diagnose($config, $pdo);
 }
 
+/** Keeps a deliberate diagnostic exception out of later runs and alerts. */
+function doDiagnosisIgnore(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    if (!is_writable(__DIR__ . '/lib/config.php')) {
+        throw new ActionRefused('lib/config.php is not writable, so this exception cannot be saved');
+    }
+
+    $key = (string)($_POST['key'] ?? '');
+    if (!preg_match('/^[a-f0-9]{40}$/', $key)) {
+        throw new ActionRefused('that is not a diagnostic finding');
+    }
+
+    $current = require __DIR__ . '/lib/config.php';
+    $ignored = array_values(array_unique(array_filter(
+        $current['diagnostic_ignores'] ?? [],
+        fn(mixed $entry): bool => is_string($entry) && preg_match('/^[a-f0-9]{40}$/', $entry)
+    )));
+    if (!in_array($key, $ignored, true)) {
+        $ignored[] = $key;
+        $current['diagnostic_ignores'] = $ignored;
+        writeConfigFile($current);
+    }
+
+    logAction($pdo, 'diagnosis_ignore', $key, 'ok', 0, 0, 'future checks suppressed');
+    return ['ok' => true] + diagnose($current, $pdo);
+}
+
+/** Restores an intentionally hidden diagnostic to later checks. */
+function doDiagnosisUnignore(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    if (!is_writable(__DIR__ . '/lib/config.php')) {
+        throw new ActionRefused('lib/config.php is not writable, so this exception cannot be removed');
+    }
+
+    $key = (string)($_POST['key'] ?? '');
+    if (!preg_match('/^[a-f0-9]{40}$/', $key)) {
+        throw new ActionRefused('that is not a diagnostic finding');
+    }
+
+    $current = require __DIR__ . '/lib/config.php';
+    $current['diagnostic_ignores'] = array_values(array_filter(
+        $current['diagnostic_ignores'] ?? [],
+        fn(mixed $entry): bool => $entry !== $key
+    ));
+    writeConfigFile($current);
+    logAction($pdo, 'diagnosis_unignore', $key, 'ok', 0, 0, 'future checks restored');
+
+    return ['ok' => true] + diagnose($current, $pdo);
+}
+
 function selfReport(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
@@ -5307,6 +5476,17 @@ function doClearProblems(array $config, PDO $pdo, bool $post): array
     $removed = clearProblems($path);
     logAction($pdo, 'clear_problems', $path, 'ok', 0, $removed, "$removed entries");
 
+    return ['ok' => true, 'removed' => $removed];
+}
+
+/** Starts a fresh audit trail, retaining an explicit record of the reset itself. */
+function doClearAudit(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $removed = (int)$pdo->query('SELECT COUNT(*) FROM actions')->fetchColumn();
+    $pdo->exec('DELETE FROM actions');
+    logAction($pdo, 'audit_cleared', null, 'ok', 0, 0,
+        $removed . ' earlier entr' . ($removed === 1 ? 'y' : 'ies') . ' removed');
     return ['ok' => true, 'removed' => $removed];
 }
 
@@ -6333,6 +6513,31 @@ function doNoteDelete(PDO $pdo, bool $post): array
     return ['ok' => true];
 }
 
+/** Clears broadcasts or deletes several selected notes, with one audit entry. */
+function doNoteBatch(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $ids = array_values(array_unique(array_map(
+        fn(string $id): int => (int)$id,
+        array_filter(explode(',', (string)($_POST['ids'] ?? '')), 'ctype_digit')
+    )));
+    $kind = (string)($_POST['kind'] ?? '');
+    if ($ids === [] || !in_array($kind, ['clear', 'delete'], true)) {
+        throw new ActionRefused('choose one or more notes and an action');
+    }
+    $marks = implode(',', array_fill(0, count($ids), '?'));
+    if ($kind === 'clear') {
+        $stmt = $pdo->prepare("UPDATE notes SET cleared_at = ?, cleared_by = ?
+            WHERE id IN ($marks) AND broadcast = 1 AND cleared_at IS NULL");
+        $stmt->execute([time(), currentAccountName(), ...$ids]);
+    } else {
+        $stmt = $pdo->prepare("DELETE FROM notes WHERE id IN ($marks)");
+        $stmt->execute($ids);
+    }
+    logAction($pdo, 'note_batch_' . $kind, implode(',', $ids), 'ok', $stmt->rowCount(), 0, null);
+    return ['ok' => true, 'changed' => $stmt->rowCount()] + notesView($config, $pdo, true);
+}
+
 /**
  * Hands back one captured payload.
  *
@@ -6340,13 +6545,16 @@ function doNoteDelete(PDO $pdo, bool $post): array
  * and the thing somebody wants to do with one is open it in something that
  * reads JSON.
  */
-function doNoteSnapshot(PDO $pdo, bool $signedIn): array
+function doNoteSnapshot(array $config, PDO $pdo, bool $signedIn): array
 {
-    if (!$signedIn) {
+    if (!$signedIn || !accessAllows($config, 'notes')) {
         throw new ActionRefused('sign in to read a snapshot');
     }
 
     $id = clampInt($_GET['id'] ?? 0, 1, PHP_INT_MAX);
+    if (noteForSnapshot($pdo, $config, $id) === null) {
+        throw new ActionRefused('that snapshot is not available to your group');
+    }
     $stmt = $pdo->prepare('SELECT kind, label, body, at FROM note_snapshots WHERE id = ?');
     $stmt->execute([$id]);
     $row = $stmt->fetch();
@@ -8343,6 +8551,18 @@ function aiTryPicture(
     $row = $ai->prepare('SELECT state, result, error FROM ai_tool_runs WHERE id = ?');
     $row->execute([$runId]);
     $found = $row->fetch() ?: [];
+    $runResult = json_decode((string)($found['result'] ?? 'null'), true)
+        ?? ['error' => $found['error'] ?? 'nothing came back'];
+    $made = null;
+    if (!empty($runResult['made'])) {
+        $picture = $ai->prepare(
+            "SELECT url, prompt, style FROM ai_images
+              WHERE session_id = ? AND kind IN ('picture', 'portrait') AND url IS NOT NULL
+              ORDER BY id DESC LIMIT 1"
+        );
+        $picture->execute([$session]);
+        $made = $picture->fetch() ?: null;
+    }
 
     logAction($pdo, 'ai_try', $name, 'ok', 0, 0, 'a picture was generated');
 
@@ -8351,9 +8571,13 @@ function aiTryPicture(
         'tool' => $name,
         'arguments' => $checked['values'],
         'ms' => $ms,
-        'result' => json_decode((string)($found['result'] ?? 'null'), true)
-            ?? ['error' => $found['error'] ?? 'nothing came back'],
+        'result' => $runResult,
         'bytes' => strlen((string)($found['result'] ?? '')),
+        'picture' => is_array($made) ? [
+            'url' => (string)$made['url'],
+            'prompt' => (string)$made['prompt'],
+            'style' => (string)$made['style'],
+        ] : null,
         'note' => 'This really generated a picture, so it really cost whatever one costs. '
             . 'It is on the Images page with the rest of them.',
     ];
@@ -8416,6 +8640,8 @@ function doAiPriceForget(array $config, PDO $pdo, bool $post): array
 function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
+
+    $wasPersona = aiPersona($config);
 
     if (!is_writable(__DIR__ . '/lib/config.php')) {
         throw new ActionRefused(
@@ -8637,6 +8863,27 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
     $current['ai']['tools'] = $perTool;
 
     writeConfigFile($current);
+
+    $isPersona = aiPersona($current);
+    if ($wasPersona['name'] !== $isPersona['name']
+        || $wasPersona['emoji'] !== $isPersona['emoji']
+        || trim($wasPersona['personality']) !== trim($isPersona['personality'])) {
+        /*
+         * A running conversation should not appear to have silently changed
+         * speakers.  This is a visible transcript marker and, being a system
+         * message, is also available to the next model turn.
+         */
+        $ai = aiDb($current, false);
+        $open = $ai === null ? null : aiOpenSession($ai);
+        if ($open !== null) {
+            aiAddMessage(
+                $ai,
+                (int)$open['id'],
+                'system',
+                sprintf('%s %s updated its identity.', $isPersona['emoji'], $isPersona['name'])
+            );
+        }
+    }
 
     logAction($pdo, 'ai_settings', null, 'ok', 0, 0, sprintf(
         '%s, %s, %d tool(s) on',

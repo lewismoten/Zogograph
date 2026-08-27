@@ -117,6 +117,23 @@ function columnExists(PDO $pdo, string $table, string $column): bool
 function migrations(): array
 {
     return [
+        37 => [
+            'CREATE TABLE collector_runs (
+                id INTEGER PRIMARY KEY,
+                started_at INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                jobs TEXT NOT NULL,
+                seconds REAL NOT NULL,
+                ok INTEGER NOT NULL,
+                error TEXT
+            )',
+            'CREATE INDEX collector_runs_started ON collector_runs (started_at)',
+        ],
+        36 => [
+            'ALTER TABLE domains ADD COLUMN certificate_expires_at INTEGER',
+            'ALTER TABLE domains ADD COLUMN certificate_checked_at INTEGER',
+            'ALTER TABLE domains ADD COLUMN certificate_error TEXT',
+        ],
         35 => [
             /* One-time OIDC authorization codes. Tokens are never stored: the
              * code carries only the minimum session snapshot needed to sign an

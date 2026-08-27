@@ -195,6 +195,31 @@ function hostMigrate(PDO $pdo): void
 function hostMigrations(): array
 {
     return [
+        24 => [
+            'CREATE TABLE host_update_runs (
+                id INTEGER PRIMARY KEY,
+                started_at INTEGER NOT NULL,
+                stage TEXT NOT NULL,
+                manager TEXT NOT NULL,
+                updates INTEGER,
+                seconds REAL NOT NULL,
+                ok INTEGER NOT NULL,
+                error TEXT,
+                output TEXT
+            )',
+            'CREATE INDEX host_update_runs_started ON host_update_runs (started_at)',
+        ],
+        23 => [
+            'CREATE TABLE host_collector_runs (
+                id INTEGER PRIMARY KEY,
+                started_at INTEGER NOT NULL,
+                jobs TEXT NOT NULL,
+                seconds REAL NOT NULL,
+                ok INTEGER NOT NULL,
+                error TEXT
+            )',
+            'CREATE INDEX host_collector_runs_started ON host_collector_runs (started_at)',
+        ],
         1 => [
             /*
              * One row per collection: the whole memory picture at an instant.
@@ -1072,4 +1097,24 @@ function hostPruneServices(PDO $pdo, int $keepDays): int
     $stmt->execute([$cutoff]);
 
     return $removed + $stmt->rowCount();
+}
+
+/**
+ * Operational ledgers are small but unbounded without a clock of their own.
+ * Keep enough history to compare a seasonal change or a failed update months
+ * later, without retaining every five-minute collector invocation forever.
+ */
+function hostPruneOperationalRuns(PDO $pdo): int
+{
+    $removed = 0;
+    foreach ([['host_collector_runs', 90], ['host_update_runs', 365]] as [$table, $days]) {
+        try {
+            $stmt = $pdo->prepare("DELETE FROM {$table} WHERE started_at < ?");
+            $stmt->execute([time() - $days * 86400]);
+            $removed += $stmt->rowCount();
+        } catch (Throwable) {
+            // Older host databases do not have the ledger tables yet.
+        }
+    }
+    return $removed;
 }

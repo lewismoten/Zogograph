@@ -47,10 +47,32 @@ require_once __DIR__ . '/lib/capabilities.php';
 require_once __DIR__ . '/lib/retention.php';
 // The outbound budget, so registries are not asked twenty things at once.
 require_once __DIR__ . '/lib/external.php';
+require_once __DIR__ . '/lib/updates.php';
 
 $args = array_slice($argv, 1);
 $quiet = in_array('--quiet', $args, true);
 $want = fn(string $flag): bool => in_array($flag, $args, true);
+$runStarted = microtime(true);
+$runPdo = null;
+$runJobs = array_values(array_filter($args, fn(string $arg): bool => $arg !== '--quiet'));
+
+$recordRun = function (?PDO $pdo, bool $ok, ?string $error = null) use ($runStarted, &$runJobs): void {
+    if ($pdo === null) return;
+    try {
+        $pdo->prepare(
+            'INSERT INTO host_collector_runs (started_at, jobs, seconds, ok, error)
+             VALUES (?, ?, ?, ?, ?)'
+        )->execute([
+            (int)$runStarted,
+            $runJobs === [] ? 'normal' : implode(' · ', array_unique($runJobs)),
+            round(microtime(true) - $runStarted, 3),
+            $ok ? 1 : 0,
+            $error,
+        ]);
+    } catch (Throwable) {
+        // Recording cannot make a root collection fail.
+    }
+};
 
 // Nothing named means collect, which is what a crontab line usually wants.
 $doCollect = $want('--collect')
@@ -67,6 +89,7 @@ $doCollect = $want('--collect')
  */
 $doDisk = $want('--disk');
 $doCapabilities = $want('--capabilities');
+$doUpdates = $want('--updates');
 
 /*
  * Or because somebody asked for one from the dashboard.
@@ -106,6 +129,7 @@ if (!($config['host']['enabled'] ?? true)) {
 
 try {
     $pdo = hostDb($config, true);
+    $runPdo = $pdo;
     if ($pdo === null) {
         throw new RuntimeException('the host database could not be opened for writing');
     }
@@ -224,6 +248,7 @@ try {
             null,
             (bool)($capture['read_asked'] ?? false)
         );
+        $runJobs[] = 'capture:' . $capture['filter'];
         storeCapture($pdo, $result);
         hostHandOver($config, hostDatabasePath($config));
 
@@ -289,6 +314,7 @@ try {
 
         $say(sprintf('Answering %s for %s...', $ask['verb'], $ask['argument']));
         $answer = runHostAsk($pdo, $ask['verb'], $ask['argument'], (int)$requested);
+        $runJobs[] = 'ask:' . $ask['verb'];
         $askedThisRun++;
         hostHandOver($config, hostDatabasePath($config));
         $say('  ' . ($answer['ok']
@@ -378,6 +404,7 @@ try {
     }
 
     if ($doCapabilities) {
+        $runJobs[] = 'capabilities';
         $user = (string)($config['host']['owner'] ?? '');
         $cagefs = cagefsStatus($user !== '' ? $user : null);
 
@@ -514,6 +541,7 @@ try {
     }
 
     if ($doDisk) {
+        $runJobs[] = 'disk-walk';
         $at = time();
 
         $mounts = hostMounts();
@@ -680,6 +708,7 @@ try {
             hostPruneServices($pdo, $serviceDays),
             $serviceDays
         ));
+        $say(sprintf('Pruned %d old operational-run records.', hostPruneOperationalRuns($pdo)));
 
         /*
          * And give the space back, which deleting rows does not do.
@@ -695,6 +724,20 @@ try {
         $say('Space:  ' . reclaimSpace($pdo));
     }
 
+    /*
+     * Deliberately late in the run.  A package transaction can be slow and
+     * should not postpone the reading which tells us whether the host is
+     * healthy.  It is interval-gated in updates.php, so the normal five-minute
+     * collector line is enough; --updates merely bypasses that interval.
+     */
+    $updateRows = runSystemUpdates($config, $pdo, $doUpdates);
+    foreach ($updateRows as $row) {
+        $runJobs[] = 'updates:' . $row['stage'];
+        $say(sprintf('Updates %s via %s: %s%s.', $row['stage'], $row['manager'],
+            $row['ok'] ? 'ok' : 'FAILED', $row['updates'] === null ? '' : ", {$row['updates']} available"));
+    }
+    if ($updateRows !== []) hostHandOver($config, hostDatabasePath($config));
+
     if ($want('--show')) {
         $row = $pdo->query('SELECT * FROM host_samples ORDER BY id DESC LIMIT 1')->fetch();
         if (!$row) {
@@ -705,7 +748,9 @@ try {
             }
         }
     }
+    $recordRun($runPdo, true);
 } catch (Throwable $e) {
+    $recordRun($runPdo, false, $e->getMessage());
     // Same shape as cron.php's handler: the log wants a level and a string.
     logProblem('error', 'host-cron: ' . $e->getMessage()
         . ' in ' . $e->getFile() . ':' . $e->getLine());

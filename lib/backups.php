@@ -120,7 +120,13 @@ function jetBackupCli(array $found = []): ?string
 
     foreach (['jetbackup5api', 'jetbackupapi'] as $name) {
         $path = trim((string)($found[$name] ?? ''));
-        if ($path !== '' && is_executable($path)) {
+        /*
+         * This path came from root's capability sweep. Re-checking it with
+         * is_executable() as the web account turns an installed, root-only
+         * JetBackup into "not found" inside CageFS. Returning it lets the
+         * inventory state accurately say that metadata needs root instead.
+         */
+        if ($path !== '') {
             return $path;
         }
     }

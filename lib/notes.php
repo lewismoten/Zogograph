@@ -291,6 +291,17 @@ function noteList(PDO $pdo, array $config, int $limit = 300): array
  *
  * @return list<array<string, mixed>>
  */
+/** The note owning a snapshot, but only when the current identity may see it. */
+function noteForSnapshot(PDO $pdo, array $config, int $snapshotId): ?array
+{
+    $visible = $pdo->prepare(
+        'SELECT n.* FROM note_snapshots s JOIN notes n ON n.id = s.note_id WHERE s.id = ?'
+    );
+    $visible->execute([$snapshotId]);
+    $note = $visible->fetch();
+    return is_array($note) && noteVisibleTo($note, $config) ? $note : null;
+}
+
 function noteSnapshotList(PDO $pdo, array $config, int $noteId): array
 {
     $visible = $pdo->prepare('SELECT audience FROM notes WHERE id = ?');

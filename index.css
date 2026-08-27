@@ -248,6 +248,8 @@ td.cmd {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.domain-capability { margin: 0 0 10px; }
+.domain-lock { cursor: help; font-size: 1.05rem; }
 .busy-moment { margin-bottom: 14px; }
 .busy-moment h4 { margin: 0 0 4px; font-size: .85rem; font-weight: 600; color: #cfcfcf; }
 .panel-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -355,6 +357,45 @@ dialog form { display: grid; gap: 12px; }
   padding: 10px 12px;
   overflow-x: auto;
   font-size: .76rem;
+}
+
+/* The file-size gauges deliberately run to 150%. A settled-size marker at
+   two-thirds leaves visible warning/error room for a database that outgrows
+   its prediction instead of making 100% look like a hard ceiling. */
+.database-gauges {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin: 0 0 14px;
+}
+.database-gauge { min-width: 0; }
+.database-gauge-head { display: flex; justify-content: space-between; gap: 8px; }
+.database-gauge-track {
+  position: relative;
+  height: 9px;
+  margin: 6px 0;
+  border-radius: 99px;
+  overflow: visible;
+  background: var(--line-soft);
+}
+.database-gauge-track::before {
+  content: "";
+  display: block;
+  width: var(--fill);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ok);
+}
+.database-gauge.band-warn .database-gauge-track::before { background: var(--warn); }
+.database-gauge.band-crit .database-gauge-track::before { background: var(--crit); }
+.database-gauge-tick {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: var(--tick);
+  width: 2px;
+  background: var(--text);
+  opacity: .9;
 }
 
 @media (max-width: 760px) {
@@ -1252,6 +1293,21 @@ tr.clickable:hover { background: var(--panel-hover); }
 .table-tools .spacer { flex: 1; }
 .table-more { margin-top: 8px; }
 
+.nav-search { display: block; margin: 8px 10px 12px; }
+.nav-search input { width: 100%; min-width: 0; }
+
+.chat-close { font-size: 1.35rem; line-height: 1; min-width: 1.75rem; padding: 0 .3rem; }
+.try-picture { display: block; max-width: min(100%, 720px); max-height: 70vh; border-radius: 10px; }
+
+/* Notes are an inbox, not a document editor. Keep the list compact and let the
+   detail dialog carry the long prose, so one incident report cannot widen the panel. */
+#notesTable .note-preview { max-width: min(54vw, 680px); white-space: normal; overflow-wrap: anywhere; }
+.note-batch-tools { margin-bottom: 10px; }
+
+@media (max-width: 620px) {
+  #notesTable .note-preview { max-width: 42vw; }
+}
+
 /* Alerts ------------------------------------------------------------- */
 
 .panel-tools { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
@@ -2147,6 +2203,9 @@ button.link.tiny:hover { opacity: 1; }
   border-radius: var(--radius);
   box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
   z-index: 41;
+  resize: both;
+  overflow: hidden;
+  min-width: min(360px, calc(100vw - 44px));
 }
 /*
  * The title bar, which now carries rather a lot.
@@ -2166,6 +2225,9 @@ button.link.tiny:hover { opacity: 1; }
   border-bottom: 1px solid var(--line);
 }
 .chat-head strong { flex: 0 0 auto; }
+.chat-panel:not(.chat-wide) .chat-head { cursor: grab; user-select: none; }
+.chat-panel:not(.chat-wide) .chat-head:active { cursor: grabbing; }
+.chat-head button, .chat-head select { cursor: pointer; }
 
 /* The cost takes the whole second line rather than squeezing the buttons. */
 .chat-head .muted {
@@ -2194,6 +2256,16 @@ button.link.tiny:hover { opacity: 1; }
 }
 .chat-user { background: var(--accent-soft); align-self: flex-end; max-width: 88%; }
 .chat-assistant { background: var(--panel-hover); align-self: flex-start; max-width: 96%; }
+.chat-system {
+  align-self: center;
+  max-width: 92%;
+  padding: 4px 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px dashed var(--line);
+  font-size: .82em;
+  text-align: center;
+}
 
 /* A tool call is scaffolding, not conversation, and is styled as such. */
 .chat-tool {
@@ -2261,6 +2333,8 @@ input.wide-field { width: 100%; max-width: 34em; }
   .chat-panel {
     right: 10px; left: 10px; width: auto; bottom: 74px;
     min-height: 0; max-height: calc(100vh - 100px);
+    min-width: 0;
+    resize: none;
   }
   .corner-menu { right: 14px; bottom: 14px; }
 }

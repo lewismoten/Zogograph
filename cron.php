@@ -48,11 +48,38 @@ require_once __DIR__ . '/lib/processes.php';
 require_once __DIR__ . '/lib/urlwatch.php';
 // Domain expiry, which is the one outage no amount of server monitoring sees.
 require_once __DIR__ . '/lib/domains.php';
+require_once __DIR__ . '/lib/hostdb.php';
+// Update-result alerts are measured by the root collector and read here.
+require_once __DIR__ . '/lib/updates.php';
 
 $flags = array_slice($argv, 1);
 $quiet = in_array('--quiet', $flags, true);
 $jobs = array_values(array_filter($flags, fn(string $f): bool => $f !== '--quiet'));
 $wants = fn(string $flag): bool => $jobs === [] || in_array($flag, $jobs, true);
+$runStarted = microtime(true);
+$runPdo = null;
+
+/** Records the cost of the whole cron invocation, even when one job fails. */
+$recordRun = function (?PDO $pdo, bool $ok, ?string $error = null) use ($runStarted, $jobs): void {
+    if ($pdo === null) {
+        return;
+    }
+    try {
+        $pdo->prepare(
+            'INSERT INTO collector_runs (started_at, kind, jobs, seconds, ok, error)
+             VALUES (?, ?, ?, ?, ?, ?)'
+        )->execute([
+            (int)$runStarted,
+            'account',
+            $jobs === [] ? 'normal' : implode(' ', $jobs),
+            round(microtime(true) - $runStarted, 3),
+            $ok ? 1 : 0,
+            $error,
+        ]);
+    } catch (Throwable) {
+        // Observability must never turn a successful collection into a failure.
+    }
+};
 
 $say = function (string $line) use ($quiet): void {
     if (!$quiet) {
@@ -80,6 +107,7 @@ if (in_array('--help', $jobs, true) || in_array('-h', $jobs, true)) {
 
 try {
     $pdo = db($config);
+    $runPdo = $pdo;
 
     if ($wants('--vitals')) {
         $row = takeVitals($config, $pdo);
@@ -255,7 +283,9 @@ try {
     if ($wants('--collect') || $wants('--report')) {
         $say('report  ' . aiReports($config, $pdo));
     }
+    $recordRun($runPdo, true);
 } catch (Throwable $e) {
+    $recordRun($runPdo, false, $e->getMessage());
     // To the log as well as to stderr: cron's stderr goes to whatever the
     // crontab line redirects to, which is often nowhere.
     logProblem('error', 'cron: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());

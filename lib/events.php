@@ -23,6 +23,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/domains.php';
+require_once __DIR__ . '/hostdb.php';
 
 /** How the calendar behaves: three months back, twelve forward. */
 const CALENDAR_BACK_MONTHS = 3;
@@ -217,6 +218,7 @@ function eventOccurrence(array $row, int $at): array
  */
 function calendarEntries(array $config, PDO $pdo): array
 {
+    $now = time();
     $from = (int)strtotime(CALENDAR_BACK_MONTHS . ' months ago midnight');
     $to = (int)strtotime('+' . CALENDAR_FORWARD_MONTHS . ' months last day of this month 23:59:59');
 
@@ -229,6 +231,27 @@ function calendarEntries(array $config, PDO $pdo): array
     }
 
     foreach (domainList($pdo) as $domain) {
+        // Certificate expiry is independent of registry WHOIS. A domain can
+        // have no readable WHOIS expiry (or one far outside this window) while
+        // its HTTPS certificate needs renewal this week.
+        $certificate = $domain['certificate_expires_at'] ?? null;
+        if ($certificate !== null && (int)$certificate >= $from && (int)$certificate <= $to) {
+            $left = (int)$certificate - $now;
+            $entries[] = [
+                'kind' => 'certificate',
+                'id' => (int)$domain['id'],
+                'title' => $domain['name'] . ' HTTPS certificate expires',
+                'at' => (int)$certificate,
+                'level' => $left < 0 || $left <= 7 * 86400 ? 'error'
+                    : ($left <= 30 * 86400 ? 'warn' : 'info'),
+                'note' => 'Read from the HTTPS endpoint on the last domain check.',
+                'link' => null,
+                'priority' => $left <= 30 * 86400,
+                'resolved' => false,
+                'view' => 'domains',
+            ];
+        }
+
         if ($domain['expires_at'] === null
             || $domain['expires_at'] < $from || $domain['expires_at'] > $to) {
             continue;
@@ -251,6 +274,7 @@ function calendarEntries(array $config, PDO $pdo): array
             'resolved' => false,
             'view' => 'domains',
         ];
+
     }
 
     /*
@@ -307,6 +331,41 @@ function calendarEntries(array $config, PDO $pdo): array
         }
     } catch (Throwable) {
         // No alerts table yet, which is not a calendar problem.
+    }
+
+    /*
+     * A reset is a past event with operational meaning: a graph gap, a daemon
+     * counter returning to zero, and often the explanation for a short outage.
+     * host_boots is keyed by the boot time, so it remains one event even after
+     * many collector passes observe the same machine.
+     */
+    try {
+        $host = hostDb($config, false);
+        if ($host !== null) {
+            $boots = $host->prepare(
+                'SELECT booted_at, kernel, ended FROM host_boots
+                  WHERE booted_at BETWEEN ? AND ? ORDER BY booted_at DESC LIMIT 100'
+            );
+            $boots->execute([$from, time()]);
+            foreach ($boots->fetchAll() as $boot) {
+                $entries[] = [
+                    'kind' => 'reset',
+                    'id' => (int)$boot['booted_at'],
+                    'title' => 'Host restarted',
+                    'at' => (int)$boot['booted_at'],
+                    'level' => 'past',
+                    'note' => trim((string)($boot['ended'] ?? '')) ?: (
+                        trim((string)($boot['kernel'] ?? '')) ?: null
+                    ),
+                    'link' => null,
+                    'priority' => false,
+                    'resolved' => false,
+                    'view' => 'uptime',
+                ];
+            }
+        }
+    } catch (Throwable) {
+        // Host collection is optional; no boot history is a valid answer.
     }
 
     $days = [];
