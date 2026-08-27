@@ -458,6 +458,7 @@ function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $
     $store->prepare('INSERT INTO package_runtime_settings (package_id, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
         ON CONFLICT(package_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by')
         ->execute([$id, $value, time(), mb_substr($actor, 0, 120)]);
+    packageRuntimeClearProbeEvidence($config, $id);
 }
 
 /** Enforces a small, predictable JSON Schema subset from the signed package.
@@ -752,6 +753,15 @@ function packageRuntimeRecordProbe(array $config, string $id, string $operation,
     $store->prepare('INSERT INTO package_runtime_probe_evidence (package_id, operation, state, reason, probed_at) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(package_id, operation) DO UPDATE SET state = excluded.state, reason = excluded.reason, probed_at = excluded.probed_at')
         ->execute([$id, $operation, $result['state'], $result['reason'], time()]);
+}
+
+/** A changed endpoint/pin/policy makes earlier diagnostic evidence stale. */
+function packageRuntimeClearProbeEvidence(array $config, string $id): void
+{
+    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id)) throw new InvalidArgumentException('package id is invalid');
+    $store = setupStoreOpen($config, false);
+    if ($store === null || (int)$store->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'package_runtime_probe_evidence'")->fetchColumn() !== 1) return;
+    $store->prepare('DELETE FROM package_runtime_probe_evidence WHERE package_id = ?')->execute([$id]);
 }
 
 /** @return array<string,array{operation:string,state:string,reason:string,probed_at:int}> */

@@ -184,6 +184,8 @@ try {
     packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['retention_days' => 30, 'custody_secret' => $reference], 'administrator');
     runtimeExpect(packageRuntimeSettings($pdo, $config, 'test-runtime')['retention_days'] === 30,
         'package SQLite-backed settings were not retained');
+    runtimeExpect(!isset(packageRuntimeProbeEvidence($config)['test-runtime']),
+        'changed package settings retained stale diagnostic probe evidence');
     try { packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['retention_days' => 0, 'custody_secret' => $reference], 'administrator'); throw new RuntimeException('invalid schema value was accepted'); }
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'invalid schema value was accepted', $error->getMessage()); }
     try { packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['retention_days' => 30, 'custody_secret' => $reference, 'undeclared' => true], 'administrator'); throw new RuntimeException('undeclared schema setting was accepted'); }
