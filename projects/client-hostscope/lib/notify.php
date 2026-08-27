@@ -208,6 +208,14 @@ function alertCatalogue(): array
             'why' => 'A sealed copy that is missing, stale, or failed verification is not
                 reliable recovery evidence when it is needed.',
         ],
+        'package_integrity' => [
+            'label' => 'Installed package integrity needs attention',
+            'severity' => 'error',
+            'cooldown' => 6 * SPAN_HOUR,
+            'view' => 'sys-packages',
+            'why' => 'A signed installed package has changed, is missing a declared file, '
+                . 'or contains an unexpected file. HostScope does not execute it while the mismatch remains.',
+        ],
     ];
 }
 

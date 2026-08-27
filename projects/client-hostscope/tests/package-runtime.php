@@ -2,6 +2,7 @@
 declare(strict_types=1);
 require_once __DIR__ . '/../lib/db.php';
 require_once __DIR__ . '/../lib/package-runtime.php';
+require_once __DIR__ . '/../lib/alerts.php';
 require_once __DIR__ . '/../lib/configure.php';
 function runtimeExpect(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
 if (!function_exists('sodium_crypto_sign_keypair')) { echo "package runtime checks skipped: sodium is unavailable\n"; exit(0); }
@@ -62,6 +63,7 @@ try {
     packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator');
     $after = packageRuntimePackages($pdo)[0];
     runtimeExpect($after['enabled'] && $after['state'] === 'registered; execution runtime pending', 'package was not registered after explicit grant');
+    runtimeExpect(packageRuntimeIntegrityAlerts($pdo) === [], 'verified package raised an integrity alert');
     packageRuntimeRevoke($pdo, 'test-runtime', 'test compromise response', 'administrator');
     $revoked = packageRuntimePackages($pdo)[0];
     runtimeExpect($revoked['revoked'] && !$revoked['enabled'] && str_starts_with($revoked['state'], 'revoked:'), 'package revocation did not disable the runtime record');
@@ -99,6 +101,10 @@ try {
     file_put_contents($installed['install_path'] . '/src/Provider.php', "<?php declare(strict_types=1); /* altered */\n");
     $altered = packageRuntimePackages($pdo)[0];
     runtimeExpect(!$altered['integrity'] && str_starts_with($altered['state'], 'integrity failed:'), 'changed package file was not flagged by runtime status');
+    $integrityAlert = packageRuntimeIntegrityAlerts($pdo);
+    runtimeExpect(count($integrityAlert) === 1 && $integrityAlert[0]['rule'] === 'package_integrity'
+        && $integrityAlert[0]['severity'] === 'error' && str_contains($integrityAlert[0]['detail'], 'test-runtime'),
+        'changed package file did not raise a non-executing integrity alert');
     try { packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator'); throw new RuntimeException('altered package was enabled'); }
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'altered package was enabled', $error->getMessage()); }
     copy($source . '/src/Provider.php', $installed['install_path'] . '/src/Provider.php');

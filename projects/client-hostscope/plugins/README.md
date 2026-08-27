@@ -34,7 +34,10 @@ The same local key as sealed copies is the simple default, while a separate
 The package-runtime dashboard rehashes installed immutable files and compares
 the installed manifest with its install-time fingerprint before it reports a
 package as usable. A changed, missing, extra, or symlinked package file—or a
-changed manifest—is shown as an integrity failure and blocks a new enablement.
+changed manifest—is shown as an integrity failure, blocks a new enablement, and
+raises the **Installed package integrity needs attention** alert during normal
+alert evaluation. The alert verifies hashes and metadata only; it never loads
+or executes the altered package.
 Older installed packages that predate the manifest-fingerprint migration are
 also fail-closed; reinstall their reviewed signed release to establish new
 evidence. Never treat a manifest comment or a browser status alone as evidence

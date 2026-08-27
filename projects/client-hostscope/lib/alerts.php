@@ -35,6 +35,7 @@ require_once __DIR__ . '/events.php';
 require_once __DIR__ . '/hostdb.php';
 require_once __DIR__ . '/updates.php';
 require_once __DIR__ . '/encryption.php';
+require_once __DIR__ . '/package-runtime.php';
 
 /**
  * How far back a projection looks.
@@ -235,6 +236,7 @@ function evaluateAlerts(array $config, PDO $pdo): array
         ...dateAlerts($config, $pdo),
         ...updateAlerts($config),
         ...encryptionRecoveryAlerts($config, $pdo),
+        ...packageRuntimeIntegrityAlerts($pdo),
     ]);
 
     foreach ($candidates as $alert) {
@@ -342,6 +344,21 @@ function encryptionRecoveryAlerts(array $config, PDO $pdo): array
     $critical = $failed !== [] || str_starts_with($problems[0], 'The private local key');
     return [['rule' => 'encryption_recovery', 'severity' => $critical ? 'error' : 'warning',
         'subject' => 'Encrypted-copy recovery needs attention', 'detail' => implode("\n", $problems)]];
+}
+
+/** Reports an installed-package hash or manifest mismatch without loading its
+ * code. A mismatch can indicate compromise, so this is an error alert. */
+function packageRuntimeIntegrityAlerts(PDO $pdo): array
+{
+    try { $packages = packageRuntimePackages($pdo); }
+    catch (Throwable) { return []; } // Package tables may not exist during an upgrade.
+    $failed = array_values(array_filter($packages, fn(array $package): bool => !$package['integrity']));
+    if ($failed === []) return [];
+    $detail = array_map(fn(array $package): string => $package['id'] . ': ' . $package['integrity_detail'], array_slice($failed, 0, 10));
+    if (count($failed) > 10) $detail[] = (count($failed) - 10) . ' additional installed package(s) failed integrity verification.';
+    return [['rule' => 'package_integrity', 'severity' => 'error',
+        'subject' => 'Installed package integrity needs attention',
+        'detail' => "HostScope did not execute these packages. Review or remove the altered files before enabling them.\n" . implode("\n", $detail)]];
 }
 
 /** Latest failed or available-update result from the root-only collector. */
