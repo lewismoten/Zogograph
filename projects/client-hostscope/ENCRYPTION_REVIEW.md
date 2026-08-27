@@ -4,6 +4,9 @@ This is the operator/product-owner checklist for encryption. It separates
 decisions that HostScope can safely default from decisions that must remain
 changeable in the website and database-backed settings.
 
+The adopted first-release choices and exact future change locations are kept
+in [ENCRYPTION_DECISIONS.md](ENCRYPTION_DECISIONS.md).
+
 ## Current safe defaults
 
 | decision | initial value | change it in | why |

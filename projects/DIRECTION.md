@@ -156,3 +156,5 @@ The detailed encryption design and implementation state live in
 [`client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md`](client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md).
 The operator-facing review checklist is
 [`client-hostscope/ENCRYPTION_REVIEW.md`](client-hostscope/ENCRYPTION_REVIEW.md).
+The concise set of adopted defaults and future configuration locations is
+[`client-hostscope/ENCRYPTION_DECISIONS.md`](client-hostscope/ENCRYPTION_DECISIONS.md).
