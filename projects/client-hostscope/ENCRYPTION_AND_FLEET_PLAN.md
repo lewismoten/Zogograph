@@ -225,7 +225,8 @@ self-managed fleet custody, ciphertext replicas, cloud KMS/HSM adapters,
 commercial HostScope key hosting, storage backends, and optional caches. The
 client now has a signed package registry, explicit capability grants,
 schema-validated database-backed settings, encrypted secret references,
-per-package SQLite data, declarative private migrations, integrity rechecks,
+per-package SQLite data, declarative private migrations, browser-visible
+integrity rechecks that block re-enablement after tampering,
 and administrator revocation. It deliberately still does **not** load package
 PHP: code execution awaits an isolation runtime and a reviewed permission
 boundary. Commercial key hosting remains optional and must not become a hidden

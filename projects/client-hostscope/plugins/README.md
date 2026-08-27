@@ -30,3 +30,9 @@ values. Core encrypts the referenced value in `setup.db` using a key file kept
 outside the web root; it never returns the plaintext through the settings API.
 The same local key as sealed copies is the simple default, while a separate
 0600 key file is available for administrators who require separate custody.
+
+The package-runtime dashboard rehashes installed immutable files before it
+reports a package as usable. A changed, missing, extra, or symlinked package
+file is shown as an integrity failure and blocks a new enablement. Review the
+installed directory or revoke the package; never treat a manifest comment or a
+browser status alone as evidence that altered package code is safe.
