@@ -136,6 +136,14 @@ try {
     keyCustodyAuthenticateBillingService(['billing_service_token_file' => $billingTokenPath], $billingToken, $root . '/web');
     try { keyCustodyAuthenticateBillingService(['billing_service_token_file' => $billingTokenPath], 'wrong-token', $root . '/web'); throw new RuntimeException('wrong billing-control token was accepted'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'wrong billing-control token was accepted', $error->getMessage()); }
+    if (function_exists('symlink') && @symlink($root, $root . '/linked-private')) {
+        try { keyCustodyReadBillingServiceToken(['billing_service_token_file' => $root . '/linked-private/billing.token'], $root . '/web'); throw new RuntimeException('symlinked billing-token directory was accepted'); }
+        catch (RuntimeException $error) { custodyExpect($error->getMessage() !== 'symlinked billing-token directory was accepted', $error->getMessage()); }
+        $masterPath = $root . '/master.key'; file_put_contents($masterPath, base64_encode(random_bytes(32)) . "\n"); chmod($masterPath, 0600);
+        try { keyCustodyReadMasterKey(['master_key_file' => $root . '/linked-private/master.key'], $root . '/web'); throw new RuntimeException('symlinked master-key directory was accepted'); }
+        catch (RuntimeException $error) { custodyExpect($error->getMessage() !== 'symlinked master-key directory was accepted', $error->getMessage()); }
+        @unlink($masterPath); @unlink($root . '/linked-private');
+    }
     $pending = keyCustodyRequestSubscriptionChange($pdo, $management['tenant_id'], 'change_plan', 'starter');
     keyCustodyApplySubscription($pdo, $management['tenant_id'], 'starter', 'active', 3, 1767225600);
     $applied = keyCustodySubscription($pdo, $management['tenant_id']);
