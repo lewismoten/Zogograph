@@ -18,6 +18,8 @@ custodyExpect(($contract['paths']['/subscription']['patch']['requestBody']['cont
     'published custody API contract omits the subscription-change request body');
 custodyExpect(isset($contract['paths']['/internal/subscriptions/{tenantId}']) && isset($contract['components']['securitySchemes']['billingService']),
     'published custody API contract omits the isolated billing control plane');
+custodyExpect(($contract['components']['schemas']['SubscriptionApply']['properties']['unwrap_quota_per_hour']['default'] ?? null) === 60,
+    'published custody API contract omits the bounded recovery-release default');
 foreach (['/keys', '/subscription', '/billing/checkout', '/billing/portal'] as $path) {
     foreach ($contract['paths'][$path] as $operation) custodyExpect(($operation['security'][0]['accountSession'] ?? null) === [],
         'published custody API contract omits management authentication for ' . $path);
@@ -191,6 +193,14 @@ try {
     try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:quota', random_bytes(80), $master); throw new RuntimeException('subscription envelope quota was exceeded'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'subscription envelope quota was exceeded', $error->getMessage()); }
     custodyExpect(hash_equals($artifactDataKey, keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)), 'client unwrap did not recover the sealed artifact data key');
+    $pdo->exec('DELETE FROM custody_unwrap_usage');
+    keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'active', 2, null, 1, 1);
+    custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['unwrap_quota_per_hour'] === 1
+        && hash_equals($artifactDataKey, keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)),
+        'configured custody recovery-release allowance did not permit its first recovery');
+    try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master); throw new RuntimeException('custody recovery-release limit was exceeded'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'custody recovery-release limit was exceeded', $error->getMessage()); }
+    keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'active', 2, null, 1, 60);
     custodyExpect(keyCustodyCacheRecommendation($pdo, $client['tenant_id'], $key['id'], 900) === 120,
         'custody key authorization limit did not cap a requested cache duration');
     custodyExpect(keyCustodyCacheRecommendation($pdo, $client['tenant_id'], $key['id'], 0) === 0,

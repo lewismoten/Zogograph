@@ -101,6 +101,14 @@ management response includes `key_used` and `can_create_keys`, so the operator
 can distinguish a plan limit from a key-creation failure without exposing key
 material.
 
+Each tenant also defaults to **60 recovery-key releases per UTC hour**. This is
+a small abuse-control ceiling for a lost or malfunctioning enrolled client, not
+an availability entitlement: it applies even when a subscription is overdue or
+cancelled, then resets automatically at the next hour. The billing control
+plane may set `unwrap_quota_per_hour` from 1 to 100,000 for a documented
+recovery workload. Do not set it to an unrealistically low value; it can delay
+bulk recovery, but it must never be used to permanently deny existing envelopes.
+
 An enrolled deployment can instead use signed `GET /v1/client/subscription`.
 That minimal view reports only envelope usage, envelope quota, subscription
 state, and whether another envelope can be stored. It is deliberately not a

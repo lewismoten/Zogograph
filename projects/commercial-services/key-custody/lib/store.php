@@ -38,14 +38,16 @@ function keyCustodyOpen(array $config, ?string $webRoot = null): PDO
     $pdo->exec('CREATE TABLE IF NOT EXISTS client_nonces (token_id TEXT NOT NULL REFERENCES access_tokens(id) ON DELETE CASCADE, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (token_id, nonce))');
     $pdo->exec('CREATE INDEX IF NOT EXISTS client_nonces_expiry ON client_nonces (expires_at)');
     $pdo->prepare('DELETE FROM client_nonces WHERE expires_at < ?')->execute([time()]);
-    $pdo->exec('CREATE TABLE IF NOT EXISTS subscriptions (tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE, plan TEXT NOT NULL, state TEXT NOT NULL, key_quota INTEGER NOT NULL, envelope_quota INTEGER NOT NULL DEFAULT 1000, renews_at INTEGER, changed_at INTEGER NOT NULL)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS subscriptions (tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE, plan TEXT NOT NULL, state TEXT NOT NULL, key_quota INTEGER NOT NULL, envelope_quota INTEGER NOT NULL DEFAULT 1000, unwrap_quota_per_hour INTEGER NOT NULL DEFAULT 60, renews_at INTEGER, changed_at INTEGER NOT NULL)');
     if (!keyCustodyTableHasColumn($pdo, 'subscriptions', 'envelope_quota')) $pdo->exec('ALTER TABLE subscriptions ADD COLUMN envelope_quota INTEGER NOT NULL DEFAULT 1000');
+    if (!keyCustodyTableHasColumn($pdo, 'subscriptions', 'unwrap_quota_per_hour')) $pdo->exec('ALTER TABLE subscriptions ADD COLUMN unwrap_quota_per_hour INTEGER NOT NULL DEFAULT 60');
     $pdo->exec('CREATE TABLE IF NOT EXISTS subscription_requests (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, action TEXT NOT NULL, requested_plan TEXT, state TEXT NOT NULL, created_at INTEGER NOT NULL, resolved_at INTEGER)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS subscription_requests_tenant_state ON subscription_requests (tenant_id, state, created_at DESC)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS custody_keys (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name TEXT NOT NULL, wrapped_key BLOB NOT NULL, wrap_nonce BLOB NOT NULL, wrap_tag BLOB NOT NULL, authorization_ttl INTEGER NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, rotated_at INTEGER)');
     if (!keyCustodyTableHasColumn($pdo, 'custody_keys', 'wrapping_public_key')) $pdo->exec('ALTER TABLE custody_keys ADD COLUMN wrapping_public_key BLOB');
     $pdo->exec('CREATE INDEX IF NOT EXISTS custody_keys_tenant_state ON custody_keys (tenant_id, state, created_at DESC)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS key_envelopes (id TEXT PRIMARY KEY, key_id TEXT NOT NULL REFERENCES custody_keys(id) ON DELETE CASCADE, artifact_id TEXT NOT NULL, envelope BLOB NOT NULL, created_at INTEGER NOT NULL, UNIQUE(key_id, artifact_id))');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS custody_unwrap_usage (tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, window_started INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (tenant_id, window_started))');
     $pdo->exec('CREATE TABLE IF NOT EXISTS custody_audit (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, at INTEGER NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL)');
     keyCustodyPrivateSqliteFiles($path);
     return $pdo;
@@ -91,7 +93,7 @@ function keyCustodyCreateTenant(PDO $pdo, string $name): array
     $pdo->prepare('INSERT INTO tenants (id, name, active, created_at) VALUES (?, ?, 1, ?)')->execute([$tenant, $name, $now]);
     $management = keyCustodyCreateToken($pdo, $tenant, 'management');
     $client = keyCustodyCreateClientCredential($pdo, $tenant, 'initial enrollment');
-    $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, envelope_quota, renews_at, changed_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')->execute([$tenant, 'free', 'active', 2, 1000, $now]);
+    $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, envelope_quota, unwrap_quota_per_hour, renews_at, changed_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)')->execute([$tenant, 'free', 'active', 2, 1000, 60, $now]);
     keyCustodyAudit($pdo, $tenant, 'tenant_create', $tenant, 'initial free plan');
     $pdo->commit();
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
@@ -250,6 +252,7 @@ function keyCustodyCreateKey(PDO $pdo, string $tenant, string $name, int $ttl, s
 function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artifactId, string $master): string
 {
     if (strlen($master) !== 32 || !keyCustodyArtifactId($artifactId)) throw new InvalidArgumentException('custody key authorization is invalid');
+    keyCustodyConsumeUnwrapAllowance($pdo, $tenant);
     $envelope = $pdo->prepare('SELECT envelopes.envelope FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE envelopes.key_id = ? AND keys.tenant_id = ? AND envelopes.artifact_id = ?');
     $envelope->execute([$id, $tenant, $artifactId]);
     $sealed = $envelope->fetchColumn();
@@ -270,6 +273,23 @@ function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artif
     if (!is_string($plain) || strlen($plain) !== 32) throw new RuntimeException('artifact data key could not be unwrapped');
     keyCustodyAudit($pdo, $tenant, 'key_unwrap_authorized', $id, 'artifact=' . $artifactId);
     return $plain;
+}
+
+/** Rate limits unwrap releases without coupling existing recovery to billing state. */
+function keyCustodyConsumeUnwrapAllowance(PDO $pdo, string $tenant): void
+{
+    keyCustodyWithWriteLock($pdo, function () use ($pdo, $tenant): void {
+        $quota = $pdo->prepare('SELECT unwrap_quota_per_hour FROM subscriptions WHERE tenant_id = ?'); $quota->execute([$tenant]);
+        $limit = $quota->fetchColumn();
+        if (!is_int($limit) && !ctype_digit((string)$limit)) throw new InvalidArgumentException('custody subscription is unavailable');
+        $limit = (int)$limit;
+        if ($limit < 1 || $limit > 100000) throw new RuntimeException('custody recovery release policy is invalid');
+        $window = intdiv(time(), 3600) * 3600;
+        $used = $pdo->prepare('SELECT count FROM custody_unwrap_usage WHERE tenant_id = ? AND window_started = ?'); $used->execute([$tenant, $window]);
+        if ((int)$used->fetchColumn() >= $limit) throw new InvalidArgumentException('custody recovery release limit is reached; retry after the current hourly window');
+        $pdo->prepare('INSERT INTO custody_unwrap_usage (tenant_id, window_started, count) VALUES (?, ?, 1)
+            ON CONFLICT(tenant_id, window_started) DO UPDATE SET count = count + 1')->execute([$tenant, $window]);
+    });
 }
 
 /** Returns only the public half used to seal a fresh per-artifact data key. */
@@ -407,23 +427,23 @@ function keyCustodyArtifactId(string $artifactId): bool
     return $artifactId !== '' && strlen($artifactId) <= 200 && preg_match('/[\x00-\x1F\x7F]/', $artifactId) !== 1;
 }
 
-function keyCustodySetSubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt, int $envelopeQuota = 1000): void
+function keyCustodySetSubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt, int $envelopeQuota = 1000, int $unwrapQuotaPerHour = 60): void
 {
-    if (!preg_match('/^[a-z][a-z0-9_-]{0,62}$/', $plan) || !in_array($state, ['active', 'past_due', 'cancelled'], true) || $quota < 0 || $quota > 10000 || $envelopeQuota < 0 || $envelopeQuota > 1000000) throw new InvalidArgumentException('subscription policy is invalid');
+    if (!preg_match('/^[a-z][a-z0-9_-]{0,62}$/', $plan) || !in_array($state, ['active', 'past_due', 'cancelled'], true) || $quota < 0 || $quota > 10000 || $envelopeQuota < 0 || $envelopeQuota > 1000000 || $unwrapQuotaPerHour < 1 || $unwrapQuotaPerHour > 100000) throw new InvalidArgumentException('subscription policy is invalid');
     $tenantCheck = $pdo->prepare('SELECT active FROM tenants WHERE id = ?'); $tenantCheck->execute([$tenant]);
     if ($tenantCheck->fetchColumn() === false) throw new InvalidArgumentException('tenant is unavailable');
-    $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, envelope_quota, renews_at, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET plan = excluded.plan, state = excluded.state, key_quota = excluded.key_quota, envelope_quota = excluded.envelope_quota, renews_at = excluded.renews_at, changed_at = excluded.changed_at')
-        ->execute([$tenant, $plan, $state, $quota, $envelopeQuota, $renewsAt, time()]);
-    keyCustodyAudit($pdo, $tenant, 'subscription_change', $tenant, $plan . '; ' . $state . '; key_quota=' . $quota . '; envelope_quota=' . $envelopeQuota);
+    $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, envelope_quota, unwrap_quota_per_hour, renews_at, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET plan = excluded.plan, state = excluded.state, key_quota = excluded.key_quota, envelope_quota = excluded.envelope_quota, unwrap_quota_per_hour = excluded.unwrap_quota_per_hour, renews_at = excluded.renews_at, changed_at = excluded.changed_at')
+        ->execute([$tenant, $plan, $state, $quota, $envelopeQuota, $unwrapQuotaPerHour, $renewsAt, time()]);
+    keyCustodyAudit($pdo, $tenant, 'subscription_change', $tenant, $plan . '; ' . $state . '; key_quota=' . $quota . '; envelope_quota=' . $envelopeQuota . '; unwrap_quota_per_hour=' . $unwrapQuotaPerHour);
 }
 
 /** Applies an entitlement from the separately authenticated commercial billing
  * control plane. It has no authority to read or unwrap custody keys. */
-function keyCustodyApplySubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt, int $envelopeQuota = 1000): void
+function keyCustodyApplySubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt, int $envelopeQuota = 1000, int $unwrapQuotaPerHour = 60): void
 {
     $pdo->beginTransaction();
     try {
-        keyCustodySetSubscription($pdo, $tenant, $plan, $state, $quota, $renewsAt, $envelopeQuota);
+        keyCustodySetSubscription($pdo, $tenant, $plan, $state, $quota, $renewsAt, $envelopeQuota, $unwrapQuotaPerHour);
         $pdo->prepare("UPDATE subscription_requests SET state = 'applied', resolved_at = ? WHERE tenant_id = ? AND state = 'pending'")
             ->execute([time(), $tenant]);
         keyCustodyAudit($pdo, $tenant, 'subscription_apply', $tenant, 'commercial billing control plane');
@@ -443,10 +463,10 @@ function keyCustodyListKeys(PDO $pdo, string $tenant): array
         'wrapping_mode' => $row['wrapping_public_key'] === null ? 'legacy_symmetric' : 'asymmetric_artifact_envelope'], $stmt->fetchAll());
 }
 
-/** @return array{plan:string,state:string,key_quota:int,key_used:int,can_create_keys:bool,envelope_quota:int,envelope_used:int,renews_at:?int,accepting_new_custody_operations:bool} */
+/** @return array{plan:string,state:string,key_quota:int,key_used:int,can_create_keys:bool,envelope_quota:int,envelope_used:int,unwrap_quota_per_hour:int,renews_at:?int,accepting_new_custody_operations:bool} */
 function keyCustodySubscription(PDO $pdo, string $tenant): array
 {
-    $stmt = $pdo->prepare('SELECT plan, state, key_quota, envelope_quota, renews_at FROM subscriptions WHERE tenant_id = ?'); $stmt->execute([$tenant]); $row = $stmt->fetch();
+    $stmt = $pdo->prepare('SELECT plan, state, key_quota, envelope_quota, unwrap_quota_per_hour, renews_at FROM subscriptions WHERE tenant_id = ?'); $stmt->execute([$tenant]); $row = $stmt->fetch();
     if (!is_array($row)) throw new InvalidArgumentException('subscription is unavailable');
     $keys = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE tenant_id = ? AND state = 'active'"); $keys->execute([$tenant]);
     $used = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE keys.tenant_id = ?'); $used->execute([$tenant]);
@@ -454,7 +474,7 @@ function keyCustodySubscription(PDO $pdo, string $tenant): array
     $renewsAt = $row['renews_at'] === null ? null : (int)$row['renews_at'];
     $accepting = $row['state'] === 'active' && ($renewsAt === null || $renewsAt >= time());
     return ['plan' => $row['plan'], 'state' => $row['state'], 'key_quota' => (int)$row['key_quota'], 'key_used' => $keyUsed,
-        'can_create_keys' => $accepting && $keyUsed < (int)$row['key_quota'], 'envelope_quota' => (int)$row['envelope_quota'],
+        'can_create_keys' => $accepting && $keyUsed < (int)$row['key_quota'], 'envelope_quota' => (int)$row['envelope_quota'], 'unwrap_quota_per_hour' => (int)$row['unwrap_quota_per_hour'],
         'envelope_used' => (int)$used->fetchColumn(), 'renews_at' => $renewsAt, 'accepting_new_custody_operations' => $accepting];
 }
 

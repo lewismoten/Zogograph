@@ -142,15 +142,16 @@ try {
     }
     if (preg_match('#^/v1/internal/subscriptions/(ten_[a-f0-9]{24})$#', $path, $match) && $method === 'PATCH') {
         if (empty($config['billing_service_token_file'])) custodyReply(503, ['error' => 'commercial billing integration is not configured']);
-        keyCustodyAuthenticateBillingService($config, $bearer, __DIR__); $body = keyCustodyRequestFields($rawBody, ['plan', 'state', 'key_quota', 'envelope_quota', 'renews_at'], ['plan', 'state', 'key_quota']);
+        keyCustodyAuthenticateBillingService($config, $bearer, __DIR__); $body = keyCustodyRequestFields($rawBody, ['plan', 'state', 'key_quota', 'envelope_quota', 'unwrap_quota_per_hour', 'renews_at'], ['plan', 'state', 'key_quota']);
         if (!is_string($body['plan'] ?? null) || !is_string($body['state'] ?? null) || !is_int($body['key_quota'] ?? null)
             || (array_key_exists('envelope_quota', $body) && !is_int($body['envelope_quota']))
+            || (array_key_exists('unwrap_quota_per_hour', $body) && !is_int($body['unwrap_quota_per_hour']))
             || (array_key_exists('renews_at', $body) && $body['renews_at'] !== null && !is_int($body['renews_at']))) {
             throw new InvalidArgumentException('commercial billing subscription fields are invalid');
         }
         $renewsAt = $body['renews_at'] ?? null;
         if ($renewsAt !== null && ($renewsAt < 0 || $renewsAt > 4102444800)) throw new InvalidArgumentException('commercial billing renewal time is invalid');
-        keyCustodyApplySubscription($pdo, $match[1], $body['plan'], $body['state'], $body['key_quota'], $renewsAt, $body['envelope_quota'] ?? 1000);
+        keyCustodyApplySubscription($pdo, $match[1], $body['plan'], $body['state'], $body['key_quota'], $renewsAt, $body['envelope_quota'] ?? 1000, $body['unwrap_quota_per_hour'] ?? 60);
         custodyReply(200, ['tenant_id' => $match[1], 'subscription' => keyCustodySubscription($pdo, $match[1]),
             'warning' => 'This billing-control endpoint changes entitlement only. It cannot unwrap, list, or export custody key material.']);
     }
