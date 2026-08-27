@@ -76,6 +76,20 @@ that supplies a signature but cannot verify is visible for diagnosis but cannot
 be enabled. Use **Install local manifest** for an atomic write, and **History**
 to restore a retained revision; neither operation enables the package.
 
+Publishers can create a keypair locally with:
+
+```bash
+php scripts/marketplace-sign.php keygen --key-id example-publisher --publisher "Example publisher"
+```
+
+Keep the printed private key offline. To sign a manifest without exposing that
+key in the command line, provide it interactively (or through a protected
+standard-input pipeline):
+
+```bash
+php scripts/marketplace-sign.php sign --manifest /secure/package.json --key-id example-publisher
+```
+
 ```json
 {
   "id": "uptime-guidance",

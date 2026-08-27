@@ -61,6 +61,7 @@ if (function_exists('sodium_crypto_sign_keypair')) {
     marketplaceExpect(marketplaceProvenance($trustConfig, $signed)['status'] === 'unavailable', 'missing sodium was not reported');
 }
 $api = file_get_contents(__DIR__ . '/../api.php');
+$signer = file_get_contents(__DIR__ . '/../scripts/marketplace-sign.php');
 marketplaceExpect($api !== false && str_contains($api, "'marketplace' => 'sys-marketplace'")
     && str_contains($api, "'marketplace-enable' => doMarketplaceEnable")
     && str_contains($api, "'marketplace-install' => doMarketplaceInstall")
@@ -70,6 +71,9 @@ marketplaceExpect($api !== false && str_contains($api, "'marketplace' => 'sys-ma
     && str_contains($api, "function marketplaceHistoryView(array \$config, bool \$post): array\n{\n    requireWrite(\$post);")
     && str_contains($api, "function doMarketplaceRollback(array \$config, PDO \$pdo, bool \$post): array\n{\n    requireWrite(\$post);"),
     'marketplace administration route is missing its write authorization');
+marketplaceExpect($signer !== false && str_contains($signer, "PHP_SAPI !== 'cli'")
+    && str_contains($signer, 'marketplaceCanonicalJson($payload)')
+    && str_contains($signer, 'sodium_crypto_sign_detached'), 'publisher signing command is missing its safety boundary');
 foreach (scandir($installer . '/.history/installed-pack') ?: [] as $entry) if (preg_match('/^[a-f0-9]{64}\.json$/', $entry)) unlink($installer . '/.history/installed-pack/' . $entry);
 unlink($installer . '/installed-pack.json'); rmdir($installer . '/.history/installed-pack'); rmdir($installer . '/.history'); rmdir($installer);
 unlink($root . '/uptime-pack.json'); unlink($root . '/bad.json'); rmdir($root);
