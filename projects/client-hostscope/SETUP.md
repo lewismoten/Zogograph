@@ -276,14 +276,23 @@ the sealed `setup` database first. That lets the recovery command resolve the
 same configured target paths rather than guessing from a damaged settings
 store.
 
-To replace a key, create the replacement key, write a separate rotated copy,
-verify that it decrypts, and only then retire the old sealed copy and key:
+To rotate the configured local key, create a replacement first, then use the
+all-artifact rotation command. It re-encrypts every currently verified retained
+artifact, verifies each replacement, marks the old ciphertext as **superseded**
+instead of deleting it, and switches the saved encryption setting only after
+those steps succeed:
 
 ```bash
 php scripts/encryption-key.php create /secure/hostscope/replacement.key
-php scripts/encryption-key.php rotate /secure/hostscope/primary.key /secure/hostscope/replacement.key \
-  account.sealed account-rotated.sealed account-rotation-2026-08-27
+php scripts/rotate-sealed-copies.php --new-key /secure/hostscope/replacement.key --confirm
+php cron.php --verify-sealed
 ```
+
+Complete a real restore drill using the replacement key before deleting any
+superseded ciphertext or retiring the old key. The low-level
+`scripts/encryption-key.php rotate` command remains useful for a single
+standalone artifact; it does not update the encrypted-artifact ledger or the
+configured key and is not the normal installation rotation workflow.
 
 ## Optional: signed executable packages
 

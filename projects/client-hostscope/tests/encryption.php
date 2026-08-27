@@ -29,6 +29,7 @@ try {
     $api = file_get_contents(__DIR__ . '/../api.php');
     $dashboard = file_get_contents(__DIR__ . '/../index.js');
     $page = file_get_contents(__DIR__ . '/../index.html');
+    $rotation = file_get_contents(__DIR__ . '/../scripts/rotate-sealed-copies.php');
     encryptionExpect($api !== false && str_contains($api, "'encryption-status' => 'sys-encryption'"),
         'encryption status is not protected by its dashboard page access rule');
     encryptionExpect($dashboard !== false && str_contains($dashboard, 'function renderEncryptionStatus')
@@ -37,6 +38,9 @@ try {
         'dashboard does not explain encrypted-copy limitations');
     encryptionExpect($page !== false && str_contains($page, 'data-view="sys-encryption"')
         && str_contains($page, 'id="encryptionBody"'), 'dashboard protection view is unavailable');
+    encryptionExpect($rotation !== false && str_contains($rotation, "state = 'superseded'")
+        && str_contains($rotation, 'saveConfiguredSettings') && str_contains($rotation, '--confirm'),
+        'configured sealed-copy rotation does not preserve recovery evidence before switching keys');
 
     $sample = require __DIR__ . '/../lib/config.sample.php';
     $fields = array_column(configFields($sample), null, 'key');
