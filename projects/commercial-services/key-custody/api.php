@@ -59,8 +59,9 @@ try {
         if (trim((string)($body['artifact_id'] ?? '')) === '' || trim((string)($body['nonce'] ?? '')) === '') throw new InvalidArgumentException('artifact and nonce are required');
         $artifactId = trim((string)($body['artifact_id'] ?? ''));
         $key = keyCustodyUnwrapKey($pdo, $auth['tenant_id'], $match[1], $artifactId, keyCustodyReadMasterKey($config, __DIR__));
+        $cache = keyCustodyCacheRecommendation($pdo, $auth['tenant_id'], $match[1], (int)($body['requested_ttl_seconds'] ?? 0));
         custodyReply(201, ['key_id' => $match[1], 'key_material' => base64_encode($key),
-            'cache_recommendation_seconds' => min(900, max(0, (int)($body['requested_ttl_seconds'] ?? 0))),
+            'cache_recommendation_seconds' => $cache,
             'warning' => 'Key material is returned for immediate in-memory use. A cache recommendation cannot revoke material that a client already received.']);
     }
     if ($path === '/v1/client-credentials/rotate' && $method === 'POST') {

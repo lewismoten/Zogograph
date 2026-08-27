@@ -83,6 +83,9 @@ The reference API can recommend a short in-memory cache duration, but it
 cannot revoke key material after a client has received it. Keep the client
 cache at zero by default, rotate a suspected key, and use an HSM/KMS-backed
 provider package when an environment needs stronger non-exportable-key policy.
+The service caps a requested recommendation at the key's configured
+authorization TTL; this is a cache ceiling, not a claim that previously
+returned material expires or is remotely revocable.
 
 If an enrolled client is replaced or its credentials might have been exposed,
 an account-management client can `POST /v1/client-credentials/rotate`. The

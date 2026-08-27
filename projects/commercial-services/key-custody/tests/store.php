@@ -52,6 +52,10 @@ try {
     $envelope = keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:20260827', random_bytes(80));
     custodyExpect(keyCustodyListEnvelopes($pdo, $management['tenant_id'], $key['id'])[0]['id'] === $envelope['id'], 'envelope metadata was not retained');
     custodyExpect(strlen(keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)) === 32, 'client unwrap did not recover an active custody key');
+    custodyExpect(keyCustodyCacheRecommendation($pdo, $client['tenant_id'], $key['id'], 900) === 300,
+        'custody key authorization limit did not cap a requested cache duration');
+    custodyExpect(keyCustodyCacheRecommendation($pdo, $client['tenant_id'], $key['id'], 0) === 0,
+        'custody cache recommendation did not preserve the zero-cache default');
     try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:missing', $master); throw new RuntimeException('unknown artifact envelope was authorized'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'unknown artifact envelope was authorized', $error->getMessage()); }
     $replacement = keyCustodyRotateKey($pdo, $management['tenant_id'], $key['id'], $master);

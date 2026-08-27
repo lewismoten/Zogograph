@@ -162,6 +162,17 @@ function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artif
     return $plain;
 }
 
+/** Returns a bounded cache recommendation; it does not turn exported key
+ * material into a revocable capability. Zero remains a valid safer choice. */
+function keyCustodyCacheRecommendation(PDO $pdo, string $tenant, string $id, int $requested): int
+{
+    if ($requested < 0 || $requested > 900) throw new InvalidArgumentException('requested key cache duration is invalid');
+    $stmt = $pdo->prepare("SELECT authorization_ttl FROM custody_keys WHERE id = ? AND tenant_id = ? AND state IN ('active', 'rotating')");
+    $stmt->execute([$id, $tenant]); $limit = $stmt->fetchColumn();
+    if ($limit === false) throw new InvalidArgumentException('custody key is unavailable');
+    return min($requested, (int)$limit);
+}
+
 /** @return array{id:string,artifact_id:string,created_at:int} */
 function keyCustodyStoreEnvelope(PDO $pdo, string $tenant, string $keyId, string $artifactId, string $envelope): array
 {
