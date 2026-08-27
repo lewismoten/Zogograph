@@ -60,6 +60,12 @@ commercial billing control plane can adjust it alongside the key quota. The
 customer's `GET /v1/subscription` response includes `envelope_used`, so an
 account UI can show remaining capacity before an upload is rejected.
 
+An enrolled deployment can instead use signed `GET /v1/client/subscription`.
+That minimal view reports only envelope usage, envelope quota, subscription
+state, and whether another envelope can be stored. It is deliberately not a
+billing or account-management API and does not reveal key metadata, recovery
+material, plan-change history, or any management capability.
+
 Quota decisions and the corresponding key or envelope write share an immediate
 SQLite write lock. Concurrent clients therefore cannot both consume the last
 available quota unit; one succeeds and later requests observe the committed

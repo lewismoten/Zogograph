@@ -103,6 +103,10 @@ try {
     if ($path === '/v1/subscription' && $method === 'GET') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['subscription' => keyCustodySubscription($pdo, $auth['tenant_id']), 'requests' => keyCustodySubscriptionRequests($pdo, $auth['tenant_id'])]);
     }
+    if ($path === '/v1/client/subscription' && $method === 'GET') {
+        $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody);
+        custodyReply(200, ['entitlement' => keyCustodyClientSubscription($pdo, $auth['tenant_id'])]);
+    }
     if ($path === '/v1/subscription' && $method === 'PATCH') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody);
         $request = keyCustodyRequestSubscriptionChange($pdo, $auth['tenant_id'], (string)($body['action'] ?? ''), isset($body['plan']) ? (string)$body['plan'] : null);

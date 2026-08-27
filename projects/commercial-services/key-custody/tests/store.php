@@ -19,6 +19,9 @@ try {
     custodyExpect((int)$pdo->query('SELECT COUNT(*) FROM client_nonces')->fetchColumn() === 0, 'expired client replay nonce was not pruned during service open');
     $management = keyCustodyAuthenticate($pdo, $tenant['management_token'], 'management');
     $client = keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client');
+    $initialEntitlement = keyCustodyClientSubscription($pdo, $client['tenant_id']);
+    custodyExpect($initialEntitlement['state'] === 'active' && $initialEntitlement['envelope_used'] === 0 && $initialEntitlement['can_store_envelopes'],
+        'enrolled client could not read its minimal initial envelope entitlement');
     $additionalClient = keyCustodyCreateAdditionalClientCredential($pdo, $client['tenant_id'], 'second server');
     custodyExpect(keyCustodyAuthenticate($pdo, $additionalClient['token'], 'client')['tenant_id'] === $client['tenant_id'], 'additional enrolled-client credential did not authenticate');
     $credentialList = keyCustodyListClientCredentials($pdo, $client['tenant_id']);
@@ -99,7 +102,11 @@ try {
     custodyExpect(keyCustodyListEnvelopes($pdo, $management['tenant_id'], $key['id'])[0]['id'] === $envelope['id'], 'envelope metadata was not retained');
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['envelope_count'] === 1, 'management key list omitted registered envelope count');
     custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['envelope_used'] === 1, 'subscription metadata omitted current envelope use');
+    custodyExpect(keyCustodyClientSubscription($pdo, $client['tenant_id'])['envelope_used'] === 1,
+        'enrolled client entitlement did not report current envelope usage');
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'active', 2, null, 1);
+    custodyExpect(!keyCustodyClientSubscription($pdo, $client['tenant_id'])['can_store_envelopes'],
+        'enrolled client entitlement allowed an envelope after its quota was filled');
     try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:quota', random_bytes(80)); throw new RuntimeException('subscription envelope quota was exceeded'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'subscription envelope quota was exceeded', $error->getMessage()); }
     custodyExpect(strlen(keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)) === 32, 'client unwrap did not recover an active custody key');

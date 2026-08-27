@@ -384,6 +384,20 @@ function keyCustodySubscription(PDO $pdo, string $tenant): array
         'envelope_used' => (int)$used->fetchColumn(), 'renews_at' => $row['renews_at'] === null ? null : (int)$row['renews_at']];
 }
 
+/** Minimal enrolled-client view. It intentionally omits management request
+ * history and never grants billing, key creation, or unwrap authority. */
+function keyCustodyClientSubscription(PDO $pdo, string $tenant): array
+{
+    $subscription = keyCustodySubscription($pdo, $tenant);
+    return [
+        'state' => $subscription['state'],
+        'envelope_quota' => $subscription['envelope_quota'],
+        'envelope_used' => $subscription['envelope_used'],
+        'can_store_envelopes' => $subscription['state'] === 'active'
+            && $subscription['envelope_used'] < $subscription['envelope_quota'],
+    ];
+}
+
 /** @return array{id:string,action:string,requested_plan:?string,state:string,created_at:int} */
 function keyCustodyRequestSubscriptionChange(PDO $pdo, string $tenant, string $action, ?string $plan): array
 {

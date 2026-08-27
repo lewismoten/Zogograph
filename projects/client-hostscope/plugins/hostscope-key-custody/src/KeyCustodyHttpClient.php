@@ -61,6 +61,20 @@ final class KeyCustodyHttpClient
         return $key;
     }
 
+    /** Reads only whether this enrolled client can store another envelope. It
+     * has no billing, management, or key-material authority. */
+    public function envelopeEntitlement(): array
+    {
+        $response = $this->request('GET', '/v1/client/subscription', null);
+        $entitlement = $response['entitlement'] ?? null;
+        if (!is_array($entitlement) || !is_string($entitlement['state'] ?? null)
+            || !is_int($entitlement['envelope_quota'] ?? null) || !is_int($entitlement['envelope_used'] ?? null)
+            || !is_bool($entitlement['can_store_envelopes'] ?? null)) {
+            throw new \RuntimeException('key custody service returned an invalid client entitlement');
+        }
+        return $entitlement;
+    }
+
     private static function validateIdentity(string $keyId, string $artifactId): void
     {
         if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200
@@ -69,22 +83,24 @@ final class KeyCustodyHttpClient
         }
     }
 
-    private function request(string $method, string $path, array $body): array
+    private function request(string $method, string $path, ?array $body): array
     {
         $metadata = self::requestMetadata();
-        $encoded = json_encode($body, JSON_THROW_ON_ERROR);
+        $encoded = $body === null ? '' : json_encode($body, JSON_THROW_ON_ERROR);
         $signature = base64_encode(sodium_crypto_sign_detached(self::requestPayload($method, $path, $metadata['timestamp'], $metadata['nonce'], $encoded), $this->clientSigningKey));
         $handle = curl_init(rtrim($this->baseUrl, '/') . $path);
         if ($handle === false) throw new \RuntimeException('could not initialize custody request');
         try {
-            curl_setopt_array($handle, [
-                CURLOPT_CUSTOMREQUEST => $method, CURLOPT_POSTFIELDS => $encoded, CURLOPT_RETURNTRANSFER => true,
+            $options = [
+                CURLOPT_CUSTOMREQUEST => $method, CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 30, CURLOPT_FOLLOWLOCATION => false,
                 CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
-                CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $this->clientToken, 'Content-Type: application/json',
+                CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $this->clientToken,
                     'X-HostScope-Timestamp: ' . $metadata['timestamp'], 'X-HostScope-Nonce: ' . $metadata['nonce'],
                     'X-HostScope-Signature: ' . $signature],
-            ]);
+            ];
+            if ($body !== null) { $options[CURLOPT_POSTFIELDS] = $encoded; $options[CURLOPT_HTTPHEADER][] = 'Content-Type: application/json'; }
+            curl_setopt_array($handle, $options);
             $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
             if (!is_string($raw)) throw new \RuntimeException('key custody request failed: ' . curl_error($handle));
             $response = json_decode($raw, true);

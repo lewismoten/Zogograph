@@ -25,6 +25,11 @@ configuration files, plaintext keys, or billing credentials. Billing is managed
 through the commercial account API/browser flow, separately from enrolled
 client credentials.
 
+The adapter can read a signed, minimal envelope-readiness projection: current
+envelope usage, quota, and whether another envelope may be stored. This lets a
+deployment explain an upload refusal before sending ciphertext, without giving
+it a billing, management, key-creation, or account-recovery credential.
+
 The included client adapter accepts only an unambiguous HTTPS service URL (no
 embedded user credentials, query, or fragment), explicitly verifies the server
 certificate and hostname, follows no redirects, and uses a five-minute service
