@@ -8564,15 +8564,24 @@ const chatState = {
   who: { name: "Assistant", emoji: "✦", portrait: null },
 };
 
-const voiceState = { speak: false, listen: false, listenMode: "never", recognition: null, utterance: null, spoken: new Set() };
+const voiceState = { speak: false, listen: false, listenMode: "never", voice: "", rate: 1, pitch: 1, volume: 1, recognition: null, utterance: null, spoken: new Set() };
+
+function configureUtterance(utterance) {
+  utterance.lang = navigator.language || "en-US";
+  utterance.rate = voiceState.rate;
+  utterance.pitch = voiceState.pitch;
+  utterance.volume = voiceState.volume;
+  const selected = window.speechSynthesis?.getVoices().find(voice => voice.voiceURI === voiceState.voice);
+  if (selected) utterance.voice = selected;
+  return utterance;
+}
 
 function speakAssistantReply(session) {
   if (!voiceState.speak || !window.speechSynthesis) return;
   const last = [...(session.messages || [])].reverse().find(message => message.role === "assistant");
   if (!last || voiceState.spoken.has(last.id)) return;
   voiceState.spoken.add(last.id);
-  const utterance = new SpeechSynthesisUtterance(String(last.content || "").slice(0, 6000));
-  utterance.lang = navigator.language || "en-US";
+  const utterance = configureUtterance(new SpeechSynthesisUtterance(String(last.content || "").slice(0, 6000)));
   /* Do not let the microphone transcribe HostScope's own reply. Stop rather
    * than merely ignoring results: recognition engines can queue audio and
    * submit it after speech has finished. */
@@ -8628,6 +8637,10 @@ function applyVoicePreferences(preferences) {
   const priorMode = voiceState.listenMode;
   voiceState.speak = preferences.speaking === "replies";
   voiceState.listenMode = preferences.listening;
+  voiceState.voice = preferences.voice;
+  voiceState.rate = preferences.rate;
+  voiceState.pitch = preferences.pitch;
+  voiceState.volume = preferences.volume;
   if (voiceState.listen && (preferences.listening === "never" || priorMode !== preferences.listening)) toggleRecognition();
   $("chatSpeak").textContent = voiceState.speak ? "Speaking" : "Speak";
   $("chatListen").hidden = preferences.listening === "never";
@@ -14819,9 +14832,13 @@ function displayPreferences() {
       colorVision: ["system", "distinguish"].includes(stored.colorVision) ? stored.colorVision : "system",
       speaking: ["never", "replies"].includes(stored.speaking) ? stored.speaking : "never",
       listening: ["never", "push", "always"].includes(stored.listening) ? stored.listening : "never",
+      voice: typeof stored.voice === "string" ? stored.voice : "",
+      rate: Math.max(.5, Math.min(2, Number.isFinite(Number(stored.rate)) ? Number(stored.rate) : 1)),
+      pitch: Math.max(0, Math.min(2, Number.isFinite(Number(stored.pitch)) ? Number(stored.pitch) : 1)),
+      volume: Math.max(0, Math.min(1, Number.isFinite(Number(stored.volume)) ? Number(stored.volume) : 1)),
     };
   } catch (_) {
-    return { textSize: "default", motion: "system", editorFont: "system", colorVision: "system", speaking: "never", listening: "never" };
+    return { textSize: "default", motion: "system", editorFont: "system", colorVision: "system", speaking: "never", listening: "never", voice: "", rate: 1, pitch: 1, volume: 1 };
   }
 }
 
@@ -14870,6 +14887,14 @@ function openDisplayPreferences() {
   for (const [value, label] of [["never", "Never"], ["replies", "Read assistant replies"]]) { const option = new Option(label, value, false, value === current.speaking); speaking.append(option); }
   const listening = document.createElement("select");
   for (const [value, label] of [["never", "Never"], ["push", "Push to talk"], ["always", "Always on"]]) { const option = new Option(label, value, false, value === current.listening); listening.append(option); }
+  const voice = document.createElement("select");
+  voice.append(new Option("Browser default", "", false, current.voice === ""));
+  for (const item of (window.speechSynthesis?.getVoices() || [])) voice.append(new Option(`${item.name} (${item.lang})`, item.voiceURI, false, item.voiceURI === current.voice));
+  const rate = document.createElement("input"); rate.type = "range"; rate.min = ".5"; rate.max = "2"; rate.step = ".1"; rate.value = String(current.rate);
+  const pitch = document.createElement("input"); pitch.type = "range"; pitch.min = "0"; pitch.max = "2"; pitch.step = ".1"; pitch.value = String(current.pitch);
+  const volume = document.createElement("input"); volume.type = "range"; volume.min = "0"; volume.max = "1"; volume.step = ".1"; volume.value = String(current.volume);
+  const test = document.createElement("button"); test.type = "button"; test.className = "link"; test.textContent = "Test voice";
+  test.addEventListener("click", () => { const utterance = configureUtterance(new SpeechSynthesisUtterance("HostScope voice settings are ready.")); const selected = (window.speechSynthesis?.getVoices() || []).find(item => item.voiceURI === voice.value); if (selected) utterance.voice = selected; utterance.rate = Number(rate.value); utterance.pitch = Number(pitch.value); utterance.volume = Number(volume.value); window.speechSynthesis?.cancel(); window.speechSynthesis?.speak(utterance); });
   showFormDialog("Display preferences", [
     fieldRow("Text size", textSize, "Applies to this browser only."),
     fieldRow("Motion", motion, "Reduce motion disables decorative animation and transitions in this browser."),
@@ -14877,9 +14902,13 @@ function openDisplayPreferences() {
     fieldRow("Colour vision", colorVision, "High distinction uses a blue, orange, and violet status palette. Status words and symbols remain visible in every mode."),
     section("Voice", document.createElement("div")),
     fieldRow("Speaking", speaking, "Browser speech synthesis; replies are read aloud only when enabled."),
+    fieldRow("Voice", voice, "Available voices come from this browser and device."),
+    fieldRow("Speed", rate, "0.5× to 2×."),
+    fieldRow("Pitch", pitch, "0 to 2."),
+    fieldRow("Volume", volume, "0 to 100%."), test,
     fieldRow("Listening", listening, "After applying, click Start listening to grant microphone permission. Push to talk requires holding the Listen button; Always on restarts recognition until stopped."),
   ], async () => {
-    applyDisplayPreferences({ textSize: textSize.value, motion: motion.value, editorFont: editorFont.value, colorVision: colorVision.value, speaking: speaking.value, listening: listening.value });
+    applyDisplayPreferences({ textSize: textSize.value, motion: motion.value, editorFont: editorFont.value, colorVision: colorVision.value, speaking: speaking.value, listening: listening.value, voice: voice.value, rate: Number(rate.value), pitch: Number(pitch.value), volume: Number(volume.value) });
     redrawCharts(document);
   }, "Apply display choices");
 }
