@@ -258,6 +258,11 @@ encryption settings. Keep a separate copy of the current bootstrap
 manual recovery action after reviewing its decrypted contents, not something a
 CLI command silently replaces.
 
+If host or assistant databases use custom paths stored in `setup.db`, restore
+the sealed `setup` database first. That lets the recovery command resolve the
+same configured target paths rather than guessing from a damaged settings
+store.
+
 To replace a key, create the replacement key, write a separate rotated copy,
 verify that it decrypts, and only then retire the old sealed copy and key:
 
