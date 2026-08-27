@@ -60,6 +60,12 @@ commercial billing control plane can adjust it alongside the key quota. The
 customer's `GET /v1/subscription` response includes `envelope_used`, so an
 account UI can show remaining capacity before an upload is rejected.
 
+Quota decisions and the corresponding key or envelope write share an immediate
+SQLite write lock. Concurrent clients therefore cannot both consume the last
+available quota unit; one succeeds and later requests observe the committed
+usage. This keeps the initial single-service SQLite deployment dependable
+without requiring a separate quota or cache service.
+
 ## Current reference API
 
 Copy `config.sample.php` to `config.php`, create a private Base64 256-bit

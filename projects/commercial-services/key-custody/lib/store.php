@@ -36,6 +36,22 @@ function keyCustodyTableHasColumn(PDO $pdo, string $table, string $column): bool
     return false;
 }
 
+/** Serializes a quota decision with its SQLite write. A deferred transaction
+ * can let concurrent requests both observe spare quota before either inserts. */
+function keyCustodyWithWriteLock(PDO $pdo, callable $operation): mixed
+{
+    if ($pdo->inTransaction()) return $operation();
+    $pdo->exec('BEGIN IMMEDIATE');
+    try {
+        $result = $operation();
+        $pdo->exec('COMMIT');
+        return $result;
+    } catch (Throwable $error) {
+        try { $pdo->exec('ROLLBACK'); } catch (Throwable) { /* Nothing to roll back. */ }
+        throw $error;
+    }
+}
+
 /** @return array{tenant_id:string,management_token:string,client_token:string,client_signing_private_key:string} */
 function keyCustodyCreateTenant(PDO $pdo, string $name): array
 {
@@ -184,19 +200,21 @@ function keyCustodyAuthenticateClientRequest(PDO $pdo, string $token, string $me
 /** @return array{id:string,name:string,authorization_ttl:int,state:string} */
 function keyCustodyCreateKey(PDO $pdo, string $tenant, string $name, int $ttl, string $master): array
 {
-    keyCustodySubscriptionAllows($pdo, $tenant);
-    $name = trim($name);
-    if ($name === '' || mb_strlen($name) > 120 || $ttl < 60 || $ttl > 900 || strlen($master) !== 32) throw new InvalidArgumentException('key creation request is invalid');
-    $used = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE tenant_id = ? AND state = 'active'"); $used->execute([$tenant]);
-    $quota = $pdo->prepare('SELECT key_quota FROM subscriptions WHERE tenant_id = ?'); $quota->execute([$tenant]);
-    if ((int)$used->fetchColumn() >= (int)$quota->fetchColumn()) throw new InvalidArgumentException('subscription key quota is reached');
-    $id = 'key_' . bin2hex(random_bytes(16)); $plain = random_bytes(32); $nonce = random_bytes(12);
-    $wrapped = openssl_encrypt($plain, 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $nonce, $tag, $id, 16);
-    if (!is_string($wrapped) || !is_string($tag)) throw new RuntimeException('could not wrap custody key');
-    $pdo->prepare('INSERT INTO custody_keys (id, tenant_id, name, wrapped_key, wrap_nonce, wrap_tag, authorization_ttl, state, created_at, rotated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)')
-        ->execute([$id, $tenant, $name, $wrapped, $nonce, $tag, $ttl, 'active', time()]);
-    keyCustodyAudit($pdo, $tenant, 'key_create', $id, 'ttl=' . $ttl);
-    return ['id' => $id, 'name' => $name, 'authorization_ttl' => $ttl, 'state' => 'active'];
+    return keyCustodyWithWriteLock($pdo, function () use ($pdo, $tenant, $name, $ttl, $master): array {
+        keyCustodySubscriptionAllows($pdo, $tenant);
+        $name = trim($name);
+        if ($name === '' || mb_strlen($name) > 120 || $ttl < 60 || $ttl > 900 || strlen($master) !== 32) throw new InvalidArgumentException('key creation request is invalid');
+        $used = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE tenant_id = ? AND state = 'active'"); $used->execute([$tenant]);
+        $quota = $pdo->prepare('SELECT key_quota FROM subscriptions WHERE tenant_id = ?'); $quota->execute([$tenant]);
+        if ((int)$used->fetchColumn() >= (int)$quota->fetchColumn()) throw new InvalidArgumentException('subscription key quota is reached');
+        $id = 'key_' . bin2hex(random_bytes(16)); $plain = random_bytes(32); $nonce = random_bytes(12);
+        $wrapped = openssl_encrypt($plain, 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $nonce, $tag, $id, 16);
+        if (!is_string($wrapped) || !is_string($tag)) throw new RuntimeException('could not wrap custody key');
+        $pdo->prepare('INSERT INTO custody_keys (id, tenant_id, name, wrapped_key, wrap_nonce, wrap_tag, authorization_ttl, state, created_at, rotated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)')
+            ->execute([$id, $tenant, $name, $wrapped, $nonce, $tag, $ttl, 'active', time()]);
+        keyCustodyAudit($pdo, $tenant, 'key_create', $id, 'ttl=' . $ttl);
+        return ['id' => $id, 'name' => $name, 'authorization_ttl' => $ttl, 'state' => 'active'];
+    });
 }
 
 function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artifactId, string $master): string
@@ -227,23 +245,25 @@ function keyCustodyCacheRecommendation(PDO $pdo, string $tenant, string $id, int
 /** @return array{id:string,artifact_id:string,created_at:int} */
 function keyCustodyStoreEnvelope(PDO $pdo, string $tenant, string $keyId, string $artifactId, string $envelope): array
 {
-    keyCustodySubscriptionAllows($pdo, $tenant);
-    if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200 || $envelope === '' || strlen($envelope) > 1048576) {
-        throw new InvalidArgumentException('key envelope request is invalid');
-    }
-    $key = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'"); $key->execute([$keyId, $tenant]);
-    if ((int)$key->fetchColumn() !== 1) throw new InvalidArgumentException('custody key is unavailable');
-    $exists = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes WHERE key_id = ? AND artifact_id = ?'); $exists->execute([$keyId, $artifactId]);
-    if ((int)$exists->fetchColumn() === 0) {
-        $usage = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE keys.tenant_id = ?'); $usage->execute([$tenant]);
-        $quota = $pdo->prepare('SELECT envelope_quota FROM subscriptions WHERE tenant_id = ?'); $quota->execute([$tenant]);
-        if ((int)$usage->fetchColumn() >= (int)$quota->fetchColumn()) throw new InvalidArgumentException('subscription envelope quota is reached');
-    }
-    $id = 'env_' . bin2hex(random_bytes(16)); $now = time();
-    $pdo->prepare('INSERT INTO key_envelopes (id, key_id, artifact_id, envelope, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(key_id, artifact_id) DO UPDATE SET id = excluded.id, envelope = excluded.envelope, created_at = excluded.created_at')
-        ->execute([$id, $keyId, $artifactId, $envelope, $now]);
-    keyCustodyAudit($pdo, $tenant, 'envelope_store', $keyId, 'artifact=' . $artifactId);
-    return ['id' => $id, 'artifact_id' => $artifactId, 'created_at' => $now];
+    return keyCustodyWithWriteLock($pdo, function () use ($pdo, $tenant, $keyId, $artifactId, $envelope): array {
+        keyCustodySubscriptionAllows($pdo, $tenant);
+        if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200 || $envelope === '' || strlen($envelope) > 1048576) {
+            throw new InvalidArgumentException('key envelope request is invalid');
+        }
+        $key = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'"); $key->execute([$keyId, $tenant]);
+        if ((int)$key->fetchColumn() !== 1) throw new InvalidArgumentException('custody key is unavailable');
+        $exists = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes WHERE key_id = ? AND artifact_id = ?'); $exists->execute([$keyId, $artifactId]);
+        if ((int)$exists->fetchColumn() === 0) {
+            $usage = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE keys.tenant_id = ?'); $usage->execute([$tenant]);
+            $quota = $pdo->prepare('SELECT envelope_quota FROM subscriptions WHERE tenant_id = ?'); $quota->execute([$tenant]);
+            if ((int)$usage->fetchColumn() >= (int)$quota->fetchColumn()) throw new InvalidArgumentException('subscription envelope quota is reached');
+        }
+        $id = 'env_' . bin2hex(random_bytes(16)); $now = time();
+        $pdo->prepare('INSERT INTO key_envelopes (id, key_id, artifact_id, envelope, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(key_id, artifact_id) DO UPDATE SET id = excluded.id, envelope = excluded.envelope, created_at = excluded.created_at')
+            ->execute([$id, $keyId, $artifactId, $envelope, $now]);
+        keyCustodyAudit($pdo, $tenant, 'envelope_store', $keyId, 'artifact=' . $artifactId);
+        return ['id' => $id, 'artifact_id' => $artifactId, 'created_at' => $now];
+    });
 }
 
 function keyCustodyDisableKey(PDO $pdo, string $tenant, string $id): void
