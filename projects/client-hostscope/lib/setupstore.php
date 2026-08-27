@@ -18,11 +18,17 @@ function setupStorePath(array $bootstrap): string
 function setupStoreOpen(array $bootstrap, bool $create = false): ?PDO
 {
     $path = setupStorePath($bootstrap);
+    if (!str_starts_with($path, '/') || is_link($path)) throw new RuntimeException('setup database path must be absolute and must not be a symbolic link');
     if (!$create && !is_file($path)) return null;
     $dir = dirname($path);
+    if (is_link($dir)) throw new RuntimeException('setup database directory must not be a symbolic link');
     if ($create && !is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
         throw new RuntimeException('could not create the setup data directory');
     }
+    $real = realpath($dir);
+    if ($real === false || !is_dir($real) || is_link($dir)) throw new RuntimeException('setup database directory is unavailable or unsafe');
+    $path = $real . '/' . basename($path);
+    if (is_link($path)) throw new RuntimeException('setup database path must not be a symbolic link');
     $pdo = new PDO('sqlite:' . $path, null, null, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,

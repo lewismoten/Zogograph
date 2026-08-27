@@ -16,6 +16,18 @@ $config = $root . '/lib/config.php';
 file_put_contents($config, "<?php return ['database' => " . var_export($root . '/data/stats.db', true) . "];\n");
 
 try {
+    if (function_exists('symlink') && @symlink($root . '/data', $root . '/linked-data')) {
+        try { setupStoreOpen(['database' => $root . '/linked-data/stats.db'], true); throw new RuntimeException('symlinked setup directory was accepted'); }
+        catch (RuntimeException $error) { setupExpect($error->getMessage() !== 'symlinked setup directory was accepted', $error->getMessage()); }
+        @unlink($root . '/linked-data');
+    }
+    file_put_contents($root . '/setup-target.db', 'not a database');
+    if (function_exists('symlink') && @symlink($root . '/setup-target.db', $root . '/data/setup.db')) {
+        try { setupStoreOpen(['database' => $root . '/data/stats.db'], true); throw new RuntimeException('symlinked setup database was accepted'); }
+        catch (RuntimeException $error) { setupExpect($error->getMessage() !== 'symlinked setup database was accepted', $error->getMessage()); }
+        @unlink($root . '/data/setup.db');
+    }
+    @unlink($root . '/setup-target.db');
     $checks = setupPreflight($root, $config, [
         'php_version' => '8.0.30', 'sqlite' => false, 'commands' => [], 'https' => false, 'cli' => false, 'encryption' => false,
     ]);
