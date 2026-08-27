@@ -2,6 +2,11 @@
 declare(strict_types=1);
 require_once __DIR__ . '/../lib/store.php';
 function custodyExpect(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
+$contract = json_decode((string)file_get_contents(__DIR__ . '/../openapi.json'), true);
+custodyExpect(is_array($contract) && (($contract['components']['schemas']['UnwrapRequest']['properties']['requested_ttl_seconds']['default'] ?? null) === 0),
+    'published custody API contract does not use zero key caching by default');
+custodyExpect(($contract['components']['schemas']['EnvelopeStore']['required'] ?? []) === ['artifact_id', 'envelope_base64'],
+    'published custody API contract omits required envelope fields');
 $root = sys_get_temp_dir() . '/hostscope-custody-' . bin2hex(random_bytes(4)); mkdir($root, 0700, true);
 try {
     $pdo = keyCustodyOpen(['database' => $root . '/service.db']);

@@ -27,6 +27,9 @@ try {
     $custodySignature = sodium_crypto_sign_detached($custodyPayload, $custodySecret);
     packageExpect(sodium_crypto_sign_verify_detached($custodySignature, $custodyPayload, sodium_crypto_sign_publickey($custodyPair)),
         'custody request signature does not verify');
+    $custodySource = file_get_contents(__DIR__ . '/../plugins/hostscope-key-custody/src/KeyCustodyHttpClient.php');
+    packageExpect($custodySource !== false && str_contains($custodySource, 'int $requestedTtl = 0')
+        && str_contains($custodySource, "'requested_ttl_seconds' => \$requestedTtl"), 'custody client does not default to zero key caching');
     $pair = sodium_crypto_sign_keypair();
     $signed = packageSignManifest($manifest, $root, 'test-publisher', sodium_crypto_sign_secretkey($pair));
     packageExpect(packageVerifyIntegrity($signed, $root)['ok'], 'fresh package integrity did not verify');

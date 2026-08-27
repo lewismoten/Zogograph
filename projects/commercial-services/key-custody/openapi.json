@@ -12,11 +12,10 @@
       "post": {"summary": "Create a tenant custody key record", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KeyCreate"}}}}, "responses": {"201": {"description": "Created"}}}
     },
     "/keys/{keyId}": {
-      "get": {"summary": "Read key policy and lifecycle state", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "responses": {"200": {"description": "Metadata only"}}},
-      "patch": {"summary": "Rotate, disable, or change key policy", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "responses": {"200": {"description": "Updated"}}}
+      "patch": {"summary": "Disable or rotate a key", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KeyAction"}}}}, "responses": {"200": {"description": "Updated"}}}
     },
     "/keys/{keyId}/envelopes": {
-      "post": {"summary": "Store a wrapped DEK envelope", "security": [{"enrolledClient": []}], "parameters": [{"$ref": "#/components/parameters/KeyId"}, {"$ref": "#/components/parameters/ClientTimestamp"}, {"$ref": "#/components/parameters/ClientNonce"}, {"$ref": "#/components/parameters/ClientSignature"}], "responses": {"201": {"description": "Envelope recorded"}}},
+      "post": {"summary": "Store a wrapped DEK envelope", "security": [{"enrolledClient": []}], "parameters": [{"$ref": "#/components/parameters/KeyId"}, {"$ref": "#/components/parameters/ClientTimestamp"}, {"$ref": "#/components/parameters/ClientNonce"}, {"$ref": "#/components/parameters/ClientSignature"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EnvelopeStore"}}}}, "responses": {"201": {"description": "Envelope recorded"}}},
       "get": {"summary": "List envelope metadata", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "responses": {"200": {"description": "Metadata only"}}}
     },
     "/keys/{keyId}/envelopes/{artifactId}": {
@@ -57,8 +56,10 @@
       "ClientSignature": {"name": "X-HostScope-Signature", "in": "header", "required": true, "description": "Base64 Ed25519 signature over METHOD, path, timestamp, nonce, and Base64 SHA-256 request-body hash separated by newlines.", "schema": {"type": "string"}}
     },
     "schemas": {
-      "KeyCreate": {"type": "object", "required": ["name", "algorithm", "authorization_ttl_seconds"], "properties": {"name": {"type": "string", "maxLength": 120}, "algorithm": {"const": "aes-256-gcm-envelope"}, "authorization_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 900}}},
-      "UnwrapRequest": {"type": "object", "required": ["envelope_id", "artifact_id", "nonce", "requested_ttl_seconds"], "properties": {"envelope_id": {"type": "string"}, "artifact_id": {"type": "string", "maxLength": 200}, "nonce": {"type": "string", "maxLength": 200}, "requested_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 900}}}
+      "KeyCreate": {"type": "object", "additionalProperties": false, "required": ["name", "authorization_ttl_seconds"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 120}, "authorization_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 900}}},
+      "KeyAction": {"type": "object", "additionalProperties": false, "required": ["action"], "properties": {"action": {"enum": ["disable", "rotate"]}}},
+      "EnvelopeStore": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "envelope_base64"], "properties": {"artifact_id": {"type": "string", "minLength": 1, "maxLength": 200}, "envelope_base64": {"type": "string", "minLength": 1, "maxLength": 1398104}}},
+      "UnwrapRequest": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "nonce"], "properties": {"artifact_id": {"type": "string", "minLength": 1, "maxLength": 200}, "nonce": {"type": "string", "minLength": 1, "maxLength": 200}, "requested_ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 900, "default": 0}}}
     }
   }
 }
