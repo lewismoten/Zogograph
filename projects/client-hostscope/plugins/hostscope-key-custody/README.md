@@ -11,6 +11,11 @@ signing key. The default unwrap cache is zero seconds; an administrator may
 choose up to 15 minutes only after understanding that a cached authorization
 can remain usable until it expires.
 
+The signed settings schema accepts only an `https://` service base and the
+opaque enrolled `ten_…` tenant identifier. This catches common setup mistakes
+before settings are stored; the adapter performs stricter URL checks again when
+it connects.
+
 It sends artifact and envelope identifiers, authenticated request metadata, and
 wrapped-key material only. It must not upload metrics, SQLite databases,
 configuration files, plaintext keys, or billing credentials. Billing is managed
