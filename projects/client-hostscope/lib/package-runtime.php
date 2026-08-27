@@ -793,6 +793,50 @@ function packageRuntimeInvokeCustodyEnrollmentCheck(PDO $registry, array $config
     return packageRuntimeInvokeProbe($registry, $config, $id, 'custody_enrollment_check', $input, true);
 }
 
+/** Adds one remote envelope only after core has rechecked the local artifact.
+ * The DEK is opened in memory and passed once to the separate write sandbox. */
+function packageRuntimeStoreCustodyEnvelope(PDO $registry, array $config, string $webRoot, string $artifactId): array
+{
+    $id = 'hostscope-key-custody';
+    if ($artifactId === '' || strlen($artifactId) > 200 || preg_match('/[\x00-\x1F\x7F]/', $artifactId)) throw new InvalidArgumentException('artifact identity is invalid');
+    $settings = packageRuntimeSettings($registry, $config, $id);
+    $readiness = packageRuntimeProviderReadiness($registry, $config, $id);
+    if (($readiness['state'] ?? '') !== 'awaiting-isolated-runtime') throw new InvalidArgumentException($readiness['reason'] ?? 'custody enrollment is not ready');
+    $enrollment = packageRuntimeProbeOperationEvidence($config, $id, 'custody_enrollment_check');
+    if ($enrollment === null || $enrollment['state'] !== 'enrollment-ready' || $enrollment['probed_at'] < time() - 86400) {
+        throw new InvalidArgumentException('run a successful custody enrollment-readiness check within the last 24 hours before storing an envelope');
+    }
+    $keyId = (string)($settings['custody_key_id'] ?? '');
+    if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId)) throw new InvalidArgumentException('save the active custody key identifier before storing an envelope');
+    $query = $registry->prepare("SELECT local_path, ciphertext_sha256 FROM encryption_artifacts WHERE artifact_id = ? AND state = 'verified'");
+    $query->execute([$artifactId]); $artifact = $query->fetch();
+    if (!is_array($artifact)) throw new InvalidArgumentException('a verified local artifact is required before remote custody can be added');
+    $directory = encryptionArtifactDirectory($config, $webRoot); $root = realpath($directory); $path = realpath((string)$artifact['local_path']);
+    if ($root === false || $path === false || is_link((string)$artifact['local_path']) || !is_file($path)
+        || !str_starts_with($path, rtrim($root, '/') . '/') || !str_ends_with($path, '.sealed')) throw new RuntimeException('the verified artifact file is unavailable or outside the private artifact directory');
+    $ciphertext = hash_file('sha256', $path);
+    if (!is_string($ciphertext) || !hash_equals((string)$artifact['ciphertext_sha256'], $ciphertext)) throw new RuntimeException('the verified artifact ciphertext no longer matches its ledger');
+    $encryption = (array)($config['encryption'] ?? []);
+    if (($encryption['mode'] ?? '') !== 'sealed_copies_local') throw new InvalidArgumentException('local sealed-copy recovery must remain enabled before remote custody can be added');
+    $dek = encryptionReadArtifactDataKey($path, encryptionReadLocalKey((string)($encryption['local_key_file'] ?? ''), $webRoot), $artifactId);
+    encryptionRecordRemoteEnvelopePending($registry, $artifactId, $id, $keyId);
+    try {
+        $result = packageRuntimeInvokeProbe($registry, $config, $id, 'custody_store_envelope', [
+            'service_base_url' => (string)$settings['service_base_url'], 'tls_spki_pin' => $settings['tls_spki_pin'] ?? null,
+            'client_credential' => packageRuntimeSecretValue($registry, $config, $id, (string)$settings['client_credential_secret']),
+            'client_signing_key' => packageRuntimeSecretValue($registry, $config, $id, (string)$settings['client_signing_secret']),
+            'custody_key_id' => $keyId, 'artifact_id' => $artifactId, 'data_key' => base64_encode($dek),
+        ], true);
+        $receipt = strtolower((string)($result['envelope_sha256'] ?? ''));
+        if (!preg_match('/^[a-f0-9]{64}$/', $receipt)) throw new RuntimeException('custody envelope-store response omitted its receipt digest');
+        encryptionRecordRemoteEnvelopeStored($registry, $artifactId, $id, $keyId, $ciphertext, $receipt);
+        return $result;
+    } catch (Throwable $error) {
+        try { encryptionRecordRemoteEnvelopeFailure($registry, $artifactId, $id, $keyId, mb_substr($error->getMessage(), 0, 500)); } catch (Throwable) {}
+        throw $error;
+    }
+}
+
 /**
  * Launches only a signed no-secret readiness probe through an operator-owned
  * sandbox command. It deliberately does not grant isolated_package_runtime or
@@ -925,7 +969,7 @@ function packageRuntimeProbeEvidence(array $config): array
 /** @return ?array{operation:string,state:string,reason:string,probed_at:int} */
 function packageRuntimeProbeOperationEvidence(array $config, string $id, string $operation): ?array
 {
-    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id) || !in_array($operation, ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe'], true)) {
+    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id) || !in_array($operation, ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe', 'custody_enrollment_check'], true)) {
         throw new InvalidArgumentException('package probe operation is invalid');
     }
     $store = setupStoreOpen($config, false);
