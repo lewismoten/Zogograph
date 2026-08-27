@@ -25,10 +25,12 @@ foreach (['/keys', '/subscription', '/billing/checkout', '/billing/portal'] as $
 custodyExpect(($contract['paths']['/keys/{keyId}/wrapping-key']['get']['security'][0]['enrolledClient'] ?? null) === [],
     'published custody API contract omits enrolled-client authentication for public wrapping-key access');
 $api = file_get_contents(__DIR__ . '/../api.php');
+$requestHelper = file_get_contents(__DIR__ . '/../lib/request.php');
 custodyExpect($api !== false && str_contains($api, 'CUSTODY_MAX_REQUEST_BYTES') && str_contains($api, 'request body is too large'),
     'custody API does not bound request-body intake before parsing');
 custodyExpect(str_contains((string)$api, "'/v1/health'"), 'custody API does not provide the documented health endpoint');
-custodyExpect(str_contains((string)$api, "confirm_recovery must be true") && str_contains((string)$api, 'custodyBody($rawBody)'),
+custodyExpect(str_contains((string)$api, "confirm_recovery must be true") && str_contains((string)$api, 'keyCustodyRequestFields($rawBody, [\'confirm_recovery\']')
+    && str_contains((string)$requestHelper, 'request contains unsupported fields'),
     'custody API does not enforce explicit recovery confirmation before deleting an envelope');
 $root = sys_get_temp_dir() . '/hostscope-custody-' . bin2hex(random_bytes(4)); mkdir($root, 0700, true);
 try {

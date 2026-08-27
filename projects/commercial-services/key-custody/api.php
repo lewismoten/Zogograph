@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require_once __DIR__ . '/lib/store.php';
+require_once __DIR__ . '/lib/request.php';
 
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
@@ -26,7 +27,6 @@ $rawBody = (string)file_get_contents('php://input', false, null, 0, CUSTODY_MAX_
 if (strlen($rawBody) > CUSTODY_MAX_REQUEST_BYTES) {
     http_response_code(413); echo json_encode(['error' => 'request body is too large']); exit;
 }
-function custodyBody(string $raw): array { $value = json_decode($raw, true); if (!is_array($value)) throw new InvalidArgumentException('JSON object body is required'); return $value; }
 function custodyReply(int $status, array $body): never { http_response_code($status); echo json_encode($body, JSON_UNESCAPED_SLASHES); exit; }
 try {
     $pdo = keyCustodyOpen($config, __DIR__);
@@ -35,12 +35,12 @@ try {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['keys' => keyCustodyListKeys($pdo, $auth['tenant_id'])]);
     }
     if ($path === '/v1/keys' && $method === 'POST') {
-        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody);
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = keyCustodyRequestFields($rawBody, ['name', 'authorization_ttl_seconds'], ['name', 'authorization_ttl_seconds']);
         $key = keyCustodyCreateKey($pdo, $auth['tenant_id'], (string)($body['name'] ?? ''), (int)($body['authorization_ttl_seconds'] ?? 0), keyCustodyReadMasterKey($config, __DIR__));
         custodyReply(201, ['key' => $key]);
     }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})$#', $path, $match) && $method === 'PATCH') {
-        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody); $action = (string)($body['action'] ?? '');
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = keyCustodyRequestFields($rawBody, ['action', 'authorization_ttl_seconds', 'name'], ['action']); $action = (string)($body['action'] ?? '');
         if ($action === 'disable') { keyCustodyDisableKey($pdo, $auth['tenant_id'], $match[1]); custodyReply(200, ['key_id' => $match[1], 'state' => 'disabled']); }
         if ($action === 'rotate') { custodyReply(200, ['replacement_key' => keyCustodyRotateKey($pdo, $auth['tenant_id'], $match[1], keyCustodyReadMasterKey($config, __DIR__)),
             'warning' => 'The old key remains available for its registered envelopes. Rewrap each artifact under the replacement, delete its old envelope, then retire the old key.']); }
@@ -54,7 +54,7 @@ try {
         throw new InvalidArgumentException('key action must be disable, rotate, retire, or update_policy');
     }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/envelopes$#', $path, $match) && $method === 'POST') {
-        $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody); $body = custodyBody($rawBody);
+        $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody); $body = keyCustodyRequestFields($rawBody, ['artifact_id', 'envelope_base64'], ['artifact_id', 'envelope_base64']);
         $envelope = base64_decode((string)($body['envelope_base64'] ?? ''), true);
         if (!is_string($envelope)) throw new InvalidArgumentException('envelope_base64 is invalid');
         custodyReply(201, ['envelope' => keyCustodyStoreEnvelope($pdo, $auth['tenant_id'], $match[1], trim((string)($body['artifact_id'] ?? '')), $envelope, keyCustodyReadMasterKey($config, __DIR__))]);
@@ -69,7 +69,7 @@ try {
     }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/envelopes/(.+)$#', $path, $match) && $method === 'DELETE') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management');
-        $body = custodyBody($rawBody);
+        $body = keyCustodyRequestFields($rawBody, ['confirm_recovery'], ['confirm_recovery']);
         if (($body['confirm_recovery'] ?? false) !== true) {
             throw new InvalidArgumentException('confirm_recovery must be true after verifying another recovery path');
         }
@@ -79,7 +79,7 @@ try {
             'warning' => 'Deleting an envelope can make its artifact unrecoverable unless another verified recovery envelope exists.']);
     }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/unwrap-authorizations$#', $path, $match) && $method === 'POST') {
-        $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody); $body = custodyBody($rawBody);
+        $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody); $body = keyCustodyRequestFields($rawBody, ['artifact_id', 'nonce', 'requested_ttl_seconds'], ['artifact_id', 'nonce']);
         if (trim((string)($body['artifact_id'] ?? '')) === '' || trim((string)($body['nonce'] ?? '')) === '') throw new InvalidArgumentException('artifact and nonce are required');
         $artifactId = trim((string)($body['artifact_id'] ?? ''));
         $key = keyCustodyUnwrapKey($pdo, $auth['tenant_id'], $match[1], $artifactId, keyCustodyReadMasterKey($config, __DIR__));
@@ -98,7 +98,7 @@ try {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['credentials' => keyCustodyListClientCredentials($pdo, $auth['tenant_id'])]);
     }
     if ($path === '/v1/client-credentials' && $method === 'POST') {
-        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody);
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = keyCustodyRequestFields($rawBody, ['label'], ['label']);
         if (!is_string($body['label'] ?? null)) throw new InvalidArgumentException('enrolled-client credential label is required');
         $credential = keyCustodyCreateAdditionalClientCredential($pdo, $auth['tenant_id'], $body['label']);
         custodyReply(201, ['client_credential_id' => $credential['id'], 'client_token' => $credential['token'], 'client_signing_private_key' => $credential['signing_private_key'],
@@ -126,7 +126,7 @@ try {
         custodyReply(200, ['entitlement' => keyCustodyClientSubscription($pdo, $auth['tenant_id'])]);
     }
     if ($path === '/v1/subscription' && $method === 'PATCH') {
-        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody);
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = keyCustodyRequestFields($rawBody, ['action', 'plan'], ['action']);
         $request = keyCustodyRequestSubscriptionChange($pdo, $auth['tenant_id'], (string)($body['action'] ?? ''), isset($body['plan']) ? (string)$body['plan'] : null);
         custodyReply(202, ['request' => $request, 'detail' => 'The commercial billing service must approve and apply this request.']);
     }
@@ -142,7 +142,7 @@ try {
     }
     if (preg_match('#^/v1/internal/subscriptions/(ten_[a-f0-9]{24})$#', $path, $match) && $method === 'PATCH') {
         if (empty($config['billing_service_token_file'])) custodyReply(503, ['error' => 'commercial billing integration is not configured']);
-        keyCustodyAuthenticateBillingService($config, $bearer, __DIR__); $body = custodyBody($rawBody);
+        keyCustodyAuthenticateBillingService($config, $bearer, __DIR__); $body = keyCustodyRequestFields($rawBody, ['plan', 'state', 'key_quota', 'envelope_quota', 'renews_at'], ['plan', 'state', 'key_quota']);
         if (!is_string($body['plan'] ?? null) || !is_string($body['state'] ?? null) || !is_int($body['key_quota'] ?? null)
             || (array_key_exists('envelope_quota', $body) && !is_int($body['envelope_quota']))
             || (array_key_exists('renews_at', $body) && $body['renews_at'] !== null && !is_int($body['renews_at']))) {
