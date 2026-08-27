@@ -239,9 +239,11 @@ dependency of local encryption.
    The registry, signed installation, explicit grants, schema-validated
    database-backed settings UI/API, private SQLite storage, CLI workflow,
    status API, encrypted secret references, signed declarative private
-   migrations, integrity rechecks, and revocation are implemented. Isolated
-   code loading and a runtime permission boundary remain before packages may
-   execute.
+   migrations, integrity rechecks, and revocation are implemented. A
+   deployment-attested sandbox can run only the signed, bounded no-secret
+   diagnostics (SQLCipher disposable preflight and custody endpoint identity
+   check); secret-bearing code loading and the runtime permission boundary
+   remain before packages may activate a provider operation.
 2. Move the current sealed-copy implementation behind a built-in disabled
    `sealed-copies` package; add setup inventory, recovery proof, restore,
    retention, status, and alerting.
@@ -279,8 +281,10 @@ reference service is separately deployable: it accepts only signed,
 hash-verified ciphertext and has no custody or unwrap API, but no client
 package can use it yet. The commercial key-custody
 reference service is separately testable and requires signed enrollment plus
-an active service entitlement for new envelopes; it is not connected to a
-client runtime or needed for local recovery. Its customer-management API can
+an active service entitlement for new envelopes. The client can run a
+credential-free, isolated endpoint identity probe, but it is not connected to
+secret-bearing envelope/unwrap operations or needed for local recovery. Its
+customer-management API can
 create/list/update policy, stage rotation, retire, and delete envelopes; its
 enrolled-client API is separately signed and can only store envelopes or unwrap
 a registered artifact. Subscription requests use management credentials, while
