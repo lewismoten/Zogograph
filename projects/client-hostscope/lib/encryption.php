@@ -271,7 +271,7 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     $settings = (array)($config['encryption'] ?? []);
     $mode = (string)($settings['mode'] ?? 'none');
     $stores = encryptionSelectedStores($settings);
-    $status = ['mode' => $mode, 'stores' => $stores, 'ready' => false, 'warnings' => [], 'artifacts' => []];
+    $status = ['mode' => $mode, 'stores' => $stores, 'ready' => false, 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null];
     if ($mode === 'none') {
         $status['warnings'][] = 'Encryption is off. Live SQLite files and copies remain unencrypted unless host storage protection is configured separately.';
         return $status;
@@ -289,6 +289,11 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     try { encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot); }
     catch (Throwable $error) { $status['warnings'][] = 'The private local key is not ready: ' . $error->getMessage(); }
     if ($stores === []) $status['warnings'][] = 'No databases or configuration artifact have been selected.';
+    $estimate = encryptionSealingStorageEstimate($config, $webRoot, $stores);
+    $status['storage_estimate'] = $estimate;
+    if ($estimate['free_bytes'] !== null && $estimate['required_bytes'] > 0 && $estimate['free_bytes'] < $estimate['required_bytes']) {
+        $status['warnings'][] = 'The encrypted-copy destination may not have enough free space for the next sealing run.';
+    }
     try {
         $stmt = $pdo->query("SELECT store, MAX(created_at) AS created_at, MAX(last_verified_at) AS last_verified_at, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verified' GROUP BY store");
         foreach ($stmt->fetchAll() as $row) $status['artifacts'][] = ['store' => $row['store'], 'created_at' => (int)$row['created_at'],
@@ -309,6 +314,26 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     }
     $status['ready'] = $stores !== [] && encryptionAvailable() && count($status['warnings']) === 0;
     return $status;
+}
+
+/** Conservative next-seal capacity estimate. SQLite snapshots and ciphertext
+ * coexist briefly, so one source-size estimate alone is not sufficient. */
+function encryptionSealingStorageEstimate(array $config, string $webRoot, array $stores): array
+{
+    $base = dirname((string)($config['database'] ?? ''));
+    $settings = (array)($config['encryption'] ?? []);
+    $directory = (string)($settings['artifact_directory'] ?? '') ?: $base . '/sealed';
+    $probe = $directory;
+    while (!is_dir($probe) && dirname($probe) !== $probe) $probe = dirname($probe);
+    $paths = [
+        'config' => $webRoot . '/lib/config.php', 'setup' => $base . '/setup.db', 'account' => (string)($config['database'] ?? ''),
+        'host' => (string)($config['host']['database'] ?? '') ?: $base . '/host.db', 'ai' => (string)($config['ai']['database'] ?? '') ?: $base . '/ai.db',
+    ];
+    $sourceBytes = 0;
+    foreach ($stores as $store) if (isset($paths[$store]) && is_file($paths[$store])) $sourceBytes += max(0, (int)filesize($paths[$store]));
+    $free = is_dir($probe) ? @disk_free_space($probe) : false;
+    return ['source_bytes' => $sourceBytes, 'required_bytes' => $sourceBytes === 0 ? 0 : $sourceBytes * 2 + 10485760,
+        'free_bytes' => is_float($free) || is_int($free) ? (int)$free : null];
 }
 
 /** Allows one missed scheduled run before reporting recovery coverage as stale. */

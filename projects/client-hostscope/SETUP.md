@@ -178,10 +178,12 @@ php cron.php --seal
 ```
 
 Each new sealed artifact is fully decrypted into a short-lived private temporary
-file before HostScope records it as verified. This is a recovery proof, so the
-first run needs temporary free disk space approximately equal to the selected
-source database/configuration file. A failed proof leaves the original live
-data untouched and does not create a verified ledger record.
+file before HostScope records it as verified. A sealing run also briefly keeps a
+SQLite snapshot and its ciphertext, so plan for about twice the selected source
+size plus a small margin at the encrypted-copy destination. The dashboard shows
+its conservative estimate and warns when observed free space is lower. A failed
+proof leaves the original live data untouched and does not create a verified
+ledger record.
 
 The dashboard's **System → Protection** view tracks this evidence. Daily
 policies warn after two days without a new verified copy; weekly policies warn

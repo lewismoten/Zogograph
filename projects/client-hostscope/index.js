@@ -11734,11 +11734,16 @@ function showPackageRuntimeRevoke(row) {
 function renderEncryptionStatus(data) {
   const body = $("encryptionBody");
   const names = { none: "Off", sealed_copies_local: "Verified encrypted copies", operator_managed_volume: "Host/VM volume protection" };
-  const parts = [factGrid([
+  const overview = [
     ["Protection mode", names[data.mode] || "Unavailable"],
     ["Selected stores", data.stores?.length ? data.stores.join(", ") : "None"],
     ["Evidence", data.ready ? "Ready" : "Needs attention"],
-  ])];
+  ];
+  if (data.storage_estimate?.required_bytes) {
+    const free = data.storage_estimate.free_bytes == null ? "free space unavailable" : `${humanBytes(data.storage_estimate.free_bytes)} free`;
+    overview.push(["Space for next seal", `${humanBytes(data.storage_estimate.required_bytes)} estimated · ${free}`]);
+  }
+  const parts = [factGrid(overview)];
   if (data.mode === "none") {
     parts.push(note("Protection is off. Live SQLite databases and ordinary copies remain unencrypted unless your host protects their storage separately. Start with the setup wizard's Encryption section; HostScope will not generate, upload, or store a private key from this page."));
   } else if (data.mode === "operator_managed_volume") {
