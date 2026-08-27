@@ -198,6 +198,12 @@ overwrites a live database. It is the low-risk first proof that the local key
 and artifact format can be opened; use the CLI restore instructions below for
 an actual replacement recovery exercise.
 
+The default **Recovery-drill review period** is 90 days. HostScope warns in the
+Protection view and through normal encryption-recovery alerts when a store's
+last drill becomes older than that period. Choose a shorter interval for more
+critical systems, or set it to `0` only if you deliberately want the required
+first drill without recurring reminders.
+
 Each new sealed artifact is fully decrypted into a short-lived private temporary
 file before HostScope records it as verified. A sealing run also briefly keeps a
 SQLite snapshot and its ciphertext, so plan for about twice the selected source
@@ -215,10 +221,10 @@ recovery point objective you selected.
 When normal alert delivery is enabled, HostScope also adds the configurable
 **Encrypted-copy recovery needs attention** rule. It warns when a selected
 store has no verified copy, has not completed its first non-destructive
-recovery drill, or has missed its selected schedule, and reports an error when
-a retained copy fails verification or the configured local key is no longer
-usable. It deliberately does not alert for host/VM volume protection: HostScope
-cannot verify a host encryption claim.
+recovery drill, has an overdue drill review, or has missed its selected
+schedule, and reports an error when a retained copy fails verification or the
+configured local key is no longer usable. It deliberately does not alert for
+host/VM volume protection: HostScope cannot verify a host encryption claim.
 
 ```cron
 # Daily encrypted copies. This does nothing unless encryption.mode is selected.

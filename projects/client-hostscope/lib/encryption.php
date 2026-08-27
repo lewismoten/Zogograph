@@ -348,6 +348,9 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
         }
         if ((int)($drilled[$store] ?? 0) <= 0) {
             $status['warnings'][] = "No successful non-destructive recovery drill has been recorded yet for {$store}.";
+        } elseif (($maximumDrillAge = encryptionRecoveryDrillMaximumAge($settings)) !== null
+            && (int)$drilled[$store] < time() - $maximumDrillAge) {
+            $status['warnings'][] = "The latest non-destructive recovery drill for {$store} is older than the selected review period.";
         }
     }
     $status['ready'] = $expected !== [] && encryptionAvailable() && count(array_filter($status['warnings'], fn(string $warning): bool => !str_contains($warning, 'is not present yet, so it is waiting'))) === 0;
@@ -387,6 +390,14 @@ function encryptionScheduleMaximumAge(string $schedule): ?int
         'weekly' => 9 * 86400,
         default => null,
     };
+}
+
+/** Zero deliberately disables periodic reminders after the initial drill. */
+function encryptionRecoveryDrillMaximumAge(array $settings): ?int
+{
+    $days = $settings['recovery_drill_max_age_days'] ?? 90;
+    if (!is_int($days) && !(is_string($days) && ctype_digit($days))) return 90 * 86400;
+    return (int)$days <= 0 ? null : min(36500, (int)$days) * 86400;
 }
 
 /** @return list<string> */

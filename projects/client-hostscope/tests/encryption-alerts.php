@@ -20,6 +20,12 @@ try {
         'missing initial encrypted-copy recovery drill did not raise a warning');
     $pdo->exec('UPDATE encryption_artifacts SET last_recovery_drill_at = ' . time());
     encryptionAlertExpect(encryptionRecoveryAlerts($config, $pdo) === [], 'current drilled encrypted-copy evidence still raised an alert');
+    $config['encryption']['recovery_drill_max_age_days'] = 1;
+    $pdo->prepare('UPDATE encryption_artifacts SET last_recovery_drill_at = ?')->execute([time() - 2 * 86400]);
+    $overdueDrill = encryptionRecoveryAlerts($config, $pdo);
+    encryptionAlertExpect(count($overdueDrill) === 1 && str_contains($overdueDrill[0]['detail'], 'older than the selected review period'),
+        'overdue encrypted-copy recovery drill did not raise a warning');
+    $pdo->exec('UPDATE encryption_artifacts SET last_recovery_drill_at = ' . time());
     $pdo->prepare('UPDATE encryption_artifacts SET created_at = ?')->execute([time() - 3 * 86400]);
     $stale = encryptionRecoveryAlerts($config, $pdo);
     encryptionAlertExpect(count($stale) === 1 && str_contains($stale[0]['detail'], 'older than the selected schedule'),

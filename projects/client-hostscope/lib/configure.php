@@ -201,6 +201,17 @@ function configFields(array $sample): array
             'when' => ['encryption_mode' => 'sealed_copies_local'],
         ],
         [
+            'key' => 'encryption_recovery_drill_max_age_days',
+            'path' => ['encryption', 'recovery_drill_max_age_days'],
+            'type' => 'int',
+            'label' => 'Recovery-drill review period (days)',
+            'help' => 'HostScope warns when a selected store has not completed a non-destructive recovery drill within this period. Ninety days is the recommended starting point; zero disables periodic reminders after the first required drill.',
+            'default' => (int)($sample['encryption']['recovery_drill_max_age_days'] ?? 90),
+            'validate' => fn(string $v): ?string => ctype_digit($v) && (int)$v <= 36500
+                ? null : 'Enter a whole number from 0 to 36500.',
+            'when' => ['encryption_mode' => 'sealed_copies_local'],
+        ],
+        [
             'key' => 'password',
             'path' => ['password_hash'],
             'type' => 'password',

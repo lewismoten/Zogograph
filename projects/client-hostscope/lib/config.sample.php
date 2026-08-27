@@ -44,6 +44,8 @@ return [
         // their cron/host scheduler responsibility.
         'backup_schedule' => 'daily', // manual, daily, or weekly
         'retention_days' => 30, // 0 keeps every local sealed artifact
+        // Re-run a non-destructive recovery drill at least this often; 0 disables reminders.
+        'recovery_drill_max_age_days' => 90,
         // Optional per-store overrides: config, setup, account, host, ai => 0..36500 days.
         'retention_days_by_store' => [],
     ],

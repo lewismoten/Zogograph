@@ -142,6 +142,14 @@ try {
             'recovery drill did not record current selected-store recovery evidence');
         $status = encryptionStatus($live, $config, $web);
         encryptionExpect($status['ready'] && count($status['artifacts']) === 2, 'sealed-copy status did not report verified coverage');
+        $overdueDrill = $config; $overdueDrill['encryption']['recovery_drill_max_age_days'] = 1;
+        $live->prepare('UPDATE encryption_artifacts SET last_recovery_drill_at = ?')->execute([time() - 2 * 86400]);
+        $overdueStatus = encryptionStatus($live, $overdueDrill, $web);
+        encryptionExpect(!$overdueStatus['ready'] && str_contains(implode(' ', $overdueStatus['warnings']), 'older than the selected review period'),
+            'overdue recovery drill was reported as current protection evidence');
+        $live->prepare('UPDATE encryption_artifacts SET last_recovery_drill_at = ?')->execute([time()]);
+        encryptionExpect(encryptionRecoveryDrillMaximumAge(['recovery_drill_max_age_days' => 0]) === null,
+            'zero recovery-drill review period did not disable periodic reminders');
         encryptionExpect(is_array($status['storage_estimate']) && $status['storage_estimate']['required_bytes'] > $status['storage_estimate']['source_bytes'],
             'sealed-copy status did not estimate next-run storage needs');
         $optional = $config; $optional['encryption']['stores'] = ['account', 'host', 'ai'];

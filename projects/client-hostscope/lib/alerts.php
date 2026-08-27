@@ -333,6 +333,9 @@ function encryptionRecoveryAlerts(array $config, PDO $pdo): array
         if (in_array($store, ['host', 'ai'], true) && !is_file($paths[$store])) continue;
         if (!isset($latest[$store])) { $problems[] = "No verified encrypted copy exists for {$store}."; continue; }
         if (($drilled[$store] ?? 0) <= 0) $problems[] = "No successful non-destructive recovery drill has been recorded yet for {$store}.";
+        elseif (($maximumDrillAge = encryptionRecoveryDrillMaximumAge($settings)) !== null && $drilled[$store] < time() - $maximumDrillAge) {
+            $problems[] = "The latest non-destructive recovery drill for {$store} is older than the selected review period.";
+        }
         if ($maximumAge !== null && $latest[$store] < time() - $maximumAge) $problems[] = "The newest verified encrypted copy for {$store} is older than the selected schedule.";
     }
     if ($problems === []) return [];
