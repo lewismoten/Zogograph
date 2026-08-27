@@ -26,15 +26,12 @@ function db(array $config): PDO
     }
 
     $fresh = !file_exists($file);
-
+    $previousUmask = umask(0077);
+    try {
     $pdo = new PDO('sqlite:' . $file, null, null, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
-
-    if ($fresh) {
-        @chmod($file, 0600);
-    }
 
     /*
      * Write-ahead logging, so a dashboard reading while the collector writes
@@ -47,8 +44,16 @@ function db(array $config): PDO
     $pdo->exec('PRAGMA busy_timeout = 5000');
 
     migrate($pdo, $fresh);
+    dbPrivateSqliteFiles($file);
 
     return $pdo;
+    } finally { umask($previousUmask); }
+}
+
+/** Core account data and SQLite journals contain operational and secret state. */
+function dbPrivateSqliteFiles(string $file): void
+{
+    foreach ([$file, $file . '-wal', $file . '-shm'] as $part) if (is_file($part) && !is_link($part)) @chmod($part, 0600);
 }
 
 /**

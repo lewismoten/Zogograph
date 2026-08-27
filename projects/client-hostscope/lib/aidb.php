@@ -67,6 +67,8 @@ function aiDb(array $config, bool $forWriting = true): ?PDO
         }
 
         $fresh = !is_file($path);
+        $previousUmask = umask(0077);
+        try {
         $pdo = new PDO('sqlite:' . $path, null, null, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -85,13 +87,20 @@ function aiDb(array $config, bool $forWriting = true): ?PDO
         $pdo->exec('PRAGMA busy_timeout = 3000');
 
         aiMigrate($pdo, $fresh);
-        @chmod($path, 0600);
+        aiPrivateSqliteFiles($path);
 
         $handle = $pdo;
         return $handle;
+        } finally { umask($previousUmask); }
     } catch (Throwable) {
         return null;
     }
+}
+
+/** Assistant transcripts and journals remain private to the web account. */
+function aiPrivateSqliteFiles(string $path): void
+{
+    foreach ([$path, $path . '-wal', $path . '-shm'] as $file) if (is_file($file) && !is_link($file)) @chmod($file, 0600);
 }
 
 function aiMigrate(PDO $pdo, bool $fresh = false): void
