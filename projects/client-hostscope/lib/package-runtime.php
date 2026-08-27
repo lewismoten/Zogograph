@@ -35,7 +35,7 @@ function packageRuntimeTrustedKeys(array $keys): array
     return $out;
 }
 
-/** @return array{id:string,version:string,publisher:string,capabilities:list<string>,runtime:array,settings_schema:?string,data:array,integrity:array,signature:array} */
+/** @return array{id:string,version:string,publisher:string,capabilities:list<string>,runtime:array,settings_schema:?string,data:array,compatibility:array,integrity:array,signature:array} */
 function packageRuntimeManifest(string $directory, array $trustedKeys): array
 {
     $root = realpath($directory);
@@ -79,6 +79,7 @@ function packageRuntimeManifest(string $directory, array $trustedKeys): array
         }
     }
     sort($migrations, SORT_STRING); $data['migrations'] = $migrations;
+    $compatibility = packageRuntimeManifestCompatibility((array)($raw['compatibility'] ?? []));
     $integrity = packageVerifyIntegrity($raw, $root);
     if (!$integrity['ok']) throw new InvalidArgumentException($integrity['detail']);
     $signature = packageVerifySignature($raw, $trustedKeys);
@@ -87,7 +88,58 @@ function packageRuntimeManifest(string $directory, array $trustedKeys): array
     }
     return ['id' => $id, 'version' => $version, 'publisher' => $publisher, 'capabilities' => $capabilities,
         'runtime' => $runtime, 'settings_schema' => isset($raw['settings_schema']) ? (string)$raw['settings_schema'] : null,
-        'data' => $data, 'integrity' => (array)$raw['integrity'], 'signature' => (array)$raw['signature']];
+        'data' => $data, 'compatibility' => $compatibility, 'integrity' => (array)$raw['integrity'], 'signature' => (array)$raw['signature']];
+}
+
+/** Normalizes requirements before a package is installed; this never loads its code. */
+function packageRuntimeManifestCompatibility(array $compatibility): array
+{
+    $minimumPhp = trim((string)($compatibility['min_php'] ?? ''));
+    if ($minimumPhp !== '' && !preg_match('/^[0-9]+\.[0-9]+(?:\.[0-9]+)?$/', $minimumPhp)) {
+        throw new InvalidArgumentException('package minimum PHP version is invalid');
+    }
+    $extensions = array_values(array_unique((array)($compatibility['requires_extensions'] ?? [])));
+    $runtime = $compatibility['requires_runtime_capability'] ?? [];
+    $runtime = is_string($runtime) ? [$runtime] : array_values(array_unique((array)$runtime));
+    if (count($extensions) > 40 || count($runtime) > 20) throw new InvalidArgumentException('package compatibility requirements are too large');
+    foreach ([$extensions, $runtime] as $requirements) foreach ($requirements as $requirement) {
+        if (!is_string($requirement) || !preg_match('/^[a-z][a-z0-9_-]{1,62}$/', $requirement)) {
+            throw new InvalidArgumentException('package compatibility requirement is invalid');
+        }
+    }
+    sort($extensions, SORT_STRING); sort($runtime, SORT_STRING);
+    return ['min_php' => $minimumPhp, 'requires_extensions' => $extensions, 'requires_runtime_capability' => $runtime];
+}
+
+/** @return array{status:string,detail:string} Safe host facts; package PHP is never loaded. */
+function packageRuntimeCompatibility(array $manifest): array
+{
+    $requirements = packageRuntimeManifestCompatibility((array)($manifest['compatibility'] ?? []));
+    if ($requirements['min_php'] !== '' && version_compare(PHP_VERSION, $requirements['min_php'], '<')) {
+        return ['status' => 'unavailable', 'detail' => 'requires PHP ' . $requirements['min_php'] . ' or newer'];
+    }
+    foreach ($requirements['requires_extensions'] as $extension) {
+        if (!extension_loaded($extension)) return ['status' => 'unavailable', 'detail' => 'requires PHP extension ' . $extension];
+    }
+    foreach ($requirements['requires_runtime_capability'] as $capability) {
+        if ($capability === 'isolated_package_runtime') return ['status' => 'unavailable', 'detail' => 'the isolated package runtime is not installed'];
+        if ($capability === 'encrypted_sqlite_driver') {
+            if (!packageRuntimeHasSqlcipherDriver()) return ['status' => 'unavailable', 'detail' => 'a SQLCipher-capable PDO SQLite driver was not detected'];
+            continue;
+        }
+        return ['status' => 'unavailable', 'detail' => 'requires unsupported runtime capability ' . $capability];
+    }
+    return ['status' => 'ready', 'detail' => 'platform requirements are met; package execution remains separately governed'];
+}
+
+/** PDO probing is core-owned and read-only; it is not package code execution. */
+function packageRuntimeHasSqlcipherDriver(): bool
+{
+    if (!class_exists(PDO::class) || !in_array('sqlite', PDO::getAvailableDrivers(), true)) return false;
+    try {
+        $pdo = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        return trim((string)$pdo->query('PRAGMA cipher_version')->fetchColumn()) !== '';
+    } catch (Throwable) { return false; }
 }
 
 function packageRuntimeRelativePath(string $path): bool
@@ -160,7 +212,7 @@ function packageRuntimeRemoveDirectory(string $directory): void
     @rmdir($directory);
 }
 
-/** @return list<array{id:string,version:string,publisher:string,enabled:bool,revoked:bool,integrity:bool,integrity_detail:string,capabilities:list<string>,grants:list<string>,state:string}> */
+/** @return list<array{id:string,version:string,publisher:string,enabled:bool,revoked:bool,integrity:bool,integrity_detail:string,compatibility:array,capabilities:list<string>,grants:list<string>,state:string}> */
 function packageRuntimePackages(PDO $pdo): array
 {
     $grants = [];
@@ -176,10 +228,12 @@ function packageRuntimePackages(PDO $pdo): array
         sort($given, SORT_STRING);
         $revoked = $row['revocation_reason'] !== null;
         $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$row['install_path'], (string)($row['manifest_sha256'] ?? ''));
+        $compatibility = packageRuntimeCompatibility($manifest);
         $enabled = $integrity['ok'] && !$revoked && $row['enabled_at'] !== null && $required === $given;
         $out[] = ['id' => $row['package_id'], 'version' => $row['version'], 'publisher' => $row['publisher'],
             'enabled' => $enabled, 'revoked' => $revoked, 'integrity' => $integrity['ok'], 'integrity_detail' => $integrity['detail'], 'capabilities' => $required, 'grants' => $given,
-            'state' => !$integrity['ok'] ? 'integrity failed: ' . $integrity['detail'] : ($revoked ? 'revoked: ' . $row['revocation_reason'] : ($enabled ? 'registered; execution runtime pending' : 'needs explicit capability grants'))];
+            'compatibility' => $compatibility,
+            'state' => !$integrity['ok'] ? 'integrity failed: ' . $integrity['detail'] : ($revoked ? 'revoked: ' . $row['revocation_reason'] : ($enabled ? 'registered; ' . $compatibility['detail'] : 'needs explicit capability grants'))];
     }
     return $out;
 }

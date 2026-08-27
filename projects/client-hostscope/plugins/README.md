@@ -54,3 +54,10 @@ that altered package code is safe.
 
 These packages are intentionally unavailable until the isolated runtime can
 enforce their capabilities, settings/secret boundaries, and audit trail.
+
+The **Package runtime** page performs a core-owned, non-executing platform
+check before presenting a package as ready. It checks declared PHP version and
+extension requirements, detects a genuine SQLCipher PDO driver where one is
+requested, and reports that isolated execution is still unavailable. This is a
+setup explanation only: a passing platform check never loads package code,
+opens a provider connection, or activates a protection claim.

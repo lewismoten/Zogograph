@@ -11663,6 +11663,7 @@ function renderPackageRuntime(data) {
     { label: "Package", render: row => `${row.id} · ${row.version}` },
     { label: "Publisher", render: row => row.publisher },
     { label: "Integrity", render: row => row.integrity ? "Verified" : "Failed" },
+    { label: "Platform", render: row => row.compatibility?.status === "ready" ? "Ready" : row.compatibility?.detail || "Not checked" },
     { label: "Requested capabilities", render: row => row.capabilities.join(", ") },
     { label: "Granted", render: row => row.grants.length ? row.grants.join(", ") : "None" },
     { label: "Status", render: row => row.state },

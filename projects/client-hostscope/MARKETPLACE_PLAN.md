@@ -49,6 +49,16 @@ Each delivery item requires a server-side authorization test, malformed
 manifest coverage, capability-denial coverage, migration/upgrade coverage, and
 documentation that describes actual behavior rather than planned behavior.
 
+### Current non-executing compatibility evidence
+
+Before executable isolation exists, core validates the signed package's
+declared minimum PHP version and required extensions, and can detect a real
+SQLCipher-capable PDO driver without loading any package entry point. The
+package dashboard displays the result so an administrator sees why a package
+is unavailable. A passing result does not grant execution, network access, or
+live-database encryption; it only avoids asking the operator to guess which
+platform prerequisite is missing.
+
 ### Implemented local provenance
 
 Manifests may carry an Ed25519 signature. When a signature is present,

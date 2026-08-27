@@ -31,6 +31,12 @@ try {
     $trustedKey = ['test-publisher' => ['publisher' => 'Test publisher',
         'public_key' => base64_encode(sodium_crypto_sign_publickey($pair))]];
     runtimeExpect(packageRuntimeTrustedKeys($trustedKey) === $trustedKey, 'trusted publisher key was not normalized');
+    runtimeExpect(packageRuntimeCompatibility(['compatibility' => ['requires_runtime_capability' => 'isolated_package_runtime']])['status'] === 'unavailable',
+        'package runtime claimed its absent isolation capability was available');
+    runtimeExpect(packageRuntimeCompatibility(['compatibility' => ['requires_extensions' => ['hostscope_test_missing_extension']]])['status'] === 'unavailable',
+        'missing package PHP extension was presented as available');
+    try { packageRuntimeManifestCompatibility(['min_php' => 'not-a-version']); throw new RuntimeException('invalid package PHP compatibility was accepted'); }
+    catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'invalid package PHP compatibility was accepted', $error->getMessage()); }
     $fields = array_column(configFields(require __DIR__ . '/../lib/config.sample.php'), null, 'key');
     $field = $fields['package_runtime_trusted_keys'];
     [, $keyProblem] = parseField($field, json_encode($trustedKey, JSON_THROW_ON_ERROR));
@@ -62,7 +68,7 @@ try {
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'missing grant was accepted', $error->getMessage()); }
     packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator');
     $after = packageRuntimePackages($pdo)[0];
-    runtimeExpect($after['enabled'] && $after['state'] === 'registered; execution runtime pending', 'package was not registered after explicit grant');
+    runtimeExpect($after['enabled'] && str_starts_with($after['state'], 'registered; platform requirements are met'), 'package was not registered after explicit grant');
     runtimeExpect(packageRuntimeIntegrityAlerts($pdo) === [], 'verified package raised an integrity alert');
     packageRuntimeRevoke($pdo, 'test-runtime', 'test compromise response', 'administrator');
     $revoked = packageRuntimePackages($pdo)[0];
