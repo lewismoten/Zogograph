@@ -68,6 +68,13 @@ foreach ([
         throw new RuntimeException("missing media authorization safeguard: {$file}");
     }
 }
+foreach (['peer-data.php', 'peer-connect.php', 'openid.php'] as $file) {
+    $source = file_get_contents(__DIR__ . '/../' . $file);
+    if ($source === false || !str_contains($source, "require_once __DIR__ . '/lib/setupstore.php'")
+        || !str_contains($source, 'loadConfiguredSettings($file)')) {
+        throw new RuntimeException('standalone peer/OIDC endpoint bypasses the shared configuration store: ' . $file);
+    }
+}
 foreach ([
     "PHP_SAPI !== 'cli'",
     "saveConfiguredSettings(\$config, \$configFile",

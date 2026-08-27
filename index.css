@@ -66,6 +66,12 @@
 
 .try-textarea { width: 100%; min-height: 12rem; }
 
+/* First-run guidance is evidence-driven, not a dismissible marketing tour. */
+.onboarding { border-color: var(--accent); background: var(--panel-hover); }
+.onboarding-list { margin: 0; padding-left: 1.3rem; }
+.onboarding-list li { margin: 8px 0; }
+.onboarding-list a { margin-left: 6px; }
+
 /* A report should remain useful off-screen: controls and navigation do not. */
 @media print {
   :root { color-scheme: light; }
@@ -2111,6 +2117,23 @@ svg.dial.is-dead { animation: none; }
   background: var(--bg);
   font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+.terminal-editor-syntax {
+  max-height: min(58vh, 34rem);
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.syntax-comment { color: var(--dim); font-style: italic; }
+.syntax-string { color: var(--ok); }
+.syntax-number { color: var(--warn); }
+.syntax-keyword { color: var(--accent); font-weight: 600; }
 .editor-browser { border-top: 1px solid var(--line-soft); }
 .editor-browser-row { display: flex; gap: 12px; align-items: baseline; justify-content: space-between;
   padding: 7px 0; border-bottom: 1px solid var(--line-soft); }

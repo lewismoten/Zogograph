@@ -80,6 +80,11 @@ php cron.php --scan
 
 Then open the site. `data/stats.db` is created on the first run.
 
+On a fresh installation, the overview keeps a short setup panel visible until
+it has both a first vital reading and a completed storage scan. Each step links
+to the exact collector schedule or storage view needed to finish it; it
+disappears automatically once the evidence exists.
+
 ### Migration safety
 
 Before HostScope applies a schema migration to an existing SQLite database, it
@@ -1934,6 +1939,11 @@ line-ending, recovery-copy, concurrent-change, and read-only safeguards.
 It identifies ASCII or UTF-8 text, line-ending convention, permissions, and
 modification time before editing. **Review changes** (or `Ctrl/Cmd+Shift+D`)
 shows a bounded line-by-line preview before the protected save.
+For common PHP, JavaScript, JSON, HTML, CSS, shell, YAML, INI, and XML files,
+**Syntax preview** renders a local, read-only colorized reading view; it does
+not execute or send the file and the native editor remains authoritative.
+Closing an edited file with the visible Close action or Escape asks before
+discarding unsaved text; an unchanged file closes immediately.
 Credential-bearing environment, private-key, database, and known secret
 configuration files are refused server-side even when they are inside the
 watched directory; use a shell or the host’s secret-management workflow for

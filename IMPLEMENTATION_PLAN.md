@@ -228,6 +228,15 @@ local change preview makes additions and removals reviewable before the existing
 atomic save; legacy 8-bit data remains safely refused rather than risking an
 invalid browser JSON response.
 
+Recognized source and configuration files now offer a local read-only syntax
+preview using text nodes only. It provides syntax-aware reading without
+executing or serializing a file, while the native textarea remains the
+accessible editing surface and protected save workflow.
+
+Editor dialogs now ask before a Close or Escape discards changed native-textarea
+content. The guard compares the browser-normalized opened value, so preserved
+CRLF files do not produce a false unsaved-change warning.
+
 The editor now also refuses environment files, private keys, local databases,
 and known secret-bearing configuration files on the server, even if they sit
 inside the watched root. This keeps credentials out of browser responses and
@@ -301,6 +310,16 @@ issuance and token exchange. A repeatable OpenSSL-backed check covers discovery,
 strict S256 PKCE, one-time code consumption, RS256 token verification, audience,
 and nonce. This is evidence for peer identity only, not a claim that external
 OIDC sign-in is implemented.
+
+The overview now recognizes an installation with no vital reading or completed
+storage scan and shows concise, evidence-driven onboarding links. It is not a
+dismissible tour: it clears only after both foundational collectors have
+produced real local evidence.
+
+Standalone peer data and peer connection entry points now use the shared
+configuration store, matching the API and OIDC provider. A static policy check
+guards these externally reachable routes against silently returning to direct
+configuration inclusion.
 
 The header now offers local browser-only display preferences for readable text
 size and reduced motion. The system preference remains the default; an explicit

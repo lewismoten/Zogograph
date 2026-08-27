@@ -3563,6 +3563,42 @@ function syncCategoryOptions() {
   if (wanted.includes(chosen)) select.value = chosen;
 }
 
+/** First-run guidance vanishes only once the underlying evidence exists. */
+function renderOnboarding(overview) {
+  const panel = $("onboarding");
+  const body = $("onboardingBody");
+  const missingVitals = !overview.vitals;
+  const missingScan = !overview.scan;
+  panel.hidden = !missingVitals && !missingScan;
+  if (panel.hidden) return;
+
+  const intro = document.createElement("p");
+  intro.className = "muted small";
+  intro.textContent = "HostScope is configured but does not yet have enough local evidence to show its full dashboard.";
+  const list = document.createElement("ol");
+  list.className = "onboarding-list";
+  const step = (text, href, label) => {
+    const item = document.createElement("li");
+    item.append(document.createTextNode(text));
+    const link = document.createElement("a");
+    link.href = href;
+    link.textContent = label;
+    item.appendChild(link);
+    list.appendChild(item);
+  };
+  if (missingVitals) {
+    step("Set up or run the account collector for its first vital reading.", "#/scans-account", "Collector schedule");
+  } else {
+    step("Vital readings are arriving. Keep the collector scheduled so charts can build history.", "#/scans-account", "Review schedule");
+  }
+  if (missingScan) {
+    step("Run the first storage scan to identify what uses space.", "#/storage", "Open Storage");
+  } else {
+    step("The first storage scan is complete. Review the largest items and set alerts when ready.", "#/storage-files", "Review storage");
+  }
+  body.replaceChildren(intro, list);
+}
+
 /* ------------------------------------------------------------------ views -- */
 
 /*
@@ -3604,6 +3640,7 @@ async function refreshShared() {
   syncLiveAvailability();
   syncCategoryOptions();
   syncScanButton(overview);
+  renderOnboarding(overview);
 
   state.overview = overview;
   state.lastReadingAt = overview.vitals ? Number(overview.vitals.taken_at) : null;
@@ -13995,6 +14032,39 @@ function terminalEditorDiff(before, after) {
   return shown.join("\n");
 }
 
+/** A small, local reader for common configuration and source formats. */
+function terminalEditorSyntaxLanguage(path) {
+  const extension = (path.match(/\.([a-z0-9]+)$/i) || ["", ""])[1].toLowerCase();
+  return ["php", "js", "mjs", "cjs", "ts", "json", "html", "htm", "css", "sh", "bash", "zsh", "yml", "yaml", "ini", "conf", "xml"].includes(extension)
+    ? extension : null;
+}
+
+/** Builds text nodes only: previewing code must never interpret it as markup. */
+function terminalEditorSyntaxPreview(path, source) {
+  const language = terminalEditorSyntaxLanguage(path);
+  if (language === null) return null;
+  const preview = document.createElement("pre");
+  preview.className = "terminal-editor-syntax";
+  preview.setAttribute("aria-label", `${language.toUpperCase()} syntax preview`);
+  const matcher = /\/\*[\s\S]*?\*\/|(?:\/\/|#)[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b(?:true|false|null|undefined|function|return|if|else|for|while|class|const|let|var|public|private|static|new|array|SELECT|FROM|WHERE)\b|\b\d+(?:\.\d+)?\b/g;
+  let at = 0;
+  for (const match of source.matchAll(matcher)) {
+    const index = match.index ?? 0;
+    preview.append(document.createTextNode(source.slice(at, index)));
+    const token = match[0];
+    const span = document.createElement("span");
+    span.className = token.startsWith("/*") || token.startsWith("//") || token.startsWith("#")
+      ? "syntax-comment" : token.startsWith("\"") || token.startsWith("'")
+      ? "syntax-string" : /^\d/.test(token)
+      ? "syntax-number" : "syntax-keyword";
+    span.textContent = token;
+    preview.appendChild(span);
+    at = index + token.length;
+  }
+  preview.append(document.createTextNode(source.slice(at)));
+  return preview;
+}
+
 async function openTerminalEditor(path) {
   const data = await api("terminal-editor", { path });
   const editable = Boolean(data.writable && state.access?.write);
@@ -14007,6 +14077,7 @@ async function openTerminalEditor(path) {
   text.readOnly = !editable;
   text.setAttribute("aria-label", `Contents of ${data.path}`);
   text.value = data.text;
+  const openedText = text.value;
   const editor = document.createElement("div");
   editor.className = "terminal-editor-wrap";
   const lines = document.createElement("pre");
@@ -14121,7 +14192,9 @@ async function openTerminalEditor(path) {
     restore.className = "link danger";
     restore.textContent = "Restore selected recovery copy";
     restore.addEventListener("click", async () => {
-      if (!(await confirmDialog("Restore this recovery copy?\n\nYour current file is copied privately before the restore. Any unsaved text in this dialog will be discarded.", "Restore copy"))) return;
+      if (!(await askFirst("Restore this recovery copy?", [
+        "Your current file is copied privately before the restore. Any unsaved text in this dialog will be discarded.",
+      ], "Restore copy", true))) return;
       try {
         const saved = await post("terminal-editor-restore", {
           path: data.path, backup: backup.value, fingerprint: data.fingerprint,
@@ -14131,6 +14204,21 @@ async function openTerminalEditor(path) {
       } catch (error) { notice(String(error.message || error)); }
     });
     parts.push(fieldRow("Recovery copy", backup, "Private pre-save copy. Restoring creates a new copy of the current version."), restore);
+  }
+  const syntax = terminalEditorSyntaxLanguage(data.path);
+  if (syntax !== null) {
+    const syntaxButton = document.createElement("button");
+    syntaxButton.type = "button";
+    syntaxButton.className = "link";
+    syntaxButton.textContent = "Syntax preview";
+    syntaxButton.title = `Read the current ${syntax.toUpperCase()} text with local syntax colors`;
+    syntaxButton.addEventListener("click", () => {
+      const preview = terminalEditorSyntaxPreview(data.path, text.value);
+      if (preview === null) return;
+      showListDialog(`Syntax preview · ${data.path.split("/").pop()}`, [preview],
+        "This local, read-only preview never executes or sends file contents. The native editor remains the place to edit and save.");
+    });
+    parts.push(syntaxButton);
   }
   if (editable) {
     const review = document.createElement("button");
@@ -14169,7 +14257,7 @@ async function openTerminalEditor(path) {
       path: data.path, text: text.value, fingerprint: data.fingerprint, line_ending: data.line_ending,
     });
     notice(`Saved ${saved.path} (${humanBytes(saved.bytes)})${saved.backup ? "; recovery copy made." : "."}`, true);
-  });
+  }, "Save it", () => text.value !== openedText);
 }
 
 /** A bounded picker is safer and more approachable than asking for a shell path. */
@@ -14636,7 +14724,9 @@ function showMemoryDialog(row) {
  * and giving each small form its own would be three more elements to keep in
  * step for no gain.
  */
-function showFormDialog(title, parts, save, submitLabel = "Save it") {
+let noteDialogCloseGuard = null;
+
+function showFormDialog(title, parts, save, submitLabel = "Save it", closeGuard = null) {
   const actions = document.createElement("div");
   actions.className = "inspect-actions";
 
@@ -14645,6 +14735,7 @@ function showFormDialog(title, parts, save, submitLabel = "Save it") {
   go.textContent = submitLabel;
   actions.appendChild(go);
 
+  noteDialogCloseGuard = closeGuard;
   $("noteFormBody").replaceChildren(...parts, actions);
   $("noteDialogTitle").textContent = title;
 
@@ -14663,6 +14754,17 @@ function showFormDialog(title, parts, save, submitLabel = "Save it") {
   };
 
   $("noteDialog").showModal();
+}
+
+/** A dialog-specific discard confirmation keeps ordinary forms uncomplicated. */
+async function closeNoteDialog() {
+  if (typeof noteDialogCloseGuard === "function" && noteDialogCloseGuard()) {
+    const discard = await askFirst("Discard unsaved editor changes?", [
+      "This file has changed in the browser but has not been saved. Closing now loses those edits.",
+    ], "Discard changes", true);
+    if (!discard) return;
+  }
+  $("noteDialog").close();
 }
 
 /* Local-only accessibility choices must work even on a read-only dashboard. */
@@ -32454,7 +32556,12 @@ $("changedCheck").addEventListener("click", async () => {
     button.textContent = "Check now";
   }
 });
-$("noteDialogClose").addEventListener("click", () => $("noteDialog").close());
+$("noteDialogClose").addEventListener("click", () => { closeNoteDialog().catch(error => notice(String(error.message || error))); });
+$("noteDialog").addEventListener("cancel", event => {
+  event.preventDefault();
+  closeNoteDialog().catch(error => notice(String(error.message || error)));
+});
+$("noteDialog").addEventListener("close", () => { noteDialogCloseGuard = null; });
 
 $("linkSweepForm").addEventListener("submit", event => {
   event.preventDefault();
