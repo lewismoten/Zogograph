@@ -214,10 +214,11 @@ recovery point objective you selected.
 
 When normal alert delivery is enabled, HostScope also adds the configurable
 **Encrypted-copy recovery needs attention** rule. It warns when a selected
-store has no verified copy or has missed its selected schedule, and reports an
-error when a retained copy fails verification or the configured local key is no
-longer usable. It deliberately does not alert for host/VM volume protection:
-HostScope cannot verify a host encryption claim.
+store has no verified copy, has not completed its first non-destructive
+recovery drill, or has missed its selected schedule, and reports an error when
+a retained copy fails verification or the configured local key is no longer
+usable. It deliberately does not alert for host/VM volume protection: HostScope
+cannot verify a host encryption claim.
 
 ```cron
 # Daily encrypted copies. This does nothing unless encryption.mode is selected.

@@ -8,13 +8,19 @@ $root = sys_get_temp_dir() . '/hostscope-encryption-alerts-' . bin2hex(random_by
 try {
     $key = $root . '/local.key'; encryptionCreateLocalKey($key, dirname(__DIR__));
     $pdo = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-    $pdo->exec('CREATE TABLE encryption_artifacts (store TEXT, created_at INTEGER, state TEXT)');
+    $pdo->exec('CREATE TABLE encryption_artifacts (store TEXT, created_at INTEGER, last_recovery_drill_at INTEGER, state TEXT)');
     $config = ['encryption' => ['mode' => 'sealed_copies_local', 'local_key_file' => $key, 'stores' => ['account'], 'backup_schedule' => 'daily']];
     encryptionAlertExpect(isset(alertCatalogue()['encryption_recovery']), 'encryption recovery rule is not configurable in the alert catalogue');
     $missing = encryptionRecoveryAlerts($config, $pdo);
     encryptionAlertExpect(count($missing) === 1 && $missing[0]['severity'] === 'warning' && str_contains($missing[0]['detail'], 'No verified encrypted copy'),
         'missing encrypted-copy evidence did not raise a warning');
-    $pdo->prepare("INSERT INTO encryption_artifacts VALUES ('account', ?, 'verified')")->execute([time() - 3 * 86400]);
+    $pdo->prepare("INSERT INTO encryption_artifacts VALUES ('account', ?, NULL, 'verified')")->execute([time()]);
+    $unrehearsed = encryptionRecoveryAlerts($config, $pdo);
+    encryptionAlertExpect(count($unrehearsed) === 1 && str_contains($unrehearsed[0]['detail'], 'No successful non-destructive recovery drill'),
+        'missing initial encrypted-copy recovery drill did not raise a warning');
+    $pdo->exec('UPDATE encryption_artifacts SET last_recovery_drill_at = ' . time());
+    encryptionAlertExpect(encryptionRecoveryAlerts($config, $pdo) === [], 'current drilled encrypted-copy evidence still raised an alert');
+    $pdo->prepare('UPDATE encryption_artifacts SET created_at = ?')->execute([time() - 3 * 86400]);
     $stale = encryptionRecoveryAlerts($config, $pdo);
     encryptionAlertExpect(count($stale) === 1 && str_contains($stale[0]['detail'], 'older than the selected schedule'),
         'stale encrypted-copy evidence did not raise a warning');

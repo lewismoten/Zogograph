@@ -311,14 +311,19 @@ function encryptionRecoveryAlerts(array $config, PDO $pdo): array
     if ($stores === []) return [];
     $paths = encryptionStorePaths($config, dirname(__DIR__));
     try {
-        $rows = $pdo->query("SELECT store, MAX(created_at) AS created_at FROM encryption_artifacts WHERE state = 'verified' GROUP BY store")->fetchAll();
+        $rows = $pdo->query("SELECT store, MAX(created_at) AS created_at, MAX(last_recovery_drill_at) AS last_recovery_drill_at
+            FROM encryption_artifacts WHERE state = 'verified' GROUP BY store")->fetchAll();
         $failed = $pdo->query("SELECT store FROM encryption_artifacts WHERE state = 'verification_failed' GROUP BY store")->fetchAll(PDO::FETCH_COLUMN);
     } catch (Throwable) {
         // An older database has no ledger to assess. Do not turn an upgrade into
         // a false encryption incident; the Protection page still explains it.
         return [];
     }
-    $latest = []; foreach ($rows as $row) $latest[(string)$row['store']] = (int)$row['created_at'];
+    $latest = []; $drilled = [];
+    foreach ($rows as $row) {
+        $latest[(string)$row['store']] = (int)$row['created_at'];
+        $drilled[(string)$row['store']] = (int)$row['last_recovery_drill_at'];
+    }
     $problems = [];
     try { encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), dirname(__DIR__)); }
     catch (Throwable) { $problems[] = 'The private local key is unavailable to HostScope.'; }
@@ -327,6 +332,7 @@ function encryptionRecoveryAlerts(array $config, PDO $pdo): array
     foreach ($stores as $store) {
         if (in_array($store, ['host', 'ai'], true) && !is_file($paths[$store])) continue;
         if (!isset($latest[$store])) { $problems[] = "No verified encrypted copy exists for {$store}."; continue; }
+        if (($drilled[$store] ?? 0) <= 0) $problems[] = "No successful non-destructive recovery drill has been recorded yet for {$store}.";
         if ($maximumAge !== null && $latest[$store] < time() - $maximumAge) $problems[] = "The newest verified encrypted copy for {$store} is older than the selected schedule.";
     }
     if ($problems === []) return [];
