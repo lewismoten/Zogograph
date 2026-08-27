@@ -62,6 +62,9 @@ try {
     $client = keyCustodyAuthenticate($pdo, $replacementCredential['token'], 'client');
     custodyExpect($client['tenant_id'] === $management['tenant_id'], 'replacement client credential did not authenticate');
     $master = random_bytes(32); $key = keyCustodyCreateKey($pdo, $management['tenant_id'], 'primary', 300, $master);
+    custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['key_used'] === 1
+        && keyCustodySubscription($pdo, $management['tenant_id'])['can_create_keys'],
+        'subscription did not report current active custody-key usage');
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $key['id'] && keyCustodyListKeys($pdo, $management['tenant_id'])[0]['envelope_count'] === 0,
         'management key list omitted created key or its envelope count');
     $policy = keyCustodyUpdateKeyPolicy($pdo, $management['tenant_id'], $key['id'], 120, 'primary policy');
@@ -71,7 +74,7 @@ try {
     custodyExpect(in_array('key_create', array_column(keyCustodyAuditEvents($pdo, $management['tenant_id'], 10), 'action'), true), 'tenant audit history omitted the key creation');
     custodyExpect(in_array('key_policy_update', array_column(keyCustodyAuditEvents($pdo, $management['tenant_id'], 10), 'action'), true), 'tenant audit history omitted the policy update');
     custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['state'] === 'active' && keyCustodySubscription($pdo, $management['tenant_id'])['envelope_quota'] === 1000
-        && keyCustodySubscription($pdo, $management['tenant_id'])['envelope_used'] === 0,
+        && keyCustodySubscription($pdo, $management['tenant_id'])['envelope_used'] === 0 && keyCustodySubscription($pdo, $management['tenant_id'])['key_used'] === 1,
         'initial subscription envelope entitlement is unavailable');
     $change = keyCustodyRequestSubscriptionChange($pdo, $management['tenant_id'], 'change_plan', 'pro');
     custodyExpect($change['state'] === 'pending' && $change['requested_plan'] === 'pro', 'subscription change request was not retained');

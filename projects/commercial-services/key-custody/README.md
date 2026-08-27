@@ -63,7 +63,10 @@ recovery of an existing artifact. This keeps the low-cost SQLite deployment
 bounded without using a billing failure to strand a customer's data. The
 commercial billing control plane can adjust it alongside the key quota. The
 customer's `GET /v1/subscription` response includes `envelope_used`, so an
-account UI can show remaining capacity before an upload is rejected.
+account UI can show remaining capacity before an upload is rejected. The same
+management response includes `key_used` and `can_create_keys`, so the operator
+can distinguish a plan limit from a key-creation failure without exposing key
+material.
 
 An enrolled deployment can instead use signed `GET /v1/client/subscription`.
 That minimal view reports only envelope usage, envelope quota, subscription
