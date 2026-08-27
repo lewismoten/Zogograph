@@ -40,8 +40,16 @@ states but does not receive card or bank details.
 ## Current reference API
 
 Copy `config.sample.php` to `config.php`, create a private Base64 256-bit
-`master_key_file`, and provision the first tenant with the store/administration
-workflow. `api.php` currently implements key list/create, client unwrap,
+`master_key_file`, and provision the first tenant:
+
+```bash
+php scripts/master-key.php /secure/hostscope-key-custody/master.key
+php scripts/provision-tenant.php "Example customer"
+```
+
+Set the generated absolute path in `config.php`. Keep the printed management
+and client tokens separately; the service retains only password hashes and
+cannot show either token again. `api.php` currently implements key list/create, client unwrap,
 subscription read, and configured billing portal/checkout session links. It is
 a low-cost SQLite reference service; deploy it behind HTTPS and an authenticated
 reverse proxy before exposing it publicly. mTLS enrollment, envelope storage,
