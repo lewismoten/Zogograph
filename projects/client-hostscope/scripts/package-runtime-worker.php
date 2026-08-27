@@ -16,7 +16,8 @@ if (!is_string($input) || strlen($input) > 65536) { fwrite(STDERR, "Worker reque
 try {
     $request = json_decode($input, true, 16, JSON_THROW_ON_ERROR);
     $manifest = json_decode((string)file_get_contents($root . '/manifest.json'), true, 64, JSON_THROW_ON_ERROR);
-    if (!is_array($request) || ($request['api'] ?? null) !== '1.0' || ($request['operation'] ?? null) !== 'capability'
+    if (!is_array($request) || array_diff(array_keys($request), ['api', 'operation', 'package_id']) !== [] || count($request) !== 3
+        || ($request['api'] ?? null) !== '1.0' || ($request['operation'] ?? null) !== 'capability'
         || !is_array($manifest) || ($request['package_id'] ?? null) !== ($manifest['id'] ?? null)) throw new RuntimeException('Worker request is invalid.');
     $runtime = (array)($manifest['runtime'] ?? []); $entrypoint = (string)($runtime['entrypoint'] ?? ''); $class = (string)($runtime['provider_class'] ?? '');
     if ($entrypoint === '' || $class === '' || str_contains($entrypoint, '..') || str_starts_with($entrypoint, '/')) throw new RuntimeException('Package runtime declaration is invalid.');

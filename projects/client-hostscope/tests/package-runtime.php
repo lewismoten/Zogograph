@@ -67,6 +67,12 @@ try {
         fwrite($pipes[0], json_encode(['api' => '1.0', 'operation' => 'capability', 'package_id' => 'test-runtime'], JSON_THROW_ON_ERROR)); fclose($pipes[0]);
         $output = stream_get_contents($pipes[1]); $errors = stream_get_contents($pipes[2]); fclose($pipes[1]); fclose($pipes[2]);
         runtimeExpect(proc_close($worker) === 0 && str_contains($output, 'test-runtime') && $errors === '', 'package sandbox worker did not return bounded capability facts');
+        $pipes = []; $unknown = proc_open([PHP_BINARY, __DIR__ . '/../scripts/package-runtime-worker.php', '--package-root', $source],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, ['HOSTSCOPE_PACKAGE_SANDBOX' => '1']);
+        runtimeExpect(is_resource($unknown), 'could not start package worker unknown-field test');
+        fwrite($pipes[0], json_encode(['api' => '1.0', 'operation' => 'capability', 'package_id' => 'test-runtime', 'unexpected' => true], JSON_THROW_ON_ERROR)); fclose($pipes[0]);
+        $unknownOutput = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]); fclose($pipes[1]); fclose($pipes[2]);
+        runtimeExpect(proc_close($unknown) === 1 && str_contains($unknownOutput, 'Worker request is invalid'), 'package worker accepted an unknown request field');
     }
     $keyPath = $root . '/package-secrets.key'; encryptionCreateLocalKey($keyPath, $root . '/web');
     $config = ['database' => $root . '/stats.db', 'encryption' => ['local_key_file' => $keyPath], 'package_runtime' => ['directory' => $root . '/installed', 'trusted_keys' => [
