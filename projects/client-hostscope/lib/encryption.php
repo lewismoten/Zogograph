@@ -585,6 +585,12 @@ function encryptionRotateConfiguredArtifacts(array &$config, PDO $pdo, string $w
     if ($directory === false || is_link($directory) || !is_dir($directory)) throw new RuntimeException('the sealed-artifact directory is unavailable');
     $rows = $pdo->query("SELECT artifact_id, store, local_path FROM encryption_artifacts WHERE state = 'verified' ORDER BY created_at, artifact_id")->fetchAll();
     if ($rows === []) throw new RuntimeException('no verified sealed artifacts are available to rotate');
+    $coverage = []; foreach ($rows as $row) $coverage[(string)$row['store']] = true;
+    foreach (encryptionSelectedStores($settings) as $store) {
+        $path = encryptionStorePaths($config, $webRoot)[$store];
+        if (in_array($store, ['host', 'ai'], true) && !is_file($path)) continue;
+        if (!isset($coverage[$store])) throw new RuntimeException("no verified artifact is available for selected {$store} store");
+    }
     $created = []; $superseded = [];
     try {
         foreach ($rows as $row) {

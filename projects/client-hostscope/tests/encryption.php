@@ -171,7 +171,7 @@ try {
         $failedStatus = encryptionStatus($live, $retentionConfig, $web);
         encryptionExpect(str_contains(implode(' ', $failedStatus['warnings']), 'failed their last verification'),
             'failed encrypted artifact was not visible in protection status');
-        $rotationConfig = $config; $rotationSaved = false;
+        $rotationConfig = $config; $rotationConfig['encryption']['stores'] = ['account']; $rotationSaved = false;
         $rotatedConfigured = encryptionRotateConfiguredArtifacts($rotationConfig, $live, $web, $replacementKeyPath,
             function (array $updated) use (&$rotationSaved): void { $rotationSaved = isset($updated['encryption']['local_key_file']); });
         encryptionExpect(count($rotatedConfigured) === 1 && $rotationSaved
