@@ -44,6 +44,8 @@ try {
 
     $sample = require __DIR__ . '/../lib/config.sample.php';
     $fields = array_column(configFields($sample), null, 'key');
+    encryptionExpect(($sample['encryption']['stores'] ?? []) === ['config', 'setup', 'account'],
+        'quick-install encryption defaults included optional host or assistant stores');
     encryptionExpect(isset($fields['encryption_mode']['options']['operator_managed_volume']),
         'operator-managed volume option is missing from setup');
     encryptionExpect(fieldApplies($fields['encryption_key_file'], ['encryption_mode' => 'sealed_copies_local'])

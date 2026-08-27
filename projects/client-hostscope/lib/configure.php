@@ -152,7 +152,7 @@ function configFields(array $sample): array
             'path' => ['encryption', 'stores'],
             'type' => 'choices',
             'label' => 'Databases to copy into encrypted artifacts',
-            'help' => 'Only checked stores are protected by the selected mode. Host and assistant stores are skipped until they exist.',
+            'help' => 'The recommended start protects bootstrap configuration, setup, and account data. Add host or assistant stores when you want their process evidence or conversations protected too; those optional stores wait until they exist.',
             'default' => (array)($sample['encryption']['stores'] ?? []),
             'options' => [
                 'config' => 'Bootstrap configuration file', 'setup' => 'Setup and configuration database',

@@ -38,8 +38,8 @@ return [
         'local_key_file' => '',
         // Null stores artifacts in data/sealed/; set an absolute private path to move them.
         'artifact_directory' => null,
-        // config, setup, account, host, ai. Missing optional databases are skipped.
-        'stores' => ['config', 'setup', 'account', 'host', 'ai'],
+        // Start with the sensitive bootstrap/account stores; host and AI are opt-in.
+        'stores' => ['config', 'setup', 'account'],
         // These make the policy visible to the operator; scheduling remains
         // their cron/host scheduler responsibility.
         'backup_schedule' => 'daily', // manual, daily, or weekly

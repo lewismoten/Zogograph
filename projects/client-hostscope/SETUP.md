@@ -157,9 +157,11 @@ php scripts/encryption-key.php create /secure/hostscope/primary.key
 
 In the setup wizard's **Encryption** section, select **Encrypted copies with a
 local private key**, enter that absolute key-file path, and choose the stores
-to include: `config`, `setup`, `account`, `host`, and/or `ai`. Missing optional
-host and assistant databases are shown as **waiting** and skipped until they
-exist; they do not make an otherwise verified account-only policy fail. The
+to include. The recommended initial selection is `config`, `setup`, and
+`account`; add `host` and/or `ai` when their process evidence or assistant
+history needs the same recovery protection. Missing optional host and assistant
+databases are shown as **waiting** and skipped until they exist; they do not
+make an otherwise verified account-only policy fail. The
 artifact directory defaults to
 the protected `data/sealed/` directory; set a private absolute path if you need
 the copies elsewhere. Choose manual, daily, or weekly scheduling and a local
