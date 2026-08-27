@@ -65,7 +65,8 @@ try {
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'invalid custody key policy was accepted', $error->getMessage()); }
     custodyExpect(in_array('key_create', array_column(keyCustodyAuditEvents($pdo, $management['tenant_id'], 10), 'action'), true), 'tenant audit history omitted the key creation');
     custodyExpect(in_array('key_policy_update', array_column(keyCustodyAuditEvents($pdo, $management['tenant_id'], 10), 'action'), true), 'tenant audit history omitted the policy update');
-    custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['state'] === 'active' && keyCustodySubscription($pdo, $management['tenant_id'])['envelope_quota'] === 1000,
+    custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['state'] === 'active' && keyCustodySubscription($pdo, $management['tenant_id'])['envelope_quota'] === 1000
+        && keyCustodySubscription($pdo, $management['tenant_id'])['envelope_used'] === 0,
         'initial subscription envelope entitlement is unavailable');
     $change = keyCustodyRequestSubscriptionChange($pdo, $management['tenant_id'], 'change_plan', 'pro');
     custodyExpect($change['state'] === 'pending' && $change['requested_plan'] === 'pro', 'subscription change request was not retained');
@@ -97,6 +98,7 @@ try {
     $envelope = keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:20260827', random_bytes(80));
     custodyExpect(keyCustodyListEnvelopes($pdo, $management['tenant_id'], $key['id'])[0]['id'] === $envelope['id'], 'envelope metadata was not retained');
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['envelope_count'] === 1, 'management key list omitted registered envelope count');
+    custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['envelope_used'] === 1, 'subscription metadata omitted current envelope use');
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'active', 2, null, 1);
     try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:quota', random_bytes(80)); throw new RuntimeException('subscription envelope quota was exceeded'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'subscription envelope quota was exceeded', $error->getMessage()); }

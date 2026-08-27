@@ -354,12 +354,14 @@ function keyCustodyListKeys(PDO $pdo, string $tenant): array
         'state' => $row['state'], 'created_at' => (int)$row['created_at'], 'envelope_count' => (int)$row['envelope_count']], $stmt->fetchAll());
 }
 
-/** @return array{plan:string,state:string,key_quota:int,envelope_quota:int,renews_at:?int} */
+/** @return array{plan:string,state:string,key_quota:int,envelope_quota:int,envelope_used:int,renews_at:?int} */
 function keyCustodySubscription(PDO $pdo, string $tenant): array
 {
     $stmt = $pdo->prepare('SELECT plan, state, key_quota, envelope_quota, renews_at FROM subscriptions WHERE tenant_id = ?'); $stmt->execute([$tenant]); $row = $stmt->fetch();
     if (!is_array($row)) throw new InvalidArgumentException('subscription is unavailable');
-    return ['plan' => $row['plan'], 'state' => $row['state'], 'key_quota' => (int)$row['key_quota'], 'envelope_quota' => (int)$row['envelope_quota'], 'renews_at' => $row['renews_at'] === null ? null : (int)$row['renews_at']];
+    $used = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE keys.tenant_id = ?'); $used->execute([$tenant]);
+    return ['plan' => $row['plan'], 'state' => $row['state'], 'key_quota' => (int)$row['key_quota'], 'envelope_quota' => (int)$row['envelope_quota'],
+        'envelope_used' => (int)$used->fetchColumn(), 'renews_at' => $row['renews_at'] === null ? null : (int)$row['renews_at']];
 }
 
 /** @return array{id:string,action:string,requested_plan:?string,state:string,created_at:int} */

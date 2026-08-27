@@ -56,7 +56,9 @@ Each subscription also has an `envelope_quota`, initially 1,000. It limits new
 named artifact envelopes per tenant, not re-saving an existing envelope and not
 recovery of an existing artifact. This keeps the low-cost SQLite deployment
 bounded without using a billing failure to strand a customer's data. The
-commercial billing control plane can adjust it alongside the key quota.
+commercial billing control plane can adjust it alongside the key quota. The
+customer's `GET /v1/subscription` response includes `envelope_used`, so an
+account UI can show remaining capacity before an upload is rejected.
 
 ## Current reference API
 
