@@ -5624,11 +5624,19 @@ function doPackageRuntimeProbe(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post); $id = trim((string)($_POST['id'] ?? ''));
     $operation = trim((string)($_POST['operation'] ?? 'capability'));
-    try { $result = packageRuntimeInvokeProbe($pdo, $config, $id, $operation); }
+    try {
+        $input = [];
+        if ($operation === 'custody_endpoint_probe') {
+            $settings = packageRuntimeSettings($pdo, $config, $id);
+            $input = ['service_base_url' => $settings['service_base_url'] ?? null,
+                'tls_spki_pin' => $settings['tls_spki_pin'] ?? null];
+        }
+        $result = packageRuntimeInvokeProbe($pdo, $config, $id, $operation, $input);
+    }
     catch (InvalidArgumentException|RuntimeException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, 'package_runtime_probe', $id, 'ok', 0, 0, $operation . '; state=' . $result['state']);
     return ['ok' => true, 'id' => $id, 'operation' => $operation, 'result' => $result,
-        'warning' => 'This isolated no-secret probe is diagnostic evidence only. It did not enable the package or activate provider operations.'];
+        'warning' => 'This isolated no-secret probe is diagnostic evidence only. It did not enable the package, send an enrollment credential, or activate provider operations.'];
 }
 
 function doPackageRuntimeEnable(PDO $pdo, bool $post): array

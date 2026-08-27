@@ -6,14 +6,14 @@
   "summary": "Optional client for the HostScope key-custody service using signed enrolled-client authentication and registered-envelope authorization.",
   "license": "Proprietary preview",
   "capabilities": ["key_provider", "network_client", "package_private_database"],
-  "runtime": {"kind": "hostscope-isolated-php-package", "entrypoint": "src/KeyCustodyProvider.php", "provider_class": "HostScope\\Plugin\\KeyCustody\\KeyCustodyProvider", "operations": ["capability"], "minimum_api": "1.0"},
+  "runtime": {"kind": "hostscope-isolated-php-package", "entrypoint": "src/KeyCustodyProvider.php", "provider_class": "HostScope\\Plugin\\KeyCustody\\KeyCustodyProvider", "operations": ["capability", "custody_endpoint_probe"], "minimum_api": "1.0"},
   "settings_schema": "settings.schema.json",
   "data": {"directory": "data", "migration_namespace": "hostscope_key_custody"},
   "compatibility": {"min_php": "8.1.0", "requires_extensions": ["curl", "openssl", "sodium"], "requires_runtime_capability": "isolated_package_runtime"},
   "integrity": {"algorithm": "sha256", "files": {
-    "README.md": "2bfc1754b54c70d624f366335e1174ab5e6ffd92b3f9c2b30cc9322451381e49",
-    "settings.schema.json": "e8c2c365d39a16102b62e93c18c15f6981f1153b345ec004e1cd274efb99fc39",
-    "src/KeyCustodyProvider.php": "0f5b2dada755086273dc2c52f5ab977ef6eda48034c57bb15f2a5feb0cdefe39",
+    "README.md": "daeb2af723e149f1be4c2b21600f3810dbe4695630f23538f479238e825a5701",
+    "settings.schema.json": "21b27263dd7959a7d9aa3f76d23c34501c1af3e9b92344147fc5050afec4c6ab",
+    "src/KeyCustodyProvider.php": "929de0b2103badcc2bbd921b535c506fb251eecfed251b4725ea2d2d078dc645",
     "src/KeyCustodyHttpClient.php": "959e5061a4b03e4bc7426c7af34707dcab6d8996c08a50ca0ecec09dcbd997b6"
   }},
   "state": "design-preview"

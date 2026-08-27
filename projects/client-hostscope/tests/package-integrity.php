@@ -3,6 +3,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../lib/package-integrity.php';
 require_once __DIR__ . '/../lib/package-submission.php';
 require_once __DIR__ . '/../plugins/hostscope-key-custody/src/KeyCustodyHttpClient.php';
+require_once __DIR__ . '/../plugins/hostscope-key-custody/src/KeyCustodyProvider.php';
 require_once __DIR__ . '/../plugins/hostscope-replica-relay/src/ReplicaRelayHttpClient.php';
 require_once __DIR__ . '/../plugins/sqlcipher-encrypted-sqlite/src/SqlcipherStorageProvider.php';
 function packageExpect(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
@@ -54,7 +55,8 @@ try {
         && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::class, 'healthEndpoint'), 'custody client does not enforce its secure transport defaults');
     $custodyDirectory = __DIR__ . '/../plugins/hostscope-key-custody';
     $custodyManifest = json_decode((string)file_get_contents($custodyDirectory . '/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
-    packageExpect(is_array($custodyManifest) && packageVerifyIntegrity($custodyManifest, $custodyDirectory)['ok'],
+    packageExpect(is_array($custodyManifest) && ($custodyManifest['runtime']['operations'] ?? null) === ['capability', 'custody_endpoint_probe']
+        && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyProvider::class, 'preflight') && packageVerifyIntegrity($custodyManifest, $custodyDirectory)['ok'],
         'key custody package manifest does not cover its installed files');
     $relayPair = sodium_crypto_sign_keypair(); $relaySecret = sodium_crypto_sign_secretkey($relayPair);
     try { new \HostScope\Plugin\ReplicaRelay\ReplicaRelayHttpClient('https://user@example.test', 'test-token', base64_encode($relaySecret)); throw new RuntimeException('relay client accepted an ambiguous endpoint'); }

@@ -16,7 +16,9 @@ if (!is_string($input) || strlen($input) > 65536) { fwrite(STDERR, "Worker reque
 try {
     $request = json_decode($input, true, 16, JSON_THROW_ON_ERROR);
     $manifest = json_decode((string)file_get_contents($root . '/manifest.json'), true, 64, JSON_THROW_ON_ERROR);
-    if (!is_array($request) || array_diff(array_keys($request), ['api', 'invocation_id', 'operation', 'package_id']) !== [] || count($request) !== 4
+    $expectedFields = ($request['operation'] ?? null) === 'custody_endpoint_probe'
+        ? ['api', 'invocation_id', 'operation', 'package_id', 'input'] : ['api', 'invocation_id', 'operation', 'package_id'];
+    if (!is_array($request) || array_diff(array_keys($request), $expectedFields) !== [] || count($request) !== count($expectedFields)
         || ($request['api'] ?? null) !== '1.0' || !is_string($request['invocation_id'] ?? null)
         || !preg_match('/^[a-f0-9]{32}$/', $request['invocation_id']) || !is_string($request['operation'] ?? null)
         || !is_array($manifest) || ($request['package_id'] ?? null) !== ($manifest['id'] ?? null)) throw new RuntimeException('Worker request is invalid.');
@@ -28,7 +30,15 @@ try {
     require $entry;
     if (!class_exists($class)) throw new RuntimeException('Package provider class is unavailable.');
     $provider = new $class();
-    $result = $request['operation'] === 'capability' ? $provider->capability() : $provider->preflight();
+    if ($request['operation'] === 'capability') $result = $provider->capability();
+    elseif ($request['operation'] === 'custody_endpoint_probe') {
+        $input = $request['input'] ?? null;
+        if (!is_array($input) || array_diff(array_keys($input), ['service_base_url', 'tls_spki_pin']) !== []
+            || !is_string($input['service_base_url'] ?? null) || (($input['tls_spki_pin'] ?? null) !== null && !is_string($input['tls_spki_pin']))) {
+            throw new RuntimeException('Custody endpoint probe input is invalid.');
+        }
+        $result = $provider->preflight($input['service_base_url'], $input['tls_spki_pin'] ?? null);
+    } else $result = $provider->preflight();
     if (!is_array($result) || !is_string($result['id'] ?? null) || !is_string($result['state'] ?? null) || !is_string($result['reason'] ?? null)
         || strlen(json_encode($result, JSON_THROW_ON_ERROR)) > 4096) throw new RuntimeException('Package capability response is invalid.');
     fwrite(STDOUT, json_encode(['api' => '1.0', 'invocation_id' => $request['invocation_id'], 'package_id' => $manifest['id'], 'operation' => $request['operation'], 'result' => $result], JSON_UNESCAPED_SLASHES) . "\n");

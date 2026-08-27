@@ -19,6 +19,14 @@ syntax, never a token containing whitespace or header-like content, and refuses
 control characters, overlong identifiers, or oversized envelopes before making
 a request.
 
+Save the endpoint, tenant identifier, and zero-second cache preference first,
+then run **Test custody endpoint** from Package runtime. That isolated probe
+uses only the saved HTTPS address and optional public TLS pin and confirms the
+expected `/v1/health` identity. Only after it succeeds should an administrator
+create package-scoped secret references for the enrolled-client bearer and
+signing key. A successful probe is not enrollment, a package activation, or a
+proof that a live database can be recovered.
+
 It first reads only the custody key's X25519 public wrapping key, generates a
 fresh artifact data key locally, and sends that key only as a sealed envelope
 with its artifact identifier and authenticated request metadata. It must not

@@ -2,7 +2,7 @@
   "title": "HostScope remote key custody",
   "type": "object",
   "additionalProperties": false,
-  "required": ["service_base_url", "tenant_id", "client_credential_secret", "client_signing_secret", "authorization_cache_seconds"],
+  "required": ["service_base_url", "tenant_id", "authorization_cache_seconds"],
   "properties": {
     "service_base_url": {"type": "string", "format": "uri", "pattern": "^https://", "description": "Configured HTTPS key-custody API base URL; embedded credentials, queries, and fragments are refused by the adapter."},
     "tenant_id": {"type": "string", "pattern": "^ten_[a-f0-9]{24}$", "description": "Tenant identifier returned during custody enrollment."},

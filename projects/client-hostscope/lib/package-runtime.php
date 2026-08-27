@@ -64,10 +64,15 @@ function packageRuntimeManifest(string $directory, array $trustedKeys): array
     $runtimeApi = trim((string)($runtime['minimum_api'] ?? ''));
     $providerClass = trim((string)($runtime['provider_class'] ?? ''));
     $operations = array_values(array_unique((array)($runtime['operations'] ?? [])));
+    $allowedOperations = match ($id) {
+        'sqlcipher-encrypted-sqlite' => ['capability', 'sqlcipher_preflight'],
+        'hostscope-key-custody' => ['capability', 'custody_endpoint_probe'],
+        default => ['capability'],
+    };
     if (($runtime['kind'] ?? '') !== 'hostscope-isolated-php-package'
         || !preg_match('/^[0-9]+\.[0-9]+$/', $runtimeApi)
         || !preg_match('/^(?:[A-Za-z_][A-Za-z0-9_]*\\\\)*[A-Za-z_][A-Za-z0-9_]*$/', $providerClass)
-        || $operations !== ($id === 'sqlcipher-encrypted-sqlite' ? ['capability', 'sqlcipher_preflight'] : ['capability'])
+        || $operations !== $allowedOperations
         || !packageRuntimeRelativePath((string)($runtime['entrypoint'] ?? ''))
         || !is_file($root . '/' . $runtime['entrypoint'])) {
         throw new InvalidArgumentException('package runtime declaration is invalid');
@@ -637,7 +642,7 @@ function packageRuntimeProbeInvoker(array $config, string $id, string $manifestH
  * enable a provider: an attestation record is not proof of live-operation safety.
  * @return array{id:string,state:string,reason:string,version?:string}
  */
-function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, string $operation = 'capability'): array
+function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, string $operation = 'capability', array $input = []): array
 {
     if (!function_exists('proc_open')) throw new RuntimeException('this PHP deployment cannot launch an isolated probe');
     $row = $registry->prepare('SELECT manifest_json, manifest_sha256, install_path, enabled_at FROM runtime_packages WHERE package_id = ?');
@@ -649,12 +654,20 @@ function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, str
     $revoked = $registry->prepare('SELECT 1 FROM runtime_package_revocations WHERE package_id = ?'); $revoked->execute([$id]);
     if ($revoked->fetchColumn()) throw new RuntimeException('package is revoked');
     $signedOperations = (array)($manifest['runtime']['operations'] ?? []);
-    if (!in_array($operation, ['capability', 'sqlcipher_preflight'], true) || !in_array($operation, $signedOperations, true)) {
+    if (!in_array($operation, ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe'], true) || !in_array($operation, $signedOperations, true)) {
         throw new InvalidArgumentException('package operation is not a signed no-secret probe');
     }
+    if ($operation === 'custody_endpoint_probe') {
+        if (array_diff(array_keys($input), ['service_base_url', 'tls_spki_pin']) !== [] || !is_string($input['service_base_url'] ?? null)
+            || (($input['tls_spki_pin'] ?? null) !== null && !is_string($input['tls_spki_pin']))) {
+            throw new InvalidArgumentException('custody endpoint probe input is invalid');
+        }
+    } elseif ($input !== []) throw new InvalidArgumentException('this probe does not accept input');
     $invoker = packageRuntimeProbeInvoker($config, $id, (string)$package['manifest_sha256']);
     $invocationId = bin2hex(random_bytes(16));
-    $request = json_encode(['api' => PACKAGE_RUNTIME_API_VERSION, 'invocation_id' => $invocationId, 'operation' => $operation, 'package_id' => $id], JSON_THROW_ON_ERROR);
+    $requestData = ['api' => PACKAGE_RUNTIME_API_VERSION, 'invocation_id' => $invocationId, 'operation' => $operation, 'package_id' => $id];
+    if ($input !== []) $requestData['input'] = $input;
+    $request = json_encode($requestData, JSON_THROW_ON_ERROR);
     $pipes = [];
     $process = proc_open($invoker['command'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null,
         ['PATH' => '/usr/bin:/bin'], ['bypass_shell' => true]);

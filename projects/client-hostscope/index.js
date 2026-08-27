@@ -11695,10 +11695,11 @@ function packageRuntimeActions(row, canChange) {
   }
   if (row.probe_configured) {
     const probe = document.createElement("button"); probe.className = "link";
-    const operation = row.id === "sqlcipher-encrypted-sqlite" ? "sqlcipher_preflight" : "capability";
-    probe.textContent = operation === "sqlcipher_preflight" ? "Run SQLCipher preflight" : "Run isolated probe";
+    const operation = row.id === "sqlcipher-encrypted-sqlite" ? "sqlcipher_preflight" : row.id === "hostscope-key-custody" ? "custody_endpoint_probe" : "capability";
+    probe.textContent = operation === "sqlcipher_preflight" ? "Run SQLCipher preflight" : operation === "custody_endpoint_probe" ? "Test custody endpoint" : "Run isolated probe";
     probe.addEventListener("click", async () => {
-      if (!(await confirmDialog(`Run the isolated ${operation} probe for ${row.id}?\n\nIt receives no HostScope settings, secrets, or live database path. It does not enable the package or activate protection.`, "Run isolated probe"))) return;
+      const inputNote = operation === "custody_endpoint_probe" ? "It uses only the saved endpoint and optional public TLS pin; it does not send an enrollment credential or key." : "It receives no HostScope settings, secrets, or live database path.";
+      if (!(await confirmDialog(`Run the isolated ${operation} probe for ${row.id}?\n\n${inputNote} It does not enable the package or activate protection.`, "Run isolated probe"))) return;
       try {
         const result = await post("package-runtime-probe", { id: row.id, operation });
         showListDialog("Isolated probe result", [factGrid([["Package", row.id], ["Operation", operation], ["State", result.result.state], ["Result", result.result.reason], ["Safety boundary", result.warning]])]);
