@@ -29,6 +29,8 @@ function setupStoreOpen(array $bootstrap, bool $create = false): ?PDO
     if ($real === false || !is_dir($real) || is_link($dir)) throw new RuntimeException('setup database directory is unavailable or unsafe');
     $path = $real . '/' . basename($path);
     if (is_link($path)) throw new RuntimeException('setup database path must not be a symbolic link');
+    $previousUmask = umask(0077);
+    try {
     $pdo = new PDO('sqlite:' . $path, null, null, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -39,9 +41,16 @@ function setupStoreOpen(array $bootstrap, bool $create = false): ?PDO
         $pdo->exec('CREATE TABLE IF NOT EXISTS setup_values (
             name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL
         )');
-        @chmod($path, 0600);
+        setupStorePrivateSqliteFiles($path);
     }
     return $pdo;
+    } finally { umask($previousUmask); }
+}
+
+/** setup.db and its SQLite journals carry credentials and policy. */
+function setupStorePrivateSqliteFiles(string $path): void
+{
+    foreach ([$path, $path . '-wal', $path . '-shm'] as $file) if (is_file($file) && !is_link($file)) @chmod($file, 0600);
 }
 
 /** Loads setup.db when present, otherwise a legacy all-in-one config.php. */

@@ -312,10 +312,19 @@ function packageRuntimePrivateDatabase(PDO $registry, array $config, string $id)
     $directory = packageRuntimeDirectory($config) . '/' . $id . '-data';
     if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) throw new RuntimeException('could not create package data directory');
     $path = $directory . '/package.db';
+    $previousUmask = umask(0077);
+    try {
     $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-    $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA busy_timeout = 5000'); @chmod($path, 0600);
+    $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA busy_timeout = 5000'); packageRuntimePrivateSqliteFiles($path);
     packageRuntimeApplyPrivateMigrations($registry, $pdo, $id);
     return $pdo;
+    } finally { umask($previousUmask); }
+}
+
+/** A package's database and journals must not become readable by other users. */
+function packageRuntimePrivateSqliteFiles(string $path): void
+{
+    foreach ([$path, $path . '-wal', $path . '-shm'] as $file) if (is_file($file) && !is_link($file)) @chmod($file, 0600);
 }
 
 /** Applies only signed declarative SQL to the package's own SQLite file. */

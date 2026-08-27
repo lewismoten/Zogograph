@@ -28,6 +28,11 @@ try {
         @unlink($root . '/data/setup.db');
     }
     @unlink($root . '/setup-target.db');
+    $setup = setupStoreOpen(['database' => $root . '/data/stats.db'], true);
+    foreach ([$root . '/data/setup.db', $root . '/data/setup.db-wal', $root . '/data/setup.db-shm'] as $privateFile) if (is_file($privateFile)) {
+        setupExpect((fileperms($privateFile) & 0077) === 0, 'setup SQLite file has broad permissions');
+    }
+    unset($setup);
     $checks = setupPreflight($root, $config, [
         'php_version' => '8.0.30', 'sqlite' => false, 'commands' => [], 'https' => false, 'cli' => false, 'encryption' => false,
     ]);
@@ -54,6 +59,7 @@ try {
     setupExpect($liveByLabel['Encrypted copies']['state'] === 'ok', 'available encryption capability was not reported');
 } finally {
     @unlink($config);
+    foreach (['setup.db', 'setup.db-wal', 'setup.db-shm'] as $file) @unlink($root . '/data/' . $file);
     @rmdir($root . '/lib');
     @rmdir($root . '/data');
     @rmdir($root);

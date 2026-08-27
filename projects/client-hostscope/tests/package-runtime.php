@@ -86,6 +86,9 @@ try {
     packageRuntimeLiftRevocation($pdo, 'test-runtime');
     packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator');
     $private = packageRuntimePrivateDatabase($pdo, $config, 'test-runtime');
+    foreach ([$config['package_runtime']['directory'] . '/test-runtime-data/package.db', $config['package_runtime']['directory'] . '/test-runtime-data/package.db-wal', $config['package_runtime']['directory'] . '/test-runtime-data/package.db-shm'] as $privateFile) if (is_file($privateFile)) {
+        runtimeExpect((fileperms($privateFile) & 0077) === 0, 'package private SQLite file has broad permissions');
+    }
     runtimeExpect((int)$private->query("SELECT COUNT(*) FROM sqlite_master WHERE name = 'private_evidence'")->fetchColumn() === 1,
         'signed package private migration was not applied');
     runtimeExpect((int)$private->query('SELECT COUNT(*) FROM package_runtime_migrations')->fetchColumn() === 1,
