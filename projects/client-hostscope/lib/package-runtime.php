@@ -837,6 +837,27 @@ function packageRuntimeStoreCustodyEnvelope(PDO $registry, array $config, string
     }
 }
 
+/** Runs a non-destructive remote-custody recovery drill for one stored envelope. */
+function packageRuntimeVerifyCustodyEnvelope(PDO $registry, array $config, string $webRoot, string $artifactId): array
+{
+    $id = 'hostscope-key-custody'; $settings = packageRuntimeSettings($registry, $config, $id);
+    $keyId = (string)($settings['custody_key_id'] ?? '');
+    $row = $registry->prepare("SELECT a.store, a.local_path, a.ciphertext_sha256 FROM encryption_artifacts a JOIN encryption_remote_envelopes r ON r.artifact_id = a.artifact_id WHERE a.artifact_id = ? AND a.state = 'verified' AND r.provider_package = ? AND r.provider_key_id = ? AND r.state = 'stored'");
+    $row->execute([$artifactId, $id, $keyId]); $artifact = $row->fetch();
+    if (!is_array($artifact)) throw new InvalidArgumentException('a stored remote envelope for a verified local artifact is required');
+    $path = realpath((string)$artifact['local_path']); $root = realpath(encryptionArtifactDirectory($config, $webRoot));
+    if ($path === false || $root === false || is_link((string)$artifact['local_path']) || !is_file($path) || !str_starts_with($path, rtrim($root, '/') . '/') || !hash_equals((string)$artifact['ciphertext_sha256'], (string)hash_file('sha256', $path))) throw new RuntimeException('the local artifact is unavailable or its ciphertext no longer matches the ledger');
+    $result = packageRuntimeInvokeProbe($registry, $config, $id, 'custody_unwrap_artifact', ['service_base_url' => (string)$settings['service_base_url'], 'tls_spki_pin' => $settings['tls_spki_pin'] ?? null, 'client_credential' => packageRuntimeSecretValue($registry, $config, $id, (string)$settings['client_credential_secret']), 'client_signing_key' => packageRuntimeSecretValue($registry, $config, $id, (string)$settings['client_signing_secret']), 'custody_key_id' => $keyId, 'artifact_id' => $artifactId], true);
+    $dek = base64_decode((string)($result['data_key'] ?? ''), true);
+    if (!is_string($dek) || strlen($dek) !== 32) throw new RuntimeException('custody recovery response did not contain a valid transient data key');
+    $temporary = $root . '/.custody-drill-' . bin2hex(random_bytes(12));
+    try { encryptionOpenFileWithDataKey($path, $temporary, $dek, $artifactId); encryptionVerifyRecoveredStore($temporary, (string)$artifact['store']); }
+    finally { @unlink($temporary); }
+    encryptionRecordRemoteEnvelopeVerified($registry, $artifactId, $id, $keyId);
+    unset($result['data_key']);
+    return $result + ['state' => 'recovery-verified', 'reason' => 'Custody released a transient key that authenticated this sealed artifact during a non-destructive recovery drill.'];
+}
+
 /**
  * Launches only a signed no-secret readiness probe through an operator-owned
  * sandbox command. It deliberately does not grant isolated_package_runtime or
