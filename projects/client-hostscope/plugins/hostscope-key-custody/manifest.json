@@ -11,10 +11,10 @@
   "data": {"directory": "data", "migration_namespace": "hostscope_key_custody"},
   "compatibility": {"min_php": "8.1.0", "requires_extensions": ["curl", "openssl", "sodium"], "requires_runtime_capability": "isolated_package_runtime"},
   "integrity": {"algorithm": "sha256", "files": {
-    "README.md": "daeb2af723e149f1be4c2b21600f3810dbe4695630f23538f479238e825a5701",
+    "README.md": "a8cefc28c590fb0e20f334aae2278f15437c1374d9bc6561cc0fc59538ba24d5",
     "settings.schema.json": "21b27263dd7959a7d9aa3f76d23c34501c1af3e9b92344147fc5050afec4c6ab",
     "src/KeyCustodyProvider.php": "929de0b2103badcc2bbd921b535c506fb251eecfed251b4725ea2d2d078dc645",
-    "src/KeyCustodyHttpClient.php": "959e5061a4b03e4bc7426c7af34707dcab6d8996c08a50ca0ecec09dcbd997b6"
+    "src/KeyCustodyHttpClient.php": "5d6dc42db7cac241e4f7a4976181fef89ab4475464714180f655802e57382b84"
   }},
   "state": "design-preview"
 }

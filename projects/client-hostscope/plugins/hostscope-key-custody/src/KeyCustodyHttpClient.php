@@ -41,7 +41,7 @@ final class KeyCustodyHttpClient
     {
         self::validateEndpoint($baseUrl, $tlsSpkiPin);
         if (!function_exists('curl_init')) throw new \RuntimeException('cURL is required for remote key custody');
-        $handle = curl_init(rtrim($baseUrl, '/') . '/v1/health');
+        $handle = curl_init(self::apiUrl($baseUrl, '/health'));
         if ($handle === false) throw new \RuntimeException('could not initialize custody health request');
         try {
             $options = [CURLOPT_CUSTOMREQUEST => 'GET', CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 10,
@@ -148,7 +148,7 @@ final class KeyCustodyHttpClient
         $metadata = self::requestMetadata();
         $encoded = $body === null ? '' : json_encode($body, JSON_THROW_ON_ERROR);
         $signature = base64_encode(sodium_crypto_sign_detached(self::requestPayload($method, $path, $metadata['timestamp'], $metadata['nonce'], $encoded), $this->clientSigningKey));
-        $handle = curl_init(rtrim($this->baseUrl, '/') . $path);
+        $handle = curl_init(self::apiUrl($this->baseUrl, $path));
         if ($handle === false) throw new \RuntimeException('could not initialize custody request');
         try {
             $options = [
@@ -168,5 +168,13 @@ final class KeyCustodyHttpClient
             if (!is_array($response) || $status < 200 || $status >= 300) throw new \RuntimeException('key custody request was refused');
             return $response;
         } finally { curl_close($handle); }
+    }
+
+    /** Accept a service root or a copied /v1 API root without doubling it. */
+    private static function apiUrl(string $baseUrl, string $path): string
+    {
+        $base = rtrim($baseUrl, '/');
+        if (!str_ends_with(strtolower((string)(parse_url($base, PHP_URL_PATH) ?? '')), '/v1')) $base .= '/v1';
+        return $base . $path;
     }
 }

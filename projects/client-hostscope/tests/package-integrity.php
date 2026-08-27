@@ -50,7 +50,8 @@ try {
         && str_contains($custodySource, "'requested_ttl_seconds' => \$requestedTtl")
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYPEER => true')
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYHOST => 2')
-        && str_contains($custodySource, 'CURLOPT_PINNEDPUBLICKEY') && str_contains($custodySource, "'/v1/health'")
+        && str_contains($custodySource, 'CURLOPT_PINNEDPUBLICKEY') && str_contains($custodySource, 'function apiUrl')
+        && str_contains($custodySource, "'/v1'")
         && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::class, 'health')
         && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::class, 'healthEndpoint'), 'custody client does not enforce its secure transport defaults');
     $custodyDirectory = __DIR__ . '/../plugins/hostscope-key-custody';

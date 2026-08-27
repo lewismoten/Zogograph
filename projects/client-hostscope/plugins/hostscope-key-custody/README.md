@@ -19,6 +19,11 @@ syntax, never a token containing whitespace or header-like content, and refuses
 control characters, overlong identifiers, or oversized envelopes before making
 a request.
 
+For `service_base_url`, use either the service root such as
+`https://custody.example/services/key-custody` or the copied API root ending in
+`/v1`. HostScope normalizes either form to the versioned API exactly once. Do
+not add endpoint names such as `/health`, credentials, query text, or fragments.
+
 Save the endpoint, tenant identifier, and zero-second cache preference first,
 then run **Test custody endpoint** from Package runtime. That isolated probe
 uses only the saved HTTPS address and optional public TLS pin and confirms the
