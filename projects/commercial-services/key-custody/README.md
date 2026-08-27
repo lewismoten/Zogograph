@@ -11,6 +11,11 @@ does not accept metric databases, sealed artifacts, or raw customer data. The
 replica relay is a different service and must not share the unwrap path or a
 combined tenant credential.
 
+The custody API enforces that its SQLite metadata directory is an absolute,
+non-symlinked private path outside the deployed web root. It creates the
+directory and database with owner-only permissions; a relative or web-served
+database location is refused rather than treated as a convenience default.
+
 See `openapi.json` for the API contract. The companion client integration will
 be the optional `hostscope-key-custody` package. Until it is installed and
 enabled, HostScope uses the local key file or self-managed fleet options.

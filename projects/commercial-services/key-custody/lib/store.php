@@ -3,12 +3,29 @@ declare(strict_types=1);
 
 const KEY_CUSTODY_TOKEN_BYTES = 32;
 
-function keyCustodyOpen(array $config): PDO
+/** Resolves a private custody-service directory and rejects storage aliases
+ * that could expose tenant metadata through the web server. */
+function keyCustodyPrivateDirectory(string $path, ?string $webRoot = null): string
+{
+    if ($path === '' || !str_starts_with($path, '/') || is_link($path)) throw new RuntimeException('custody private path must be absolute and must not be a symbolic link');
+    if (!is_dir($path) && !mkdir($path, 0700, true) && !is_dir($path)) throw new RuntimeException('could not create custody data directory');
+    $real = realpath($path);
+    if ($real === false || is_link($path) || !is_dir($real)) throw new RuntimeException('custody private directory is unavailable or unsafe');
+    @chmod($real, 0700);
+    $root = $webRoot === null ? false : realpath($webRoot);
+    if (is_string($root) && ($real === $root || str_starts_with($real, rtrim($root, '/') . '/'))) {
+        throw new RuntimeException('custody private directory must be outside the web root');
+    }
+    return $real;
+}
+
+function keyCustodyOpen(array $config, ?string $webRoot = null): PDO
 {
     $path = (string)($config['database'] ?? '');
-    if ($path === '' || !str_starts_with($path, '/')) throw new InvalidArgumentException('custody database path must be absolute');
-    $directory = dirname($path);
-    if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) throw new RuntimeException('could not create custody data directory');
+    if ($path === '' || !str_starts_with($path, '/') || is_link($path)) throw new InvalidArgumentException('custody database path must be absolute and must not be a symbolic link');
+    $directory = keyCustodyPrivateDirectory(dirname($path), $webRoot);
+    $path = $directory . '/' . basename($path);
+    if (is_link($path)) throw new RuntimeException('custody database must not be a symbolic link');
     $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
     $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA busy_timeout = 5000'); $pdo->exec('PRAGMA foreign_keys = ON'); @chmod($path, 0600);
     $pdo->exec('CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)');

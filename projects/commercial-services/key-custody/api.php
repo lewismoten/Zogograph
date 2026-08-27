@@ -21,7 +21,7 @@ $rawBody = (string)file_get_contents('php://input');
 function custodyBody(string $raw): array { $value = json_decode($raw, true); if (!is_array($value)) throw new InvalidArgumentException('JSON object body is required'); return $value; }
 function custodyReply(int $status, array $body): never { http_response_code($status); echo json_encode($body, JSON_UNESCAPED_SLASHES); exit; }
 try {
-    $pdo = keyCustodyOpen($config);
+    $pdo = keyCustodyOpen($config, __DIR__);
     if ($path === '/v1/keys' && $method === 'GET') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['keys' => keyCustodyListKeys($pdo, $auth['tenant_id'])]);
     }

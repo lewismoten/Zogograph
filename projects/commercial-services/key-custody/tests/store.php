@@ -12,6 +12,8 @@ custodyExpect(isset($contract['paths']['/internal/subscriptions/{tenantId}']) &&
 $root = sys_get_temp_dir() . '/hostscope-custody-' . bin2hex(random_bytes(4)); mkdir($root, 0700, true);
 try {
     $pdo = keyCustodyOpen(['database' => $root . '/service.db']);
+    try { keyCustodyOpen(['database' => 'relative.db']); throw new RuntimeException('relative custody database path was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'relative custody database path was accepted', $error->getMessage()); }
     $tenant = keyCustodyCreateTenant($pdo, 'Example');
     [$initialClientTokenId] = explode('.', $tenant['client_token'], 2);
     $pdo->prepare('INSERT INTO client_nonces (token_id, nonce, expires_at) VALUES (?, ?, ?)')->execute([$initialClientTokenId, 'expired_nonce_abcdefghijklmnop', time() - 1]);
