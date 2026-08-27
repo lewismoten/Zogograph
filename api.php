@@ -301,6 +301,9 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'peers' => peersView($config, $pdo, $signedIn),
         'marketplace' => marketplaceView($config, $pdo, $signedIn),
         'marketplace-enable' => doMarketplaceEnable($config, $pdo, $post),
+        'marketplace-install' => doMarketplaceInstall($config, $pdo, $post),
+        'marketplace-history' => marketplaceHistoryView($config, $post),
+        'marketplace-rollback' => doMarketplaceRollback($config, $pdo, $post),
         'peer-save' => doPeerSave($config, $pdo, $post),
         'peer-delete' => doPeerDelete($config, $pdo, $post),
         'peer-transport-rotate' => doPeerTransportRotate($config, $pdo, $post),
@@ -5544,6 +5547,34 @@ function doMarketplaceEnable(array $config, PDO $pdo, bool $post): array
     logAction($pdo, $enabled ? 'marketplace_enable' : 'marketplace_disable', $id, 'ok', 0, 0,
         $package['version'] . '; ' . implode(', ', $package['capabilities']));
     return ['ok' => true, 'package' => $package];
+}
+
+function doMarketplaceInstall(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    try { $result = marketplaceInstallManifest($config, $pdo, (string)($_POST['manifest'] ?? ''), currentAccountName()); }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'marketplace_install', $result['package']['id'], 'ok', 0, 0,
+        $result['package']['version'] . '; local manifest; prior=' . ($result['revision'] ?? 'none'));
+    return ['ok' => true, 'package' => $result['package']];
+}
+
+function marketplaceHistoryView(array $config, bool $post): array
+{
+    requireWrite($post);
+    try { return ['history' => marketplaceHistory($config, trim((string)($_POST['id'] ?? '')))]; }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+}
+
+function doMarketplaceRollback(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $id = trim((string)($_POST['id'] ?? ''));
+    $revision = trim((string)($_POST['revision'] ?? ''));
+    try { $result = marketplaceRollback($config, $pdo, $id, $revision, currentAccountName()); }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'marketplace_rollback', $id, 'ok', 0, 0, $result['package']['version'] . '; revision=' . $revision);
+    return ['ok' => true, 'package' => $result['package']];
 }
 
 function doClearProblems(array $config, PDO $pdo, bool $post): array

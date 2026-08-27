@@ -23,7 +23,7 @@ return [
      * package here never executes PHP, shell, or browser code. A signed
      * manifest is enabled only when its configured publisher key verifies. */
     'marketplace' => [
-        'directory' => __DIR__ . '/../marketplace',
+        'directory' => __DIR__ . '/../data/marketplace',
         // 'trusted_keys' => [
         //     'example-publisher' => ['publisher' => 'Example publisher',
         //         'public_key' => 'base64 Ed25519 public key'],

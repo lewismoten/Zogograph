@@ -29,6 +29,18 @@ try { marketplaceManifest(['id'=>'Bad','version'=>'1','name'=>'x','publisher'=>'
 try { marketplaceManifest(['id'=>'bad-guidance','version'=>'1.0.0','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['alert_recommendations'], 'recommendations'=>[['rule'=>'same_rule','severity'=>'warning','reason'=>'x'], ['rule'=>'same_rule','severity'=>'error','reason'=>'y']]]); throw new RuntimeException('duplicate package guidance was accepted'); } catch (InvalidArgumentException) {}
 $incompatible = marketplaceManifest(['id'=>'future-runtime','version'=>'1.0.0','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['alert_recommendations'], 'compatibility'=>['min_php'=>'999.0.0']]);
 marketplaceExpect(!marketplaceCompatibility($pdo, $incompatible)['can_enable'], 'incompatible package can be enabled');
+$installer = $root . '/installed';
+$installConfig = ['marketplace' => ['directory' => $installer]];
+$installOne = json_encode(['id'=>'installed-pack','version'=>'1.0.0','name'=>'Installed pack','publisher'=>'HostScope','summary'=>'First local revision.','license'=>'Proprietary','capabilities'=>['alert_recommendations']]);
+$installed = marketplaceInstallManifest($installConfig, $pdo, $installOne, 'administrator');
+marketplaceExpect($installed['revision'] === null && is_file($installer . '/installed-pack.json'), 'local manifest was not installed atomically');
+$installTwo = json_encode(['id'=>'installed-pack','version'=>'1.1.0','name'=>'Installed pack','publisher'=>'HostScope','summary'=>'Second local revision.','license'=>'Proprietary','capabilities'=>['alert_recommendations']]);
+$updatedInstall = marketplaceInstallManifest($installConfig, $pdo, $installTwo, 'administrator');
+marketplaceExpect(is_string($updatedInstall['revision']) && count(marketplaceHistory($installConfig, 'installed-pack')) === 1,
+    'package update did not preserve a rollback revision');
+$rolledBack = marketplaceRollback($installConfig, $pdo, 'installed-pack', $updatedInstall['revision'], 'administrator');
+marketplaceExpect($rolledBack['package']['version'] === '1.0.0' && !marketplacePackages($installConfig, $pdo)[0]['enabled'],
+    'rollback did not restore a disabled prior package revision');
 $signed = marketplaceManifest(['id'=>'signed-pack','version'=>'1.0.0','name'=>'Signed pack','publisher'=>'Example publisher','summary'=>'Signed guidance.','license'=>'Proprietary','capabilities'=>['alert_recommendations']]);
 if (function_exists('sodium_crypto_sign_keypair')) {
     $pair = sodium_crypto_sign_keypair();
@@ -51,7 +63,14 @@ if (function_exists('sodium_crypto_sign_keypair')) {
 $api = file_get_contents(__DIR__ . '/../api.php');
 marketplaceExpect($api !== false && str_contains($api, "'marketplace' => 'sys-marketplace'")
     && str_contains($api, "'marketplace-enable' => doMarketplaceEnable")
-    && str_contains($api, "function doMarketplaceEnable(array \$config, PDO \$pdo, bool \$post): array\n{\n    requireWrite(\$post);"),
+    && str_contains($api, "'marketplace-install' => doMarketplaceInstall")
+    && str_contains($api, "'marketplace-rollback' => doMarketplaceRollback")
+    && str_contains($api, "function doMarketplaceEnable(array \$config, PDO \$pdo, bool \$post): array\n{\n    requireWrite(\$post);")
+    && str_contains($api, "function doMarketplaceInstall(array \$config, PDO \$pdo, bool \$post): array\n{\n    requireWrite(\$post);")
+    && str_contains($api, "function marketplaceHistoryView(array \$config, bool \$post): array\n{\n    requireWrite(\$post);")
+    && str_contains($api, "function doMarketplaceRollback(array \$config, PDO \$pdo, bool \$post): array\n{\n    requireWrite(\$post);"),
     'marketplace administration route is missing its write authorization');
+foreach (scandir($installer . '/.history/installed-pack') ?: [] as $entry) if (preg_match('/^[a-f0-9]{64}\.json$/', $entry)) unlink($installer . '/.history/installed-pack/' . $entry);
+unlink($installer . '/installed-pack.json'); rmdir($installer . '/.history/installed-pack'); rmdir($installer . '/.history'); rmdir($installer);
 unlink($root . '/uptime-pack.json'); unlink($root . '/bad.json'); rmdir($root);
 echo "marketplace checks passed\n";

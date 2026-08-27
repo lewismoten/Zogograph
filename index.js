@@ -11640,6 +11640,11 @@ function renderMarketplace(data) {
   const body = $("marketplaceBody");
   const parts = [note("Packages are discovered from the configured local marketplace directory. Remote downloads and executable hooks are not supported.")];
   if (data.errors?.length) parts.push(note(`Ignored manifests: ${data.errors.join("; ")}`));
+  if (data.can_change) {
+    const install = document.createElement("button"); install.type = "button"; install.className = "primary"; install.textContent = "Install local manifest";
+    install.addEventListener("click", showMarketplaceInstallDialog);
+    parts.push(install);
+  }
   if (!data.packages.length) { parts.push(note("No valid local package manifests were found.")); body.replaceChildren(...parts); return; }
   const holder = document.createElement("div"); holder.id = "marketplaceTable"; parts.push(holder); body.replaceChildren(...parts);
   renderTable("marketplaceTable", data.packages, [
@@ -11659,6 +11664,9 @@ function renderMarketplace(data) {
         wrap.appendChild(review);
       }
       if (!data.can_change) return wrap;
+      const history = document.createElement("button"); history.className = "link"; history.textContent = "History";
+      history.addEventListener("click", () => showMarketplaceHistory(row));
+      wrap.appendChild(history);
       const button = document.createElement("button"); button.className = row.enabled ? "link danger" : "link";
       button.textContent = row.enabled ? "Disable" : "Enable";
       button.disabled = !row.provenance.can_enable || !row.compatibility.can_enable;
@@ -11672,6 +11680,39 @@ function renderMarketplace(data) {
       return wrap;
     }},
   ], null, row => row.enabled ? "row-ok" : "", row => row.id);
+}
+
+function showMarketplaceInstallDialog() {
+  const manifest = document.createElement("textarea");
+  manifest.className = "wide-field"; manifest.rows = 18; manifest.spellcheck = false;
+  manifest.placeholder = '{\n  "id": "uptime-guidance",\n  "version": "1.0.0"\n}';
+  showFormDialog("Install local marketplace manifest", [
+    fieldRow("Manifest JSON", manifest, "This saves only a validated JSON manifest in the configured local catalog. It cannot upload or execute code."),
+  ], async () => {
+    await post("marketplace-install", { manifest: manifest.value });
+    await refreshMarketplace();
+    notice("Local package manifest installed for review.", true);
+  }, "Install for review");
+}
+
+async function showMarketplaceHistory(row) {
+  try {
+    const data = await post("marketplace-history", { id: row.id });
+    if (!data.history.length) { showListDialog(`${row.name} history`, [note("No prior local revisions are available.")]); return; }
+    const list = document.createElement("div"); list.className = "stack";
+    for (const revision of data.history) {
+      const item = document.createElement("div"); item.className = "list-row";
+      const label = document.createElement("span"); label.textContent = `${revision.version} · saved ${whenSpan(revision.stored_at)}`;
+      const restore = document.createElement("button"); restore.className = "link"; restore.textContent = "Restore for review";
+      restore.addEventListener("click", async () => {
+        if (!(await confirmDialog(`Restore ${row.name} ${revision.version}? The restored package remains disabled until reviewed again.`, "Restore package"))) return;
+        try { await post("marketplace-rollback", { id: row.id, revision: revision.revision }); $("noteDialog").close(); await refreshMarketplace(); notice(`${row.name} restored for review.`, true); }
+        catch (error) { notice(String(error.message || error)); }
+      });
+      item.append(label, restore); list.appendChild(item);
+    }
+    showListDialog(`${row.name} history`, [list], "Restoring a prior revision preserves administrator control: it stays disabled until explicitly enabled again.");
+  } catch (error) { notice(String(error.message || error)); }
 }
 
 function renderPeers(data) {

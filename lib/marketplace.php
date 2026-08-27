@@ -180,10 +180,135 @@ function marketplaceSetEnabled(array $config, PDO $pdo, string $id, bool $enable
     $compatibility = marketplaceCompatibility($pdo, $package);
     if ($enabled && !$package['provenance']['can_enable']) throw new InvalidArgumentException('package provenance cannot be verified');
     if ($enabled && !$compatibility['can_enable']) throw new InvalidArgumentException('package is incompatible with this HostScope runtime');
+    marketplaceRecordState($pdo, $package['id'], $package['version'], $enabled, $actor);
+    return $package + ['compatibility' => $compatibility, 'enabled' => $enabled];
+}
+
+function marketplaceRecordState(PDO $pdo, string $id, string $version, bool $enabled, string $actor): void
+{
     $now = time();
     $pdo->prepare('INSERT INTO marketplace_packages (package_id, version, enabled_at, changed_at, changed_by)
         VALUES (?, ?, ?, ?, ?) ON CONFLICT(package_id) DO UPDATE SET version = excluded.version,
         enabled_at = excluded.enabled_at, changed_at = excluded.changed_at, changed_by = excluded.changed_by')
-        ->execute([$id, $package['version'], $enabled ? $now : null, $now, mb_substr($actor, 0, 120)]);
-    return $package + ['compatibility' => $compatibility, 'enabled' => $enabled];
+        ->execute([$id, $version, $enabled ? $now : null, $now, mb_substr($actor, 0, 120)]);
+}
+
+/** @return array{id:string,version:string,name:string,publisher:string,summary:string,license:string,capabilities:list<string>,recommendations:list<array>,compatibility:array,signature:?array} */
+function marketplaceManifestFromJson(string $json): array
+{
+    if ($json === '' || strlen($json) > MARKETPLACE_MAX_MANIFEST_BYTES) throw new InvalidArgumentException('package manifest is too large');
+    try { $raw = json_decode($json, true, 64, JSON_THROW_ON_ERROR); }
+    catch (JsonException) { throw new InvalidArgumentException('package manifest is not valid JSON'); }
+    if (!is_array($raw)) throw new InvalidArgumentException('package manifest is not an object');
+    return marketplaceManifest($raw);
+}
+
+function marketplaceManifestJson(array $manifest): string
+{
+    if ($manifest['signature'] === null) unset($manifest['signature']);
+    return json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
+}
+
+function marketplaceWritableDirectory(array $config): string
+{
+    $directory = rtrim((string)($config['marketplace']['directory'] ?? ''), '/');
+    if ($directory === '' || is_link($directory)) throw new InvalidArgumentException('marketplace directory is unsafe');
+    if (!is_dir($directory) && !mkdir($directory, 0750, true)) throw new InvalidArgumentException('marketplace directory cannot be created');
+    $directory = realpath($directory);
+    if ($directory === false || !is_dir($directory) || !is_writable($directory)) throw new InvalidArgumentException('marketplace directory is not writable');
+    return $directory;
+}
+
+function marketplaceWriteFile(string $path, string $contents): void
+{
+    $temporary = dirname($path) . '/.' . basename($path) . '.' . bin2hex(random_bytes(8)) . '.tmp';
+    if (file_put_contents($temporary, $contents, LOCK_EX) !== strlen($contents)) {
+        @unlink($temporary);
+        throw new InvalidArgumentException('package manifest could not be written');
+    }
+    chmod($temporary, 0640);
+    if (!rename($temporary, $path)) {
+        @unlink($temporary);
+        throw new InvalidArgumentException('package manifest could not be installed');
+    }
+}
+
+/** @return array{package:array,revision:?string} */
+function marketplaceInstallManifest(array $config, PDO $pdo, string $json, string $actor): array
+{
+    $manifest = marketplaceManifestFromJson($json);
+    $provenance = marketplaceProvenance($config, $manifest);
+    if (!$provenance['can_enable']) throw new InvalidArgumentException('package provenance cannot be verified');
+    $compatibility = marketplaceCompatibility($pdo, $manifest);
+    if (!$compatibility['can_enable']) throw new InvalidArgumentException('package is incompatible with this HostScope runtime');
+    $directory = marketplaceWritableDirectory($config);
+    $target = $directory . '/' . $manifest['id'] . '.json';
+    $revision = null;
+    if (is_file($target)) {
+        if (is_link($target) || filesize($target) > MARKETPLACE_MAX_MANIFEST_BYTES) throw new InvalidArgumentException('existing package manifest is unsafe');
+        $previous = (string)file_get_contents($target);
+        $previousManifest = marketplaceManifestFromJson($previous);
+        if ($previousManifest['id'] !== $manifest['id']) throw new InvalidArgumentException('existing package id does not match its filename');
+        if ($previous !== marketplaceManifestJson($manifest)) {
+            $revision = hash('sha256', $previous);
+            $history = $directory . '/.history/' . $manifest['id'];
+            if (!is_dir($history) && !mkdir($history, 0750, true)) throw new InvalidArgumentException('package history cannot be created');
+            if (is_link($history) || !is_writable($history)) throw new InvalidArgumentException('package history is unsafe');
+            marketplaceWriteFile($history . '/' . $revision . '.json', $previous);
+        }
+    }
+    marketplaceWriteFile($target, marketplaceManifestJson($manifest));
+    marketplaceRecordState($pdo, $manifest['id'], $manifest['version'], false, $actor);
+    return ['package' => $manifest + ['provenance' => $provenance, 'compatibility' => $compatibility, 'enabled' => false], 'revision' => $revision];
+}
+
+/** @return list<array{revision:string,version:string,name:string,stored_at:int}> */
+function marketplaceHistory(array $config, string $id): array
+{
+    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id)) throw new InvalidArgumentException('package id is invalid');
+    $directory = (string)($config['marketplace']['directory'] ?? '');
+    if ($directory === '' || is_link($directory)) return [];
+    $history = rtrim($directory, '/') . '/.history/' . $id;
+    if (!is_dir($history) || is_link($history) || !is_readable($history)) return [];
+    $rows = [];
+    foreach (scandir($history) ?: [] as $entry) {
+        if (!preg_match('/^([a-f0-9]{64})\.json$/', $entry, $match)) continue;
+        $file = $history . '/' . $entry;
+        if (is_link($file) || !is_file($file) || filesize($file) > MARKETPLACE_MAX_MANIFEST_BYTES) continue;
+        try {
+            $manifest = marketplaceManifestFromJson((string)file_get_contents($file));
+            if ($manifest['id'] !== $id) continue;
+            $rows[] = ['revision' => $match[1], 'version' => $manifest['version'], 'name' => $manifest['name'], 'stored_at' => filemtime($file) ?: 0];
+        } catch (Throwable) { continue; }
+    }
+    usort($rows, fn(array $left, array $right): int => $right['stored_at'] <=> $left['stored_at']);
+    return $rows;
+}
+
+/** @return array{package:array,revision:string} */
+function marketplaceRollback(array $config, PDO $pdo, string $id, string $revision, string $actor): array
+{
+    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id) || !preg_match('/^[a-f0-9]{64}$/', $revision)) throw new InvalidArgumentException('package rollback target is invalid');
+    $directory = marketplaceWritableDirectory($config);
+    $history = $directory . '/.history/' . $id;
+    if (is_link($history) || !is_dir($history)) throw new InvalidArgumentException('package revision is unavailable');
+    $source = $history . '/' . $revision . '.json';
+    if (is_link($source) || !is_file($source) || filesize($source) > MARKETPLACE_MAX_MANIFEST_BYTES) throw new InvalidArgumentException('package revision is unavailable');
+    $contents = (string)file_get_contents($source);
+    $manifest = marketplaceManifestFromJson($contents);
+    if ($manifest['id'] !== $id) throw new InvalidArgumentException('package revision does not match its id');
+    $provenance = marketplaceProvenance($config, $manifest);
+    $compatibility = marketplaceCompatibility($pdo, $manifest);
+    if (!$provenance['can_enable'] || !$compatibility['can_enable']) throw new InvalidArgumentException('package revision cannot run on this HostScope instance');
+    $target = $directory . '/' . $id . '.json';
+    if (is_file($target)) {
+        if (is_link($target) || filesize($target) > MARKETPLACE_MAX_MANIFEST_BYTES) throw new InvalidArgumentException('existing package manifest is unsafe');
+        $current = (string)file_get_contents($target);
+        $currentManifest = marketplaceManifestFromJson($current);
+        if ($currentManifest['id'] !== $id) throw new InvalidArgumentException('existing package id does not match its filename');
+        marketplaceWriteFile($history . '/' . hash('sha256', $current) . '.json', $current);
+    }
+    marketplaceWriteFile($target, marketplaceManifestJson($manifest));
+    marketplaceRecordState($pdo, $id, $manifest['version'], false, $actor);
+    return ['package' => $manifest + ['provenance' => $provenance, 'compatibility' => $compatibility, 'enabled' => false], 'revision' => $revision];
 }
