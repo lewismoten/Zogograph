@@ -1,0 +1,47 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "HostScope Key Custody API",
+    "version": "1.0.0-draft",
+    "description": "Optional remote custody for wrapped encryption-key envelopes. No endpoint returns a raw KEK or DEK."
+  },
+  "servers": [{"url": "{serviceBase}/v1", "variables": {"serviceBase": {"default": "https://configured.example/services/key-custody"}}}],
+  "paths": {
+    "/keys": {
+      "get": {"summary": "List tenant key records", "responses": {"200": {"description": "Key metadata only"}}},
+      "post": {"summary": "Create a tenant custody key record", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KeyCreate"}}}}, "responses": {"201": {"description": "Created"}}}
+    },
+    "/keys/{keyId}": {
+      "get": {"summary": "Read key policy and lifecycle state", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "responses": {"200": {"description": "Metadata only"}}},
+      "patch": {"summary": "Rotate, disable, or change key policy", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "responses": {"200": {"description": "Updated"}}}
+    },
+    "/keys/{keyId}/envelopes": {
+      "post": {"summary": "Store a wrapped DEK envelope", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "responses": {"201": {"description": "Envelope recorded"}}},
+      "get": {"summary": "List envelope metadata", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "responses": {"200": {"description": "Metadata only"}}}
+    },
+    "/keys/{keyId}/unwrap-authorizations": {
+      "post": {"summary": "Request short-lived authorization to unwrap one named envelope", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UnwrapRequest"}}}}, "responses": {"201": {"description": "Short-lived authorization or provider-wrapped response"}, "403": {"description": "Policy, subscription, or enrollment refusal"}}}
+    },
+    "/subscription": {
+      "get": {"summary": "Read plan, quota, renewal, and custody availability", "responses": {"200": {"description": "Subscription state"}}},
+      "patch": {"summary": "Change selected plan or cancel at period end", "responses": {"200": {"description": "Updated subscription state"}}}
+    },
+    "/billing/checkout": {
+      "post": {"summary": "Create a hosted checkout or invoice session", "responses": {"201": {"description": "Opaque billing-session URL/reference"}}}
+    },
+    "/billing/portal": {
+      "post": {"summary": "Create a hosted billing-management session", "responses": {"201": {"description": "Opaque billing-session URL/reference"}}}
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "accountSession": {"type": "http", "scheme": "bearer", "description": "Account management token; never valid for unwrap requests."},
+      "enrolledClient": {"type": "mutualTLS", "description": "Enrolled client certificate plus replay-protected request assertion."}
+    },
+    "parameters": {"KeyId": {"name": "keyId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{12,120}$"}}},
+    "schemas": {
+      "KeyCreate": {"type": "object", "required": ["name", "algorithm", "authorization_ttl_seconds"], "properties": {"name": {"type": "string", "maxLength": 120}, "algorithm": {"const": "aes-256-gcm-envelope"}, "authorization_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 900}}},
+      "UnwrapRequest": {"type": "object", "required": ["envelope_id", "artifact_id", "nonce", "requested_ttl_seconds"], "properties": {"envelope_id": {"type": "string"}, "artifact_id": {"type": "string", "maxLength": 200}, "nonce": {"type": "string", "maxLength": 200}, "requested_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 900}}}
+    }
+  }
+}

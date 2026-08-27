@@ -1,0 +1,19 @@
+{
+  "id": "hostscope-key-custody",
+  "version": "0.1.0",
+  "name": "HostScope remote key custody",
+  "publisher": "HostScope",
+  "summary": "Optional client for the HostScope key-custody service using enrolled-client authentication and short-lived unwrap authorization.",
+  "license": "Proprietary preview",
+  "capabilities": ["key_provider", "network_client", "package_private_database"],
+  "runtime": {"kind": "hostscope-isolated-php-package", "entrypoint": "src/KeyCustodyProvider.php", "minimum_api": "1.0"},
+  "settings_schema": "settings.schema.json",
+  "data": {"directory": "data", "migration_namespace": "hostscope_key_custody"},
+  "compatibility": {"min_php": "8.1.0", "requires_extensions": ["curl", "openssl"], "requires_runtime_capability": "isolated_package_runtime"},
+  "integrity": {"algorithm": "sha256", "files": {
+    "README.md": "55f48cef0c508f1eae845c80852138bc9b60f92e13925642f128cb4457ec47ff",
+    "settings.schema.json": "7ac32fb2ac81399055bbe211f3747886375a32d0494c50b02f0d33b2f604b96c",
+    "src/KeyCustodyProvider.php": "0f5b2dada755086273dc2c52f5ab977ef6eda48034c57bb15f2a5feb0cdefe39"
+  }},
+  "state": "design-preview"
+}
