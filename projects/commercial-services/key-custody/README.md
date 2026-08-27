@@ -17,13 +17,15 @@ enabled, HostScope uses the local key file or self-managed fleet options.
 
 ## Security baseline
 
-- Require HTTPS and enrolled client authentication (mTLS preferred; a
-  short-lived scoped client assertion is the fallback).
+- Require HTTPS and enrolled-client authentication. The reference service
+  requires both a client bearer credential and an Ed25519 signature over the
+  method, path, timestamp, nonce, and exact body hash. mTLS is the planned
+  deployment upgrade for high-assurance environments.
 - Use a distinct account-management session/token for billing and key-policy
   management; never reuse it for collector or replica traffic.
 - Require every enrolled-client request to include a timestamp within five
-  minutes and a one-time nonce; the service retains used nonces for ten minutes
-  to reject replayed unwrap or envelope requests.
+  minutes, a one-time nonce, and the signature; the service retains used
+  nonces for ten minutes to reject replayed unwrap or envelope requests.
 - Return key identifiers and policy only to management endpoints. The enrolled
   client unwrap endpoint may return the requested key over HTTPS after scoped
   authorization; it never exposes a key through billing or management APIs.
@@ -48,13 +50,15 @@ php scripts/provision-tenant.php "Example customer"
 ```
 
 Set the generated absolute path in `config.php`. Keep the printed management
-and client tokens separately; the service retains only password hashes and
-cannot show either token again. `api.php` currently implements key list/create, client unwrap,
+token, client token, and client signing private key separately; the service
+retains only token hashes and the signing public key and cannot show the token
+or private key again. `api.php` currently implements key list/create, client unwrap,
 subscription read, and configured billing portal/checkout session links. It is
 a low-cost SQLite reference service; deploy it behind HTTPS and an authenticated
 reverse proxy before exposing it publicly. Envelope storage, key rotation, and
-timestamp/nonce replay protection are included. mTLS enrollment, signed client
-assertions, and payment-provider integration remain the next service increments.
+timestamp/nonce replay protection with signed client requests are included.
+mTLS enrollment and payment-provider integration remain the next service
+increments.
 
 On Apache, the included `.htaccess` routes `/v1/...` requests to `api.php` and
 denies direct configuration/database files. Nginx and other servers must apply

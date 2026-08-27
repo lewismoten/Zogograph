@@ -13,6 +13,11 @@ try {
     $custodyMetadata = \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::requestMetadata();
     packageExpect(ctype_digit($custodyMetadata['timestamp']) && preg_match('/^[A-Za-z0-9_-]{16,}$/', $custodyMetadata['nonce']) === 1,
         'custody client request metadata is not replay-safe');
+    $custodyPair = sodium_crypto_sign_keypair(); $custodySecret = sodium_crypto_sign_secretkey($custodyPair);
+    $custodyPayload = \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::requestPayload('POST', '/v1/keys/example/envelopes', $custodyMetadata['timestamp'], $custodyMetadata['nonce'], '{}');
+    $custodySignature = sodium_crypto_sign_detached($custodyPayload, $custodySecret);
+    packageExpect(sodium_crypto_sign_verify_detached($custodySignature, $custodyPayload, sodium_crypto_sign_publickey($custodyPair)),
+        'custody request signature does not verify');
     $pair = sodium_crypto_sign_keypair();
     $signed = packageSignManifest($manifest, $root, 'test-publisher', sodium_crypto_sign_secretkey($pair));
     packageExpect(packageVerifyIntegrity($signed, $root)['ok'], 'fresh package integrity did not verify');

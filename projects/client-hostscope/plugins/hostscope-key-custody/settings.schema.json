@@ -2,11 +2,12 @@
   "title": "HostScope remote key custody",
   "type": "object",
   "additionalProperties": false,
-  "required": ["service_base_url", "tenant_id", "client_credential_secret", "authorization_cache_seconds"],
+  "required": ["service_base_url", "tenant_id", "client_credential_secret", "client_signing_secret", "authorization_cache_seconds"],
   "properties": {
     "service_base_url": {"type": "string", "format": "uri", "description": "Configured HTTPS key-custody API base URL."},
     "tenant_id": {"type": "string", "minLength": 1, "maxLength": 120},
     "client_credential_secret": {"type": "string", "pattern": "^secret_ref:"},
+    "client_signing_secret": {"type": "string", "pattern": "^secret_ref:", "description": "Base64 Ed25519 private key emitted once during client enrollment."},
     "authorization_cache_seconds": {"type": "integer", "minimum": 0, "maximum": 900, "default": 0}
   }
 }

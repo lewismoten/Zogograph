@@ -12,7 +12,8 @@ function keyCustodyOpen(array $config): PDO
     $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
     $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA busy_timeout = 5000'); $pdo->exec('PRAGMA foreign_keys = ON'); @chmod($path, 0600);
     $pdo->exec('CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS access_tokens (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, scope TEXT NOT NULL, token_hash TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS access_tokens (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, scope TEXT NOT NULL, token_hash TEXT NOT NULL, public_key BLOB, created_at INTEGER NOT NULL, revoked_at INTEGER)');
+    if (!keyCustodyTableHasColumn($pdo, 'access_tokens', 'public_key')) $pdo->exec('ALTER TABLE access_tokens ADD COLUMN public_key BLOB');
     $pdo->exec('CREATE INDEX IF NOT EXISTS access_tokens_tenant_scope ON access_tokens (tenant_id, scope, revoked_at)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS client_nonces (token_id TEXT NOT NULL REFERENCES access_tokens(id) ON DELETE CASCADE, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (token_id, nonce))');
     $pdo->exec('CREATE INDEX IF NOT EXISTS client_nonces_expiry ON client_nonces (expires_at)');
@@ -26,7 +27,13 @@ function keyCustodyOpen(array $config): PDO
     return $pdo;
 }
 
-/** @return array{tenant_id:string,management_token:string,client_token:string} */
+function keyCustodyTableHasColumn(PDO $pdo, string $table, string $column): bool
+{
+    foreach ($pdo->query('PRAGMA table_info(' . $table . ')') as $field) if (($field['name'] ?? null) === $column) return true;
+    return false;
+}
+
+/** @return array{tenant_id:string,management_token:string,client_token:string,client_signing_private_key:string} */
 function keyCustodyCreateTenant(PDO $pdo, string $name): array
 {
     $name = trim($name);
@@ -36,21 +43,35 @@ function keyCustodyCreateTenant(PDO $pdo, string $name): array
     try {
     $pdo->prepare('INSERT INTO tenants (id, name, active, created_at) VALUES (?, ?, 1, ?)')->execute([$tenant, $name, $now]);
     $management = keyCustodyCreateToken($pdo, $tenant, 'management');
-    $client = keyCustodyCreateToken($pdo, $tenant, 'client');
+    $client = keyCustodyCreateClientCredential($pdo, $tenant);
     $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, renews_at, changed_at) VALUES (?, ?, ?, ?, NULL, ?)')->execute([$tenant, 'free', 'active', 2, $now]);
     keyCustodyAudit($pdo, $tenant, 'tenant_create', $tenant, 'initial free plan');
     $pdo->commit();
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
-    return ['tenant_id' => $tenant, 'management_token' => $management, 'client_token' => $client];
+    return ['tenant_id' => $tenant, 'management_token' => $management, 'client_token' => $client['token'], 'client_signing_private_key' => $client['signing_private_key']];
 }
 
-function keyCustodyCreateToken(PDO $pdo, string $tenant, string $scope): string
+function keyCustodyCreateToken(PDO $pdo, string $tenant, string $scope, ?string $publicKey = null): string
 {
     if (!in_array($scope, ['management', 'client'], true)) throw new InvalidArgumentException('token scope is invalid');
+    if ($scope === 'client' && (!is_string($publicKey) || strlen($publicKey) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES)) throw new InvalidArgumentException('client signing public key is invalid');
+    if ($scope === 'management' && $publicKey !== null) throw new InvalidArgumentException('management tokens cannot have a signing key');
     $id = 'tok_' . bin2hex(random_bytes(10)); $secret = base64_encode(random_bytes(KEY_CUSTODY_TOKEN_BYTES));
-    $pdo->prepare('INSERT INTO access_tokens (id, tenant_id, scope, token_hash, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL)')
-        ->execute([$id, $tenant, $scope, password_hash($secret, PASSWORD_DEFAULT), time()]);
+    $pdo->prepare('INSERT INTO access_tokens (id, tenant_id, scope, token_hash, public_key, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, NULL)')
+        ->execute([$id, $tenant, $scope, password_hash($secret, PASSWORD_DEFAULT), $publicKey, time()]);
     return $id . '.' . $secret;
+}
+
+/** @return array{token:string,signing_private_key:string} */
+function keyCustodyCreateClientCredential(PDO $pdo, string $tenant): array
+{
+    if (!function_exists('sodium_crypto_sign_keypair')) throw new RuntimeException('libsodium is required for enrolled-client credentials');
+    $pair = sodium_crypto_sign_keypair();
+    return [
+        'token' => keyCustodyCreateToken($pdo, $tenant, 'client', sodium_crypto_sign_publickey($pair)),
+        // This is emitted once for enrollment; only the public half is retained.
+        'signing_private_key' => base64_encode(sodium_crypto_sign_secretkey($pair)),
+    ];
 }
 
 /** @return array{tenant_id:string,scope:string} */
@@ -65,12 +86,26 @@ function keyCustodyAuthenticate(PDO $pdo, string $token, string $requiredScope):
 }
 
 /** @return array{tenant_id:string,scope:string} */
-function keyCustodyAuthenticateClientRequest(PDO $pdo, string $token, string $timestamp, string $nonce): array
+function keyCustodyClientRequestPayload(string $method, string $path, string $timestamp, string $nonce, string $body): string
+{
+    return strtoupper($method) . "\n" . $path . "\n" . $timestamp . "\n" . $nonce . "\n" . base64_encode(hash('sha256', $body, true));
+}
+
+/** @return array{tenant_id:string,scope:string} */
+function keyCustodyAuthenticateClientRequest(PDO $pdo, string $token, string $method, string $path, string $timestamp, string $nonce, string $signature, string $body): array
 {
     $auth = keyCustodyAuthenticate($pdo, $token, 'client');
     [$tokenId] = explode('.', $token, 2);
     if (!ctype_digit($timestamp) || abs(time() - (int)$timestamp) > 300 || !preg_match('/^[A-Za-z0-9_-]{16,200}$/', $nonce)) {
         throw new InvalidArgumentException('client request timestamp or nonce is invalid');
+    }
+    if (!function_exists('sodium_crypto_sign_verify_detached')) throw new RuntimeException('libsodium is required for enrolled-client requests');
+    $stmt = $pdo->prepare('SELECT public_key FROM access_tokens WHERE id = ? AND tenant_id = ? AND scope = ? AND revoked_at IS NULL');
+    $stmt->execute([$tokenId, $auth['tenant_id'], 'client']); $publicKey = $stmt->fetchColumn();
+    $signatureBytes = base64_decode($signature, true);
+    if (!is_string($publicKey) || strlen($publicKey) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES || !is_string($signatureBytes) || strlen($signatureBytes) !== SODIUM_CRYPTO_SIGN_BYTES
+        || !sodium_crypto_sign_verify_detached($signatureBytes, keyCustodyClientRequestPayload($method, $path, $timestamp, $nonce, $body), $publicKey)) {
+        throw new InvalidArgumentException('client request signature is invalid');
     }
     $pdo->prepare('DELETE FROM client_nonces WHERE expires_at < ?')->execute([time()]);
     try {

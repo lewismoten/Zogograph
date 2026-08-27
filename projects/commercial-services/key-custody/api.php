@@ -16,7 +16,9 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $bearer = preg_match('/^Bearer\s+(.+)$/i', (string)($_SERVER['HTTP_AUTHORIZATION'] ?? ''), $match) ? $match[1] : '';
 $clientTimestamp = (string)($_SERVER['HTTP_X_HOSTSCOPE_TIMESTAMP'] ?? '');
 $clientNonce = (string)($_SERVER['HTTP_X_HOSTSCOPE_NONCE'] ?? '');
-function custodyBody(): array { $value = json_decode((string)file_get_contents('php://input'), true); if (!is_array($value)) throw new InvalidArgumentException('JSON object body is required'); return $value; }
+$clientSignature = (string)($_SERVER['HTTP_X_HOSTSCOPE_SIGNATURE'] ?? '');
+$rawBody = (string)file_get_contents('php://input');
+function custodyBody(string $raw): array { $value = json_decode($raw, true); if (!is_array($value)) throw new InvalidArgumentException('JSON object body is required'); return $value; }
 function custodyReply(int $status, array $body): never { http_response_code($status); echo json_encode($body, JSON_UNESCAPED_SLASHES); exit; }
 try {
     $pdo = keyCustodyOpen($config);
@@ -24,18 +26,18 @@ try {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['keys' => keyCustodyListKeys($pdo, $auth['tenant_id'])]);
     }
     if ($path === '/v1/keys' && $method === 'POST') {
-        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody();
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody);
         $key = keyCustodyCreateKey($pdo, $auth['tenant_id'], (string)($body['name'] ?? ''), (int)($body['authorization_ttl_seconds'] ?? 0), keyCustodyReadMasterKey($config, __DIR__));
         custodyReply(201, ['key' => $key]);
     }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})$#', $path, $match) && $method === 'PATCH') {
-        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody(); $action = (string)($body['action'] ?? '');
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody); $action = (string)($body['action'] ?? '');
         if ($action === 'disable') { keyCustodyDisableKey($pdo, $auth['tenant_id'], $match[1]); custodyReply(200, ['key_id' => $match[1], 'state' => 'disabled']); }
         if ($action === 'rotate') { custodyReply(200, ['replacement_key' => keyCustodyRotateKey($pdo, $auth['tenant_id'], $match[1], keyCustodyReadMasterKey($config, __DIR__))]); }
         throw new InvalidArgumentException('key action must be disable or rotate');
     }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/envelopes$#', $path, $match) && $method === 'POST') {
-        $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $clientTimestamp, $clientNonce); $body = custodyBody();
+        $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody); $body = custodyBody($rawBody);
         $envelope = base64_decode((string)($body['envelope_base64'] ?? ''), true);
         if (!is_string($envelope)) throw new InvalidArgumentException('envelope_base64 is invalid');
         custodyReply(201, ['envelope' => keyCustodyStoreEnvelope($pdo, $auth['tenant_id'], $match[1], trim((string)($body['artifact_id'] ?? '')), $envelope)]);
@@ -44,7 +46,7 @@ try {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['envelopes' => keyCustodyListEnvelopes($pdo, $auth['tenant_id'], $match[1])]);
     }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/unwrap-authorizations$#', $path, $match) && $method === 'POST') {
-        $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $clientTimestamp, $clientNonce); $body = custodyBody();
+        $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody); $body = custodyBody($rawBody);
         if (trim((string)($body['artifact_id'] ?? '')) === '' || trim((string)($body['nonce'] ?? '')) === '') throw new InvalidArgumentException('artifact and nonce are required');
         $key = keyCustodyUnwrapKey($pdo, $auth['tenant_id'], $match[1], keyCustodyReadMasterKey($config, __DIR__));
         custodyReply(201, ['key_id' => $match[1], 'key_material' => base64_encode($key), 'expires_in_seconds' => min(900, max(60, (int)($body['requested_ttl_seconds'] ?? 60)))]);
@@ -53,7 +55,7 @@ try {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['subscription' => keyCustodySubscription($pdo, $auth['tenant_id'])]);
     }
     if ($path === '/v1/subscription' && $method === 'PATCH') {
-        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody();
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody);
         $request = keyCustodyRequestSubscriptionChange($pdo, $auth['tenant_id'], (string)($body['action'] ?? ''), isset($body['plan']) ? (string)$body['plan'] : null);
         custodyReply(202, ['request' => $request, 'detail' => 'The commercial billing service must approve and apply this request.']);
     }

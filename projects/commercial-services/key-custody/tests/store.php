@@ -8,10 +8,21 @@ try {
     $tenant = keyCustodyCreateTenant($pdo, 'Example');
     $management = keyCustodyAuthenticate($pdo, $tenant['management_token'], 'management');
     $client = keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client');
-    $request = keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], (string)time(), 'nonce_' . bin2hex(random_bytes(12)));
+    $private = base64_decode($tenant['client_signing_private_key'], true);
+    custodyExpect(is_string($private), 'tenant client signing credential is invalid');
+    $signedRequest = function (string $nonce, string $body) use ($pdo, $tenant, $private): array {
+        $timestamp = (string)time(); $path = '/v1/keys/key_' . str_repeat('a', 32) . '/envelopes';
+        return [$timestamp, base64_encode(sodium_crypto_sign_detached(keyCustodyClientRequestPayload('POST', $path, $timestamp, $nonce, $body), $private)), $path];
+    };
+    $body = '{"artifact_id":"account:20260827"}'; $nonce = 'nonce_' . bin2hex(random_bytes(12));
+    [$timestamp, $signature, $path] = $signedRequest($nonce, $body);
+    $request = keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], 'POST', $path, $timestamp, $nonce, $signature, $body);
     custodyExpect($request['tenant_id'] === $client['tenant_id'], 'replay-protected client request did not authenticate');
-    try { keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], (string)time(), 'nonce_reused_value_123'); keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], (string)time(), 'nonce_reused_value_123'); throw new RuntimeException('reused nonce was accepted'); }
+    try { keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], 'POST', $path, $timestamp, $nonce, $signature, $body); throw new RuntimeException('reused nonce was accepted'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'reused nonce was accepted', $error->getMessage()); }
+    $tamperedNonce = 'nonce_' . bin2hex(random_bytes(12)); [$tamperedTime, $tamperedSignature, $tamperedPath] = $signedRequest($tamperedNonce, $body);
+    try { keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], 'POST', $tamperedPath, $tamperedTime, $tamperedNonce, $tamperedSignature, '{"artifact_id":"changed"}'); throw new RuntimeException('body changed after signing was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'body changed after signing was accepted', $error->getMessage()); }
     custodyExpect($management['tenant_id'] === $client['tenant_id'], 'tenant tokens do not authenticate to the same tenant');
     $master = random_bytes(32); $key = keyCustodyCreateKey($pdo, $management['tenant_id'], 'primary', 300, $master);
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $key['id'], 'management key list omitted created key');

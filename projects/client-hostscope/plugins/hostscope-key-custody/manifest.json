@@ -9,12 +9,12 @@
   "runtime": {"kind": "hostscope-isolated-php-package", "entrypoint": "src/KeyCustodyProvider.php", "minimum_api": "1.0"},
   "settings_schema": "settings.schema.json",
   "data": {"directory": "data", "migration_namespace": "hostscope_key_custody"},
-  "compatibility": {"min_php": "8.1.0", "requires_extensions": ["curl", "openssl"], "requires_runtime_capability": "isolated_package_runtime"},
+  "compatibility": {"min_php": "8.1.0", "requires_extensions": ["curl", "openssl", "sodium"], "requires_runtime_capability": "isolated_package_runtime"},
   "integrity": {"algorithm": "sha256", "files": {
-    "README.md": "d680b3fada136c7bfdb2e3a7ec5d2127484c8fe14e728f89ee4869dc0200dbb9",
-    "settings.schema.json": "7ac32fb2ac81399055bbe211f3747886375a32d0494c50b02f0d33b2f604b96c",
+    "README.md": "3d8c50891a2dbab36bb40b2aefd7521371cac8e3e7e5af3b600ea6bc4e80e732",
+    "settings.schema.json": "9ee915f584d6fcc6c68bb8e07e0f1c93e389b587b3e175a7486e114b7d425fbf",
     "src/KeyCustodyProvider.php": "0f5b2dada755086273dc2c52f5ab977ef6eda48034c57bb15f2a5feb0cdefe39",
-    "src/KeyCustodyHttpClient.php": "9b584a9618586e556b5a1f560dffa50fb355e162979d379b063f3b37267e0c97"
+    "src/KeyCustodyHttpClient.php": "9c3624789a62232b3356ce65ec91aab138c3d4f79676b218ba7fb21923e6f1d2"
   }},
   "state": "design-preview"
 }

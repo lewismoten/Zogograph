@@ -7,18 +7,31 @@ namespace HostScope\Plugin\KeyCustody;
  * provider. It intentionally retains no response/key cache. */
 final class KeyCustodyHttpClient
 {
-    public function __construct(private readonly string $baseUrl, private readonly string $clientToken)
+    private readonly string $clientSigningKey;
+
+    /** The signing key is the Base64 Ed25519 private key printed at enrollment. */
+    public function __construct(private readonly string $baseUrl, private readonly string $clientToken, string $clientSigningKey)
     {
         if (!filter_var($baseUrl, FILTER_VALIDATE_URL) || !str_starts_with($baseUrl, 'https://') || $clientToken === '') {
             throw new \InvalidArgumentException('key custody endpoint or client credential is invalid');
         }
         if (!function_exists('curl_init')) throw new \RuntimeException('cURL is required for remote key custody');
+        if (!function_exists('sodium_crypto_sign_detached')) throw new \RuntimeException('libsodium is required for remote key custody');
+        $this->clientSigningKey = base64_decode($clientSigningKey, true);
+        if (!is_string($this->clientSigningKey) || strlen($this->clientSigningKey) !== SODIUM_CRYPTO_SIGN_SECRETKEYBYTES) {
+            throw new \InvalidArgumentException('key custody client signing credential is invalid');
+        }
     }
 
     /** @return array{timestamp:string,nonce:string} */
     public static function requestMetadata(): array
     {
         return ['timestamp' => (string)time(), 'nonce' => rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=')];
+    }
+
+    public static function requestPayload(string $method, string $path, string $timestamp, string $nonce, string $body): string
+    {
+        return strtoupper($method) . "\n" . $path . "\n" . $timestamp . "\n" . $nonce . "\n" . base64_encode(hash('sha256', $body, true));
     }
 
     public function storeEnvelope(string $keyId, string $artifactId, string $envelope): array
@@ -42,14 +55,17 @@ final class KeyCustodyHttpClient
     private function request(string $method, string $path, array $body): array
     {
         $metadata = self::requestMetadata();
+        $encoded = json_encode($body, JSON_THROW_ON_ERROR);
+        $signature = base64_encode(sodium_crypto_sign_detached(self::requestPayload($method, $path, $metadata['timestamp'], $metadata['nonce'], $encoded), $this->clientSigningKey));
         $handle = curl_init(rtrim($this->baseUrl, '/') . $path);
         if ($handle === false) throw new \RuntimeException('could not initialize custody request');
         try {
             curl_setopt_array($handle, [
-                CURLOPT_CUSTOMREQUEST => $method, CURLOPT_POSTFIELDS => json_encode($body, JSON_THROW_ON_ERROR), CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CUSTOMREQUEST => $method, CURLOPT_POSTFIELDS => $encoded, CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 30, CURLOPT_FOLLOWLOCATION => false,
                 CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $this->clientToken, 'Content-Type: application/json',
-                    'X-HostScope-Timestamp: ' . $metadata['timestamp'], 'X-HostScope-Nonce: ' . $metadata['nonce']],
+                    'X-HostScope-Timestamp: ' . $metadata['timestamp'], 'X-HostScope-Nonce: ' . $metadata['nonce'],
+                    'X-HostScope-Signature: ' . $signature],
             ]);
             $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
             if (!is_string($raw)) throw new \RuntimeException('key custody request failed: ' . curl_error($handle));
