@@ -24,7 +24,7 @@
     },
     "/subscription": {
       "get": {"summary": "Read plan, quota, renewal, and custody availability", "responses": {"200": {"description": "Subscription state"}}},
-      "patch": {"summary": "Change selected plan or cancel at period end", "responses": {"200": {"description": "Updated subscription state"}}}
+      "patch": {"summary": "Request a plan change or cancellation", "responses": {"202": {"description": "Auditable pending billing request"}}}
     },
     "/billing/checkout": {
       "post": {"summary": "Create a hosted checkout or invoice session", "responses": {"201": {"description": "Opaque billing-session URL/reference"}}}

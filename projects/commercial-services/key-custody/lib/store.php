@@ -17,6 +17,8 @@ function keyCustodyOpen(array $config): PDO
     $pdo->exec('CREATE TABLE IF NOT EXISTS client_nonces (token_id TEXT NOT NULL REFERENCES access_tokens(id) ON DELETE CASCADE, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (token_id, nonce))');
     $pdo->exec('CREATE INDEX IF NOT EXISTS client_nonces_expiry ON client_nonces (expires_at)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS subscriptions (tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE, plan TEXT NOT NULL, state TEXT NOT NULL, key_quota INTEGER NOT NULL, renews_at INTEGER, changed_at INTEGER NOT NULL)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS subscription_requests (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, action TEXT NOT NULL, requested_plan TEXT, state TEXT NOT NULL, created_at INTEGER NOT NULL, resolved_at INTEGER)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS subscription_requests_tenant_state ON subscription_requests (tenant_id, state, created_at DESC)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS custody_keys (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name TEXT NOT NULL, wrapped_key BLOB NOT NULL, wrap_nonce BLOB NOT NULL, wrap_tag BLOB NOT NULL, authorization_ttl INTEGER NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, rotated_at INTEGER)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS custody_keys_tenant_state ON custody_keys (tenant_id, state, created_at DESC)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS key_envelopes (id TEXT PRIMARY KEY, key_id TEXT NOT NULL REFERENCES custody_keys(id) ON DELETE CASCADE, artifact_id TEXT NOT NULL, envelope BLOB NOT NULL, created_at INTEGER NOT NULL, UNIQUE(key_id, artifact_id))');
@@ -176,6 +178,23 @@ function keyCustodySubscription(PDO $pdo, string $tenant): array
     $stmt = $pdo->prepare('SELECT plan, state, key_quota, renews_at FROM subscriptions WHERE tenant_id = ?'); $stmt->execute([$tenant]); $row = $stmt->fetch();
     if (!is_array($row)) throw new InvalidArgumentException('subscription is unavailable');
     return ['plan' => $row['plan'], 'state' => $row['state'], 'key_quota' => (int)$row['key_quota'], 'renews_at' => $row['renews_at'] === null ? null : (int)$row['renews_at']];
+}
+
+/** @return array{id:string,action:string,requested_plan:?string,state:string,created_at:int} */
+function keyCustodyRequestSubscriptionChange(PDO $pdo, string $tenant, string $action, ?string $plan): array
+{
+    if (!in_array($action, ['change_plan', 'cancel'], true)) throw new InvalidArgumentException('subscription action is invalid');
+    $plan = $plan === null ? null : trim($plan);
+    if (($action === 'change_plan' && ($plan === '' || !preg_match('/^[a-z][a-z0-9_-]{0,62}$/', $plan))) || ($action === 'cancel' && $plan !== null && $plan !== '')) {
+        throw new InvalidArgumentException('requested subscription plan is invalid');
+    }
+    $active = $pdo->prepare("SELECT COUNT(*) FROM subscriptions WHERE tenant_id = ? AND state IN ('active', 'past_due')"); $active->execute([$tenant]);
+    if ((int)$active->fetchColumn() !== 1) throw new InvalidArgumentException('subscription is unavailable');
+    $id = 'subreq_' . bin2hex(random_bytes(12)); $now = time();
+    $pdo->prepare('INSERT INTO subscription_requests (id, tenant_id, action, requested_plan, state, created_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?, NULL)')
+        ->execute([$id, $tenant, $action, $plan === '' ? null : $plan, 'pending', $now]);
+    keyCustodyAudit($pdo, $tenant, 'subscription_request', $id, $action . ($plan ? '; plan=' . $plan : ''));
+    return ['id' => $id, 'action' => $action, 'requested_plan' => $plan === '' ? null : $plan, 'state' => 'pending', 'created_at' => $now];
 }
 
 function keyCustodySubscriptionAllows(PDO $pdo, string $tenant): void

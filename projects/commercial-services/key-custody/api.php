@@ -52,6 +52,11 @@ try {
     if ($path === '/v1/subscription' && $method === 'GET') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['subscription' => keyCustodySubscription($pdo, $auth['tenant_id'])]);
     }
+    if ($path === '/v1/subscription' && $method === 'PATCH') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody();
+        $request = keyCustodyRequestSubscriptionChange($pdo, $auth['tenant_id'], (string)($body['action'] ?? ''), isset($body['plan']) ? (string)$body['plan'] : null);
+        custodyReply(202, ['request' => $request, 'detail' => 'The commercial billing service must approve and apply this request.']);
+    }
     if (in_array($path, ['/v1/billing/checkout', '/v1/billing/portal'], true) && $method === 'POST') {
         keyCustodyAuthenticate($pdo, $bearer, 'management'); $portal = trim((string)($config['billing_portal_url'] ?? ''));
         if ($portal === '' || !filter_var($portal, FILTER_VALIDATE_URL) || !str_starts_with($portal, 'https://')) custodyReply(503, ['error' => 'billing portal is not configured']);

@@ -16,6 +16,8 @@ try {
     $master = random_bytes(32); $key = keyCustodyCreateKey($pdo, $management['tenant_id'], 'primary', 300, $master);
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $key['id'], 'management key list omitted created key');
     custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['state'] === 'active', 'initial subscription state is unavailable');
+    $change = keyCustodyRequestSubscriptionChange($pdo, $management['tenant_id'], 'change_plan', 'pro');
+    custodyExpect($change['state'] === 'pending' && $change['requested_plan'] === 'pro', 'subscription change request was not retained');
     $envelope = keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:20260827', random_bytes(80));
     custodyExpect(keyCustodyListEnvelopes($pdo, $management['tenant_id'], $key['id'])[0]['id'] === $envelope['id'], 'envelope metadata was not retained');
     custodyExpect(strlen(keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], $master)) === 32, 'client unwrap did not recover an active custody key');
