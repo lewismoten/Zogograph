@@ -102,6 +102,7 @@ if (in_array('--help', $jobs, true) || in_array('-h', $jobs, true)) {
       php cron.php --alerts     evaluate the rules, email if anything tripped
       php cron.php --prune      thin readings older than the retention window
       php cron.php --seal       create opted-in encrypted SQLite copies
+      php cron.php --verify-sealed  re-authenticate retained encrypted copies
       php cron.php              all of the above
       php cron.php --quiet      say nothing unless something goes wrong
 
@@ -145,6 +146,13 @@ try {
             : 'Created ' . count($sealed) . ' sealed database cop' . (count($sealed) === 1 ? 'y.' : 'ies.'));
         if ($pruned['removed'] > 0) $say('Pruned ' . $pruned['removed'] . ' expired encrypted artifact' . ($pruned['removed'] === 1 ? '.' : 's.'));
         foreach ($pruned['warnings'] as $warning) $say('Encryption retention warning: ' . $warning);
+    }
+
+    if (in_array('--verify-sealed', $jobs, true)) {
+        $checked = encryptionVerifyConfiguredCopies($config, $pdo, __DIR__);
+        $say('Verified ' . $checked['verified'] . ' retained encrypted artifact' . ($checked['verified'] === 1 ? '.' : 's.'));
+        if ($checked['failed'] > 0) $say('Encryption verification failed for ' . $checked['failed'] . ' artifact' . ($checked['failed'] === 1 ? '.' : 's.'));
+        foreach ($checked['warnings'] as $warning) $say('Encryption verification warning: ' . $warning);
     }
 
     if ($wants('--scan')) {

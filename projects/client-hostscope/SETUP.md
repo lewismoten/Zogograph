@@ -192,6 +192,10 @@ recovery point objective you selected.
 ```cron
 # Daily encrypted copies. This does nothing unless encryption.mode is selected.
 19 3 * * * /absolute/path/to/php /absolute/path/to/hostscope/cron.php --seal --quiet
+
+# Weekly full ciphertext/authentication re-check. It creates no new copy and
+# decrypts each retained artifact only into a short-lived private temporary file.
+43 4 * * 0 /absolute/path/to/php /absolute/path/to/hostscope/cron.php --verify-sealed --quiet
 ```
 
 The key is never kept in HostScope configuration or its databases. A lost key

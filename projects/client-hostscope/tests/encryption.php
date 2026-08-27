@@ -100,10 +100,13 @@ try {
         encryptionOpenFile((string)$copies[0]['local_path'], $root . '/restored-config.php', $key);
         encryptionExpect(str_contains((string)file_get_contents($root . '/restored-config.php'), "'private' => true"),
             'sealed configuration copy differs from source');
-        $live->exec('CREATE TABLE encryption_artifacts (artifact_id TEXT PRIMARY KEY, store TEXT, created_at INTEGER, local_path TEXT, ciphertext_bytes INTEGER, ciphertext_sha256 TEXT, state TEXT)');
+        $live->exec('CREATE TABLE encryption_artifacts (artifact_id TEXT PRIMARY KEY, store TEXT, created_at INTEGER, last_verified_at INTEGER, local_path TEXT, ciphertext_bytes INTEGER, ciphertext_sha256 TEXT, state TEXT)');
         encryptionRecordArtifacts($live, $copies);
         encryptionExpect((int)$live->query('SELECT COUNT(*) FROM encryption_artifacts')->fetchColumn() === 2,
             'sealed artifacts were not recorded for replication');
+        $reverified = encryptionVerifyConfiguredCopies($config, $live, $web);
+        encryptionExpect($reverified['verified'] === 2 && $reverified['failed'] === 0,
+            'retained encrypted artifacts were not re-verified');
         $status = encryptionStatus($live, $config, $web);
         encryptionExpect($status['ready'] && count($status['artifacts']) === 2, 'sealed-copy status did not report verified coverage');
         $stale = $config; $stale['encryption']['backup_schedule'] = 'daily';
@@ -117,9 +120,9 @@ try {
         $oldPath = $root . '/sealed/account.old.sealed';
         copy((string)$copies[1]['local_path'], $oldPath);
         $oldHash = hash_file('sha256', $oldPath);
-        $live->prepare("INSERT INTO encryption_artifacts (artifact_id, store, created_at, local_path, ciphertext_bytes, ciphertext_sha256, state)
-            VALUES (?, 'account', ?, ?, ?, ?, 'verified')")
-            ->execute(['account:old', time() - 31 * 86400, $oldPath, filesize($oldPath), $oldHash]);
+        $live->prepare("INSERT INTO encryption_artifacts (artifact_id, store, created_at, last_verified_at, local_path, ciphertext_bytes, ciphertext_sha256, state)
+            VALUES (?, 'account', ?, ?, ?, ?, ?, 'verified')")
+            ->execute(['account:old', time() - 31 * 86400, time() - 31 * 86400, $oldPath, filesize($oldPath), $oldHash]);
         $retentionConfig = $config;
         $retentionConfig['encryption']['retention_days'] = 30;
         $pruned = encryptionPruneConfiguredCopies($retentionConfig, $live);
@@ -129,6 +132,13 @@ try {
         $accountEvidence = array_values(array_filter($afterPrune['artifacts'], fn(array $artifact): bool => $artifact['store'] === 'account'));
         encryptionExpect(count($accountEvidence) === 1 && $accountEvidence[0]['copies'] === 1,
             'pruned encrypted artifacts were reported as current verified copies');
+        file_put_contents((string)$copies[0]['local_path'], 'tampered ciphertext');
+        $failedVerification = encryptionVerifyConfiguredCopies($retentionConfig, $live, $web);
+        encryptionExpect($failedVerification['failed'] === 1 && (int)$live->query("SELECT COUNT(*) FROM encryption_artifacts WHERE state = 'verification_failed'")->fetchColumn() === 1,
+            'tampered retained encrypted artifact was not marked as failed evidence');
+        $failedStatus = encryptionStatus($live, $retentionConfig, $web);
+        encryptionExpect(str_contains(implode(' ', $failedStatus['warnings']), 'failed their last verification'),
+            'failed encrypted artifact was not visible in protection status');
     }
 
     $tampered = $root . '/tampered.sealed';

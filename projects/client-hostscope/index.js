@@ -11676,6 +11676,7 @@ function renderEncryptionStatus(data) {
     { label: "Store", render: row => row.store },
     { label: "Verified copies", render: row => String(row.copies) },
     { label: "Newest proof", render: row => whenSpan(row.created_at) },
+    { label: "Last re-check", render: row => row.last_verified_at ? whenSpan(row.last_verified_at) : "not rechecked" },
   ]);
 }
 

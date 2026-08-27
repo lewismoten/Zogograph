@@ -189,6 +189,10 @@ function migrationStatementApplied(PDO $pdo, string $sql): bool
 function migrations(): array
 {
     return [
+        52 => [
+            'ALTER TABLE encryption_artifacts ADD COLUMN last_verified_at INTEGER',
+            'UPDATE encryption_artifacts SET last_verified_at = created_at WHERE last_verified_at IS NULL',
+        ],
         51 => [
             /* Registry for signed executable packages. A row is not permission
              * to execute code: it is immutable installation evidence plus the

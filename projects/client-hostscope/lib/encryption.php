@@ -290,11 +290,16 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     catch (Throwable $error) { $status['warnings'][] = 'The private local key is not ready: ' . $error->getMessage(); }
     if ($stores === []) $status['warnings'][] = 'No databases or configuration artifact have been selected.';
     try {
-        $stmt = $pdo->query("SELECT store, MAX(created_at) AS created_at, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verified' GROUP BY store");
-        foreach ($stmt->fetchAll() as $row) $status['artifacts'][] = ['store' => $row['store'], 'created_at' => (int)$row['created_at'], 'copies' => (int)$row['copies']];
+        $stmt = $pdo->query("SELECT store, MAX(created_at) AS created_at, MAX(last_verified_at) AS last_verified_at, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verified' GROUP BY store");
+        foreach ($stmt->fetchAll() as $row) $status['artifacts'][] = ['store' => $row['store'], 'created_at' => (int)$row['created_at'],
+            'last_verified_at' => (int)$row['last_verified_at'], 'copies' => (int)$row['copies']];
     } catch (Throwable) { $status['warnings'][] = 'No encrypted artifact ledger is available yet.'; }
     $covered = array_column($status['artifacts'], 'store');
     $latest = array_column($status['artifacts'], 'created_at', 'store');
+    try {
+        $failed = $pdo->query("SELECT store, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verification_failed' GROUP BY store")->fetchAll();
+        foreach ($failed as $artifact) $status['warnings'][] = 'One or more retained encrypted copies for ' . $artifact['store'] . ' failed their last verification.';
+    } catch (Throwable) { /* Older/partial ledgers already carry a general warning above. */ }
     foreach ($stores as $store) {
         if (!in_array($store, $covered, true)) { $status['warnings'][] = "No verified encrypted copy exists yet for {$store}."; continue; }
         $maximumAge = encryptionScheduleMaximumAge((string)($settings['backup_schedule'] ?? 'manual'));
@@ -327,14 +332,50 @@ function encryptionSelectedStores(array $settings): array
 function encryptionRecordArtifacts(PDO $pdo, array $artifacts): void
 {
     $insert = $pdo->prepare('INSERT INTO encryption_artifacts
-        (artifact_id, store, created_at, local_path, ciphertext_bytes, ciphertext_sha256, state)
-        VALUES (?, ?, ?, ?, ?, ?, \'verified\')');
+        (artifact_id, store, created_at, last_verified_at, local_path, ciphertext_bytes, ciphertext_sha256, state)
+        VALUES (?, ?, ?, ?, ?, ?, ?, \'verified\')');
     foreach ($artifacts as $artifact) {
+        $now = time();
         $insert->execute([
-            (string)$artifact['artifact_id'], (string)$artifact['store'], time(), (string)$artifact['local_path'],
+            (string)$artifact['artifact_id'], (string)$artifact['store'], $now, $now, (string)$artifact['local_path'],
             (int)$artifact['ciphertext_bytes'], (string)$artifact['sha256'],
         ]);
     }
+}
+
+/** Re-authenticates retained artifacts without leaving plaintext on disk.
+ * It is intentionally an explicit CLI/scheduled operation, not page-load work. */
+function encryptionVerifyConfiguredCopies(array $config, PDO $pdo, string $webRoot): array
+{
+    $settings = (array)($config['encryption'] ?? []);
+    if (($settings['mode'] ?? '') !== 'sealed_copies_local') return ['verified' => 0, 'failed' => 0, 'warnings' => []];
+    $key = encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot);
+    $directory = (string)($settings['artifact_directory'] ?? '');
+    if ($directory === '') $directory = dirname((string)$config['database']) . '/sealed';
+    $root = realpath($directory);
+    if ($root === false || !is_dir($root) || is_link($directory)) throw new RuntimeException('encrypted artifact directory is unavailable or unsafe');
+    $rows = $pdo->query("SELECT artifact_id, local_path, ciphertext_sha256 FROM encryption_artifacts WHERE state = 'verified' ORDER BY created_at ASC")->fetchAll();
+    $verified = 0; $failed = 0; $warnings = [];
+    $ok = $pdo->prepare("UPDATE encryption_artifacts SET last_verified_at = ? WHERE artifact_id = ? AND state = 'verified'");
+    $bad = $pdo->prepare("UPDATE encryption_artifacts SET state = 'verification_failed' WHERE artifact_id = ? AND state = 'verified'");
+    foreach ($rows as $artifact) {
+        $configured = (string)$artifact['local_path']; $path = realpath($configured);
+        try {
+            if ($path === false || is_link($configured) || !is_file($path) || !str_starts_with($path, rtrim($root, '/') . '/') || !str_ends_with($path, '.sealed')) {
+                throw new RuntimeException('artifact is unavailable or outside the configured directory');
+            }
+            $hash = hash_file('sha256', $path);
+            if (!is_string($hash) || !hash_equals((string)$artifact['ciphertext_sha256'], $hash)) throw new RuntimeException('ciphertext hash does not match the recorded artifact');
+            $temporary = $root . '/.reverify-' . bin2hex(random_bytes(12));
+            try { encryptionOpenFile($path, $temporary, $key); }
+            finally { @unlink($temporary); }
+            $ok->execute([time(), $artifact['artifact_id']]); $verified++;
+        } catch (Throwable $error) {
+            $bad->execute([$artifact['artifact_id']]); $failed++;
+            $warnings[] = 'encrypted artifact verification failed: ' . $error->getMessage();
+        }
+    }
+    return ['verified' => $verified, 'failed' => $failed, 'warnings' => array_values(array_unique($warnings))];
 }
 
 /** Removes only old verified local artifacts after a successful sealing run.
