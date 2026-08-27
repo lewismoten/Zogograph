@@ -28,10 +28,13 @@ custodyExpect(($contract['paths']['/keys/{keyId}/wrapping-key']['get']['security
     'published custody API contract omits enrolled-client authentication for public wrapping-key access');
 $api = file_get_contents(__DIR__ . '/../api.php');
 $requestHelper = file_get_contents(__DIR__ . '/../lib/request.php');
+$nginx = file_get_contents(__DIR__ . '/../deploy/nginx.conf.example');
 custodyExpect($api !== false && str_contains($api, 'CUSTODY_MAX_REQUEST_BYTES') && str_contains($api, 'request body is too large'),
     'custody API does not bound request-body intake before parsing');
 custodyExpect(str_contains((string)$api, "X-Frame-Options: DENY") && str_contains((string)$api, "Referrer-Policy: no-referrer")
     && str_contains((string)$api, 'Strict-Transport-Security'), 'custody API lacks its HTTPS response-header baseline');
+custodyExpect($nginx !== false && str_contains($nginx, 'client_max_body_size 2m') && str_contains($nginx, 'HTTP_AUTHORIZATION')
+    && str_contains($nginx, 'Strict-Transport-Security'), 'custody Nginx deployment boundary lacks request and header hardening');
 custodyExpect(str_contains((string)$api, "catch (JsonException) { custodyReply(400") && str_contains((string)$api, 'JSON object body is invalid'),
     'custody API does not distinguish malformed JSON from an internal failure');
 custodyExpect(str_contains((string)$api, "'/v1/health'"), 'custody API does not provide the documented health endpoint');

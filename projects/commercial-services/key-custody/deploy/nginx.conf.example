@@ -7,6 +7,7 @@ location = /services/key-custody { return 308 /services/key-custody/; }
 # The API is the only public custody-service entry point. PHP receives PATH_INFO
 # such as /v1/keys and HTTPS=on even though TLS ends at this reverse proxy.
 location ~ ^/services/key-custody(/v1/.*)$ {
+    client_max_body_size 2m;
     include fastcgi_params;
     fastcgi_param SCRIPT_FILENAME /srv/hostscope/projects/commercial-services/key-custody/api.php;
     fastcgi_param PATH_INFO $1;
@@ -15,6 +16,10 @@ location ~ ^/services/key-custody(/v1/.*)$ {
     fastcgi_pass unix:/run/php/php-fpm.sock;
     add_header Cache-Control "no-store" always;
     add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Permissions-Policy "geolocation=(), microphone=(), camera=()" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 }
 
 # Do not expose source, SQLite files/WAL companions, configuration, scripts,

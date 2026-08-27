@@ -53,7 +53,10 @@ For the provisional VPS path, use
 [`deploy/nginx.conf.example`](deploy/nginx.conf.example) inside the HTTPS
 server block. It is important to forward `Authorization` and set `HTTPS=on`
 for PHP when TLS terminates at Nginx; otherwise the service correctly refuses
-requests rather than silently accepting insecure traffic.
+requests rather than silently accepting insecure traffic. The example also
+rejects bodies above 2 MiB at the proxy before PHP reads them and repeats the
+API response-header baseline. Review the HSTS `includeSubDomains` scope before
+using it on a shared hostname.
 
 ## Security baseline
 
