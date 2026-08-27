@@ -64,9 +64,9 @@ probe. A deployment may opt in to launching that probe through a package-
 specific, manifest-pinned sandbox command; it is diagnostic only and package
 grants do not authorize arbitrary provider operations.
 
-The **Package runtime** page performs a core-owned, non-executing platform
-check before presenting a package as ready. It checks declared PHP version and
-extension requirements, detects a genuine SQLCipher PDO driver where one is
-requested, and reports that isolated execution is still unavailable. This is a
-setup explanation only: a passing platform check never loads package code,
-opens a provider connection, or activates a protection claim.
+The **Package runtime** page performs a core-owned platform check before
+presenting a package as ready. It checks declared PHP version and extension
+requirements, detects a genuine SQLCipher PDO driver where one is requested,
+and reports that secret-bearing isolated execution is still unavailable. A
+deployment may separately run only its signed no-secret diagnostic probe; a
+passing platform check or probe never activates a protection claim.

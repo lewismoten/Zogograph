@@ -305,16 +305,18 @@ cannot be recovered from a sealed copy. See
 scope, limitations, rotation design, and planned self-managed fleet custody.
 
 Optional remote custody and ciphertext-replica storage are deliberately not
-selectable in this release. The separate key-custody service already provides
+activatable in this release. The separate key-custody service already provides
 tenant key, envelope, enrolled-client credential, audit, and subscription APIs;
 the separate replica relay accepts only signed, hash-verified ciphertext. The
-customer client does not yet execute either provider package. Do not put a
-management token, billing credential, recovery key, or plaintext database in
-this installation to try to enable them. When the isolated provider runtime is
-released, setup will ask only for the configured service base URL and
-package-scoped encrypted references to the enrolled-client credential and
-signing key; management and billing credentials stay outside the client
-entirely.
+customer client can now run an isolated, credential-free custody endpoint
+identity probe after saving its public service URL and tenant identifier. That
+probe is useful before enrollment, but it does not activate remote custody or
+send a credential, key, or database. Do not put a management token, billing
+credential, recovery key, or plaintext database in this installation to try to
+enable them. When the secret-bearing provider runtime is released, setup will
+accept only package-scoped encrypted references to the enrolled-client
+credential and signing key; management and billing credentials stay outside the
+client entirely.
 
 To inspect a copy during recovery, decrypt it to a new private file and remove
 that plaintext file when you finish:

@@ -40,17 +40,19 @@ and has passed its specific release gate:
 - MySQL/MariaDB storage and Redis cache/queue integrations. Neither is an
   encryption feature, and Redis is not a default durable metric store.
 
-Package code is not allowed to execute from the dashboard until the isolated
-runtime and its reviewed permission boundary exist. Installing a package today
-may expose its metadata and settings schema, but cannot imply that its proposed
-protection is active. The sandboxed no-secret worker and the staged RPC
-operations are specified in [PROVIDER_RPC_PLAN.md](PROVIDER_RPC_PLAN.md).
+Package code is not allowed to execute in a dashboard, cron, setup, or API PHP
+process. Installing a package may expose metadata and settings, but cannot
+imply that its proposed protection is active. A deployment-attested sandbox may
+run only signed no-secret probes—such as SQLCipher's disposable preflight or
+custody's credential-free endpoint identity check—and records bounded evidence.
+The sandboxed worker and staged RPC operations are specified in
+[PROVIDER_RPC_PLAN.md](PROVIDER_RPC_PLAN.md).
 
-The Package runtime page nevertheless performs a non-executing readiness
-check. It reports missing PHP extensions, an unavailable SQLCipher PDO driver,
-or the absent isolation runtime in plain language before an administrator
-spends time entering package settings. “Platform ready” is only a prerequisite;
-it is never a live-encryption or provider-connection claim.
+The Package runtime page also performs a core-owned platform check. It reports
+missing PHP extensions, an unavailable SQLCipher PDO driver, or the absent
+isolation runtime in plain language before an administrator spends time entering
+package settings. “Platform ready” and a successful no-secret probe are only
+prerequisites; neither is a live-encryption or provider-connection claim.
 
 ## Where a product owner changes this later
 
