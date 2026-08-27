@@ -217,17 +217,33 @@ function encryptionSealConfiguredCopies(array $config, PDO $account, string $web
         $artifact = $store . ':' . $stamp;
         $sealed = $directory . '/' . $store . '.' . $stamp . '.sealed';
         if ($store === 'config') {
-            $out[] = ['store' => $store, 'local_path' => $sealed]
+            $record = ['store' => $store, 'local_path' => $sealed]
                 + encryptionSealFile($paths[$store], $sealed, $key, $artifact);
+            encryptionVerifySealedArtifact($sealed, $key, (int)$record['plaintext_bytes']);
+            $out[] = $record;
             continue;
         }
         $pdo = $store === 'account' ? $account : new PDO('sqlite:' . $paths[$store], null, null, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]);
-        $out[] = ['store' => $store, 'local_path' => $sealed]
+        $record = ['store' => $store, 'local_path' => $sealed]
             + encryptionSealSqliteSnapshot($pdo, $sealed, $key, $artifact);
+        encryptionVerifySealedArtifact($sealed, $key, (int)$record['plaintext_bytes']);
+        $out[] = $record;
     }
     return $out;
+}
+
+/** Fully authenticates a new artifact before it becomes verified ledger evidence. */
+function encryptionVerifySealedArtifact(string $source, string $kek, int $expectedBytes): void
+{
+    $temporary = dirname($source) . '/.verify-' . bin2hex(random_bytes(12));
+    try {
+        encryptionOpenFile($source, $temporary, $kek);
+        if ((int)filesize($temporary) !== $expectedBytes) throw new RuntimeException('sealed artifact recovery proof has an unexpected plaintext size');
+    } finally {
+        @unlink($temporary);
+    }
 }
 
 /** Rejects an unusable opt-in policy before setup records it. */

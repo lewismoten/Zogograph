@@ -177,6 +177,12 @@ Run a first copy manually, then schedule it separately from normal collection:
 php cron.php --seal
 ```
 
+Each new sealed artifact is fully decrypted into a short-lived private temporary
+file before HostScope records it as verified. This is a recovery proof, so the
+first run needs temporary free disk space approximately equal to the selected
+source database/configuration file. A failed proof leaves the original live
+data untouched and does not create a verified ledger record.
+
 ```cron
 # Daily encrypted copies. This does nothing unless encryption.mode is selected.
 19 3 * * * /absolute/path/to/php /absolute/path/to/hostscope/cron.php --seal --quiet

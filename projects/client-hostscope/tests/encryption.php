@@ -57,6 +57,7 @@ try {
     encryptionExpect(!str_contains((string)file_get_contents($sealed), 'private sqlite record'), 'sealed copy contains plaintext');
     encryptionOpenFile($sealed, $opened, $key);
     encryptionExpect(hash_file('sha256', $source) === hash_file('sha256', $opened), 'opened copy differs from source');
+    encryptionVerifySealedArtifact($sealed, $key, (int)filesize($source));
     $replacementKeyPath = $keys . '/replacement.key';
     encryptionCreateLocalKey($replacementKeyPath, $web);
     $replacement = encryptionReadLocalKey($replacementKeyPath, $web);
