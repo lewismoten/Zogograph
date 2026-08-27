@@ -4,8 +4,10 @@ This contract defines the next implementation step after enrolled-client
 readiness. It preserves HostScope’s low-cost local recovery path while allowing
 an optional remote custody provider to add a separate recovery envelope.
 
-It is a design and release contract, not a claim that envelope upload or remote
-unwrap is enabled today.
+The first implementation now supports explicit, per-artifact envelope storage
+and non-destructive remote recovery drills. Both remain disabled until the
+administrator configures and reviews their dedicated launchers; neither makes
+hosted custody a default dependency or permits provider-only recovery.
 
 ## Recovery model
 
@@ -62,7 +64,7 @@ records the matching artifact ID and ciphertext digest.
    the exact artifact ID.
 4. Core validates the bounded receipt, records `stored`, and surfaces that the
    remote copy is an additional recovery path—not a live-at-rest claim.
-5. A later recovery drill may request an unwrap only through a distinct
+5. A recovery drill requests an unwrap only through a distinct
    operation, use the DEK in memory to authenticate the artifact, then discard
    it. The drill records outcome evidence but never persists the returned key.
 6. Rotation adds and verifies a replacement envelope before any old envelope
@@ -75,7 +77,7 @@ the newest verified local copy merely because a remote envelope exists.
 
 ## Isolation and permission gates
 
-The future `custody_store_envelope` operation requires all of:
+The implemented `custody_store_envelope` operation requires all of:
 
 - the enrolled-client readiness check has succeeded for the exact endpoint;
 - `key_provider` and `network_client` have been explicitly granted;
@@ -86,9 +88,11 @@ The future `custody_store_envelope` operation requires all of:
 
 It must not receive local key files, setup/configuration databases, arbitrary
 filesystem paths, management/billing credentials, or another package’s state.
-`custody_unwrap_artifact` has a separate release gate because it handles a
-returned DEK and must prove temporary-file cleanup, recovery behavior, rate
-limit/retry handling, and no-key logging.
+`custody_unwrap_artifact` uses a third dedicated launcher and returns a DEK
+only through the worker’s private process pipe. Core authenticates one named
+artifact into a private temporary file, removes it, discards the DEK, and
+records only the verification result. It still requires ongoing review of
+rate-limit/retry behavior and no-key logging.
 
 ## Customer experience
 
