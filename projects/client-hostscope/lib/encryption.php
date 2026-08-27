@@ -520,7 +520,8 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
             $status['warnings'][] = "The latest non-destructive recovery drill for {$store} is older than the selected review period.";
         }
     }
-    $status['ready'] = $expected !== [] && encryptionAvailable() && count(array_filter($status['warnings'], fn(string $warning): bool => !str_contains($warning, 'is not present yet, so it is waiting'))) === 0;
+    $status['ready'] = $expected !== [] && encryptionAvailable() && count(array_filter($status['warnings'], fn(string $warning): bool => !str_contains($warning, 'is not present yet, so it is waiting')
+        && !str_starts_with($warning, 'One or more optional remote custody envelope attempts failed'))) === 0;
     if ($status['ready']) $status['evidence'] = 'verified_sealed_copies';
     return $status;
 }
@@ -676,6 +677,18 @@ function encryptionRecordRemoteEnvelopeStored(PDO $pdo, string $artifactId, stri
         WHERE artifact_id = ? AND provider_package = ? AND provider_key_id = ? AND ciphertext_sha256 = ? AND state = 'pending'");
     $stmt->execute([$envelopeSha256, time(), $artifactId, $providerPackage, $providerKeyId, $ciphertextSha256]);
     if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('remote envelope receipt does not match a pending verified artifact');
+}
+
+/** Leaves a bounded, non-secret retry explanation; it never changes local
+ * artifact evidence or deletes a prior stored receipt. */
+function encryptionRecordRemoteEnvelopeFailure(PDO $pdo, string $artifactId, string $providerPackage, string $providerKeyId, string $detail): void
+{
+    $detail = trim(preg_replace('/[\x00-\x1F\x7F]+/', ' ', $detail) ?? '');
+    if ($detail === '' || mb_strlen($detail) > 500) throw new InvalidArgumentException('remote envelope failure detail is invalid');
+    $stmt = $pdo->prepare("UPDATE encryption_remote_envelopes SET state = 'failed', detail = ?, stored_at = NULL, verified_at = NULL
+        WHERE artifact_id = ? AND provider_package = ? AND provider_key_id = ? AND state = 'pending'");
+    $stmt->execute([$detail, $artifactId, $providerPackage, $providerKeyId]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('remote envelope failure does not match a pending artifact');
 }
 
 /** Re-authenticates retained artifacts without leaving plaintext on disk.

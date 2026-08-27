@@ -282,6 +282,12 @@ try {
             'protection status did not disclose bounded remote-envelope evidence');
         try { encryptionRecordRemoteEnvelopeStored($live, $remoteArtifact, 'hostscope-key-custody', 'key_' . str_repeat('a', 32), str_repeat('0', 64), $envelopeHash); throw new RuntimeException('mismatched remote custody receipt was accepted'); }
         catch (InvalidArgumentException $error) { encryptionExpect($error->getMessage() !== 'mismatched remote custody receipt was accepted', $error->getMessage()); }
+        $failureArtifact = (string)$copies[0]['artifact_id'];
+        encryptionRecordRemoteEnvelopePending($live, $failureArtifact, 'hostscope-key-custody', 'key_' . str_repeat('b', 32));
+        encryptionRecordRemoteEnvelopeFailure($live, $failureArtifact, 'hostscope-key-custody', 'key_' . str_repeat('b', 32), 'endpoint temporarily unavailable');
+        encryptionExpect((string)$live->query("SELECT state FROM encryption_remote_envelopes WHERE artifact_id = '" . $failureArtifact . "'")->fetchColumn() === 'failed'
+            && str_contains(implode(' ', encryptionStatus($live, $config, $web)['warnings']), 'remote custody envelope attempts failed'),
+            'failed remote custody attempt was not retained as bounded protection evidence');
         $reverified = encryptionVerifyConfiguredCopies($config, $live, $web);
         encryptionExpect($reverified['verified'] === 2 && $reverified['failed'] === 0,
             'retained encrypted artifacts were not re-verified');
