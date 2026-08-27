@@ -13,6 +13,8 @@ setup.
 For the deployment, branding, customer-choice, and launch-policy decisions
 that sit above this implementation plan, see
 [`../DIRECTION.md`](../DIRECTION.md).
+The additive local-plus-remote envelope format and release gate are specified
+in [CUSTODY_ARTIFACT_CONTRACT.md](CUSTODY_ARTIFACT_CONTRACT.md).
 
 ## Goal and threat boundary
 
