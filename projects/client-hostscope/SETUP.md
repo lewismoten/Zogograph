@@ -199,3 +199,28 @@ php scripts/encryption-key.php create /secure/hostscope/replacement.key
 php scripts/encryption-key.php rotate /secure/hostscope/primary.key /secure/hostscope/replacement.key \
   account.sealed account-rotated.sealed account-rotation-2026-08-27
 ```
+
+## Optional: signed executable packages
+
+The normal marketplace remains data-only. Executable packages, including the
+future encryption packages, are installed separately so a package cannot run
+merely because a JSON manifest was copied into a catalog. A package must have a
+trusted publisher key, a valid Ed25519 signature, and matching hashes for every
+immutable file.
+
+After adding the publisher public key through the protected package settings,
+an administrator can inspect, install, and grant the package's declared
+capabilities from the protected package page/API. The equivalent low-complexity
+CLI workflow is:
+
+```bash
+php scripts/package-install.php install /absolute/path/to/signed-package
+php scripts/package-install.php list
+php scripts/package-install.php enable package-id capability[,capability...]
+```
+
+The capability list must exactly match the package's signed declaration. At
+this stage installation and grants only register immutable files and a private
+SQLite data directory; executable package code remains unavailable until the
+isolated runtime is complete. This is intentional: it lets administrators
+validate provenance and configuration without silently running new code.

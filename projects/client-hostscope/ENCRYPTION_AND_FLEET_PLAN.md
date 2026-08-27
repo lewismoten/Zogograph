@@ -226,6 +226,10 @@ must not become a hidden dependency of local encryption.
 
 1. Add the signed isolated marketplace runtime, package settings/secrets store,
    capability grants, private package migrations, and audit/revocation model.
+   The initial registry, signed installation, explicit grants, private SQLite
+   storage, CLI workflow, and status API are implemented; isolated code loading,
+   package settings UI, secret references, revocation, and private migrations
+   remain before packages may execute.
 2. Move the current sealed-copy implementation behind a built-in disabled
    `sealed-copies` package; add setup inventory, recovery proof, restore,
    retention, status, and alerting.

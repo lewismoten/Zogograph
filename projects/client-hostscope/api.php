@@ -92,6 +92,7 @@ require_once __DIR__ . '/lib/external.php';
 require_once __DIR__ . '/lib/updates.php';
 require_once __DIR__ . '/lib/peers.php';
 require_once __DIR__ . '/lib/marketplace.php';
+require_once __DIR__ . '/lib/package-runtime.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
@@ -304,6 +305,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'marketplace-install' => doMarketplaceInstall($config, $pdo, $post),
         'marketplace-history' => marketplaceHistoryView($config, $post),
         'marketplace-rollback' => doMarketplaceRollback($config, $pdo, $post),
+        'package-runtime' => packageRuntimeView($config, $pdo, $signedIn),
+        'package-runtime-enable' => doPackageRuntimeEnable($pdo, $post),
         'peer-save' => doPeerSave($config, $pdo, $post),
         'peer-delete' => doPeerDelete($config, $pdo, $post),
         'peer-transport-rotate' => doPeerTransportRotate($config, $pdo, $post),
@@ -340,6 +343,7 @@ function requireActionAccess(array $config, string $action): void
         'note-marks' => 'sys-notes', 'note-snapshots' => 'sys-notes',
         'chart-series' => 'charts', 'charts' => 'charts',
         'peers' => 'sys-peers', 'marketplace' => 'sys-marketplace',
+        'package-runtime' => 'sys-marketplace',
         'labels' => 'net-labels', 'descriptions' => 'sys-descriptions',
         'changed' => 'sys-changed', 'capability-changes' => 'sys-changed',
         'installed' => 'sys-installed', 'symlinks' => 'storage-links',
@@ -5575,6 +5579,26 @@ function doMarketplaceRollback(array $config, PDO $pdo, bool $post): array
     catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, 'marketplace_rollback', $id, 'ok', 0, 0, $result['package']['version'] . '; revision=' . $revision);
     return ['ok' => true, 'package' => $result['package']];
+}
+
+/** Signed package records are private administrative evidence, never public catalog data. */
+function packageRuntimeView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) throw new ActionRefused('sign in to view installed packages');
+    return ['packages' => packageRuntimePackages($pdo), 'can_change' => accessAllows($config, 'write')];
+}
+
+function doPackageRuntimeEnable(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $id = trim((string)($_POST['id'] ?? ''));
+    $enabled = (string)($_POST['enabled'] ?? '') === '1';
+    $grants = preg_split('/[\s,]+/', trim((string)($_POST['grants'] ?? ''))) ?: [];
+    try { packageRuntimeSetEnabled($pdo, $id, $grants, $enabled, currentAccountName()); }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, $enabled ? 'package_runtime_enable' : 'package_runtime_disable', $id, 'ok', 0, 0,
+        implode(', ', $grants));
+    return ['ok' => true, 'packages' => packageRuntimePackages($pdo)];
 }
 
 function doClearProblems(array $config, PDO $pdo, bool $post): array
