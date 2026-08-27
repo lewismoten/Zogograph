@@ -28,7 +28,7 @@
   "integrity": {
     "algorithm": "sha256",
     "files": {
-      "README.md": "dbc016ec88c7c819e0497bc8335532321dfe79809bd359015444b550766750f7",
+      "README.md": "0bd2c7d78f99366ddb4622f6dd87bf45d9cac05ce1f0afe5ba0d1976a4452fbd",
       "settings.schema.json": "57f9b194e2a9673e2546d435074d6930942be67b43066603ad34d40331547f84",
       "src/SqlcipherStorageProvider.php": "19d45906418e0be7b569438f96193a94009f7580b2e2b4a3beac7a24dbf17124"
     }

@@ -40,3 +40,28 @@ Any changed, added, removed, or symlinked immutable file makes integrity
 verification fail. Runtime package data is deliberately outside that signed
 set. A future file-integrity alert package can consume these verification
 results and alert without trusting comment headers embedded in source files.
+
+## Customer testing and commercial review
+
+Customers may generate their own publisher identity, sign a private test
+package, and verify it locally before the executable package runtime is
+available:
+
+```bash
+php scripts/package-sign.php keygen --key-id my-team --publisher "My team"
+php scripts/package-sign.php sign --package /private/my-package --key-id my-team --write
+php scripts/package-sign.php verify --package /private/my-package --public-key BASE64_PUBLIC_KEY
+```
+
+To request commercial marketplace review, create a signed, portable review
+bundle. It contains the signed manifest and exactly the immutable files named
+by it; it excludes runtime data and never needs the private signing key.
+
+```bash
+php scripts/package-submit.php prepare --package /private/my-package \
+  --public-key BASE64_PUBLIC_KEY --output /private/my-package-review.zip
+```
+
+The commercial reviewer verifies this bundle against the customer publisher
+key. Publication does not replace the customer signature; marketplace approval
+is separate provenance.
