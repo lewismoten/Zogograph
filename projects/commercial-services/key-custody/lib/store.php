@@ -87,6 +87,7 @@ function keyCustodyCreateAdditionalClientCredential(PDO $pdo, string $tenant, st
 {
     $tenantCheck = $pdo->prepare('SELECT active FROM tenants WHERE id = ?'); $tenantCheck->execute([$tenant]);
     if ($tenantCheck->fetchColumn() !== 1) throw new InvalidArgumentException('tenant is unavailable');
+    $label = trim($label);
     $credential = keyCustodyCreateClientCredential($pdo, $tenant, $label);
     keyCustodyAudit($pdo, $tenant, 'client_credential_create', $credential['id'], 'additional enrolled-client credential; label=' . $label);
     return $credential;
