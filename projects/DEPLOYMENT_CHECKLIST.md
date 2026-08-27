@@ -85,6 +85,14 @@ general secret store.
 - Marketplace packages are signed, reviewed, capability-scoped, and revocable.
   Do not execute package PHP until the isolated runtime and permission boundary
   are complete.
+- The ordinary package diagnostic launcher is secret-free and network-free. A
+  custody enrollment-readiness check, if deployed, uses a separately reviewed
+  launcher whose egress policy permits only the normalized configured custody
+  origin. Require fresh endpoint-identity evidence, explicit `key_provider`
+  and `network_client` approval, and encrypted package-secret references before
+  it receives an enrolled-client pair. This check may read subscription
+  readiness only; it cannot store an envelope, unwrap a key, or access an
+  artifact/database path.
 - The update service publishes a signed manifest and validates release-file
   hashes before a client accepts an update.
 - The replica relay proves it stores ciphertext only. The custody service proves
@@ -100,6 +108,10 @@ general secret store.
   exact PHP/PDO build.
 - Before enabling automatic artifact deletion, verify recovery exercises,
   alerting, retention rules, and replica deletion acknowledgements.
+- Before enabling remote envelope upload or recovery, complete the separate
+  artifact-contract release gate: preserve the verified local envelope, record
+  digest-only remote evidence, test storage and isolated unwrap recovery, and
+  document outage, rotation, deletion, and customer recovery behavior.
 
 ## Decisions to record before public launch
 
