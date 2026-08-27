@@ -332,12 +332,16 @@ function diagnoseCpu(PDO $pdo, ?array $vitals, ?array $host): array
     }
 
     if ($host !== null && $host['cpu_percent'] !== null && (float)$host['cpu_percent'] >= 85) {
+        $monitoring = ($host['monitoring_cpu_percent'] ?? null) === null
+            ? ''
+            : sprintf(' The collector tree accounted for %.1f%% of that interval; the rest is workload outside HostScope.',
+                (float)$host['monitoring_cpu_percent']);
         $out[] = finding(
             'warning',
             'The whole machine is busy',
             sprintf('%.0f%% of every core on the host is in use.', (float)$host['cpu_percent']),
             'This is the server itself, not this account\'s allowance. Every account on it is '
-                . 'affected, and the cause may well not be yours.',
+                . 'affected, and the cause may well not be yours.' . $monitoring,
             // The CPU pages rather than the memory ones: "busy" is a processor
             // finding, and the biggest process by memory is very often asleep.
             'See what is burning the processor',
@@ -429,6 +433,11 @@ function diagnoseLoad(?array $vitals, ?array $host): array
         return [];
     }
 
+    $monitoring = ($sample['monitoring_runnable'] ?? null) === null
+        ? ''
+        : ' The collector tree had ' . (int)$sample['monitoring_runnable']
+            . ' runnable task' . ((int)$sample['monitoring_runnable'] === 1 ? '' : 's')
+            . ' at this instant; that is not an exact share of the averaged load.';
     return [finding(
         $perCore >= 4 ? 'critical' : 'warning',
         'Work is queueing',
@@ -436,7 +445,7 @@ function diagnoseLoad(?array $vitals, ?array $host): array
             (float)$sample['load1'], (int)$sample['cpu_cores'], $perCore),
         'Load counts work waiting as well as work running, so this can be high while CPU is '
             . 'not - the usual cause of that combination is disk, not processor: everything is '
-            . 'blocked waiting for I/O.',
+            . 'blocked waiting for I/O.' . $monitoring,
         'See what is touching the disk',
         'disk-procs'
     )];

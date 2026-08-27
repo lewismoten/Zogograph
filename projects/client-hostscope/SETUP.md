@@ -142,6 +142,13 @@ setup wizard and add this job to **root's** crontab, not the account crontab:
 Run the printed command once as root to verify it. Skip this step if you do not
 administer the machine; HostScope continues to work with account-level data.
 
+The host collector records its own process tree separately from server totals:
+CPU and memory gauges retain the total reading, with the monitor shown as a
+darker arc and the non-monitor workload named beside it. Alerts still use the
+total. Load average cannot be split exactly by process on Linux, so HostScope
+shows the collector tree's currently runnable tasks beside the total load
+instead of presenting an invented "load excluding monitoring" number.
+
 ## Finish securely
 
 - Confirm the dashboard is reachable only over HTTPS.
