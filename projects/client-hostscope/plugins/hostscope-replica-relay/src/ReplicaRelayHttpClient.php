@@ -10,16 +10,10 @@ final class ReplicaRelayHttpClient
 
     public function __construct(private readonly string $baseUrl, private readonly string $clientToken, string $clientSigningKey, private readonly ?string $tlsSpkiPin = null)
     {
-        $url = parse_url($baseUrl);
-        if (!filter_var($baseUrl, FILTER_VALIDATE_URL) || !is_array($url) || strtolower((string)($url['scheme'] ?? '')) !== 'https' || !is_string($url['host'] ?? null)
-            || $url['host'] === '' || isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment']) || $clientToken === '') {
-            throw new \InvalidArgumentException('replica relay endpoint or client credential is invalid');
-        }
+        self::validateEndpoint($baseUrl, $tlsSpkiPin);
+        if ($clientToken === '') throw new \InvalidArgumentException('replica relay endpoint or client credential is invalid');
         if (!preg_match('~^tok_[a-f0-9]{20}\.[A-Za-z0-9+/_-]+={0,2}$~', $clientToken)) {
             throw new \InvalidArgumentException('replica relay client credential is invalid');
-        }
-        if ($tlsSpkiPin !== null && preg_match('~^sha256//[A-Za-z0-9+/]{43}=$~', $tlsSpkiPin) !== 1) {
-            throw new \InvalidArgumentException('replica relay TLS public-key pin is invalid');
         }
         if (!function_exists('curl_init') || !function_exists('sodium_crypto_sign_detached')) throw new \RuntimeException('cURL and libsodium are required for replica relay');
         $this->signingKey = base64_decode($clientSigningKey, true);
@@ -37,15 +31,17 @@ final class ReplicaRelayHttpClient
         finally { fclose($stream); }
     }
 
-    /** Tests only service liveness; it sends no bearer, signature, or ciphertext. */
-    public function health(): array
+    /** Tests a configured endpoint before enrollment; it sends no credential or ciphertext. */
+    public static function healthEndpoint(string $baseUrl, ?string $tlsSpkiPin = null): array
     {
-        $handle = curl_init(rtrim($this->baseUrl, '/') . '/v1/health'); if ($handle === false) throw new \RuntimeException('could not initialize replica relay health request');
+        self::validateEndpoint($baseUrl, $tlsSpkiPin);
+        if (!function_exists('curl_init')) throw new \RuntimeException('cURL is required for replica relay');
+        $handle = curl_init(rtrim($baseUrl, '/') . '/v1/health'); if ($handle === false) throw new \RuntimeException('could not initialize replica relay health request');
         try {
             $options = [CURLOPT_CUSTOMREQUEST => 'GET', CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 10,
                 CURLOPT_TIMEOUT => 30, CURLOPT_FOLLOWLOCATION => false, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
                 CURLOPT_HTTPHEADER => ['Accept: application/json']];
-            if ($this->tlsSpkiPin !== null) $options[CURLOPT_PINNEDPUBLICKEY] = $this->tlsSpkiPin;
+            if ($tlsSpkiPin !== null) $options[CURLOPT_PINNEDPUBLICKEY] = $tlsSpkiPin;
             curl_setopt_array($handle, $options); $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
             $response = is_string($raw) ? json_decode($raw, true) : null;
             if ($status !== 200 || !is_array($response) || ($response['status'] ?? null) !== 'ok'
@@ -54,6 +50,12 @@ final class ReplicaRelayHttpClient
             }
             return $response;
         } finally { curl_close($handle); }
+    }
+
+    /** Tests only service liveness; it sends no bearer, signature, or ciphertext. */
+    public function health(): array
+    {
+        return self::healthEndpoint($this->baseUrl, $this->tlsSpkiPin);
     }
 
     /** Reads only this enrolled deployment's ciphertext capacity. It does not
@@ -105,5 +107,16 @@ final class ReplicaRelayHttpClient
     {
         if ($this->tlsSpkiPin !== null) $options[CURLOPT_PINNEDPUBLICKEY] = $this->tlsSpkiPin;
         return $options;
+    }
+
+    private static function validateEndpoint(string $baseUrl, ?string $tlsSpkiPin): void
+    {
+        $url = parse_url($baseUrl);
+        if (!filter_var($baseUrl, FILTER_VALIDATE_URL) || !is_array($url) || strtolower((string)($url['scheme'] ?? '')) !== 'https'
+            || !is_string($url['host'] ?? null) || $url['host'] === '' || isset($url['user']) || isset($url['pass'])
+            || isset($url['query']) || isset($url['fragment'])) throw new \InvalidArgumentException('replica relay endpoint is invalid');
+        if ($tlsSpkiPin !== null && preg_match('~^sha256//[A-Za-z0-9+/]{43}=$~', $tlsSpkiPin) !== 1) {
+            throw new \InvalidArgumentException('replica relay TLS public-key pin is invalid');
+        }
     }
 }

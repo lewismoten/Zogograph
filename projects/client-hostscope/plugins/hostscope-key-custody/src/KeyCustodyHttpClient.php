@@ -12,16 +12,10 @@ final class KeyCustodyHttpClient
     /** The signing key is the Base64 Ed25519 private key printed at enrollment. */
     public function __construct(private readonly string $baseUrl, private readonly string $clientToken, string $clientSigningKey, private readonly ?string $tlsSpkiPin = null)
     {
-        $url = parse_url($baseUrl);
-        if (!filter_var($baseUrl, FILTER_VALIDATE_URL) || !is_array($url) || strtolower((string)($url['scheme'] ?? '')) !== 'https' || !is_string($url['host'] ?? null)
-            || $url['host'] === '' || isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment']) || $clientToken === '') {
-            throw new \InvalidArgumentException('key custody endpoint or client credential is invalid');
-        }
+        self::validateEndpoint($baseUrl, $tlsSpkiPin);
+        if ($clientToken === '') throw new \InvalidArgumentException('key custody endpoint or client credential is invalid');
         if (!preg_match('~^tok_[a-f0-9]{20}\.[A-Za-z0-9+/_-]+={0,2}$~', $clientToken)) {
             throw new \InvalidArgumentException('key custody client credential is invalid');
-        }
-        if ($tlsSpkiPin !== null && preg_match('~^sha256//[A-Za-z0-9+/]{43}=$~', $tlsSpkiPin) !== 1) {
-            throw new \InvalidArgumentException('key custody TLS public-key pin is invalid');
         }
         if (!function_exists('curl_init')) throw new \RuntimeException('cURL is required for remote key custody');
         if (!function_exists('sodium_crypto_sign_detached')) throw new \RuntimeException('libsodium is required for remote key custody');
@@ -42,16 +36,18 @@ final class KeyCustodyHttpClient
         return strtoupper($method) . "\n" . $path . "\n" . $timestamp . "\n" . $nonce . "\n" . base64_encode(hash('sha256', $body, true));
     }
 
-    /** Tests only service liveness; it sends no bearer, signature, or key material. */
-    public function health(): array
+    /** Tests a configured endpoint before enrollment; it sends no credential or key material. */
+    public static function healthEndpoint(string $baseUrl, ?string $tlsSpkiPin = null): array
     {
-        $handle = curl_init(rtrim($this->baseUrl, '/') . '/v1/health');
+        self::validateEndpoint($baseUrl, $tlsSpkiPin);
+        if (!function_exists('curl_init')) throw new \RuntimeException('cURL is required for remote key custody');
+        $handle = curl_init(rtrim($baseUrl, '/') . '/v1/health');
         if ($handle === false) throw new \RuntimeException('could not initialize custody health request');
         try {
             $options = [CURLOPT_CUSTOMREQUEST => 'GET', CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 10,
                 CURLOPT_TIMEOUT => 30, CURLOPT_FOLLOWLOCATION => false, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
                 CURLOPT_HTTPHEADER => ['Accept: application/json']];
-            if ($this->tlsSpkiPin !== null) $options[CURLOPT_PINNEDPUBLICKEY] = $this->tlsSpkiPin;
+            if ($tlsSpkiPin !== null) $options[CURLOPT_PINNEDPUBLICKEY] = $tlsSpkiPin;
             curl_setopt_array($handle, $options); $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
             $response = is_string($raw) ? json_decode($raw, true) : null;
             if ($status !== 200 || !is_array($response) || ($response['status'] ?? null) !== 'ok'
@@ -60,6 +56,12 @@ final class KeyCustodyHttpClient
             }
             return $response;
         } finally { curl_close($handle); }
+    }
+
+    /** Tests only service liveness; it sends no bearer, signature, or key material. */
+    public function health(): array
+    {
+        return self::healthEndpoint($this->baseUrl, $this->tlsSpkiPin);
     }
 
     public function storeEnvelope(string $keyId, string $artifactId, string $envelope): array
@@ -125,6 +127,17 @@ final class KeyCustodyHttpClient
         if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200
             || preg_match('/[\x00-\x1F\x7F]/', $artifactId)) {
             throw new \InvalidArgumentException('key custody artifact identity is invalid');
+        }
+    }
+
+    private static function validateEndpoint(string $baseUrl, ?string $tlsSpkiPin): void
+    {
+        $url = parse_url($baseUrl);
+        if (!filter_var($baseUrl, FILTER_VALIDATE_URL) || !is_array($url) || strtolower((string)($url['scheme'] ?? '')) !== 'https'
+            || !is_string($url['host'] ?? null) || $url['host'] === '' || isset($url['user']) || isset($url['pass'])
+            || isset($url['query']) || isset($url['fragment'])) throw new \InvalidArgumentException('key custody endpoint is invalid');
+        if ($tlsSpkiPin !== null && preg_match('~^sha256//[A-Za-z0-9+/]{43}=$~', $tlsSpkiPin) !== 1) {
+            throw new \InvalidArgumentException('key custody TLS public-key pin is invalid');
         }
     }
 

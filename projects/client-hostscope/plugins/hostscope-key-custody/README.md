@@ -31,10 +31,12 @@ envelope usage, quota, and whether another envelope may be stored. This lets a
 deployment explain an upload refusal before sending ciphertext, without giving
 it a billing, management, key-creation, or account-recovery credential.
 
-The adapter's `health()` method calls the unauthenticated `/v1/health` probe
-using the same HTTPS and optional SPKI pin configuration, but sends no bearer,
-signature, or key material. A package setup screen can use it as a connection
-test before storing an envelope or requesting recovery material.
+`KeyCustodyHttpClient::healthEndpoint($url, $pin)` calls the unauthenticated
+`/v1/health` probe before enrollment, using the same HTTPS and optional SPKI
+pin configuration but sending no bearer, signature, or key material. The
+instance `health()` method is the equivalent post-enrollment convenience call.
+A package setup screen should use the static probe before accepting a client
+credential, then show the verified service identity before continuing.
 
 The included client adapter accepts only an unambiguous HTTPS service URL (no
 embedded user credentials, query, or fragment), explicitly verifies the server

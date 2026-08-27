@@ -28,10 +28,13 @@ readiness projection: artifact count, ciphertext bytes, configured ceilings,
 and whether another artifact can be stored. It has no authority to list,
 download, delete, manage, or bill the relay account.
 
-The adapter's `health()` method calls the unauthenticated `/v1/health` probe
-with the same HTTPS and optional SPKI pin configuration, but sends no bearer,
-signature, or ciphertext. A package setup screen can use it as a connection
-test before scheduling a ciphertext transfer.
+`ReplicaRelayHttpClient::healthEndpoint($url, $pin)` calls the unauthenticated
+`/v1/health` probe before enrollment, using the same HTTPS and optional SPKI
+pin configuration but sending no bearer, signature, or ciphertext. The
+instance `health()` method is the equivalent post-enrollment convenience call.
+A package setup screen should use the static probe before accepting a client
+credential, then show the verified service identity before scheduling a
+ciphertext transfer.
 
 The package remains a design preview until the isolated runtime can enforce its
 capabilities and the core replication ledger can prove upload, remote digest
