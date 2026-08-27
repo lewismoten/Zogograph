@@ -15,8 +15,7 @@ browser.
 - Administrators review and explicitly enable each package.
 - Package capabilities are allowlisted and shown before enablement.
 - Remote discovery, payment, telemetry, automatic updates, and executable
-  package hooks remain disabled until signed-package verification and rollback
-  are implemented.
+  package hooks are not part of the local marketplace and remain disabled.
 
 ## Delivery sequence
 
@@ -25,7 +24,7 @@ browser.
 3. [x] Administrator catalog UI with package detail, enable/disable, and safe
    unavailable/error states.
 4. [x] First data-only package type: alert-rule recommendations.
-5. [ ] Signed package verification, compatibility checks, install/rollback,
+5. [x] Signed package verification, compatibility checks, install/rollback,
    and release provenance before any remote package source.
 6. [ ] Publisher workflow, commercial terms, moderation, payments, and hosted
    marketplace service only after legal and business-owner decisions.
@@ -36,7 +35,7 @@ Each delivery item requires a server-side authorization test, malformed
 manifest coverage, capability-denial coverage, migration/upgrade coverage, and
 documentation that describes actual behavior rather than planned behavior.
 
-### In progress: package provenance
+### Implemented local provenance
 
 Manifests may carry an Ed25519 signature. When a signature is present,
 HostScope verifies it against a locally configured publisher key and refuses to
@@ -45,8 +44,9 @@ remain local-only administrator-reviewed manifests. Compatibility ranges,
 including PHP and database-schema bounds, are checked before enablement; a
 changed package version requires fresh administrator approval. Package
 installation and rollback are local-only, atomic, and leave the restored
-revision disabled for review. Release provenance and every remote source are
-still unimplemented.
+revision disabled for review. Each replaced manifest is retained under a
+content-derived SHA-256 revision id, and installation, approval, disablement,
+and rollback are audit records. Remote sources remain unavailable.
 
 ## Current package format
 
@@ -55,6 +55,26 @@ Set `marketplace.directory` in `lib/config.php` (it defaults to the protected
 Only `alert_recommendations` is currently accepted. A recommendation is shown
 for administrator review only; enabling it neither changes an alert rule nor
 executes package code.
+
+## Signatures and revisions
+
+An unsigned manifest is permitted only as a locally reviewed package. To add
+publisher provenance, configure the publisher's Base64 Ed25519 public key under
+`marketplace.trusted_keys` and add this object to the manifest:
+
+```json
+"signature": {
+  "key_id": "example-publisher",
+  "algorithm": "ed25519",
+  "value": "base64 detached signature"
+}
+```
+
+The signature covers the manifest without `signature`, serialized as compact
+JSON with object keys sorted lexically and array order preserved. A package
+that supplies a signature but cannot verify is visible for diagnosis but cannot
+be enabled. Use **Install local manifest** for an atomic write, and **History**
+to restore a retained revision; neither operation enables the package.
 
 ```json
 {
