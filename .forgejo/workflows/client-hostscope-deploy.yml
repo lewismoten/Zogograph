@@ -1,0 +1,156 @@
+name: Deploy Client HostScope
+
+on:
+  push:
+    branches:
+      - develop
+      - feature-dashboard-professional-polish
+    paths:
+      - projects/client-hostscope/**
+      - .forgejo/workflows/client-hostscope-deploy.yml
+  workflow_dispatch:
+
+concurrency:
+  group: client-hostscope-deploy-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HOSTSCOPE_DEPLOY_HOST: ${{ vars.HOSTSCOPE_DEPLOY_HOST }}
+      HOSTSCOPE_DEPLOY_PORT: ${{ vars.HOSTSCOPE_DEPLOY_PORT }}
+      HOSTSCOPE_DEPLOY_USER: ${{ vars.HOSTSCOPE_DEPLOY_USER }}
+      HOSTSCOPE_DEPLOY_PATH: ${{ vars.HOSTSCOPE_DEPLOY_PATH }}
+      HOSTSCOPE_DEPLOY_URL: ${{ vars.HOSTSCOPE_DEPLOY_URL }}
+      HOSTSCOPE_DEPLOY_KNOWN_HOSTS: ${{ vars.HOSTSCOPE_DEPLOY_KNOWN_HOSTS }}
+      HOSTSCOPE_SNAPSHOT_PATH: ${{ vars.HOSTSCOPE_SNAPSHOT_PATH }}
+      HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate deployment settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          for setting in HOSTSCOPE_DEPLOY_HOST HOSTSCOPE_DEPLOY_USER HOSTSCOPE_DEPLOY_PATH HOSTSCOPE_DEPLOY_URL HOSTSCOPE_DEPLOY_KNOWN_HOSTS HOSTSCOPE_SNAPSHOT_PATH HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY; do
+            test -n "${!setting}" || { echo "Missing required deployment setting: $setting"; exit 1; }
+          done
+          test -d projects/client-hostscope
+
+      - name: Assemble release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=release/client-hostscope
+          mkdir -p "$release"
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='data/***' \
+            --exclude='lib/config.php' \
+            --exclude='tests/' \
+            --exclude='deploy/' \
+            --exclude='*.md' \
+            projects/client-hostscope/ "$release/"
+
+      - name: Create build manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=release/client-hostscope
+          created_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          version="$(git describe --tags --always)"
+          cat > "$release/build.json" <<EOF
+          {
+            "commit": "${GITHUB_SHA}",
+            "ref": "${GITHUB_REF_NAME}",
+            "runId": "${GITHUB_RUN_ID}",
+            "runNumber": "${GITHUB_RUN_NUMBER}",
+            "createdAt": "${created_at}",
+            "version": "${version}",
+            "repo": "${GITHUB_REPOSITORY}",
+            "application": "HostScope",
+            "part": "client-hostscope"
+          }
+          EOF
+          cat "$release/build.json"
+
+      - name: Install SSH key
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/hostscope_deploy_key"
+          printf '%s\n' "$HOSTSCOPE_DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/hostscope_deploy_key" "$HOME/.ssh/known_hosts"
+
+      - name: Install rsync
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v rsync >/dev/null || { apt-get update; apt-get install -y rsync; }
+
+      - name: Snapshot the live site and SQLite databases
+        id: snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_SHA}"
+          printf 'id=%s\n' "$snapshot_id" >> "$GITHUB_OUTPUT"
+          ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${HOSTSCOPE_DEPLOY_PORT:-22}" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
+            "${HOSTSCOPE_DEPLOY_USER}@${HOSTSCOPE_DEPLOY_HOST}" \
+            bash -s -- "$HOSTSCOPE_DEPLOY_PATH" "$HOSTSCOPE_SNAPSHOT_PATH" "$snapshot_id" <<'REMOTE'
+          set -eu
+          site=$1
+          snapshots=$2
+          snapshot_id=$3
+          case "$snapshots" in "$site"|"$site"/*) echo 'Snapshot path must be outside the deploy path.' >&2; exit 1;; esac
+          mkdir -p "$site" "$snapshots"
+          [ -n "$(find "$site" -mindepth 1 -maxdepth 1 -print -quit)" ] || exit 0
+          snapshot="$snapshots/$snapshot_id"
+          test ! -e "$snapshot" || { echo "Snapshot already exists: $snapshot" >&2; exit 1; }
+          mkdir -p "$snapshot/site" "$snapshot/databases"
+          rsync -a --delete --exclude='*.db' --exclude='*.db-*' --exclude='*.sqlite' --exclude='*.sqlite-*' --exclude='*.sqlite3' --exclude='*.sqlite3-*' "$site/" "$snapshot/site/"
+          if [ -d "$site/data" ]; then
+            command -v sqlite3 >/dev/null || { echo 'sqlite3 is required on the deployment server for safe snapshots.' >&2; exit 1; }
+            find "$site/data" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print0 |
+              while IFS= read -r -d '' database; do
+                relative=${database#"$site"/}
+                destination="$snapshot/databases/$relative"
+                mkdir -p "$(dirname "$destination")"
+                sqlite3 "$database" ".backup '$destination'"
+              done
+          fi
+          printf '%s\n' "$snapshot_id" > "$snapshot/SNAPSHOT_ID"
+          REMOTE
+
+      - name: Upload application files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rsync -az --delete \
+            --exclude='data/***' \
+            --exclude='lib/config.php' \
+            --exclude='.well-known/' \
+            -e "ssh -i $HOME/.ssh/hostscope_deploy_key -p ${HOSTSCOPE_DEPLOY_PORT:-22} -o BatchMode=yes -o IdentitiesOnly=yes" \
+            release/client-hostscope/ \
+            "${HOSTSCOPE_DEPLOY_USER}@${HOSTSCOPE_DEPLOY_HOST}:${HOSTSCOPE_DEPLOY_PATH}/"
+
+      - name: Verify deployed build
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_url="${HOSTSCOPE_DEPLOY_URL%/}/build.json"
+          for attempt in 1 2 3 4 5; do
+            deployed="$(curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 "${build_url}?run=${GITHUB_RUN_ID}" | sed -n 's/.*"commit": "\([^"]*\)".*/\1/p')" || deployed=''
+            [ "$deployed" = "$GITHUB_SHA" ] && exit 0
+            echo "Attempt $attempt did not return ${GITHUB_SHA}."
+            sleep 5
+          done
+          exit 1
+
+      - name: Report snapshot
+        run: 'echo "Pre-deploy snapshot: ${{ steps.snapshot.outputs.id }}"'
