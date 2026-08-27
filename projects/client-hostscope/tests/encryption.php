@@ -31,6 +31,8 @@ try {
     $page = file_get_contents(__DIR__ . '/../index.html');
     $rotation = file_get_contents(__DIR__ . '/../scripts/rotate-sealed-copies.php');
     $configRestore = file_get_contents(__DIR__ . '/../scripts/restore-config.php');
+    $accountRestore = file_get_contents(__DIR__ . '/../scripts/restore-account.php');
+    $storeRestore = file_get_contents(__DIR__ . '/../scripts/restore-store.php');
     $setupGuide = file_get_contents(__DIR__ . '/../SETUP.md');
     encryptionExpect($api !== false && str_contains($api, "'encryption-status' => 'sys-encryption'"),
         'encryption status is not protected by its dashboard page access rule');
@@ -48,6 +50,10 @@ try {
     encryptionExpect($configRestore !== false && str_contains($configRestore, 'encryptionRestoreBootstrapConfiguration')
         && str_contains($configRestore, '--confirm'),
         'sealed bootstrap configuration has no guarded recovery command');
+    encryptionExpect($accountRestore !== false && $storeRestore !== false
+        && str_contains($accountRestore, 'encryptionSealFile') && str_contains($storeRestore, 'encryptionSealFile')
+        && str_contains($accountRestore, 'encryptionVerifySealedStoreArtifact') && str_contains($storeRestore, 'encryptionVerifySealedStoreArtifact'),
+        'sealed database restoration does not retain a verified sealed rollback artifact');
     encryptionExpect($setupGuide !== false && str_contains($setupGuide, '--recovery-drill --quiet')
         && str_contains($setupGuide, 'Quarterly non-destructive recovery drill'),
         'setup guide does not provide a recurring recovery-drill schedule');

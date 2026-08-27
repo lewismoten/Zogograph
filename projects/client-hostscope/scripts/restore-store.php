@@ -41,11 +41,12 @@ if ($source === false || !is_file($source) || $target === '' || !str_starts_with
 if ($sealedKey === null && realpath($target) === $source) { fwrite(STDERR, "The source is already the live store; refusing to replace it with itself.\n"); exit(1); }
 if (!is_dir(dirname($target)) || !is_writable(dirname($target))) { fwrite(STDERR, "The selected store directory is unavailable or not writable.\n"); exit(1); }
 
-$temporary = $target . '.restore-' . bin2hex(random_bytes(8)); $decrypted = null;
+$temporary = $target . '.restore-' . bin2hex(random_bytes(8)); $decrypted = null; $kek = null;
 try {
     if ($sealedKey !== null) {
         $decrypted = $target . '.sealed-restore-' . bin2hex(random_bytes(8)) . '.db';
-        encryptionOpenFile($source, $decrypted, encryptionReadLocalKey($sealedKey, dirname(__DIR__)));
+        $kek = encryptionReadLocalKey($sealedKey, dirname(__DIR__));
+        encryptionOpenFile($source, $decrypted, $kek);
         $source = $decrypted;
     }
     $candidate = new PDO('sqlite:' . $source, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
@@ -56,8 +57,15 @@ try {
     $candidate = null;
     if (is_file($target)) {
         $live = new PDO('sqlite:' . $target, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-        $recovery = dirname($target) . '/before-restore-' . $store . '-' . gmdate('Ymd\THis\Z') . '.db';
+        $stamp = gmdate('Ymd\THis\Z') . '-' . bin2hex(random_bytes(4));
+        $recovery = dirname($target) . '/before-restore-' . $store . '-' . $stamp . '.db';
         $live->exec('VACUUM INTO ' . $live->quote($recovery)); $live = null; @chmod($recovery, 0600);
+        if ($kek !== null) {
+            $sealedRecovery = dirname($target) . '/before-restore-' . $store . '-' . $stamp . '.sealed';
+            $record = encryptionSealFile($recovery, $sealedRecovery, $kek, $store . ':before-restore:' . $stamp);
+            encryptionVerifySealedStoreArtifact($sealedRecovery, $kek, (int)$record['plaintext_bytes'], $store);
+            @unlink($recovery); $recovery = $sealedRecovery;
+        }
         fwrite(STDOUT, 'Saved the current database to ' . $recovery . "\n");
     }
     if (!@copy($source, $temporary)) throw new RuntimeException('could not copy the verified export beside the live database');

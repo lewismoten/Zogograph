@@ -52,11 +52,12 @@ if ($sealedKey === null && realpath($target) === $source) {
 }
 
 $temporary = $target . '.restore-' . bin2hex(random_bytes(8));
-$decrypted = null;
+$decrypted = null; $kek = null;
 try {
     if ($sealedKey !== null) {
         $decrypted = $target . '.sealed-restore-' . bin2hex(random_bytes(8)) . '.db';
-        encryptionOpenFile($source, $decrypted, encryptionReadLocalKey($sealedKey, dirname(__DIR__)));
+        $kek = encryptionReadLocalKey($sealedKey, dirname(__DIR__));
+        encryptionOpenFile($source, $decrypted, $kek);
         $source = $decrypted;
     }
     $candidate = new PDO('sqlite:' . $source, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
@@ -76,7 +77,15 @@ try {
         $recovery = snapshotDirectory($config) . '/before-restore-account-' . gmdate('Ymd\THis\Z') . '.db';
         $made = snapshotDatabase($live, $recovery);
         $live = null;
-        fwrite(STDOUT, 'Saved the current database to ' . $made['path'] . "\n");
+        $recovery = $made['path'];
+        if ($kek !== null) {
+            $stamp = gmdate('Ymd\THis\Z') . '-' . bin2hex(random_bytes(4));
+            $sealedRecovery = dirname($recovery) . '/before-restore-account-' . $stamp . '.sealed';
+            $record = encryptionSealFile($recovery, $sealedRecovery, $kek, 'account:before-restore:' . $stamp);
+            encryptionVerifySealedStoreArtifact($sealedRecovery, $kek, (int)$record['plaintext_bytes'], 'account');
+            @unlink($recovery); $recovery = $sealedRecovery;
+        }
+        fwrite(STDOUT, 'Saved the current database to ' . $recovery . "\n");
     }
 
     if (!@copy($source, $temporary)) {

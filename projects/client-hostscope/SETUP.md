@@ -274,8 +274,8 @@ php scripts/encryption-key.php decrypt /secure/hostscope/primary.key account.sea
 
 To restore an account database from a sealed copy, stop the web server and all
 HostScope cron jobs first. The restore command requires that acknowledgement,
-fully authenticates and checks the decrypted SQLite candidate, snapshots the
-current account database, replaces it atomically, and removes stale WAL/SHM
+fully authenticates and checks the decrypted SQLite candidate, seals a snapshot
+of the current account database, replaces it atomically, and removes stale WAL/SHM
 files. The short-lived decrypted candidate is removed even when the restore is
 refused. It must be run from the deployed HostScope directory as the account
 that owns the files:
@@ -292,8 +292,8 @@ and availability contracts.
 
 Use the generic restore command for the other sealed SQLite stores. It requires
 the same stopped-writer acknowledgement, checks that the decrypted candidate
-has the expected store table, creates a private pre-restore snapshot beside the
-target, atomically replaces it, and removes stale WAL/SHM companions:
+has the expected store table, seals a pre-restore snapshot beside the target,
+atomically replaces it, and removes stale WAL/SHM companions:
 
 ```bash
 php scripts/restore-store.php --store setup --sealed /secure/setup.sealed \
@@ -303,6 +303,12 @@ php scripts/restore-store.php --store host --sealed /secure/host.sealed \
 php scripts/restore-store.php --store ai --sealed /secure/ai.sealed \
   --key /secure/hostscope/primary.key --writers-stopped
 ```
+
+When `--sealed` and `--key` are used, the printed pre-restore rollback path
+ends in `.sealed`; its plaintext snapshot is removed after verification. The
+legacy `--from` form has no key to use and therefore retains its local private
+SQLite rollback snapshot as plaintext—move or protect it yourself before using
+that compatibility mode for sensitive data.
 
 Restoring `setup` changes the saved website/package policy, credentials, and
 encryption settings. To restore the separately sealed bootstrap `lib/config.php`,
