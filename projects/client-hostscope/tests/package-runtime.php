@@ -56,6 +56,11 @@ try {
     $signed = packageSignManifest($manifest, $source, 'test-publisher', sodium_crypto_sign_secretkey($pair));
     file_put_contents($source . '/manifest.json', json_encode($signed, JSON_THROW_ON_ERROR));
     if (function_exists('proc_open')) {
+        $pipes = []; $unattested = proc_open([PHP_BINARY, __DIR__ . '/../scripts/package-runtime-worker.php', '--package-root', $source],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, []);
+        runtimeExpect(is_resource($unattested), 'could not start unattended package worker');
+        fclose($pipes[0]); $unattestedOutput = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]); fclose($pipes[1]); fclose($pipes[2]);
+        runtimeExpect(proc_close($unattested) === 77 && str_contains($unattestedOutput, 'attested package sandbox'), 'package worker started without sandbox attestation');
         $pipes = []; $worker = proc_open([PHP_BINARY, __DIR__ . '/../scripts/package-runtime-worker.php', '--package-root', $source],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, ['HOSTSCOPE_PACKAGE_SANDBOX' => '1']);
         runtimeExpect(is_resource($worker), 'could not start package sandbox worker');
