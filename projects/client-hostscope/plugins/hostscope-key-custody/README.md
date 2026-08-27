@@ -17,9 +17,10 @@ configuration files, plaintext keys, or billing credentials. Billing is managed
 through the commercial account API/browser flow, separately from enrolled
 client credentials.
 
-The included client adapter uses HTTPS with normal certificate validation, no
-redirect following, a five-minute service timestamp window, and a one-time
-request nonce. It signs the HTTP method, request path, timestamp, nonce, and
+The included client adapter accepts only an unambiguous HTTPS service URL (no
+embedded user credentials, query, or fragment), explicitly verifies the server
+certificate and hostname, follows no redirects, and uses a five-minute service
+timestamp window plus a one-time request nonce. It signs the HTTP method, request path, timestamp, nonce, and
 the exact request-body hash with Ed25519, so a stolen bearer alone cannot alter
 or create an enrolled-client request. It retains no key cache: any unwrapped
 key is returned only to the immediate caller for in-memory use.

@@ -12,7 +12,9 @@ final class KeyCustodyHttpClient
     /** The signing key is the Base64 Ed25519 private key printed at enrollment. */
     public function __construct(private readonly string $baseUrl, private readonly string $clientToken, string $clientSigningKey)
     {
-        if (!filter_var($baseUrl, FILTER_VALIDATE_URL) || !str_starts_with($baseUrl, 'https://') || $clientToken === '') {
+        $url = parse_url($baseUrl);
+        if (!is_array($url) || ($url['scheme'] ?? null) !== 'https' || !is_string($url['host'] ?? null)
+            || $url['host'] === '' || isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment']) || $clientToken === '') {
             throw new \InvalidArgumentException('key custody endpoint or client credential is invalid');
         }
         if (!function_exists('curl_init')) throw new \RuntimeException('cURL is required for remote key custody');
@@ -64,6 +66,7 @@ final class KeyCustodyHttpClient
             curl_setopt_array($handle, [
                 CURLOPT_CUSTOMREQUEST => $method, CURLOPT_POSTFIELDS => $encoded, CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 30, CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
                 CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $this->clientToken, 'Content-Type: application/json',
                     'X-HostScope-Timestamp: ' . $metadata['timestamp'], 'X-HostScope-Nonce: ' . $metadata['nonce'],
                     'X-HostScope-Signature: ' . $signature],

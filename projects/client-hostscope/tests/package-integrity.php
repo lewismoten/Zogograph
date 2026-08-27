@@ -29,7 +29,9 @@ try {
         'custody request signature does not verify');
     $custodySource = file_get_contents(__DIR__ . '/../plugins/hostscope-key-custody/src/KeyCustodyHttpClient.php');
     packageExpect($custodySource !== false && str_contains($custodySource, 'int $requestedTtl = 0')
-        && str_contains($custodySource, "'requested_ttl_seconds' => \$requestedTtl"), 'custody client does not default to zero key caching');
+        && str_contains($custodySource, "'requested_ttl_seconds' => \$requestedTtl")
+        && str_contains($custodySource, 'CURLOPT_SSL_VERIFYPEER => true')
+        && str_contains($custodySource, 'CURLOPT_SSL_VERIFYHOST => 2'), 'custody client does not enforce its secure transport defaults');
     $pair = sodium_crypto_sign_keypair();
     $signed = packageSignManifest($manifest, $root, 'test-publisher', sodium_crypto_sign_secretkey($pair));
     packageExpect(packageVerifyIntegrity($signed, $root)['ok'], 'fresh package integrity did not verify');
