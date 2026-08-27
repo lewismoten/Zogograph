@@ -308,6 +308,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'marketplace-rollback' => doMarketplaceRollback($config, $pdo, $post),
         'package-runtime' => packageRuntimeView($config, $pdo, $signedIn),
         'package-runtime-probe' => doPackageRuntimeProbe($config, $pdo, $post),
+        'package-runtime-custody-diagnostic-approve' => doPackageRuntimeCustodyDiagnosticApprove($pdo, $post),
         'package-runtime-enable' => doPackageRuntimeEnable($pdo, $post),
         'package-runtime-revoke' => doPackageRuntimeRevoke($pdo, $post),
         'package-runtime-unrevoke' => doPackageRuntimeLiftRevocation($pdo, $post),
@@ -357,6 +358,7 @@ function requireActionAccess(array $config, string $action): void
         'peers' => 'sys-peers', 'marketplace' => 'sys-marketplace',
         'package-runtime' => 'sys-packages',
         'package-runtime-probe' => 'sys-packages',
+        'package-runtime-custody-diagnostic-approve' => 'sys-packages',
         'package-runtime-enable' => 'sys-packages',
         'package-runtime-revoke' => 'sys-packages',
         'package-runtime-unrevoke' => 'sys-packages',
@@ -5644,6 +5646,15 @@ function doPackageRuntimeProbe(array $config, PDO $pdo, bool $post): array
     logAction($pdo, 'package_runtime_probe', $id, 'ok', 0, 0, $operation . '; state=' . $result['state']);
     return ['ok' => true, 'id' => $id, 'operation' => $operation, 'result' => $result,
         'warning' => 'This isolated no-secret probe is diagnostic evidence only. It did not enable the package, send an enrollment credential, or activate provider operations.'];
+}
+
+function doPackageRuntimeCustodyDiagnosticApprove(PDO $pdo, bool $post): array
+{
+    requireWrite($post); $id = trim((string)($_POST['id'] ?? ''));
+    try { packageRuntimeApproveCustodyDiagnostic($pdo, $id, currentAccountName()); }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'package_runtime_custody_diagnostic_approve', $id, 'ok', 0, 0, 'key_provider, network_client only; package remains inactive');
+    return ['ok' => true, 'packages' => packageRuntimePackages($pdo)];
 }
 
 function doPackageRuntimeEnable(PDO $pdo, bool $post): array

@@ -292,6 +292,29 @@ function packageRuntimeSetEnabled(PDO $pdo, string $id, array $grants, bool $ena
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
 }
 
+/** Records the minimum explicit approval for the credential-only custody
+ * diagnostic. It never enables package execution or grants private storage. */
+function packageRuntimeApproveCustodyDiagnostic(PDO $pdo, string $id, string $actor): void
+{
+    if ($id !== 'hostscope-key-custody') throw new InvalidArgumentException('this diagnostic approval is only available for the custody package');
+    $row = $pdo->prepare('SELECT manifest_json, manifest_sha256, install_path FROM runtime_packages WHERE package_id = ?'); $row->execute([$id]); $package = $row->fetch();
+    $manifest = is_array($package) ? json_decode((string)$package['manifest_json'], true) : null;
+    if (!is_array($manifest)) throw new InvalidArgumentException('package is not installed');
+    $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$package['install_path'], (string)$package['manifest_sha256']);
+    if (!$integrity['ok']) throw new InvalidArgumentException('installed package integrity failed: ' . $integrity['detail']);
+    $revoked = $pdo->prepare('SELECT COUNT(*) FROM runtime_package_revocations WHERE package_id = ?'); $revoked->execute([$id]);
+    if ((int)$revoked->fetchColumn() !== 0) throw new InvalidArgumentException('package is revoked; review it before approving any diagnostic permission');
+    $required = ['key_provider', 'network_client'];
+    if (array_diff($required, (array)($manifest['capabilities'] ?? [])) !== []) throw new InvalidArgumentException('signed custody package lacks required diagnostic capabilities');
+    $pdo->beginTransaction();
+    try {
+        $insert = $pdo->prepare('INSERT OR IGNORE INTO runtime_package_grants (package_id, capability, granted_at, granted_by) VALUES (?, ?, ?, ?)');
+        foreach ($required as $capability) $insert->execute([$id, $capability, time(), mb_substr($actor, 0, 120)]);
+        $pdo->prepare('UPDATE runtime_packages SET changed_at = ?, changed_by = ? WHERE package_id = ?')->execute([time(), mb_substr($actor, 0, 120), $id]);
+        $pdo->commit();
+    } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
+}
+
 /** @return array{ok:bool,detail:string} */
 function packageRuntimeVerifyInstalledPackage(array $manifest, string $directory, string $manifestHash): array
 {

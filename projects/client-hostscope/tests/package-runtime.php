@@ -102,6 +102,8 @@ try {
     $genericReadiness = packageRuntimeProviderReadiness($pdo, $config, 'test-runtime');
     runtimeExpect($genericReadiness['state'] === 'not-applicable' && !$genericReadiness['endpoint_tested'],
         'non-provider package received an incorrect custody readiness state');
+    try { packageRuntimeApproveCustodyDiagnostic($pdo, 'test-runtime', 'administrator'); throw new RuntimeException('non-custody package received custody diagnostic approval'); }
+    catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'non-custody package received custody diagnostic approval', $error->getMessage()); }
     runtimeExpect(packageRuntimeSettings($pdo, $config, 'test-runtime')['retention_days'] === 30,
         'signed package settings defaults were not shown before setup');
     if (function_exists('proc_open')) {

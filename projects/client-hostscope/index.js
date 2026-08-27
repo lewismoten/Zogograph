@@ -11711,6 +11711,15 @@ function packageRuntimeActions(row, canChange) {
     });
     wrap.appendChild(probe);
   }
+  if (row.id === "hostscope-key-custody" && !["key_provider", "network_client"].every(capability => row.grants.includes(capability))) {
+    const approve = document.createElement("button"); approve.className = "link"; approve.textContent = "Approve enrollment check";
+    approve.addEventListener("click", async () => {
+      if (!(await confirmDialog("Approve only key-provider and network-client permission for the custody enrollment check?\n\nThis does not enable the package, create an envelope, unwrap a key, or grant database access.", "Approve custody diagnostic"))) return;
+      try { await post("package-runtime-custody-diagnostic-approve", { id: row.id }); await refreshPackageRuntime(); notice("Custody enrollment-check permissions approved; the package remains inactive.", true); }
+      catch (error) { notice(String(error.message || error)); }
+    });
+    wrap.appendChild(approve);
+  }
   const toggle = document.createElement("button"); toggle.className = row.enabled ? "link danger" : "link";
   const platformReady = row.compatibility?.status === "ready";
   toggle.textContent = row.enabled ? "Disable" : (platformReady ? "Grant & enable" : "Platform unavailable");
