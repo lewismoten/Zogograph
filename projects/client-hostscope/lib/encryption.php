@@ -248,6 +248,41 @@ function encryptionValidateSettings(array $config, string $webRoot): void
     encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot);
 }
 
+/** Safe operational status for the protected browser/API surface. It reports
+ * actual local evidence and never returns key paths, key bytes, or artifacts. */
+function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
+{
+    $settings = (array)($config['encryption'] ?? []);
+    $mode = (string)($settings['mode'] ?? 'none');
+    $stores = encryptionSelectedStores($settings);
+    $status = ['mode' => $mode, 'stores' => $stores, 'ready' => false, 'warnings' => [], 'artifacts' => []];
+    if ($mode === 'none') {
+        $status['warnings'][] = 'Encryption is off. Live SQLite files and copies remain unencrypted unless host storage protection is configured separately.';
+        return $status;
+    }
+    if ($mode === 'operator_managed_volume') {
+        $status['ready'] = $stores !== [];
+        $status['warnings'][] = 'HostScope cannot verify host or volume encryption. Confirm that the selected databases, WAL files, logs, and backups are covered by your host policy.';
+        return $status;
+    }
+    if ($mode !== 'sealed_copies_local') {
+        $status['warnings'][] = 'The selected encryption mode is not available in this HostScope release.';
+        return $status;
+    }
+    if (!encryptionAvailable()) $status['warnings'][] = 'OpenSSL AES-256-GCM support is unavailable.';
+    try { encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot); }
+    catch (Throwable $error) { $status['warnings'][] = 'The private local key is not ready: ' . $error->getMessage(); }
+    if ($stores === []) $status['warnings'][] = 'No databases or configuration artifact have been selected.';
+    try {
+        $stmt = $pdo->query('SELECT store, MAX(created_at) AS created_at, COUNT(*) AS copies FROM encryption_artifacts GROUP BY store');
+        foreach ($stmt->fetchAll() as $row) $status['artifacts'][] = ['store' => $row['store'], 'created_at' => (int)$row['created_at'], 'copies' => (int)$row['copies']];
+    } catch (Throwable) { $status['warnings'][] = 'No encrypted artifact ledger is available yet.'; }
+    $covered = array_column($status['artifacts'], 'store');
+    foreach ($stores as $store) if (!in_array($store, $covered, true)) $status['warnings'][] = "No verified encrypted copy exists yet for {$store}.";
+    $status['ready'] = $stores !== [] && encryptionAvailable() && count($status['warnings']) === 0;
+    return $status;
+}
+
 /** @return list<string> */
 function encryptionSelectedStores(array $settings): array
 {

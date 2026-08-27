@@ -92,6 +92,10 @@ try {
         encryptionRecordArtifacts($live, $copies);
         encryptionExpect((int)$live->query('SELECT COUNT(*) FROM encryption_artifacts')->fetchColumn() === 2,
             'sealed artifacts were not recorded for replication');
+        $status = encryptionStatus($live, $config, $web);
+        encryptionExpect($status['ready'] && count($status['artifacts']) === 2, 'sealed-copy status did not report verified coverage');
+        $volume = encryptionStatus($live, ['encryption' => ['mode' => 'operator_managed_volume', 'stores' => ['account']]], $web);
+        encryptionExpect($volume['ready'] && $volume['warnings'] !== [], 'volume-protection status did not explain its verification limit');
     }
 
     $tampered = $root . '/tampered.sealed';

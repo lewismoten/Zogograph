@@ -93,6 +93,7 @@ require_once __DIR__ . '/lib/updates.php';
 require_once __DIR__ . '/lib/peers.php';
 require_once __DIR__ . '/lib/marketplace.php';
 require_once __DIR__ . '/lib/package-runtime.php';
+require_once __DIR__ . '/lib/encryption.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
@@ -309,6 +310,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'package-runtime-enable' => doPackageRuntimeEnable($pdo, $post),
         'package-runtime-settings' => packageRuntimeSettingsView($config, $pdo, $signedIn),
         'package-runtime-settings-save' => doPackageRuntimeSettingsSave($config, $pdo, $post),
+        'encryption-status' => encryptionStatusView($config, $pdo, $signedIn),
         'peer-save' => doPeerSave($config, $pdo, $post),
         'peer-delete' => doPeerDelete($config, $pdo, $post),
         'peer-transport-rotate' => doPeerTransportRotate($config, $pdo, $post),
@@ -347,6 +349,7 @@ function requireActionAccess(array $config, string $action): void
         'peers' => 'sys-peers', 'marketplace' => 'sys-marketplace',
         'package-runtime' => 'sys-marketplace',
         'package-runtime-settings' => 'sys-marketplace',
+        'encryption-status' => 'sys-account',
         'labels' => 'net-labels', 'descriptions' => 'sys-descriptions',
         'changed' => 'sys-changed', 'capability-changes' => 'sys-changed',
         'installed' => 'sys-installed', 'symlinks' => 'storage-links',
@@ -5628,6 +5631,12 @@ function doPackageRuntimeSettingsSave(array $config, PDO $pdo, bool $post): arra
     catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, 'package_runtime_settings_save', $id, 'ok', 0, 0, 'package settings updated');
     return ['ok' => true, 'id' => $id, 'settings' => packageRuntimeSettings($pdo, $config, $id)];
+}
+
+function encryptionStatusView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) throw new ActionRefused('sign in to view encryption status');
+    return encryptionStatus($pdo, $config, __DIR__);
 }
 
 function doClearProblems(array $config, PDO $pdo, bool $post): array
