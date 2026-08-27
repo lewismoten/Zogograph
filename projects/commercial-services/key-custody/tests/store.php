@@ -37,6 +37,9 @@ custodyExpect($nginx !== false && str_contains($nginx, 'client_max_body_size 2m'
     && str_contains($nginx, 'Strict-Transport-Security'), 'custody Nginx deployment boundary lacks request and header hardening');
 custodyExpect(str_contains((string)$api, "catch (JsonException) { custodyReply(400") && str_contains((string)$api, 'JSON object body is invalid'),
     'custody API does not distinguish malformed JSON from an internal failure');
+custodyExpect(str_contains((string)$api, 'KeyCustodyRateLimitException') && str_contains((string)$api, 'Retry-After: ')
+    && isset($contract['paths']['/keys/{keyId}/unwrap-authorizations']['post']['responses']['429']),
+    'custody API does not explain a temporary recovery-release throttle to clients');
 custodyExpect(str_contains((string)$api, "'/v1/health'"), 'custody API does not provide the documented health endpoint');
 custodyExpect(str_contains((string)$api, "confirm_recovery must be true") && str_contains((string)$api, 'keyCustodyRequestFields($rawBody, [\'confirm_recovery\']')
     && str_contains((string)$requestHelper, 'request contains unsupported fields'),
@@ -208,7 +211,7 @@ try {
         && hash_equals($artifactDataKey, keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)),
         'configured custody recovery-release allowance did not permit its first recovery');
     try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master); throw new RuntimeException('custody recovery-release limit was exceeded'); }
-    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'custody recovery-release limit was exceeded', $error->getMessage()); }
+    catch (KeyCustodyRateLimitException $error) { custodyExpect($error->retryAfterSeconds >= 1 && $error->retryAfterSeconds <= 3600, 'custody recovery-release retry time is invalid'); }
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'active', 2, null, 1, 60);
     custodyExpect(keyCustodyCacheRecommendation($pdo, $client['tenant_id'], $key['id'], 900) === 120,
         'custody key authorization limit did not cap a requested cache duration');

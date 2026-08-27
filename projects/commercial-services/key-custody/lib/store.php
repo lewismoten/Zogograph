@@ -3,6 +3,14 @@ declare(strict_types=1);
 
 const KEY_CUSTODY_TOKEN_BYTES = 32;
 
+final class KeyCustodyRateLimitException extends RuntimeException
+{
+    public function __construct(public readonly int $retryAfterSeconds)
+    {
+        parent::__construct('custody recovery release limit is reached; retry after the current hourly window');
+    }
+}
+
 /** Resolves a private custody-service directory and rejects storage aliases
  * that could expose tenant metadata through the web server. */
 function keyCustodyPrivateDirectory(string $path, ?string $webRoot = null): string
@@ -288,7 +296,7 @@ function keyCustodyConsumeUnwrapAllowance(PDO $pdo, string $tenant): void
         if ($limit < 1 || $limit > 100000) throw new RuntimeException('custody recovery release policy is invalid');
         $window = intdiv(time(), 3600) * 3600;
         $used = $pdo->prepare('SELECT count FROM custody_unwrap_usage WHERE tenant_id = ? AND window_started = ?'); $used->execute([$tenant, $window]);
-        if ((int)$used->fetchColumn() >= $limit) throw new InvalidArgumentException('custody recovery release limit is reached; retry after the current hourly window');
+        if ((int)$used->fetchColumn() >= $limit) throw new KeyCustodyRateLimitException(max(1, $window + 3600 - time()));
         $pdo->prepare('INSERT INTO custody_unwrap_usage (tenant_id, window_started, count) VALUES (?, ?, 1)
             ON CONFLICT(tenant_id, window_started) DO UPDATE SET count = count + 1')->execute([$tenant, $window]);
     });

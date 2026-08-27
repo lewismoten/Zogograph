@@ -161,5 +161,9 @@ try {
     }
     custodyReply(404, ['error' => 'unknown custody API operation']);
 } catch (JsonException) { custodyReply(400, ['error' => 'JSON object body is invalid']); }
+catch (KeyCustodyRateLimitException $error) {
+    header('Retry-After: ' . $error->retryAfterSeconds);
+    custodyReply(429, ['error' => $error->getMessage(), 'retry_after_seconds' => $error->retryAfterSeconds]);
+}
 catch (InvalidArgumentException $error) { custodyReply(403, ['error' => $error->getMessage()]); }
 catch (Throwable $error) { error_log('key custody service failure: ' . $error->getMessage()); custodyReply(500, ['error' => 'service failure']); }
