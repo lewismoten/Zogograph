@@ -43,6 +43,35 @@ authenticated website/API.
 | TLS public-key pin | before enabling it or rotating a pinned service certificate key | provider package settings | A pin supplements CA validation but can block recovery if it is not migrated before the service certificate key changes. |
 | Product/domain naming | before public launch or rebrand | commercial-site deployment settings | Domains and labels must not change encrypted artifact identifiers, peer identities, signing keys, or stored customer data. |
 
+## Deferred setup-credential vault
+
+`setup.db` currently holds the authenticated settings record. Its portable
+protection is a sealed copy; live protection remains the operator's encrypted
+volume or a future verified SQLCipher package. A future optional field vault
+may encrypt bounded credentials inside that record, but it must be introduced
+as a migration, not as a blanket recursive transformation.
+
+- Keep the minimal bootstrap (`database`, `scan_root`, timezone, and any
+  vault-key locator) readable before `setup.db` opens; never encrypt the only
+  information needed to locate its recovery key.
+- Start only with bounded secret values such as TOTP secrets, Telegram tokens,
+  model-provider keys, private signing keys, and enrolled-provider credentials.
+  Do not field-encrypt queryable paths, metrics, access groups, or policy
+  structures without defining their indexing and migration behavior.
+- Require an external owner-only key file, a successful decrypt/restart check,
+  and a retained verified recovery artifact before replacing any plaintext
+  value. Keep the feature off by default.
+- Preserve a versioned envelope, key identifier, authenticated associated data
+  naming the exact setting, and an explicit key-rotation/recovery procedure.
+  Never store the vault key, plaintext fallback, or recovery password in
+  `setup.db`, logs, browser storage, or a URL.
+
+The initial implementation location is `lib/setupstore.php`; configuration UI
+must be added through the authenticated setup flow, and every consumer of a
+vaulted value must receive plaintext only in process memory. Review this design
+before treating field protection as a substitute for volume or SQLCipher
+encryption.
+
 ## Recommended initial product direction
 
 These are deliberate starting policies for the first public release. They
