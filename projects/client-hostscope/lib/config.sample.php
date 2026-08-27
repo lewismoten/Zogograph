@@ -64,6 +64,9 @@ return [
     'package_runtime' => [
         'directory' => __DIR__ . '/../data/packages',
         'trusted_keys' => [], // key-id => ['publisher' => '', 'public_key' => 'Base64 Ed25519 key']
+        // Optional 0600 key outside the web root for encrypted package secrets.
+        // Blank reuses encryption.local_key_file when one is configured.
+        'secret_key_file' => '',
     ],
 
     // Sign-in. Without this nobody can unmask paths or delete anything, which

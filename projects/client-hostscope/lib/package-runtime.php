@@ -6,6 +6,7 @@ declare(strict_types=1);
  * separately reviewed isolation runtime is implemented. */
 require_once __DIR__ . '/package-integrity.php';
 require_once __DIR__ . '/setupstore.php';
+require_once __DIR__ . '/encryption.php';
 
 const PACKAGE_RUNTIME_CAPABILITIES = [
     'storage_backend', 'live_database_encryption', 'package_private_database',
@@ -200,7 +201,7 @@ function packageRuntimePrivateDatabase(PDO $registry, array $config, string $id)
 }
 
 /** Package settings live in setup.db, not the package's metric/database file.
- * Secret values are references to the future secret provider, never raw keys. */
+ * Secret values are references to the encrypted local secret vault, never raw keys. */
 function packageRuntimeSettings(PDO $pdo, array $config, string $id): array
 {
     packageRuntimeInstalled($pdo, $id);
@@ -219,6 +220,7 @@ function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $
 {
     packageRuntimeInstalled($pdo, $id);
     packageRuntimeValidateSettings($settings);
+    packageRuntimeValidateSettingsSecretReferences($settings, $id);
     $store = setupStoreOpen($config, true);
     if ($store === null) throw new RuntimeException('could not open package settings store');
     $store->exec('CREATE TABLE IF NOT EXISTS package_runtime_settings (
@@ -258,4 +260,82 @@ function packageRuntimeValidateSettings(array $settings): void
         }
     };
     $walk($settings, '', 0);
+}
+
+function packageRuntimeValidateSettingsSecretReferences(array $settings, string $id): void
+{
+    $walk = function (mixed $value) use (&$walk, $id): void {
+        if (is_array($value)) { foreach ($value as $child) $walk($child); return; }
+        if (is_string($value) && str_starts_with($value, 'secret_ref:')) packageRuntimeValidateSecretReference($id, $value);
+    };
+    $walk($settings);
+}
+
+/** Uses a separately configured key when present, otherwise the local
+ * sealed-copy key. The file itself stays outside the web root and setup.db. */
+function packageRuntimeSecretKey(array $config): string
+{
+    $runtime = (array)($config['package_runtime'] ?? []);
+    $encryption = (array)($config['encryption'] ?? []);
+    $path = trim((string)($runtime['secret_key_file'] ?? '')) ?: trim((string)($encryption['local_key_file'] ?? ''));
+    if ($path === '') throw new RuntimeException('configure a private package-secret key file or a local encryption key before saving package secrets');
+    $master = encryptionReadLocalKey($path, dirname(__DIR__));
+    $key = hash_hkdf('sha256', $master, 32, 'HostScope package secret vault v1');
+    if (!is_string($key) || strlen($key) !== 32) throw new RuntimeException('could not derive the package secret key');
+    return $key;
+}
+
+function packageRuntimeSecretReference(string $id): string
+{
+    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id)) throw new InvalidArgumentException('package id is invalid');
+    return 'secret_ref:' . $id . ':' . rtrim(strtr(base64_encode(random_bytes(18)), '+/', '-_'), '=');
+}
+
+function packageRuntimeValidateSecretReference(string $id, string $reference): void
+{
+    if (!preg_match('/^secret_ref:' . preg_quote($id, '/') . ':[A-Za-z0-9_-]{16,200}$/', $reference)) {
+        throw new InvalidArgumentException('package secret reference is invalid or belongs to another package');
+    }
+}
+
+function packageRuntimeSecretStore(PDO $registry, array $config, string $id, string $value, string $actor): string
+{
+    packageRuntimeInstalled($registry, $id);
+    if ($value === '' || strlen($value) > 8192) throw new InvalidArgumentException('package secret must be between 1 and 8192 bytes');
+    $store = setupStoreOpen($config, true);
+    if ($store === null) throw new RuntimeException('could not open package secrets store');
+    $store->exec('CREATE TABLE IF NOT EXISTS package_runtime_secrets (
+        reference TEXT PRIMARY KEY, package_id TEXT NOT NULL, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL, tag BLOB NOT NULL,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL
+    )');
+    $reference = packageRuntimeSecretReference($id); $nonce = random_bytes(12); $key = packageRuntimeSecretKey($config);
+    $ciphertext = openssl_encrypt($value, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $nonce, $tag, $reference, 16);
+    if (!is_string($ciphertext) || !is_string($tag)) throw new RuntimeException('could not encrypt package secret');
+    $store->prepare('INSERT INTO package_runtime_secrets (reference, package_id, nonce, ciphertext, tag, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        ->execute([$reference, $id, $nonce, $ciphertext, $tag, time(), time(), mb_substr($actor, 0, 120)]);
+    return $reference;
+}
+
+/** Only the eventual isolated runtime may call this after checking a matching
+ * declared secret reference; it is never returned by an HTTP settings API. */
+function packageRuntimeSecretValue(PDO $registry, array $config, string $id, string $reference): string
+{
+    packageRuntimeInstalled($registry, $id); packageRuntimeValidateSecretReference($id, $reference);
+    $store = setupStoreOpen($config, false);
+    if ($store === null) throw new InvalidArgumentException('package secret is unavailable');
+    $stmt = $store->prepare('SELECT nonce, ciphertext, tag FROM package_runtime_secrets WHERE reference = ? AND package_id = ?');
+    $stmt->execute([$reference, $id]); $row = $stmt->fetch();
+    if (!is_array($row)) throw new InvalidArgumentException('package secret is unavailable');
+    $plain = openssl_decrypt($row['ciphertext'], 'aes-256-gcm', packageRuntimeSecretKey($config), OPENSSL_RAW_DATA, $row['nonce'], $row['tag'], $reference);
+    if (!is_string($plain) || $plain === '') throw new RuntimeException('package secret could not be opened');
+    return $plain;
+}
+
+function packageRuntimeSecretDelete(PDO $registry, array $config, string $id, string $reference): void
+{
+    packageRuntimeInstalled($registry, $id); packageRuntimeValidateSecretReference($id, $reference);
+    $store = setupStoreOpen($config, false);
+    if ($store === null) throw new InvalidArgumentException('package secret is unavailable');
+    $stmt = $store->prepare('DELETE FROM package_runtime_secrets WHERE reference = ? AND package_id = ?'); $stmt->execute([$reference, $id]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('package secret is unavailable');
 }

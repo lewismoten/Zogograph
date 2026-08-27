@@ -310,6 +310,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'package-runtime-enable' => doPackageRuntimeEnable($pdo, $post),
         'package-runtime-settings' => packageRuntimeSettingsView($config, $pdo, $signedIn),
         'package-runtime-settings-save' => doPackageRuntimeSettingsSave($config, $pdo, $post),
+        'package-runtime-secret-create' => doPackageRuntimeSecretCreate($config, $pdo, $post),
+        'package-runtime-secret-delete' => doPackageRuntimeSecretDelete($config, $pdo, $post),
         'encryption-status' => encryptionStatusView($config, $pdo, $signedIn),
         'peer-save' => doPeerSave($config, $pdo, $post),
         'peer-delete' => doPeerDelete($config, $pdo, $post),
@@ -349,6 +351,8 @@ function requireActionAccess(array $config, string $action): void
         'peers' => 'sys-peers', 'marketplace' => 'sys-marketplace',
         'package-runtime' => 'sys-marketplace',
         'package-runtime-settings' => 'sys-marketplace',
+        'package-runtime-secret-create' => 'sys-marketplace',
+        'package-runtime-secret-delete' => 'sys-marketplace',
         'encryption-status' => 'sys-encryption',
         'labels' => 'net-labels', 'descriptions' => 'sys-descriptions',
         'changed' => 'sys-changed', 'capability-changes' => 'sys-changed',
@@ -5631,6 +5635,27 @@ function doPackageRuntimeSettingsSave(array $config, PDO $pdo, bool $post): arra
     catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, 'package_runtime_settings_save', $id, 'ok', 0, 0, 'package settings updated');
     return ['ok' => true, 'id' => $id, 'settings' => packageRuntimeSettings($pdo, $config, $id)];
+}
+
+function doPackageRuntimeSecretCreate(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $id = trim((string)($_POST['id'] ?? '')); $value = (string)($_POST['value'] ?? '');
+    try { $reference = packageRuntimeSecretStore($pdo, $config, $id, $value, currentAccountName()); }
+    catch (InvalidArgumentException|RuntimeException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'package_runtime_secret_create', $id, 'ok', 0, 0, 'encrypted package secret reference created');
+    return ['ok' => true, 'id' => $id, 'reference' => $reference,
+        'warning' => 'Store the returned reference in package settings. The secret value is never returned.'];
+}
+
+function doPackageRuntimeSecretDelete(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $id = trim((string)($_POST['id'] ?? '')); $reference = trim((string)($_POST['reference'] ?? ''));
+    try { packageRuntimeSecretDelete($pdo, $config, $id, $reference); }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'package_runtime_secret_delete', $id, 'ok', 0, 0, 'encrypted package secret reference deleted');
+    return ['ok' => true, 'id' => $id, 'reference' => $reference];
 }
 
 function encryptionStatusView(array $config, PDO $pdo, bool $signedIn): array

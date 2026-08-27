@@ -251,3 +251,11 @@ this stage installation and grants only register immutable files and a private
 SQLite data directory; executable package code remains unavailable until the
 isolated runtime is complete. This is intentional: it lets administrators
 validate provenance and configuration without silently running new code.
+
+Package settings may contain opaque `secret_ref:` values, never a raw provider
+token or private key. Before creating one, configure **Package secrets key
+file** in setup: leave it blank to reuse the local sealed-copy key, or choose a
+separate absolute 0600 key file outside the web root for separate custody. The
+authenticated package API can create a reference once; it returns the reference
+but never the secret value. Losing that external key makes the referenced
+provider credential unrecoverable, so keep an offline recovery copy.

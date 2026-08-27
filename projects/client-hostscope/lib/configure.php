@@ -102,6 +102,19 @@ function configFields(array $sample): array
             },
         ],
         [
+            'key' => 'package_runtime_secret_key_file',
+            'path' => ['package_runtime', 'secret_key_file'],
+            'type' => 'text',
+            'label' => 'Package secrets key file (optional)',
+            'help' => 'An absolute private key file outside this web directory. Leave blank to reuse the local encryption key when configured. Without either key, package secret references cannot be saved. A separate file gives package credentials separate custody.',
+            'default' => (string)($sample['package_runtime']['secret_key_file'] ?? ''),
+            'validate' => function (string $value): ?string {
+                if ($value === '') return null;
+                try { encryptionReadLocalKey($value, dirname(__DIR__)); return null; }
+                catch (Throwable $error) { return $error->getMessage(); }
+            },
+        ],
+        [
             'key' => 'encryption_key_custody',
             'path' => ['encryption', 'key_custody'],
             'type' => 'choice',
