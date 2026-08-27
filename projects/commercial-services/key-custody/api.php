@@ -58,6 +58,11 @@ try {
         if (!is_string($envelope)) throw new InvalidArgumentException('envelope_base64 is invalid');
         custodyReply(201, ['envelope' => keyCustodyStoreEnvelope($pdo, $auth['tenant_id'], $match[1], trim((string)($body['artifact_id'] ?? '')), $envelope)]);
     }
+    if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/wrapping-key$#', $path, $match) && $method === 'GET') {
+        $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody);
+        custodyReply(200, ['key_id' => $match[1], 'wrapping_algorithm' => 'x25519-xsalsa20-poly1305-seal',
+            'wrapping_public_key' => keyCustodyWrappingPublicKey($pdo, $auth['tenant_id'], $match[1])]);
+    }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/envelopes$#', $path, $match) && $method === 'GET') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['envelopes' => keyCustodyListEnvelopes($pdo, $auth['tenant_id'], $match[1])]);
     }
@@ -74,9 +79,9 @@ try {
         $artifactId = trim((string)($body['artifact_id'] ?? ''));
         $key = keyCustodyUnwrapKey($pdo, $auth['tenant_id'], $match[1], $artifactId, keyCustodyReadMasterKey($config, __DIR__));
         $cache = keyCustodyCacheRecommendation($pdo, $auth['tenant_id'], $match[1], (int)($body['requested_ttl_seconds'] ?? 0));
-        custodyReply(201, ['key_id' => $match[1], 'key_material' => base64_encode($key),
+        custodyReply(201, ['key_id' => $match[1], 'data_key_material' => base64_encode($key),
             'cache_recommendation_seconds' => $cache,
-            'warning' => 'Key material is returned for immediate in-memory use. A cache recommendation cannot revoke material that a client already received.']);
+            'warning' => 'The artifact data key is returned for immediate in-memory use. A cache recommendation cannot revoke material that a client already received.']);
     }
     if ($path === '/v1/client-credentials/rotate' && $method === 'POST') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management');

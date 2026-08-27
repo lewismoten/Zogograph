@@ -42,13 +42,35 @@ final class KeyCustodyHttpClient
     public function storeEnvelope(string $keyId, string $artifactId, string $envelope): array
     {
         self::validateIdentity($keyId, $artifactId);
-        if ($envelope === '' || strlen($envelope) > 1048576) throw new \InvalidArgumentException('key custody envelope is invalid');
+        if ($envelope === '' || !defined('SODIUM_CRYPTO_BOX_SEALBYTES') || strlen($envelope) !== SODIUM_CRYPTO_BOX_SEALBYTES + 32) throw new \InvalidArgumentException('key custody envelope is invalid');
         return $this->request('POST', '/v1/keys/' . rawurlencode($keyId) . '/envelopes', [
             'artifact_id' => $artifactId, 'envelope_base64' => base64_encode($envelope),
         ]);
     }
 
-    /** Returns key material only for immediate in-memory use by the caller. */
+    /** Reads the public wrapping key used to seal one fresh artifact data key. */
+    public function wrappingPublicKey(string $keyId): string
+    {
+        self::validateIdentity($keyId, 'public-key');
+        $response = $this->request('GET', '/v1/keys/' . rawurlencode($keyId) . '/wrapping-key', null);
+        $key = base64_decode((string)($response['wrapping_public_key'] ?? ''), true);
+        if (!is_string($key) || !defined('SODIUM_CRYPTO_BOX_PUBLICKEYBYTES') || strlen($key) !== SODIUM_CRYPTO_BOX_PUBLICKEYBYTES) {
+            throw new \RuntimeException('key custody service returned an invalid wrapping public key');
+        }
+        return $key;
+    }
+
+    /** Seals a new 256-bit artifact data key locally; only custody can open it. */
+    public static function sealDataKey(string $dataKey, string $wrappingPublicKey): string
+    {
+        if (!function_exists('sodium_crypto_box_seal') || strlen($dataKey) !== 32 || !defined('SODIUM_CRYPTO_BOX_PUBLICKEYBYTES')
+            || strlen($wrappingPublicKey) !== SODIUM_CRYPTO_BOX_PUBLICKEYBYTES) {
+            throw new \InvalidArgumentException('artifact data key or custody wrapping key is invalid');
+        }
+        return sodium_crypto_box_seal($dataKey, $wrappingPublicKey);
+    }
+
+    /** Returns an artifact data key only for immediate in-memory use by the caller. */
     public function unwrap(string $keyId, string $artifactId, int $requestedTtl = 0): string
     {
         self::validateIdentity($keyId, $artifactId);
@@ -56,8 +78,8 @@ final class KeyCustodyHttpClient
         $response = $this->request('POST', '/v1/keys/' . rawurlencode($keyId) . '/unwrap-authorizations', [
             'artifact_id' => $artifactId, 'nonce' => bin2hex(random_bytes(16)), 'requested_ttl_seconds' => $requestedTtl,
         ]);
-        $key = base64_decode((string)($response['key_material'] ?? ''), true);
-        if (!is_string($key) || strlen($key) !== 32) throw new \RuntimeException('key custody service returned invalid key material');
+        $key = base64_decode((string)($response['data_key_material'] ?? ''), true);
+        if (!is_string($key) || strlen($key) !== 32) throw new \RuntimeException('key custody service returned invalid artifact data key');
         return $key;
     }
 

@@ -6,7 +6,7 @@ the dashboard. Its first implementation may use a private SQLite database per
 service deployment; a managed SQL backend is an operational upgrade, not a
 customer-visible requirement.
 
-The service stores key metadata and wrapped data-encryption-key envelopes. It
+The service stores key metadata and wrapped per-artifact data-key envelopes. It
 does not accept metric databases, sealed artifacts, or raw customer data. The
 replica relay is a different service and must not share the unwrap path or a
 combined tenant credential.
@@ -42,10 +42,12 @@ requests rather than silently accepting insecure traffic.
 - Require every enrolled-client request to include a timestamp within five
   minutes, a one-time nonce, and the signature; the service retains used
   nonces for ten minutes to reject replayed unwrap or envelope requests.
-- Return key identifiers and policy only to management endpoints. The enrolled
-  client unwrap endpoint may return a key over HTTPS only after a scoped,
-  signed request names a registered envelope belonging to that tenant; it never
-  exposes a key through billing or management APIs.
+- An enrolled client obtains an active key's X25519 **public** wrapping key,
+  creates a fresh 256-bit data key locally, and seals that data key into one
+  artifact envelope. The service retains the matching private half encrypted
+  under its private service master key. The unwrap endpoint may return only the
+  named artifact data key over HTTPS after a scoped signed request; it never
+  exposes a private wrapping key through billing or management APIs.
 - Log every enrollment, policy, authorization, rotation, disablement, and
   billing state change without recording plaintext keys, envelopes, or tokens.
 - Default to disabled remote custody, one tenant per account, 15-minute unwrap
@@ -98,7 +100,8 @@ php scripts/provision-tenant.php "Example customer"
 Set the generated absolute path in `config.php`. Keep the printed management
 token, client token, and client signing private key separately; the service
 retains only token hashes and the signing public key and cannot show the token
-or private key again. `api.php` currently implements key list/create, client unwrap,
+or private key again. `api.php` currently implements key list/create, signed
+public-wrapping-key read, client artifact-data-key unwrap,
 subscription status plus pending change-request read/withdrawal, and configured
 billing portal/checkout session links. It is a low-cost SQLite reference
 service; deploy it behind HTTPS and an authenticated reverse proxy before

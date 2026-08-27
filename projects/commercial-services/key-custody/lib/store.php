@@ -41,6 +41,7 @@ function keyCustodyOpen(array $config, ?string $webRoot = null): PDO
     $pdo->exec('CREATE TABLE IF NOT EXISTS subscription_requests (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, action TEXT NOT NULL, requested_plan TEXT, state TEXT NOT NULL, created_at INTEGER NOT NULL, resolved_at INTEGER)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS subscription_requests_tenant_state ON subscription_requests (tenant_id, state, created_at DESC)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS custody_keys (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name TEXT NOT NULL, wrapped_key BLOB NOT NULL, wrap_nonce BLOB NOT NULL, wrap_tag BLOB NOT NULL, authorization_ttl INTEGER NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, rotated_at INTEGER)');
+    if (!keyCustodyTableHasColumn($pdo, 'custody_keys', 'wrapping_public_key')) $pdo->exec('ALTER TABLE custody_keys ADD COLUMN wrapping_public_key BLOB');
     $pdo->exec('CREATE INDEX IF NOT EXISTS custody_keys_tenant_state ON custody_keys (tenant_id, state, created_at DESC)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS key_envelopes (id TEXT PRIMARY KEY, key_id TEXT NOT NULL REFERENCES custody_keys(id) ON DELETE CASCADE, artifact_id TEXT NOT NULL, envelope BLOB NOT NULL, created_at INTEGER NOT NULL, UNIQUE(key_id, artifact_id))');
     $pdo->exec('CREATE TABLE IF NOT EXISTS custody_audit (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, at INTEGER NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL)');
@@ -214,7 +215,7 @@ function keyCustodyAuthenticateClientRequest(PDO $pdo, string $token, string $me
     return $auth;
 }
 
-/** @return array{id:string,name:string,authorization_ttl:int,state:string} */
+/** @return array{id:string,name:string,authorization_ttl:int,state:string,wrapping_public_key:string} */
 function keyCustodyCreateKey(PDO $pdo, string $tenant, string $name, int $ttl, string $master): array
 {
     return keyCustodyWithWriteLock($pdo, function () use ($pdo, $tenant, $name, $ttl, $master): array {
@@ -224,28 +225,42 @@ function keyCustodyCreateKey(PDO $pdo, string $tenant, string $name, int $ttl, s
         $used = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE tenant_id = ? AND state = 'active'"); $used->execute([$tenant]);
         $quota = $pdo->prepare('SELECT key_quota FROM subscriptions WHERE tenant_id = ?'); $quota->execute([$tenant]);
         if ((int)$used->fetchColumn() >= (int)$quota->fetchColumn()) throw new InvalidArgumentException('subscription key quota is reached');
-        $id = 'key_' . bin2hex(random_bytes(16)); $plain = random_bytes(32); $nonce = random_bytes(12);
-        $wrapped = openssl_encrypt($plain, 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $nonce, $tag, $id, 16);
+        if (!function_exists('sodium_crypto_box_keypair')) throw new RuntimeException('libsodium is required for custody key wrapping');
+        $id = 'key_' . bin2hex(random_bytes(16)); $pair = sodium_crypto_box_keypair();
+        $private = sodium_crypto_box_secretkey($pair); $public = sodium_crypto_box_publickey($pair); $nonce = random_bytes(12);
+        $wrapped = openssl_encrypt($private, 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $nonce, $tag, $id, 16);
         if (!is_string($wrapped) || !is_string($tag)) throw new RuntimeException('could not wrap custody key');
-        $pdo->prepare('INSERT INTO custody_keys (id, tenant_id, name, wrapped_key, wrap_nonce, wrap_tag, authorization_ttl, state, created_at, rotated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)')
-            ->execute([$id, $tenant, $name, $wrapped, $nonce, $tag, $ttl, 'active', time()]);
+        $pdo->prepare('INSERT INTO custody_keys (id, tenant_id, name, wrapped_key, wrap_nonce, wrap_tag, wrapping_public_key, authorization_ttl, state, created_at, rotated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)')
+            ->execute([$id, $tenant, $name, $wrapped, $nonce, $tag, $public, $ttl, 'active', time()]);
         keyCustodyAudit($pdo, $tenant, 'key_create', $id, 'ttl=' . $ttl);
-        return ['id' => $id, 'name' => $name, 'authorization_ttl' => $ttl, 'state' => 'active'];
+        return ['id' => $id, 'name' => $name, 'authorization_ttl' => $ttl, 'state' => 'active', 'wrapping_public_key' => base64_encode($public)];
     });
 }
 
 function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artifactId, string $master): string
 {
     if (strlen($master) !== 32 || $artifactId === '' || strlen($artifactId) > 200) throw new InvalidArgumentException('custody key authorization is invalid');
-    $envelope = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE envelopes.key_id = ? AND keys.tenant_id = ? AND envelopes.artifact_id = ?');
+    $envelope = $pdo->prepare('SELECT envelopes.envelope FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE envelopes.key_id = ? AND keys.tenant_id = ? AND envelopes.artifact_id = ?');
     $envelope->execute([$id, $tenant, $artifactId]);
-    if ((int)$envelope->fetchColumn() !== 1) throw new InvalidArgumentException('the requested artifact envelope is unavailable');
-    $stmt = $pdo->prepare("SELECT wrapped_key, wrap_nonce, wrap_tag FROM custody_keys WHERE id = ? AND tenant_id = ? AND state IN ('active', 'rotating')"); $stmt->execute([$id, $tenant]); $row = $stmt->fetch();
+    $sealed = $envelope->fetchColumn();
+    if (!is_string($sealed)) throw new InvalidArgumentException('the requested artifact envelope is unavailable');
+    $stmt = $pdo->prepare("SELECT wrapped_key, wrap_nonce, wrap_tag, wrapping_public_key FROM custody_keys WHERE id = ? AND tenant_id = ? AND state IN ('active', 'rotating')"); $stmt->execute([$id, $tenant]); $row = $stmt->fetch();
     if (!is_array($row)) throw new InvalidArgumentException('custody key is unavailable');
-    $plain = openssl_decrypt($row['wrapped_key'], 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $row['wrap_nonce'], $row['wrap_tag'], $id);
-    if (!is_string($plain) || strlen($plain) !== 32) throw new RuntimeException('custody key could not be unwrapped');
+    $private = openssl_decrypt($row['wrapped_key'], 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $row['wrap_nonce'], $row['wrap_tag'], $id);
+    if (!is_string($private) || !is_string($row['wrapping_public_key'] ?? null) || !function_exists('sodium_crypto_box_seal_open')) throw new RuntimeException('custody key wrapping material is unavailable');
+    $plain = sodium_crypto_box_seal_open($sealed, sodium_crypto_box_keypair_from_secretkey_and_publickey($private, $row['wrapping_public_key']));
+    if (!is_string($plain) || strlen($plain) !== 32) throw new RuntimeException('artifact data key could not be unwrapped');
     keyCustodyAudit($pdo, $tenant, 'key_unwrap_authorized', $id, 'artifact=' . $artifactId);
     return $plain;
+}
+
+/** Returns only the public half used to seal a fresh per-artifact data key. */
+function keyCustodyWrappingPublicKey(PDO $pdo, string $tenant, string $id): string
+{
+    $stmt = $pdo->prepare("SELECT wrapping_public_key FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'"); $stmt->execute([$id, $tenant]);
+    $key = $stmt->fetchColumn();
+    if (!is_string($key) || !defined('SODIUM_CRYPTO_BOX_PUBLICKEYBYTES') || strlen($key) !== SODIUM_CRYPTO_BOX_PUBLICKEYBYTES) throw new InvalidArgumentException('custody wrapping key is unavailable');
+    return base64_encode($key);
 }
 
 /** Returns a bounded cache recommendation; it does not turn exported key
@@ -264,7 +279,7 @@ function keyCustodyStoreEnvelope(PDO $pdo, string $tenant, string $keyId, string
 {
     return keyCustodyWithWriteLock($pdo, function () use ($pdo, $tenant, $keyId, $artifactId, $envelope): array {
         keyCustodySubscriptionAllows($pdo, $tenant);
-        if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200 || $envelope === '' || strlen($envelope) > 1048576) {
+        if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200 || !defined('SODIUM_CRYPTO_BOX_SEALBYTES') || $envelope === '' || strlen($envelope) !== SODIUM_CRYPTO_BOX_SEALBYTES + 32) {
             throw new InvalidArgumentException('key envelope request is invalid');
         }
         $key = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'"); $key->execute([$keyId, $tenant]);
