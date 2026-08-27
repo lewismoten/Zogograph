@@ -91,7 +91,18 @@ function encryptionArtifactDirectory(array $config, string $webRoot): string
 {
     $settings = (array)($config['encryption'] ?? []);
     $configured = (string)($settings['artifact_directory'] ?? '');
-    if ($configured === '') return dirname((string)$config['database']) . '/sealed';
+    if ($configured === '') {
+        $default = dirname((string)$config['database']) . '/sealed';
+        if (is_link($default) || (!is_dir($default) && !@mkdir($default, 0700, true) && !is_dir($default))) {
+            throw new RuntimeException('the default encrypted-copy directory is unavailable or unsafe');
+        }
+        $real = realpath($default);
+        if ($real === false || is_link($default) || !is_dir($real) || !is_writable($real)) {
+            throw new RuntimeException('the default encrypted-copy directory is unavailable or unsafe');
+        }
+        @chmod($real, 0700);
+        return $real;
+    }
     encryptionValidateArtifactDirectory($configured, $webRoot);
     $root = realpath($webRoot);
     if (!is_dir($configured) && !@mkdir($configured, 0700, true) && !is_dir($configured)) throw new RuntimeException('could not create the sealed-artifact directory');

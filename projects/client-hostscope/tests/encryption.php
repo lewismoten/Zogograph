@@ -71,6 +71,16 @@ try {
     $key = encryptionReadLocalKey($keyPath, $web);
     encryptionExpect(strlen($key) === 32, 'local key did not contain 256 bits');
     encryptionExpect((fileperms($keyPath) & 0077) === 0, 'local key permissions are too broad');
+    $defaultDatabase = $root . '/default/stats.db'; mkdir(dirname($defaultDatabase), 0700, true);
+    $defaultSealed = dirname($defaultDatabase) . '/sealed';
+    symlink($web, $defaultSealed);
+    try {
+        encryptionArtifactDirectory(['database' => $defaultDatabase, 'encryption' => []], $web);
+        throw new RuntimeException('symlinked default encrypted-copy directory was accepted');
+    } catch (RuntimeException $error) {
+        encryptionExpect($error->getMessage() !== 'symlinked default encrypted-copy directory was accepted', $error->getMessage());
+    }
+    @unlink($defaultSealed);
     encryptionValidateSettings(['encryption' => ['mode' => 'sealed_copies_local',
         'local_key_file' => $keyPath, 'stores' => ['account']]], $web);
     encryptionValidateSettings(['encryption' => ['mode' => 'operator_managed_volume',
