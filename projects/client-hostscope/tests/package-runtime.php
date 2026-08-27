@@ -24,7 +24,8 @@ try {
         && str_contains($api, "'package-runtime-secret-create' => 'sys-packages'")
         && str_contains($api, "'package-runtime-revoke' => 'sys-packages'"), 'package runtime writes are not page-access gated');
     runtimeExpect($dashboard !== false && str_contains($dashboard, 'function renderPackageRuntime')
-        && str_contains($dashboard, 'does not run package code') && str_contains($dashboard, 'Review or remove altered files before enabling.'), 'dashboard does not explain the package execution boundary');
+        && str_contains($dashboard, 'does not run package code') && str_contains($dashboard, 'Review or remove altered files before enabling.')
+        && str_contains($dashboard, 'Platform unavailable'), 'dashboard does not explain the package execution boundary');
     runtimeExpect($page !== false && str_contains($page, 'data-view="sys-packages"')
         && str_contains($page, 'id="packageRuntimeBody"'), 'package runtime dashboard view is unavailable');
     $pair = sodium_crypto_sign_keypair();

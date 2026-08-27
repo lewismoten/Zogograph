@@ -11694,7 +11694,10 @@ function packageRuntimeActions(row, canChange) {
     wrap.appendChild(failed); return wrap;
   }
   const toggle = document.createElement("button"); toggle.className = row.enabled ? "link danger" : "link";
-  toggle.textContent = row.enabled ? "Disable" : "Grant & enable";
+  const platformReady = row.compatibility?.status === "ready";
+  toggle.textContent = row.enabled ? "Disable" : (platformReady ? "Grant & enable" : "Platform unavailable");
+  toggle.disabled = !row.enabled && !platformReady;
+  toggle.title = toggle.disabled ? `Cannot enable: ${row.compatibility?.detail || "platform requirements are unavailable"}` : "";
   toggle.addEventListener("click", async () => {
     const verb = row.enabled ? "Disable" : "Grant every listed capability and enable";
     if (!(await confirmDialog(`${verb} ${row.id}?\n\nCapabilities: ${row.capabilities.join(", ")}\n\nThis records permission only; it does not run package code.`, `${verb} package`))) return;
