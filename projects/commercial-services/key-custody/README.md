@@ -21,6 +21,9 @@ enabled, HostScope uses the local key file or self-managed fleet options.
   short-lived scoped client assertion is the fallback).
 - Use a distinct account-management session/token for billing and key-policy
   management; never reuse it for collector or replica traffic.
+- Require every enrolled-client request to include a timestamp within five
+  minutes and a one-time nonce; the service retains used nonces for ten minutes
+  to reject replayed unwrap or envelope requests.
 - Return key identifiers and policy only to management endpoints. The enrolled
   client unwrap endpoint may return the requested key over HTTPS after scoped
   authorization; it never exposes a key through billing or management APIs.

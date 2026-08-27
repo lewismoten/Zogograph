@@ -14,6 +14,8 @@ function keyCustodyOpen(array $config): PDO
     $pdo->exec('CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS access_tokens (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, scope TEXT NOT NULL, token_hash TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS access_tokens_tenant_scope ON access_tokens (tenant_id, scope, revoked_at)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS client_nonces (token_id TEXT NOT NULL REFERENCES access_tokens(id) ON DELETE CASCADE, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (token_id, nonce))');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS client_nonces_expiry ON client_nonces (expires_at)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS subscriptions (tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE, plan TEXT NOT NULL, state TEXT NOT NULL, key_quota INTEGER NOT NULL, renews_at INTEGER, changed_at INTEGER NOT NULL)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS custody_keys (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name TEXT NOT NULL, wrapped_key BLOB NOT NULL, wrap_nonce BLOB NOT NULL, wrap_tag BLOB NOT NULL, authorization_ttl INTEGER NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, rotated_at INTEGER)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS custody_keys_tenant_state ON custody_keys (tenant_id, state, created_at DESC)');
@@ -58,6 +60,21 @@ function keyCustodyAuthenticate(PDO $pdo, string $token, string $requiredScope):
     $stmt->execute([$id]); $row = $stmt->fetch();
     if (!is_array($row) || !(bool)$row['active'] || $row['scope'] !== $requiredScope || !password_verify($secret, $row['token_hash'])) throw new InvalidArgumentException('access token is refused');
     return ['tenant_id' => $row['tenant_id'], 'scope' => $row['scope']];
+}
+
+/** @return array{tenant_id:string,scope:string} */
+function keyCustodyAuthenticateClientRequest(PDO $pdo, string $token, string $timestamp, string $nonce): array
+{
+    $auth = keyCustodyAuthenticate($pdo, $token, 'client');
+    [$tokenId] = explode('.', $token, 2);
+    if (!ctype_digit($timestamp) || abs(time() - (int)$timestamp) > 300 || !preg_match('/^[A-Za-z0-9_-]{16,200}$/', $nonce)) {
+        throw new InvalidArgumentException('client request timestamp or nonce is invalid');
+    }
+    $pdo->prepare('DELETE FROM client_nonces WHERE expires_at < ?')->execute([time()]);
+    try {
+        $pdo->prepare('INSERT INTO client_nonces (token_id, nonce, expires_at) VALUES (?, ?, ?)')->execute([$tokenId, $nonce, time() + 600]);
+    } catch (PDOException) { throw new InvalidArgumentException('client request nonce was already used'); }
+    return $auth;
 }
 
 /** @return array{id:string,name:string,authorization_ttl:int,state:string} */

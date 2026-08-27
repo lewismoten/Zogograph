@@ -8,6 +8,10 @@ try {
     $tenant = keyCustodyCreateTenant($pdo, 'Example');
     $management = keyCustodyAuthenticate($pdo, $tenant['management_token'], 'management');
     $client = keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client');
+    $request = keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], (string)time(), 'nonce_' . bin2hex(random_bytes(12)));
+    custodyExpect($request['tenant_id'] === $client['tenant_id'], 'replay-protected client request did not authenticate');
+    try { keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], (string)time(), 'nonce_reused_value_123'); keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], (string)time(), 'nonce_reused_value_123'); throw new RuntimeException('reused nonce was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'reused nonce was accepted', $error->getMessage()); }
     custodyExpect($management['tenant_id'] === $client['tenant_id'], 'tenant tokens do not authenticate to the same tenant');
     $master = random_bytes(32); $key = keyCustodyCreateKey($pdo, $management['tenant_id'], 'primary', 300, $master);
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $key['id'], 'management key list omitted created key');
