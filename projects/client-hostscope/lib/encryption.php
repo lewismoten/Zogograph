@@ -476,6 +476,7 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
         foreach ($retired->fetchAll() as $row) $status['retired_artifacts'][] = ['store' => $row['store'], 'copies' => (int)$row['copies']];
     } catch (Throwable) { $status['warnings'][] = 'No encrypted artifact ledger is available yet.'; }
     $paths = encryptionStorePaths($config, $webRoot);
+    foreach (encryptionSensitiveSourceWarnings($paths, $stores) as $warning) $status['warnings'][] = $warning;
     $expected = [];
     foreach ($stores as $store) {
         if (in_array($store, ['host', 'ai'], true) && !is_file($paths[$store])) {
@@ -507,6 +508,23 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     }
     $status['ready'] = $expected !== [] && encryptionAvailable() && count(array_filter($status['warnings'], fn(string $warning): bool => !str_contains($warning, 'is not present yet, so it is waiting'))) === 0;
     return $status;
+}
+
+/** Does not expose a source path, but calls out common live disclosure risks
+ * for the two bootstrap/settings stores most likely to contain credentials. */
+function encryptionSensitiveSourceWarnings(array $paths, array $stores): array
+{
+    $warnings = [];
+    foreach (array_intersect($stores, ['config', 'setup']) as $store) {
+        $path = (string)($paths[$store] ?? '');
+        if ($path === '' || !file_exists($path)) continue;
+        if (is_link($path)) { $warnings[] = "The selected {$store} source is a symbolic link; use an owner-controlled regular file before treating protection as ready."; continue; }
+        $permissions = fileperms($path);
+        if ($permissions !== false && ($permissions & 0077) !== 0) {
+            $warnings[] = "The selected {$store} source is readable by group or other users; restrict it to the HostScope service account before treating protection as ready.";
+        }
+    }
+    return $warnings;
 }
 
 /** Conservative next-seal capacity estimate. SQLite snapshots and ciphertext

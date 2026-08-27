@@ -183,7 +183,7 @@ try {
         'rotated sealed copy differs from source');
 
     if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
-        file_put_contents($web . '/lib/config.php', "<?php return ['private' => true];\n");
+        file_put_contents($web . '/lib/config.php', "<?php return ['private' => true];\n"); chmod($web . '/lib/config.php', 0600);
         $live = new PDO('sqlite:' . $root . '/live.db', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
         $live->exec('CREATE TABLE evidence (value TEXT NOT NULL)');
         $live->exec("INSERT INTO evidence VALUES ('committed WAL value')");
@@ -220,6 +220,10 @@ try {
             'recovery drill did not record current selected-store recovery evidence');
         $status = encryptionStatus($live, $config, $web);
         encryptionExpect($status['ready'] && count($status['artifacts']) === 2, 'sealed-copy status did not report verified coverage');
+        chmod($web . '/lib/config.php', 0644);
+        encryptionExpect(str_contains(implode(' ', encryptionStatus($live, $config, $web)['warnings']), 'config source is readable by group or other users'),
+            'protection status did not report a broadly readable selected configuration source');
+        chmod($web . '/lib/config.php', 0600);
         $policyConfig = $config; $policyConfig['encryption'] += ['backup_schedule' => 'daily', 'retention_days' => 30,
             'retention_recovery_tiers' => ['daily' => 7, 'weekly' => 4, 'monthly' => 12], 'recovery_drill_max_age_days' => 90];
         $policyStatus = encryptionStatus($live, $policyConfig, $web);
