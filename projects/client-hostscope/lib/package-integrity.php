@@ -81,6 +81,7 @@ function packageVerifyIntegrity(array $manifest, string $directory): array
     try { $actual = packageFileHashes($directory); }
     catch (Throwable $error) { return ['ok' => false, 'detail' => $error->getMessage()]; }
     $declared = $integrity['files'];
+    ksort($declared, SORT_STRING);
     if (array_keys($declared) !== array_keys($actual)) return ['ok' => false, 'detail' => 'package files differ from the signed manifest'];
     foreach ($actual as $path => $hash) {
         if (!is_string($declared[$path]) || !hash_equals($hash, strtolower($declared[$path]))) {

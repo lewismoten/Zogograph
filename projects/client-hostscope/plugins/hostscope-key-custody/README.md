@@ -14,3 +14,8 @@ wrapped-key material only. It must not upload metrics, SQLite databases,
 configuration files, plaintext keys, or billing credentials. Billing is managed
 through the commercial account API/browser flow, separately from enrolled
 client credentials.
+
+The included client adapter uses HTTPS with normal certificate validation, no
+redirect following, a five-minute service timestamp window, and a one-time
+request nonce. It retains no key cache: any unwrapped key is returned only to
+the immediate caller for in-memory use.
