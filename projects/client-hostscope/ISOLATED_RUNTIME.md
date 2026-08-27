@@ -36,9 +36,8 @@ accepts only a matching bounded response. It can report package readiness or a
 SQLCipher disposable preflight; it neither enables a package nor grants the
 `isolated_package_runtime` capability.
 
-The sole credential-bearing operation currently implemented is
-`custody_enrollment_check`. It is intentionally separate from the no-network
-probe launcher: the deployment must define a distinct
+Credential-bearing operations are intentionally separate from the no-network
+probe launcher. `custody_enrollment_check` requires a distinct
 `custody_credential_check_invokers` command, manifest fingerprint, and a
 declared egress origin that exactly matches the saved custody endpoint. Before
 core sends the one-time enrolled bearer/signing pair through standard input, it
@@ -48,6 +47,15 @@ requires fresh endpoint identity evidence and explicit `key_provider` plus
 key, or receive an artifact/database path. The deployment profile must enforce
 the single-origin egress rule—core validates the declaration but cannot turn a
 generic container network into an egress firewall.
+
+`custody_store_envelope` has a second, independently configured
+`custody_envelope_invokers` command and must not reuse the check launcher. It
+receives only a named verified artifact's 32-byte DEK in memory, custody-key
+identifier, enrolled-client pair, and endpoint facts. It seals and stores the
+envelope itself and returns only its SHA-256 receipt. The worker receives no
+local KEK, database path, artifact bytes, plaintext, management credential, or
+envelope body. The core UI does not expose this operation until its ledger and
+recovery-drill gate are complete.
 
 [`deploy/package-worker.compose.example.yml`](deploy/package-worker.compose.example.yml)
 is an optional Docker-compatible one-shot sandbox starting point. It disables

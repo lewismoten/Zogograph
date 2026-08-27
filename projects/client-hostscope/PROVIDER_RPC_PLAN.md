@@ -14,9 +14,11 @@ at runtime; the manifest and core both have to recognize it.
 | `store_ciphertext` | `ciphertext_replica` + `network_client` | already-sealed artifact bytes/digest and scoped client credential | plaintext store, artifact data key, recovery key |
 | `sqlcipher_preflight` | `live_database_encryption` + `storage_backend` | a disposable, core-created test database path in the package mount | selected live database, setup database, production key |
 | `custody_enrollment_check` | `key_provider` + `network_client` | enrolled-client bearer/signing key, configured endpoint, and optional public TLS pin | management/billing credential, artifact ID, any database path, envelope, or data key |
+| `custody_store_envelope` | `key_provider` + `network_client` | one 32-byte in-memory artifact DEK, configured custody-key and artifact IDs, enrolled-client pair | local KEK, plaintext, database path, management/billing credential, or returned envelope body |
 
 `capability`, the SQLCipher-only `sqlcipher_preflight`, and the custody
-credential-only `custody_enrollment_check` are now implemented
+credential-only `custody_enrollment_check`, and the separately launcher-gated
+`custody_store_envelope` worker operation are now implemented
 in the sandbox worker. The preflight uses a random temporary file/key and
 returns only `unavailable` or `preflight-ready`; it does not receive a selected
 store or production key. Add each remaining operation only after its request
@@ -85,6 +87,14 @@ runner. It requires all of the following before core sends the enrolled pair:
 3. a separate deployment-owned `custody_credential_check_invokers` command
    pinned to the installed manifest hash; and
 4. a declared egress origin exactly matching the saved HTTPS custody origin.
+
+An envelope write needs a second, explicitly configured
+`custody_envelope_invokers` launcher. It must not reuse the readiness-check
+launcher merely because the URL and client enrollment are the same. Core must
+first prove the named local artifact and its ciphertext hash, then create a
+pending ledger row; the worker receives the DEK only in memory and returns a
+digest-only receipt. A core workflow and recovery-drill release gate remain
+required before writes are exposed in the Protection UI.
 
 The sandbox profile must enforce one-shot execution, read-only package files,
 no core mounts, no environment/argument secret delivery, and egress restricted

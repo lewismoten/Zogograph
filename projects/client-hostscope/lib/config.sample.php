@@ -106,6 +106,20 @@ return [
          *   ],
          * ],
          */
+        /* An envelope write is a separate authority, even though it uses the
+         * same enrolled client and endpoint. Do not point this at the
+         * credential-check launcher. Its sandbox must permit only the exact
+         * custody origin and receive its input through standard input.
+         *
+         * 'custody_envelope_invokers' => [
+         *   'hostscope-key-custody' => [
+         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/hostscope/custody-envelope-store.yml', 'run', '--rm', '-T', 'package-worker'],
+         *     'isolation_profile' => 'container-one-shot-egress-restricted-v1',
+         *     'network_egress_origin' => 'https://custody.example',
+         *     'package_manifest_sha256' => 'the exact installed manifest SHA-256',
+         *   ],
+         * ],
+         */
     ],
 
     // Sign-in. Without this nobody can unmask paths or delete anything, which
