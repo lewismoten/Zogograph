@@ -37,6 +37,7 @@ try {
     encryptionExpect($dashboard !== false && str_contains($dashboard, 'function renderEncryptionStatus')
         && str_contains($dashboard, 'Verified encrypted copies protect backup artifacts')
         && str_contains($dashboard, 'Recovery-drill review')
+        && str_contains($dashboard, 'Bootstrap configuration recovery is deliberately CLI-only')
         && str_contains($dashboard, 'Optional remote key custody and ciphertext replica storage are not selectable yet'),
         'dashboard does not explain encrypted-copy limitations');
     encryptionExpect($page !== false && str_contains($page, 'data-view="sys-encryption"')
