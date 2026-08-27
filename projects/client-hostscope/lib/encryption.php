@@ -267,6 +267,62 @@ function encryptionVerifyRecoveredStore(string $path, string $store): void
     if ($pdo->query('PRAGMA quick_check')->fetchColumn() !== 'ok') throw new RuntimeException('recovered SQLite artifact failed integrity check');
 }
 
+/**
+ * Restores a sealed bootstrap configuration only after authenticating and
+ * parsing it without execution. The existing bootstrap is privately backed up
+ * before an atomic same-directory replacement.
+ *
+ * @return string|null private prior-configuration backup, if one existed
+ */
+function encryptionRestoreBootstrapConfiguration(
+    string $sealedSource,
+    string $keyPath,
+    string $target,
+    string $webRoot,
+    string $recoveryDirectory
+): ?string {
+    $source = realpath($sealedSource);
+    if ($source === false || is_link($sealedSource) || !is_file($source) || is_link($target)) {
+        throw new RuntimeException('the sealed source or bootstrap configuration location is unavailable or unsafe');
+    }
+    $targetDirectory = realpath(dirname($target));
+    if ($targetDirectory === false || !is_dir($targetDirectory) || !is_writable($targetDirectory)) {
+        throw new RuntimeException('the bootstrap configuration directory is unavailable or unsafe');
+    }
+    if (file_exists($target) && !is_file($target)) {
+        throw new RuntimeException('the bootstrap configuration is not a regular file');
+    }
+    if (is_link($recoveryDirectory) || (!is_dir($recoveryDirectory) && !mkdir($recoveryDirectory, 0700, true))) {
+        throw new RuntimeException('the private recovery directory is unavailable or unsafe');
+    }
+    $recovery = realpath($recoveryDirectory);
+    if ($recovery === false || !is_dir($recovery) || !is_writable($recovery) || is_link($recoveryDirectory)) {
+        throw new RuntimeException('the private recovery directory is unavailable or unsafe');
+    }
+    @chmod($recovery, 0700);
+    $plain = $recovery . '/config-restore-' . bin2hex(random_bytes(8)) . '.php';
+    $temporary = $targetDirectory . '/.config-restore-' . bin2hex(random_bytes(8));
+    try {
+        encryptionOpenFile($source, $plain, encryptionReadLocalKey($keyPath, $webRoot));
+        encryptionVerifyRecoveredStore($plain, 'config');
+        $backup = null;
+        if (is_file($target)) {
+            $backup = $recovery . '/config-before-restore-' . gmdate('Ymd\\THis\\Z') . '-' . bin2hex(random_bytes(4)) . '.php';
+            if (!copy($target, $backup)) throw new RuntimeException('could not save the current bootstrap configuration');
+            @chmod($backup, 0600);
+        }
+        if (!copy($plain, $temporary)) throw new RuntimeException('could not stage recovered bootstrap configuration');
+        @chmod($temporary, 0600);
+        if (!rename($temporary, $target)) throw new RuntimeException('could not atomically replace bootstrap configuration');
+        return $backup;
+    } catch (Throwable $error) {
+        @unlink($temporary);
+        throw $error;
+    } finally {
+        @unlink($plain);
+    }
+}
+
 /** Rejects an unusable opt-in policy before setup records it. */
 function encryptionValidateSettings(array $config, string $webRoot): void
 {

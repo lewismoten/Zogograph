@@ -44,8 +44,8 @@ try {
     encryptionExpect($rotation !== false && str_contains($rotation, 'encryptionRotateConfiguredArtifacts')
         && str_contains($rotation, 'saveConfiguredSettings') && str_contains($rotation, '--confirm'),
         'configured sealed-copy rotation does not preserve recovery evidence before switching keys');
-    encryptionExpect($configRestore !== false && str_contains($configRestore, 'encryptionVerifyRecoveredStore')
-        && str_contains($configRestore, '--confirm') && str_contains($configRestore, 'config-before-restore'),
+    encryptionExpect($configRestore !== false && str_contains($configRestore, 'encryptionRestoreBootstrapConfiguration')
+        && str_contains($configRestore, '--confirm'),
         'sealed bootstrap configuration has no guarded recovery command');
     encryptionExpect($setupGuide !== false && str_contains($setupGuide, '--recovery-drill --quiet')
         && str_contains($setupGuide, 'Quarterly non-destructive recovery drill'),
@@ -119,6 +119,29 @@ try {
     file_put_contents($root . '/invalid-config.php', "<?php return [;\n");
     try { encryptionVerifyRecoveredStore($root . '/invalid-config.php', 'config'); throw new RuntimeException('invalid recovered configuration syntax was accepted'); }
     catch (Throwable $error) { encryptionExpect($error->getMessage() !== 'invalid recovered configuration syntax was accepted', $error->getMessage()); }
+    $recovery = $web . '/data/recovery';
+    $configTarget = $web . '/lib/config.php';
+    $recoveredText = "<?php return ['private' => 'recovered'];\n";
+    $priorText = "<?php return ['private' => 'prior'];\n";
+    $configPlain = $root . '/recoverable-config.php';
+    $configSealed = $root . '/recoverable-config.sealed';
+    file_put_contents($configPlain, $recoveredText);
+    file_put_contents($configTarget, $priorText);
+    encryptionSealFile($configPlain, $configSealed, $key, 'config:recoverable');
+    $configBackup = encryptionRestoreBootstrapConfiguration($configSealed, $keyPath, $configTarget, $web, $recovery);
+    encryptionExpect(is_string($configBackup) && file_get_contents($configBackup) === $priorText
+        && file_get_contents($configTarget) === $recoveredText && !glob($recovery . '/config-restore-*.php'),
+        'guarded bootstrap restoration did not atomically replace the configuration and retain its private backup');
+    $invalidSealed = $root . '/invalid-config.sealed';
+    encryptionSealFile($root . '/invalid-config.php', $invalidSealed, $key, 'config:invalid');
+    try {
+        encryptionRestoreBootstrapConfiguration($invalidSealed, $keyPath, $configTarget, $web, $recovery);
+        throw new RuntimeException('invalid sealed configuration was restored');
+    } catch (RuntimeException $error) {
+        encryptionExpect($error->getMessage() !== 'invalid sealed configuration was restored', $error->getMessage());
+    }
+    encryptionExpect(file_get_contents($configTarget) === $recoveredText,
+        'invalid sealed configuration changed the existing bootstrap');
     $replacementKeyPath = $keys . '/replacement.key';
     encryptionCreateLocalKey($replacementKeyPath, $web);
     $replacement = encryptionReadLocalKey($replacementKeyPath, $web);
