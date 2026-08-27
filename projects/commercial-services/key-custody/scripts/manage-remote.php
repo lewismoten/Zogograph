@@ -34,7 +34,9 @@ function custodyManageBaseUrl(string $base): string
     if (!filter_var($base, FILTER_VALIDATE_URL) || !is_array($parsed) || strtolower((string)($parsed['scheme'] ?? '')) !== 'https'
         || !is_string($parsed['host'] ?? null) || $parsed['host'] === '' || isset($parsed['user']) || isset($parsed['pass'])
         || isset($parsed['query']) || isset($parsed['fragment'])) throw new InvalidArgumentException('management base URL must be an unambiguous HTTPS URL');
-    return rtrim($base, '/');
+    $base = rtrim($base, '/');
+    if (!str_ends_with(strtolower((string)(parse_url($base, PHP_URL_PATH) ?? '')), '/v1')) $base .= '/v1';
+    return $base;
 }
 
 function custodyManageRequest(string $base, ?string $token, ?string $pin, string $method, string $path, ?array $body = null): array

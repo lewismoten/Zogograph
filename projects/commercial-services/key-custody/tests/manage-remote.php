@@ -35,6 +35,7 @@ manageExpect($source !== false && str_contains($source, 'CURLOPT_SSL_VERIFYPEER 
     && str_contains($source, 'CURLOPT_PINNEDPUBLICKEY') && str_contains($source, "'Authorization: Bearer ' . \$token")
     && str_contains($source, "\$command === 'health' ? null") && str_contains($source, '--confirm-recovery')
     && str_contains($source, "['confirm_recovery' => true]") && str_contains($source, "'/client-credentials'")
-    && str_contains($source, "'/management-credentials/rotate'") && str_contains($source, "'/audit'"),
+    && str_contains($source, "'/management-credentials/rotate'") && str_contains($source, "'/audit'")
+    && str_contains($source, "str_ends_with(strtolower((string)(parse_url(\$base, PHP_URL_PATH) ?? '')), '/v1')"),
     'management CLI does not retain its required secure transport boundary');
 echo "key custody management CLI checks passed\n";

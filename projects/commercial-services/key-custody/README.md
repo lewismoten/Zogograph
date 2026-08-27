@@ -233,20 +233,21 @@ recovery channel.
 For a small self-operated deployment, use the included CLI instead of putting
 a management token in a browser URL, shell history, or client configuration.
 Put the one-time management token in an absolute `0600` file outside the web
-root, then use a normal HTTPS endpoint:
+root, then use a normal HTTPS endpoint. The CLI accepts either the service
+root or the copied `/v1` API root and normalizes it exactly once:
 
 ```bash
 php scripts/manage-remote.php \
-  --base-url https://custody.example/v1 \
+  --base-url https://custody.example/services/key-custody \
   health
 
 php scripts/manage-remote.php \
-  --base-url https://custody.example/v1 \
+  --base-url https://custody.example/services/key-custody/v1 \
   --token-file /secure/hostscope-key-custody/management.token \
   keys
 
 php scripts/manage-remote.php \
-  --base-url https://custody.example/v1 \
+  --base-url https://custody.example/services/key-custody \
   --token-file /secure/hostscope-key-custody/management.token \
   create-key primary 300
 ```
