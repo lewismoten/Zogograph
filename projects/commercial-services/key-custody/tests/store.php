@@ -22,7 +22,8 @@ try {
     $additionalClient = keyCustodyCreateAdditionalClientCredential($pdo, $client['tenant_id'], 'second server');
     custodyExpect(keyCustodyAuthenticate($pdo, $additionalClient['token'], 'client')['tenant_id'] === $client['tenant_id'], 'additional enrolled-client credential did not authenticate');
     $credentialList = keyCustodyListClientCredentials($pdo, $client['tenant_id']);
-    custodyExpect(count($credentialList) === 2 && $credentialList[0]['label'] === 'second server', 'enrolled-client metadata did not list both labeled deployments');
+    custodyExpect(count($credentialList) === 2 && in_array('second server', array_column($credentialList, 'label'), true),
+        'enrolled-client metadata did not list both labeled deployments');
     keyCustodyRevokeClientCredential($pdo, $client['tenant_id'], $additionalClient['id']);
     try { keyCustodyAuthenticate($pdo, $additionalClient['token'], 'client'); throw new RuntimeException('revoked individual enrolled-client credential remained active'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'revoked individual enrolled-client credential remained active', $error->getMessage()); }
@@ -56,7 +57,8 @@ try {
     $client = keyCustodyAuthenticate($pdo, $replacementCredential['token'], 'client');
     custodyExpect($client['tenant_id'] === $management['tenant_id'], 'replacement client credential did not authenticate');
     $master = random_bytes(32); $key = keyCustodyCreateKey($pdo, $management['tenant_id'], 'primary', 300, $master);
-    custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $key['id'], 'management key list omitted created key');
+    custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $key['id'] && keyCustodyListKeys($pdo, $management['tenant_id'])[0]['envelope_count'] === 0,
+        'management key list omitted created key or its envelope count');
     $policy = keyCustodyUpdateKeyPolicy($pdo, $management['tenant_id'], $key['id'], 120, 'primary policy');
     custodyExpect($policy['name'] === 'primary policy' && $policy['authorization_ttl'] === 120, 'custody key policy was not updated');
     try { keyCustodyUpdateKeyPolicy($pdo, $management['tenant_id'], $key['id'], 1); throw new RuntimeException('invalid custody key policy was accepted'); }
@@ -93,6 +95,7 @@ try {
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'active', 2, null);
     $envelope = keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:20260827', random_bytes(80));
     custodyExpect(keyCustodyListEnvelopes($pdo, $management['tenant_id'], $key['id'])[0]['id'] === $envelope['id'], 'envelope metadata was not retained');
+    custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['envelope_count'] === 1, 'management key list omitted registered envelope count');
     custodyExpect(strlen(keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)) === 32, 'client unwrap did not recover an active custody key');
     custodyExpect(keyCustodyCacheRecommendation($pdo, $client['tenant_id'], $key['id'], 900) === 120,
         'custody key authorization limit did not cap a requested cache duration');

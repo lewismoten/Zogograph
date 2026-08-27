@@ -336,12 +336,15 @@ function keyCustodyApplySubscription(PDO $pdo, string $tenant, string $plan, str
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
 }
 
-/** @return list<array{id:string,name:string,authorization_ttl:int,state:string,created_at:int}> */
+/** @return list<array{id:string,name:string,authorization_ttl:int,state:string,created_at:int,envelope_count:int}> */
 function keyCustodyListKeys(PDO $pdo, string $tenant): array
 {
-    $stmt = $pdo->prepare('SELECT id, name, authorization_ttl, state, created_at FROM custody_keys WHERE tenant_id = ? ORDER BY created_at DESC');
+    $stmt = $pdo->prepare('SELECT keys.id, keys.name, keys.authorization_ttl, keys.state, keys.created_at,
+        (SELECT COUNT(*) FROM key_envelopes envelopes WHERE envelopes.key_id = keys.id) AS envelope_count
+        FROM custody_keys keys WHERE keys.tenant_id = ? ORDER BY keys.created_at DESC');
     $stmt->execute([$tenant]);
-    return array_map(fn(array $row): array => ['id' => $row['id'], 'name' => $row['name'], 'authorization_ttl' => (int)$row['authorization_ttl'], 'state' => $row['state'], 'created_at' => (int)$row['created_at']], $stmt->fetchAll());
+    return array_map(fn(array $row): array => ['id' => $row['id'], 'name' => $row['name'], 'authorization_ttl' => (int)$row['authorization_ttl'],
+        'state' => $row['state'], 'created_at' => (int)$row['created_at'], 'envelope_count' => (int)$row['envelope_count']], $stmt->fetchAll());
 }
 
 /** @return array{plan:string,state:string,key_quota:int,renews_at:?int} */

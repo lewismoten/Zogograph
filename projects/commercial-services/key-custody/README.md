@@ -110,6 +110,9 @@ An account-management client may delete one named envelope with
 `DELETE /v1/keys/{keyId}/envelopes/{artifactId}`. This does not delete the
 custody key or any other artifact envelope. It is irreversible from the
 service's perspective: verify another recovery path before making the request.
+`GET /v1/keys` includes each key's `envelope_count`, so an operator can see
+which key still protects retained artifacts before attempting a staged rotation,
+retirement, or disablement.
 
 The reference API can recommend a short in-memory cache duration, but it
 cannot revoke key material after a client has received it. Keep the client
