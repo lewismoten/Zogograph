@@ -2,8 +2,8 @@
 declare(strict_types=1);
 
 return [
-    // Keep this SQLite database outside the document root or deny it at the web server.
-    'database' => __DIR__ . '/data/key-custody.db',
+    // Private service data directory, outside the deployed web root (0700 is created automatically).
+    'database' => '/var/lib/hostscope-key-custody/key-custody.db',
     // Absolute 0600 file outside the web root. Create 32 random bytes, Base64 encoded.
     'master_key_file' => '/secure/hostscope-key-custody/master.key',
     // Development may set this false only on loopback. Production must use HTTPS.

@@ -113,7 +113,9 @@ php scripts/master-key.php /secure/hostscope-key-custody/master.key
 php scripts/provision-tenant.php "Example customer"
 ```
 
-Set the generated absolute path in `config.php`. Keep the printed management
+Set the generated absolute path in `config.php`; keep the SQLite database in a
+private directory outside the deployed service web root (the sample uses
+`/var/lib/hostscope-key-custody/key-custody.db`). Keep the printed management
 token, client token, and client signing private key separately; the service
 retains only token hashes and the signing public key and cannot show the token
 or private key again. `api.php` currently implements key list/create, signed

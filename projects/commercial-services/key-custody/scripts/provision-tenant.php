@@ -9,6 +9,6 @@ if (!is_file($configFile)) { fwrite(STDERR, "Copy config.sample.php to config.ph
 $config = require $configFile;
 if (!is_array($config)) { fwrite(STDERR, "Key-custody configuration is invalid.\n"); exit(1); }
 try {
-    $tenant = keyCustodyCreateTenant(keyCustodyOpen($config), $argv[1]);
+    $tenant = keyCustodyCreateTenant(keyCustodyOpen($config, realpath(__DIR__ . '/..') ?: dirname(__DIR__)), $argv[1]);
     fwrite(STDOUT, "Tenant: {$tenant['tenant_id']}\nManagement token (account, billing, key policy): {$tenant['management_token']}\nEnrolled-client token (unwrap/envelope only): {$tenant['client_token']}\nEnrolled-client Ed25519 signing private key (Base64): {$tenant['client_signing_private_key']}\n\nStore all three values securely now. The service stores only token hashes and the client signing public key; it cannot show the tokens or private key again.\n");
 } catch (Throwable $error) { fwrite(STDERR, 'Tenant provisioning failed: ' . $error->getMessage() . "\n"); exit(1); }
