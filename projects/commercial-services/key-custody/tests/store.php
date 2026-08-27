@@ -124,6 +124,8 @@ try {
         && keyCustodySubscriptionRequests($pdo, $management['tenant_id'])[0]['state'] === 'applied', 'billing control plane did not resolve pending request');
     try { keyCustodyApplySubscription($pdo, $management['tenant_id'], 'starter', 'active', -1, null); throw new RuntimeException('invalid billing quota was accepted'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'invalid billing quota was accepted', $error->getMessage()); }
+    try { keyCustodyApplySubscription($pdo, 'ten_' . str_repeat('0', 24), 'starter', 'active', 2, null); throw new RuntimeException('unknown tenant billing entitlement was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'unknown tenant billing entitlement was accepted', $error->getMessage()); }
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'past_due', 2, null);
     try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:blocked', random_bytes(80), $master); throw new RuntimeException('past-due subscription stored an envelope'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'past-due subscription stored an envelope', $error->getMessage()); }

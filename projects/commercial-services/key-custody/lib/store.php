@@ -400,6 +400,8 @@ function keyCustodyArtifactId(string $artifactId): bool
 function keyCustodySetSubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt, int $envelopeQuota = 1000): void
 {
     if (!preg_match('/^[a-z][a-z0-9_-]{0,62}$/', $plan) || !in_array($state, ['active', 'past_due', 'cancelled'], true) || $quota < 0 || $quota > 10000 || $envelopeQuota < 0 || $envelopeQuota > 1000000) throw new InvalidArgumentException('subscription policy is invalid');
+    $tenantCheck = $pdo->prepare('SELECT active FROM tenants WHERE id = ?'); $tenantCheck->execute([$tenant]);
+    if ($tenantCheck->fetchColumn() === false) throw new InvalidArgumentException('tenant is unavailable');
     $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, envelope_quota, renews_at, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET plan = excluded.plan, state = excluded.state, key_quota = excluded.key_quota, envelope_quota = excluded.envelope_quota, renews_at = excluded.renews_at, changed_at = excluded.changed_at')
         ->execute([$tenant, $plan, $state, $quota, $envelopeQuota, $renewsAt, time()]);
     keyCustodyAudit($pdo, $tenant, 'subscription_change', $tenant, $plan . '; ' . $state . '; key_quota=' . $quota . '; envelope_quota=' . $envelopeQuota);
