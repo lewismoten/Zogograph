@@ -11,7 +11,7 @@ $source = $root . '/source';
 mkdir($source . '/src', 0700, true);
 mkdir($source . '/migrations', 0700, true);
 mkdir($root . '/web', 0700, true);
-file_put_contents($source . '/src/Provider.php', "<?php declare(strict_types=1);\n");
+file_put_contents($source . '/src/Provider.php', "<?php declare(strict_types=1); namespace TestRuntime; final class Provider { public function capability(): array { return ['id' => 'test-runtime', 'state' => 'available', 'reason' => 'test']; } }\n");
 file_put_contents($source . '/settings.schema.json', json_encode([
     'type' => 'object', 'additionalProperties' => false, 'required' => ['retention_days', 'custody_secret'],
     'properties' => ['retention_days' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 90],
@@ -49,12 +49,20 @@ try {
     $manifest = [
         'id' => 'test-runtime', 'version' => '1.0.0', 'publisher' => 'Test publisher',
         'capabilities' => ['package_private_database'],
-        'runtime' => ['kind' => 'hostscope-isolated-php-package', 'entrypoint' => 'src/Provider.php', 'minimum_api' => '1.0'],
+        'runtime' => ['kind' => 'hostscope-isolated-php-package', 'entrypoint' => 'src/Provider.php', 'provider_class' => 'TestRuntime\\Provider', 'minimum_api' => '1.0'],
         'settings_schema' => 'settings.schema.json',
         'data' => ['migrations' => ['migrations/001-private-evidence.sql']],
     ];
     $signed = packageSignManifest($manifest, $source, 'test-publisher', sodium_crypto_sign_secretkey($pair));
     file_put_contents($source . '/manifest.json', json_encode($signed, JSON_THROW_ON_ERROR));
+    if (function_exists('proc_open')) {
+        $pipes = []; $worker = proc_open([PHP_BINARY, __DIR__ . '/../scripts/package-runtime-worker.php', '--package-root', $source],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, ['HOSTSCOPE_PACKAGE_SANDBOX' => '1']);
+        runtimeExpect(is_resource($worker), 'could not start package sandbox worker');
+        fwrite($pipes[0], json_encode(['api' => '1.0', 'operation' => 'capability', 'package_id' => 'test-runtime'], JSON_THROW_ON_ERROR)); fclose($pipes[0]);
+        $output = stream_get_contents($pipes[1]); $errors = stream_get_contents($pipes[2]); fclose($pipes[1]); fclose($pipes[2]);
+        runtimeExpect(proc_close($worker) === 0 && str_contains($output, 'test-runtime') && $errors === '', 'package sandbox worker did not return bounded capability facts');
+    }
     $keyPath = $root . '/package-secrets.key'; encryptionCreateLocalKey($keyPath, $root . '/web');
     $config = ['database' => $root . '/stats.db', 'encryption' => ['local_key_file' => $keyPath], 'package_runtime' => ['directory' => $root . '/installed', 'trusted_keys' => [
         'test-publisher' => ['publisher' => 'Test publisher', 'public_key' => base64_encode(sodium_crypto_sign_publickey($pair))],

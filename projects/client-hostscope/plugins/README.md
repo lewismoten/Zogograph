@@ -59,6 +59,10 @@ The deployment and JSON-RPC boundary for that runtime is specified in
 real OS/container sandbox; PHP-only restrictions are not considered execution
 isolation.
 
+The bundled worker currently supports only an isolated, no-secret capability
+probe. HostScope itself does not launch that worker yet, and package grants do
+not authorize arbitrary provider operations.
+
 The **Package runtime** page performs a core-owned, non-executing platform
 check before presenting a package as ready. It checks declared PHP version and
 extension requirements, detects a genuine SQLCipher PDO driver where one is

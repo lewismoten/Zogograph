@@ -19,6 +19,14 @@ dedicated container or operating-system service account. Mount only:
 - a single request/response channel owned by HostScope; and
 - explicitly approved, short-lived input values.
 
+HostScope includes `scripts/package-runtime-worker.php` as the initial runner
+component. It refuses to start unless its launcher sets
+`HOSTSCOPE_PACKAGE_SANDBOX=1`, accepts only a 64 KiB `capability` probe, and
+does not receive configuration, secrets, core database handles, or package
+private-data paths. The marker is an operator attestation, not sandbox proof:
+run the worker only from the container/OS service described above. Core does
+not invoke it yet, so its presence does not enable executable packages.
+
 Do not mount the HostScope web root, core databases, setup database, bootstrap
 configuration, key files, SSH agent, Docker socket, home directory, or a broad
 host filesystem. Disable outbound networking by default; grant it only for a

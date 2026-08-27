@@ -6,7 +6,7 @@
   "summary": "Optional client for the HostScope key-custody service using signed enrolled-client authentication and registered-envelope authorization.",
   "license": "Proprietary preview",
   "capabilities": ["key_provider", "network_client", "package_private_database"],
-  "runtime": {"kind": "hostscope-isolated-php-package", "entrypoint": "src/KeyCustodyProvider.php", "minimum_api": "1.0"},
+  "runtime": {"kind": "hostscope-isolated-php-package", "entrypoint": "src/KeyCustodyProvider.php", "provider_class": "HostScope\\Plugin\\KeyCustody\\KeyCustodyProvider", "minimum_api": "1.0"},
   "settings_schema": "settings.schema.json",
   "data": {"directory": "data", "migration_namespace": "hostscope_key_custody"},
   "compatibility": {"min_php": "8.1.0", "requires_extensions": ["curl", "openssl", "sodium"], "requires_runtime_capability": "isolated_package_runtime"},

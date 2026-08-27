@@ -62,13 +62,15 @@ function packageRuntimeManifest(string $directory, array $trustedKeys): array
     sort($capabilities, SORT_STRING);
     $runtime = (array)($raw['runtime'] ?? []);
     $runtimeApi = trim((string)($runtime['minimum_api'] ?? ''));
+    $providerClass = trim((string)($runtime['provider_class'] ?? ''));
     if (($runtime['kind'] ?? '') !== 'hostscope-isolated-php-package'
         || !preg_match('/^[0-9]+\.[0-9]+$/', $runtimeApi)
+        || !preg_match('/^(?:[A-Za-z_][A-Za-z0-9_]*\\\\)*[A-Za-z_][A-Za-z0-9_]*$/', $providerClass)
         || !packageRuntimeRelativePath((string)($runtime['entrypoint'] ?? ''))
         || !is_file($root . '/' . $runtime['entrypoint'])) {
         throw new InvalidArgumentException('package runtime declaration is invalid');
     }
-    $runtime['minimum_api'] = $runtimeApi;
+    $runtime['minimum_api'] = $runtimeApi; $runtime['provider_class'] = $providerClass;
     foreach (['settings_schema'] as $field) {
         if (isset($raw[$field]) && (!packageRuntimeRelativePath((string)$raw[$field]) || !is_file($root . '/' . $raw[$field]))) {
             throw new InvalidArgumentException('package settings declaration is invalid');
