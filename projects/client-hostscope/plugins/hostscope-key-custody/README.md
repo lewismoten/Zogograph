@@ -35,6 +35,8 @@ proof that a live database can be recovered.
 HostScope requires a successful endpoint result less than 24 hours old before
 it accepts either enrollment reference. Save only opaque `secret_ref:` values;
 the raw bearer and private signing key never belong in normal package settings.
+Changing the service URL or TLS pin clears that endpoint evidence and requires
+the test again; rotating only the encrypted references preserves it.
 
 It first reads only the custody key's X25519 public wrapping key, generates a
 fresh artifact data key locally, and sends that key only as a sealed envelope

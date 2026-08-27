@@ -445,6 +445,7 @@ function packageRuntimeSettingsDefaults(PDO $pdo, string $id): array
 function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $settings, string $actor): void
 {
     packageRuntimeInstalled($pdo, $id);
+    $prior = packageRuntimeSettings($pdo, $config, $id);
     packageRuntimeValidateSettings($settings);
     packageRuntimeValidateSettingsSecretReferences($settings, $id);
     packageRuntimeValidateManifestSettings($pdo, $id, $settings);
@@ -470,7 +471,10 @@ function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $
     $store->prepare('INSERT INTO package_runtime_settings (package_id, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
         ON CONFLICT(package_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by')
         ->execute([$id, $value, time(), mb_substr($actor, 0, 120)]);
-    packageRuntimeClearProbeEvidence($config, $id);
+    $endpointChanged = $id !== 'hostscope-key-custody'
+        || ($prior['service_base_url'] ?? null) !== ($settings['service_base_url'] ?? null)
+        || ($prior['tls_spki_pin'] ?? null) !== ($settings['tls_spki_pin'] ?? null);
+    if ($endpointChanged) packageRuntimeClearProbeEvidence($config, $id);
 }
 
 /** Enforces a small, predictable JSON Schema subset from the signed package.
