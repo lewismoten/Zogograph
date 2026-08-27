@@ -154,6 +154,10 @@ try {
     }
     file_put_contents($source, str_repeat("private sqlite record\n", 100000));
     $sealedInfo = encryptionSealFile($source, $sealed, $key, 'stats:1');
+    encryptionExpect(hash_equals(encryptionReadArtifactDataKey($sealed, $key, 'stats:1'), encryptionReadArtifactDataKey($sealed, $key, 'stats:1')),
+        'sealed artifact data key could not be reopened for in-memory custody wrapping');
+    try { encryptionReadArtifactDataKey($sealed, $key, 'stats:other'); throw new RuntimeException('sealed artifact data key accepted a mismatched identity'); }
+    catch (RuntimeException $error) { encryptionExpect($error->getMessage() !== 'sealed artifact data key accepted a mismatched identity', $error->getMessage()); }
     encryptionExpect($sealedInfo['plaintext_bytes'] === filesize($source), 'sealed byte count is wrong');
     encryptionExpect(!str_contains((string)file_get_contents($sealed), 'private sqlite record'), 'sealed copy contains plaintext');
     encryptionExpect((fileperms($sealed) & 0077) === 0, 'sealed artifact permissions are too broad');

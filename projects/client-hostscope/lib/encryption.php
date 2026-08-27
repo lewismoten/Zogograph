@@ -895,6 +895,32 @@ function encryptionOpenFile(string $source, string $destination, string $kek): v
     @chmod($destination, 0600);
 }
 
+/** Opens only the locally wrapped DEK for a verified artifact. Callers must
+ * keep it in memory and pass it directly to a narrowly scoped recovery or
+ * custody operation; they must never persist or log this value. */
+function encryptionReadArtifactDataKey(string $source, string $kek, string $artifactId): string
+{
+    if (!encryptionAvailable() || strlen($kek) !== 32 || $artifactId === '' || !is_file($source) || !is_readable($source)) {
+        throw new RuntimeException('the sealed artifact or local key is unavailable');
+    }
+    $in = fopen($source, 'rb');
+    if ($in === false) throw new RuntimeException('could not open the sealed artifact');
+    try {
+        if (encryptionReadExact($in, strlen(ENCRYPTION_MAGIC)) !== ENCRYPTION_MAGIC) throw new RuntimeException('the artifact is not a HostScope sealed copy');
+        [$header] = encryptionReadArtifactHeader($in);
+        if (!hash_equals((string)$header['artifact_id'], $artifactId)) throw new RuntimeException('the sealed artifact identity does not match its ledger');
+        $wrapped = base64_decode((string)($header['wrapped_key'] ?? ''), true);
+        $nonce = base64_decode((string)($header['wrap_nonce'] ?? ''), true);
+        $tag = base64_decode((string)($header['wrap_tag'] ?? ''), true);
+        if (!is_string($wrapped) || !is_string($nonce) || strlen($nonce) !== 12 || !is_string($tag) || strlen($tag) !== 16) {
+            throw new RuntimeException('the wrapped artifact key is invalid');
+        }
+        $dek = openssl_decrypt($wrapped, 'aes-256-gcm', $kek, OPENSSL_RAW_DATA, $nonce, $tag, $artifactId);
+        if (!is_string($dek) || strlen($dek) !== 32) throw new RuntimeException('the artifact key cannot be opened');
+        return $dek;
+    } finally { fclose($in); }
+}
+
 /** Reads the bounded authenticated artifact header. Version 1 remains the
  * only accepted format until the additive remote-envelope format is released. */
 function encryptionReadArtifactHeader($stream): array
