@@ -15,6 +15,12 @@ See `openapi.json` for the API contract. The companion client integration will
 be the optional `hostscope-key-custody` package. Until it is installed and
 enabled, HostScope uses the local key file or self-managed fleet options.
 
+For the provisional VPS path, use
+[`deploy/nginx.conf.example`](deploy/nginx.conf.example) inside the HTTPS
+server block. It is important to forward `Authorization` and set `HTTPS=on`
+for PHP when TLS terminates at Nginx; otherwise the service correctly refuses
+requests rather than silently accepting insecure traffic.
+
 ## Security baseline
 
 - Require HTTPS and enrolled-client authentication. The reference service
