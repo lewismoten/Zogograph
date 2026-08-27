@@ -182,9 +182,15 @@ function packageRuntimeSetEnabled(PDO $pdo, string $id, array $grants, bool $ena
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
 }
 
-function packageRuntimePrivateDatabase(array $config, string $id): PDO
+function packageRuntimePrivateDatabase(PDO $registry, array $config, string $id): PDO
 {
-    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id)) throw new InvalidArgumentException('package id is invalid');
+    packageRuntimeInstalled($registry, $id);
+    $grant = $registry->prepare('SELECT enabled_at FROM runtime_packages WHERE package_id = ?');
+    $grant->execute([$id]);
+    if ($grant->fetchColumn() === null) throw new InvalidArgumentException('package is not enabled');
+    $grant = $registry->prepare('SELECT COUNT(*) FROM runtime_package_grants WHERE package_id = ? AND capability = ?');
+    $grant->execute([$id, 'package_private_database']);
+    if ((int)$grant->fetchColumn() !== 1) throw new InvalidArgumentException('package lacks private database permission');
     $directory = packageRuntimeDirectory($config) . '/' . $id . '-data';
     if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) throw new RuntimeException('could not create package data directory');
     $path = $directory . '/package.db';

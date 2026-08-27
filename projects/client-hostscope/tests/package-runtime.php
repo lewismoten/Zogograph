@@ -42,7 +42,7 @@ try {
     packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator');
     $after = packageRuntimePackages($pdo)[0];
     runtimeExpect($after['enabled'] && $after['state'] === 'registered; execution runtime pending', 'package was not registered after explicit grant');
-    $private = packageRuntimePrivateDatabase($config, 'test-runtime');
+    $private = packageRuntimePrivateDatabase($pdo, $config, 'test-runtime');
     $private->exec('CREATE TABLE private_evidence (value TEXT)');
     runtimeExpect((int)$private->query("SELECT COUNT(*) FROM sqlite_master WHERE name = 'private_evidence'")->fetchColumn() === 1,
         'package private SQLite database is unavailable');
