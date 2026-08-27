@@ -465,6 +465,8 @@ function keyCustodyClientSubscription(PDO $pdo, string $tenant): array
     $subscription = keyCustodySubscription($pdo, $tenant);
     return [
         'state' => $subscription['state'],
+        'renews_at' => $subscription['renews_at'],
+        'accepting_new_custody_operations' => $subscription['accepting_new_custody_operations'],
         'envelope_quota' => $subscription['envelope_quota'],
         'envelope_used' => $subscription['envelope_used'],
         'can_store_envelopes' => $subscription['accepting_new_custody_operations']

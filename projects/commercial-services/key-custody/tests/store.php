@@ -57,7 +57,8 @@ try {
     catch (RuntimeException $error) { custodyExpect($error->getMessage() !== 'web-root custody metadata backup was accepted', $error->getMessage()); }
     $client = keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client');
     $initialEntitlement = keyCustodyClientSubscription($pdo, $client['tenant_id']);
-    custodyExpect($initialEntitlement['state'] === 'active' && $initialEntitlement['envelope_used'] === 0 && $initialEntitlement['can_store_envelopes'],
+    custodyExpect($initialEntitlement['state'] === 'active' && $initialEntitlement['renews_at'] === null && $initialEntitlement['accepting_new_custody_operations']
+        && $initialEntitlement['envelope_used'] === 0 && $initialEntitlement['can_store_envelopes'],
         'enrolled client could not read its minimal initial envelope entitlement');
     $additionalClient = keyCustodyCreateAdditionalClientCredential($pdo, $client['tenant_id'], 'second server');
     custodyExpect(keyCustodyAuthenticate($pdo, $additionalClient['token'], 'client')['tenant_id'] === $client['tenant_id'], 'additional enrolled-client credential did not authenticate');
@@ -142,6 +143,8 @@ try {
         'billing control plane did not apply subscription entitlement');
     custodyExpect(!$applied['accepting_new_custody_operations'] && !$applied['can_create_keys'],
         'overdue subscription still allowed new custody operations');
+    custodyExpect(!keyCustodyClientSubscription($pdo, $client['tenant_id'])['accepting_new_custody_operations'],
+        'enrolled client entitlement did not report an overdue renewal pause');
     try { keyCustodyCreateKey($pdo, $management['tenant_id'], 'overdue renewal', 300, $master); throw new RuntimeException('overdue subscription created a custody key'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'overdue subscription created a custody key', $error->getMessage()); }
     custodyExpect(keyCustodySubscriptionRequests($pdo, $management['tenant_id'])[0]['id'] === $pending['id']

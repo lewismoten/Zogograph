@@ -115,6 +115,8 @@ final class KeyCustodyHttpClient
         $response = $this->request('GET', '/v1/client/subscription', null);
         $entitlement = $response['entitlement'] ?? null;
         if (!is_array($entitlement) || !is_string($entitlement['state'] ?? null)
+            || !array_key_exists('renews_at', $entitlement) || ($entitlement['renews_at'] !== null && !is_int($entitlement['renews_at']))
+            || !is_bool($entitlement['accepting_new_custody_operations'] ?? null)
             || !is_int($entitlement['envelope_quota'] ?? null) || !is_int($entitlement['envelope_used'] ?? null)
             || !is_bool($entitlement['can_store_envelopes'] ?? null)) {
             throw new \RuntimeException('key custody service returned an invalid client entitlement');
