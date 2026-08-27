@@ -68,6 +68,11 @@ keys, envelopes, tokens, or private signing material—so a commercial website
 can explain key, enrollment, and subscription changes without becoming a key
 recovery channel.
 
+An account-management client may delete one named envelope with
+`DELETE /v1/keys/{keyId}/envelopes/{artifactId}`. This does not delete the
+custody key or any other artifact envelope. It is irreversible from the
+service's perspective: verify another recovery path before making the request.
+
 The reference API can recommend a short in-memory cache duration, but it
 cannot revoke key material after a client has received it. Keep the client
 cache at zero by default, rotate a suspected key, and use an HSM/KMS-backed

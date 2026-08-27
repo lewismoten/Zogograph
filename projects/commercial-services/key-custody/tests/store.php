@@ -45,6 +45,10 @@ try {
     custodyExpect(strlen(keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)) === 32, 'client unwrap did not recover an active custody key');
     try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:missing', $master); throw new RuntimeException('unknown artifact envelope was authorized'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'unknown artifact envelope was authorized', $error->getMessage()); }
+    keyCustodyDeleteEnvelope($pdo, $management['tenant_id'], $key['id'], 'account:20260827');
+    custodyExpect(keyCustodyListEnvelopes($pdo, $management['tenant_id'], $key['id']) === [], 'artifact envelope was not deleted');
+    try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master); throw new RuntimeException('deleted artifact envelope was authorized'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'deleted artifact envelope was authorized', $error->getMessage()); }
     $replacement = keyCustodyRotateKey($pdo, $management['tenant_id'], $key['id'], $master);
     custodyExpect($replacement['id'] !== $key['id'] && keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $replacement['id'], 'custody key rotation did not create a replacement');
     keyCustodyDisableKey($pdo, $management['tenant_id'], $replacement['id']);

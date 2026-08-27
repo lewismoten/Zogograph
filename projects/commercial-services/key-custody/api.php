@@ -45,6 +45,13 @@ try {
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/envelopes$#', $path, $match) && $method === 'GET') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['envelopes' => keyCustodyListEnvelopes($pdo, $auth['tenant_id'], $match[1])]);
     }
+    if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/envelopes/(.+)$#', $path, $match) && $method === 'DELETE') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management');
+        $artifactId = rawurldecode($match[2]);
+        keyCustodyDeleteEnvelope($pdo, $auth['tenant_id'], $match[1], $artifactId);
+        custodyReply(200, ['key_id' => $match[1], 'artifact_id' => $artifactId, 'state' => 'deleted',
+            'warning' => 'Deleting an envelope can make its artifact unrecoverable unless another verified recovery envelope exists.']);
+    }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/unwrap-authorizations$#', $path, $match) && $method === 'POST') {
         $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody); $body = custodyBody($rawBody);
         if (trim((string)($body['artifact_id'] ?? '')) === '' || trim((string)($body['nonce'] ?? '')) === '') throw new InvalidArgumentException('artifact and nonce are required');

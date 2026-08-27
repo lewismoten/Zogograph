@@ -210,6 +210,17 @@ function keyCustodyListEnvelopes(PDO $pdo, string $tenant, string $keyId): array
     return array_map(fn(array $row): array => ['id' => $row['id'], 'artifact_id' => $row['artifact_id'], 'created_at' => (int)$row['created_at']], $stmt->fetchAll());
 }
 
+function keyCustodyDeleteEnvelope(PDO $pdo, string $tenant, string $keyId, string $artifactId): void
+{
+    if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200) {
+        throw new InvalidArgumentException('key envelope deletion request is invalid');
+    }
+    $stmt = $pdo->prepare('DELETE FROM key_envelopes WHERE key_id = ? AND artifact_id = ? AND EXISTS (SELECT 1 FROM custody_keys WHERE id = ? AND tenant_id = ?)');
+    $stmt->execute([$keyId, $artifactId, $keyId, $tenant]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('key envelope is unavailable');
+    keyCustodyAudit($pdo, $tenant, 'envelope_delete', $keyId, 'artifact=' . $artifactId);
+}
+
 function keyCustodySetSubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt): void
 {
     if (!preg_match('/^[a-z][a-z0-9_-]{0,62}$/', $plan) || !in_array($state, ['active', 'past_due', 'cancelled'], true) || $quota < 0 || $quota > 10000) throw new InvalidArgumentException('subscription policy is invalid');

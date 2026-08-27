@@ -19,6 +19,9 @@
       "post": {"summary": "Store a wrapped DEK envelope", "security": [{"enrolledClient": []}], "parameters": [{"$ref": "#/components/parameters/KeyId"}, {"$ref": "#/components/parameters/ClientTimestamp"}, {"$ref": "#/components/parameters/ClientNonce"}, {"$ref": "#/components/parameters/ClientSignature"}], "responses": {"201": {"description": "Envelope recorded"}}},
       "get": {"summary": "List envelope metadata", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "responses": {"200": {"description": "Metadata only"}}}
     },
+    "/keys/{keyId}/envelopes/{artifactId}": {
+      "delete": {"summary": "Delete one named envelope after verifying another recovery path", "security": [{"accountSession": []}], "parameters": [{"$ref": "#/components/parameters/KeyId"}, {"name": "artifactId", "in": "path", "required": true, "schema": {"type": "string", "maxLength": 200}}], "responses": {"200": {"description": "Envelope deleted; the custody key and other envelopes remain."}, "403": {"description": "Envelope does not belong to the tenant or is unavailable."}}}
+    },
     "/keys/{keyId}/unwrap-authorizations": {
       "post": {"summary": "Request a custody key for one registered envelope", "security": [{"enrolledClient": []}], "parameters": [{"$ref": "#/components/parameters/KeyId"}, {"$ref": "#/components/parameters/ClientTimestamp"}, {"$ref": "#/components/parameters/ClientNonce"}, {"$ref": "#/components/parameters/ClientSignature"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UnwrapRequest"}}}}, "responses": {"201": {"description": "Key material for immediate in-memory use, plus a cache recommendation"}, "403": {"description": "Policy, envelope, subscription, or enrollment refusal"}}}
     },
