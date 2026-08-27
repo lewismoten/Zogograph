@@ -3,6 +3,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../lib/package-integrity.php';
 require_once __DIR__ . '/../lib/package-submission.php';
 require_once __DIR__ . '/../plugins/hostscope-key-custody/src/KeyCustodyHttpClient.php';
+require_once __DIR__ . '/../plugins/hostscope-replica-relay/src/ReplicaRelayHttpClient.php';
 require_once __DIR__ . '/../plugins/sqlcipher-encrypted-sqlite/src/SqlcipherStorageProvider.php';
 function packageExpect(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
 if (!function_exists('sodium_crypto_sign_keypair')) { echo "package integrity checks skipped: sodium is unavailable\n"; exit(0); }
@@ -34,6 +35,17 @@ try {
         && str_contains($custodySource, "'requested_ttl_seconds' => \$requestedTtl")
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYPEER => true')
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYHOST => 2'), 'custody client does not enforce its secure transport defaults');
+    $relayPair = sodium_crypto_sign_keypair(); $relaySecret = sodium_crypto_sign_secretkey($relayPair);
+    try { new \HostScope\Plugin\ReplicaRelay\ReplicaRelayHttpClient('https://user@example.test', 'test-token', base64_encode($relaySecret)); throw new RuntimeException('relay client accepted an ambiguous endpoint'); }
+    catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'relay client accepted an ambiguous endpoint', $error->getMessage()); }
+    $relaySource = file_get_contents(__DIR__ . '/../plugins/hostscope-replica-relay/src/ReplicaRelayHttpClient.php');
+    packageExpect($relaySource !== false && str_contains($relaySource, 'CURLOPT_UPLOAD => true')
+        && str_contains($relaySource, 'CURLOPT_SSL_VERIFYPEER => true') && str_contains($relaySource, 'CURLOPT_SSL_VERIFYHOST => 2'),
+        'relay client does not stream ciphertext with secure transport defaults');
+    $relayDirectory = __DIR__ . '/../plugins/hostscope-replica-relay';
+    $relayManifest = json_decode((string)file_get_contents($relayDirectory . '/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+    packageExpect(is_array($relayManifest) && packageVerifyIntegrity($relayManifest, $relayDirectory)['ok'],
+        'replica relay package manifest does not cover its installed files');
     $pair = sodium_crypto_sign_keypair();
     $signed = packageSignManifest($manifest, $root, 'test-publisher', sodium_crypto_sign_secretkey($pair));
     packageExpect(packageVerifyIntegrity($signed, $root)['ok'], 'fresh package integrity did not verify');

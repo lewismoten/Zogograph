@@ -1,0 +1,20 @@
+{
+  "id": "hostscope-replica-relay",
+  "version": "0.1.0",
+  "name": "HostScope ciphertext replica relay",
+  "publisher": "HostScope",
+  "summary": "Optional signed client for a tenant-isolated ciphertext-only HostScope replica relay.",
+  "license": "Proprietary preview",
+  "capabilities": ["network_client", "encrypted_replica", "package_private_database"],
+  "runtime": {"kind": "hostscope-isolated-php-package", "entrypoint": "src/ReplicaRelayProvider.php", "minimum_api": "1.0"},
+  "settings_schema": "settings.schema.json",
+  "data": {"directory": "data", "migration_namespace": "hostscope_replica_relay"},
+  "compatibility": {"min_php": "8.1.0", "requires_extensions": ["curl", "openssl", "sodium"], "requires_runtime_capability": "isolated_package_runtime"},
+  "integrity": {"algorithm": "sha256", "files": {
+    "README.md": "776a8201283f3b7e507d1cbbe0c99f5ce713646a194e84af2a436871a27b7639",
+    "settings.schema.json": "a153916864a0f0592a02a97a3dc8406e46b602e82bf00745114be21b74944026",
+    "src/ReplicaRelayProvider.php": "b5b4d0be4fcfc72c3c2b9fca43333881f13dc5b3c50faabbf498659f872587df",
+    "src/ReplicaRelayHttpClient.php": "23e9b6a24279f0a42ec87bffc017ce41d78a66e2338ed31cd436553a13904985"
+  }},
+  "state": "design-preview"
+}
