@@ -109,6 +109,15 @@ try {
         catch (RuntimeException $error) { runtimeExpect($error->getMessage() !== 'package data directory symlink was accepted', $error->getMessage()); }
         @unlink($unsafeData); @rmdir($outside);
     }
+    $private = null;
+    $packagePath = $config['package_runtime']['directory'] . '/test-runtime-data/package.db';
+    $outsideDb = $root . '/outside-package.db'; copy($packagePath, $outsideDb); @unlink($packagePath);
+    if (function_exists('symlink') && @symlink($outsideDb, $packagePath)) {
+        try { packageRuntimePrivateDatabase($pdo, $config, 'test-runtime'); throw new RuntimeException('package database symlink was accepted'); }
+        catch (RuntimeException $error) { runtimeExpect($error->getMessage() !== 'package database symlink was accepted', $error->getMessage()); }
+        @unlink($packagePath); copy($outsideDb, $packagePath);
+    }
+    @unlink($outsideDb);
     $reference = packageRuntimeSecretStore($pdo, $config, 'test-runtime', 'remote-client-credential', 'administrator');
     runtimeExpect(str_starts_with($reference, 'secret_ref:test-runtime:'), 'package secret reference is not package-scoped');
     runtimeExpect(packageRuntimeSecretValue($pdo, $config, 'test-runtime', $reference) === 'remote-client-credential', 'encrypted package secret could not be recovered');

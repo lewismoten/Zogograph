@@ -324,6 +324,7 @@ function packageRuntimePrivateDatabase(PDO $registry, array $config, string $id)
     }
     @chmod($directory, 0700);
     $path = $directory . '/package.db';
+    if (is_link($path)) throw new RuntimeException('package database path must not be a symbolic link');
     $previousUmask = umask(0077);
     try {
     $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
