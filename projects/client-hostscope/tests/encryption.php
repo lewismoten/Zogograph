@@ -129,9 +129,12 @@ try {
     file_put_contents($configTarget, $priorText);
     encryptionSealFile($configPlain, $configSealed, $key, 'config:recoverable');
     $configBackup = encryptionRestoreBootstrapConfiguration($configSealed, $keyPath, $configTarget, $web, $recovery);
-    encryptionExpect(is_string($configBackup) && file_get_contents($configBackup) === $priorText
-        && file_get_contents($configTarget) === $recoveredText && !glob($recovery . '/config-restore-*.php'),
-        'guarded bootstrap restoration did not atomically replace the configuration and retain its private backup');
+    $backupOpened = $root . '/prior-config-opened.php';
+    if (is_string($configBackup)) encryptionOpenFile($configBackup, $backupOpened, $key);
+    encryptionExpect(is_string($configBackup) && str_ends_with($configBackup, '.sealed') && !str_contains((string)file_get_contents($configBackup), $priorText)
+        && file_get_contents($backupOpened) === $priorText && file_get_contents($configTarget) === $recoveredText
+        && !glob($recovery . '/config-restore-*.php'),
+        'guarded bootstrap restoration did not atomically replace the configuration and retain a sealed prior copy');
     $invalidSealed = $root . '/invalid-config.sealed';
     encryptionSealFile($root . '/invalid-config.php', $invalidSealed, $key, 'config:invalid');
     try {

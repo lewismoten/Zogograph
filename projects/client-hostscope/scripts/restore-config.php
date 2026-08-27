@@ -14,7 +14,7 @@ require_once __DIR__ . '/../lib/encryption.php';
 $root = dirname(__DIR__); $target = $root . '/lib/config.php';
 try {
     $backup = encryptionRestoreBootstrapConfiguration($argv[2], $argv[4], $target, $root, $root . '/data/recovery');
-    fwrite(STDOUT, 'Restored bootstrap configuration' . ($backup === null ? '.' : "; saved prior copy to {$backup}.") . "\n");
+    fwrite(STDOUT, 'Restored bootstrap configuration' . ($backup === null ? '.' : "; saved a sealed prior copy to {$backup}.") . "\n");
 } catch (Throwable $error) {
     fwrite(STDERR, 'Restore refused: ' . $error->getMessage() . "\n"); exit(1);
 }

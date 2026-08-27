@@ -269,10 +269,10 @@ function encryptionVerifyRecoveredStore(string $path, string $store): void
 
 /**
  * Restores a sealed bootstrap configuration only after authenticating and
- * parsing it without execution. The existing bootstrap is privately backed up
+ * parsing it without execution. The existing bootstrap is sealed and backed up
  * before an atomic same-directory replacement.
  *
- * @return string|null private prior-configuration backup, if one existed
+ * @return string|null sealed prior-configuration backup, if one existed
  */
 function encryptionRestoreBootstrapConfiguration(
     string $sealedSource,
@@ -303,13 +303,15 @@ function encryptionRestoreBootstrapConfiguration(
     $plain = $recovery . '/config-restore-' . bin2hex(random_bytes(8)) . '.php';
     $temporary = $targetDirectory . '/.config-restore-' . bin2hex(random_bytes(8));
     try {
-        encryptionOpenFile($source, $plain, encryptionReadLocalKey($keyPath, $webRoot));
+        $key = encryptionReadLocalKey($keyPath, $webRoot);
+        encryptionOpenFile($source, $plain, $key);
         encryptionVerifyRecoveredStore($plain, 'config');
         $backup = null;
         if (is_file($target)) {
-            $backup = $recovery . '/config-before-restore-' . gmdate('Ymd\\THis\\Z') . '-' . bin2hex(random_bytes(4)) . '.php';
-            if (!copy($target, $backup)) throw new RuntimeException('could not save the current bootstrap configuration');
-            @chmod($backup, 0600);
+            $stamp = gmdate('Ymd\\THis\\Z') . '-' . bin2hex(random_bytes(4));
+            $backup = $recovery . '/config-before-restore-' . $stamp . '.sealed';
+            $record = encryptionSealFile($target, $backup, $key, 'config:before-restore:' . $stamp);
+            encryptionVerifySealedStoreArtifact($backup, $key, (int)$record['plaintext_bytes'], 'config');
         }
         if (!copy($plain, $temporary)) throw new RuntimeException('could not stage recovered bootstrap configuration');
         @chmod($temporary, 0600);
