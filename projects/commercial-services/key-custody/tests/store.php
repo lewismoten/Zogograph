@@ -119,6 +119,8 @@ try {
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'past-due subscription stored an envelope', $error->getMessage()); }
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'active', 2, null);
     $envelope = keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $sealedDataKey);
+    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], "account:\nforged", $sealedDataKey); throw new RuntimeException('multiline artifact identifier was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'multiline artifact identifier was accepted', $error->getMessage()); }
     custodyExpect(keyCustodyListEnvelopes($pdo, $management['tenant_id'], $key['id'])[0]['id'] === $envelope['id'], 'envelope metadata was not retained');
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['envelope_count'] === 1, 'management key list omitted registered envelope count');
     custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['envelope_used'] === 1, 'subscription metadata omitted current envelope use');

@@ -239,7 +239,7 @@ function keyCustodyCreateKey(PDO $pdo, string $tenant, string $name, int $ttl, s
 
 function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artifactId, string $master): string
 {
-    if (strlen($master) !== 32 || $artifactId === '' || strlen($artifactId) > 200) throw new InvalidArgumentException('custody key authorization is invalid');
+    if (strlen($master) !== 32 || !keyCustodyArtifactId($artifactId)) throw new InvalidArgumentException('custody key authorization is invalid');
     $envelope = $pdo->prepare('SELECT envelopes.envelope FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE envelopes.key_id = ? AND keys.tenant_id = ? AND envelopes.artifact_id = ?');
     $envelope->execute([$id, $tenant, $artifactId]);
     $sealed = $envelope->fetchColumn();
@@ -287,7 +287,7 @@ function keyCustodyStoreEnvelope(PDO $pdo, string $tenant, string $keyId, string
 {
     return keyCustodyWithWriteLock($pdo, function () use ($pdo, $tenant, $keyId, $artifactId, $envelope): array {
         keyCustodySubscriptionAllows($pdo, $tenant);
-        if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200 || !defined('SODIUM_CRYPTO_BOX_SEALBYTES') || $envelope === '' || strlen($envelope) !== SODIUM_CRYPTO_BOX_SEALBYTES + 32) {
+        if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || !keyCustodyArtifactId($artifactId) || !defined('SODIUM_CRYPTO_BOX_SEALBYTES') || $envelope === '' || strlen($envelope) !== SODIUM_CRYPTO_BOX_SEALBYTES + 32) {
             throw new InvalidArgumentException('key envelope request is invalid');
         }
         $key = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active' AND wrapping_public_key IS NOT NULL"); $key->execute([$keyId, $tenant]);
@@ -372,13 +372,20 @@ function keyCustodyListEnvelopes(PDO $pdo, string $tenant, string $keyId): array
 
 function keyCustodyDeleteEnvelope(PDO $pdo, string $tenant, string $keyId, string $artifactId): void
 {
-    if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200) {
+    if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || !keyCustodyArtifactId($artifactId)) {
         throw new InvalidArgumentException('key envelope deletion request is invalid');
     }
     $stmt = $pdo->prepare('DELETE FROM key_envelopes WHERE key_id = ? AND artifact_id = ? AND EXISTS (SELECT 1 FROM custody_keys WHERE id = ? AND tenant_id = ?)');
     $stmt->execute([$keyId, $artifactId, $keyId, $tenant]);
     if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('key envelope is unavailable');
     keyCustodyAudit($pdo, $tenant, 'envelope_delete', $keyId, 'artifact=' . $artifactId);
+}
+
+/** Artifact identifiers appear in audit metadata and must remain one bounded,
+ * printable record rather than an opportunity for log or display injection. */
+function keyCustodyArtifactId(string $artifactId): bool
+{
+    return $artifactId !== '' && strlen($artifactId) <= 200 && preg_match('/[\x00-\x1F\x7F]/', $artifactId) !== 1;
 }
 
 function keyCustodySetSubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt, int $envelopeQuota = 1000): void
