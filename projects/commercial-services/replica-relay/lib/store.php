@@ -1,15 +1,33 @@
 <?php
 declare(strict_types=1);
 
+/** Resolves a private absolute directory, rejecting aliases that could place
+ * relay ciphertext or metadata beneath a web-served tree. */
+function replicaRelayPrivateDirectory(string $path, ?string $webRoot = null): string
+{
+    if ($path === '' || !str_starts_with($path, '/') || is_link($path)) throw new RuntimeException('relay private path must be absolute and must not be a symbolic link');
+    if (!is_dir($path) && !mkdir($path, 0700, true) && !is_dir($path)) throw new RuntimeException('could not create relay private directory');
+    $real = realpath($path);
+    if ($real === false || is_link($path) || !is_dir($real)) throw new RuntimeException('relay private directory is unavailable or unsafe');
+    @chmod($real, 0700);
+    $root = $webRoot === null ? false : realpath($webRoot);
+    if (is_string($root) && ($real === $root || str_starts_with($real, rtrim($root, '/') . '/'))) {
+        throw new RuntimeException('relay private directory must be outside the web root');
+    }
+    return $real;
+}
+
 /** Opens the relay's private metadata store. Ciphertext itself stays in files. */
-function replicaRelayOpen(array $config): PDO
+function replicaRelayOpen(array $config, ?string $webRoot = null): PDO
 {
     $database = trim((string)($config['database'] ?? ''));
-    if ($database === '') throw new RuntimeException('relay database is not configured');
-    $directory = dirname($database);
-    if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) throw new RuntimeException('could not create relay data directory');
+    if ($database === '' || !str_starts_with($database, '/') || is_link($database)) throw new RuntimeException('relay database must be an absolute non-symlink path');
+    $directory = replicaRelayPrivateDirectory(dirname($database), $webRoot);
+    $database = $directory . '/' . basename($database);
+    if (is_link($database)) throw new RuntimeException('relay database must not be a symbolic link');
+    replicaRelayPrivateDirectory((string)($config['artifact_directory'] ?? ''), $webRoot);
     $pdo = new PDO('sqlite:' . $database, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-    $pdo->exec('PRAGMA foreign_keys = ON');
+    $pdo->exec('PRAGMA foreign_keys = ON'); $pdo->exec('PRAGMA busy_timeout = 5000'); @chmod($database, 0600);
     $pdo->exec('CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL, created_at INTEGER NOT NULL)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS access_tokens (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, scope TEXT NOT NULL, token_hash TEXT NOT NULL, public_key BLOB, created_at INTEGER NOT NULL, revoked_at INTEGER)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS access_tokens_tenant_scope ON access_tokens (tenant_id, scope, revoked_at)');
@@ -93,7 +111,7 @@ function replicaRelayCreateClientCredential(PDO $pdo, string $tenant): array
 
 function replicaRelayArtifactPath(array $config, string $tenant, string $artifact): string
 {
-    $root = rtrim((string)($config['artifact_directory'] ?? ''), '/');
+    $root = replicaRelayPrivateDirectory((string)($config['artifact_directory'] ?? ''));
     if ($root === '' || !preg_match('/^ten_[a-f0-9]{24}$/', $tenant) || !preg_match('/^[A-Za-z0-9._:-]{1,200}$/', $artifact)) throw new InvalidArgumentException('relay artifact identity is invalid');
     return $root . '/' . $tenant . '/' . hash('sha256', $artifact) . '.sealed';
 }

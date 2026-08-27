@@ -13,6 +13,11 @@ point, not a claim that SQLite is suitable for unlimited artifacts. Set
 paths outside the document root, and use object storage only through a later
 adapter that preserves the same tenant isolation and digest verification.
 
+The deployed API enforces that its SQLite directory and ciphertext directory
+are absolute, non-symlinked private paths outside its web root. It creates them
+with owner-only permissions; a relative or web-root path is refused instead of
+silently storing ciphertext beside the application.
+
 ## Quick deployment
 
 Copy `config.sample.php` to `config.php`, choose private absolute paths, deploy

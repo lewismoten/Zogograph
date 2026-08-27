@@ -6,6 +6,10 @@ $root = sys_get_temp_dir() . '/hostscope-relay-' . bin2hex(random_bytes(4)); mkd
 try {
     $config = ['database' => $root . '/service.db', 'artifact_directory' => $root . '/artifacts', 'maximum_artifact_bytes' => 1024];
     $pdo = replicaRelayOpen($config); $tenant = replicaRelayCreateTenant($pdo, 'Example');
+    try { replicaRelayOpen(['database' => 'relative.db', 'artifact_directory' => $root . '/bad']); throw new RuntimeException('relative relay database path was accepted'); }
+    catch (RuntimeException $error) { relayExpect($error->getMessage() !== 'relative relay database path was accepted', $error->getMessage()); }
+    try { replicaRelayOpen(['database' => $root . '/bad.db', 'artifact_directory' => 'relative-artifacts']); throw new RuntimeException('relative relay artifact directory was accepted'); }
+    catch (RuntimeException $error) { relayExpect($error->getMessage() !== 'relative relay artifact directory was accepted', $error->getMessage()); }
     $management = replicaRelayAuthenticate($pdo, $tenant['management_token'], 'management');
     $private = base64_decode($tenant['client_signing_private_key'], true); relayExpect(is_string($private), 'relay enrollment signing key is invalid');
     $artifact = 'account:20260827'; $ciphertext = random_bytes(256); $path = '/v1/artifacts/' . $artifact; $timestamp = (string)time(); $nonce = 'nonce_' . bin2hex(random_bytes(12));

@@ -13,7 +13,7 @@ $timestamp = (string)($_SERVER['HTTP_X_HOSTSCOPE_TIMESTAMP'] ?? ''); $nonce = (s
 $body = '';
 function relayReply(int $status, array $body): never { http_response_code($status); header('Content-Type: application/json'); echo json_encode($body, JSON_UNESCAPED_SLASHES); exit; }
 try {
-    $pdo = replicaRelayOpen($config);
+    $pdo = replicaRelayOpen($config, __DIR__);
     if ($path === '/v1/artifacts' && $method === 'GET') { $auth = replicaRelayAuthenticate($pdo, $bearer, 'management'); relayReply(200, ['artifacts' => replicaRelayListArtifacts($pdo, $auth['tenant_id'])]); }
     if (preg_match('#^/v1/artifacts/([^/]{1,600})$#', $path, $match) && $method === 'PUT') {
         $artifactId = rawurldecode($match[1]);
