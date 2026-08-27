@@ -441,13 +441,14 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     $settings = (array)($config['encryption'] ?? []);
     $mode = (string)($settings['mode'] ?? 'none');
     $stores = encryptionSelectedStores($settings);
-    $status = ['mode' => $mode, 'stores' => $stores, 'policy' => encryptionPolicySummary($settings), 'waiting_stores' => [], 'superseded_artifacts' => [], 'retired_artifacts' => [], 'ready' => false, 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null];
+    $status = ['mode' => $mode, 'stores' => $stores, 'policy' => encryptionPolicySummary($settings), 'waiting_stores' => [], 'superseded_artifacts' => [], 'retired_artifacts' => [], 'ready' => false, 'evidence' => 'none', 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null];
     if ($mode === 'none') {
         $status['warnings'][] = 'Encryption is off. Live SQLite files and copies remain unencrypted unless host storage protection is configured separately.';
         return $status;
     }
     if ($mode === 'operator_managed_volume') {
         $status['ready'] = $stores !== [];
+        $status['evidence'] = $stores === [] ? 'none' : 'operator_declared';
         $status['warnings'][] = 'HostScope cannot verify host or volume encryption. Confirm that the selected databases, WAL files, logs, and backups are covered by your host policy.';
         return $status;
     }
@@ -508,6 +509,7 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
         }
     }
     $status['ready'] = $expected !== [] && encryptionAvailable() && count(array_filter($status['warnings'], fn(string $warning): bool => !str_contains($warning, 'is not present yet, so it is waiting'))) === 0;
+    if ($status['ready']) $status['evidence'] = 'verified_sealed_copies';
     return $status;
 }
 

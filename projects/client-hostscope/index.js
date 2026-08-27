@@ -11735,10 +11735,11 @@ function showPackageRuntimeRevoke(row) {
 function renderEncryptionStatus(data) {
   const body = $("encryptionBody");
   const names = { none: "Off", sealed_copies_local: "Verified encrypted copies", operator_managed_volume: "Host/VM volume protection" };
+  const evidence = { none: "No protection evidence", operator_declared: "Operator-declared host/volume coverage (not verified)", verified_sealed_copies: "Verified encrypted-copy and recovery evidence" };
   const overview = [
     ["Protection mode", names[data.mode] || "Unavailable"],
     ["Selected stores", data.stores?.length ? data.stores.join(", ") : "None"],
-    ["Evidence", data.ready ? "Ready" : "Needs attention"],
+    ["Protection evidence", evidence[data.evidence] || "Needs attention"],
   ];
   if (data.storage_estimate?.required_bytes) {
     const free = data.storage_estimate.free_bytes == null ? "free space unavailable" : `${humanBytes(data.storage_estimate.free_bytes)} free`;
@@ -11761,7 +11762,7 @@ function renderEncryptionStatus(data) {
   if (data.mode === "none") {
     parts.push(note("Protection is off. Live SQLite databases and ordinary copies remain unencrypted unless your host protects their storage separately. Start with the setup wizard's Encryption section; HostScope will not generate, upload, or store a private key from this page."));
   } else if (data.mode === "operator_managed_volume") {
-    parts.push(note("HostScope records your host/VM protection policy but cannot verify it. Confirm that every selected database, SQLite WAL/SHM companion, configuration file, log, export, and backup destination is covered. This is not evidence of a verified encrypted copy."));
+    parts.push(note("HostScope records your host/VM protection policy but cannot verify it. The displayed evidence is your declaration, not a verified encrypted copy. Confirm that every selected database, SQLite WAL/SHM companion, configuration file, log, export, and backup destination is covered."));
   } else if (data.mode === "sealed_copies_local") {
     parts.push(note("Verified encrypted copies protect backup artifacts, not the running SQLite database. Run `php cron.php --seal` and then `php cron.php --recovery-drill` from the server after setup. The drill decrypts and validates current copies without touching live data; schedule seals separately. Recovery requires the private key outside the web root and an explicit CLI restore."));
     parts.push(note("Bootstrap configuration recovery is deliberately CLI-only: `scripts/restore-config.php` authenticates and parses the sealed PHP without executing it, atomically replaces `lib/config.php`, and leaves the prior configuration as a sealed rollback artifact. Test the recovered settings before deleting that artifact."));
