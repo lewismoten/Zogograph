@@ -102,7 +102,8 @@ function hostDb(array $config, bool $forWriting): ?PDO
     }
 
     $fresh = !file_exists($file);
-
+    $previousUmask = umask(0077);
+    try {
     $pdo = new PDO('sqlite:' . $file, null, null, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -114,12 +115,10 @@ function hostDb(array $config, bool $forWriting): ?PDO
     $pdo->exec('PRAGMA busy_timeout = 10000');
 
     hostMigrate($pdo, $fresh);
-
-    if ($fresh) {
-        hostHandOver($config, $file);
-    }
+    hostHandOver($config, $file);
 
     return $handles[$key] = $pdo;
+    } finally { umask($previousUmask); }
 }
 
 /**
