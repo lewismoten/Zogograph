@@ -13,6 +13,10 @@ $root = sys_get_temp_dir() . '/hostscope-custody-' . bin2hex(random_bytes(4)); m
 try {
     $pdo = keyCustodyOpen(['database' => $root . '/service.db']);
     $tenant = keyCustodyCreateTenant($pdo, 'Example');
+    [$initialClientTokenId] = explode('.', $tenant['client_token'], 2);
+    $pdo->prepare('INSERT INTO client_nonces (token_id, nonce, expires_at) VALUES (?, ?, ?)')->execute([$initialClientTokenId, 'expired_nonce_abcdefghijklmnop', time() - 1]);
+    keyCustodyOpen(['database' => $root . '/service.db']);
+    custodyExpect((int)$pdo->query('SELECT COUNT(*) FROM client_nonces')->fetchColumn() === 0, 'expired client replay nonce was not pruned during service open');
     $management = keyCustodyAuthenticate($pdo, $tenant['management_token'], 'management');
     $client = keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client');
     $private = base64_decode($tenant['client_signing_private_key'], true);
