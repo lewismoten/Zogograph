@@ -120,6 +120,13 @@ and immediately revokes all previous enrolled-client credentials for that
 tenant. Update the client package's two `secret_ref:` values together before
 retiring the old deployment.
 
+If a customer management token is exposed, use it once to call
+`POST /v1/management-credentials/rotate`. The response contains a replacement
+management token once and revokes every prior management token for that tenant.
+Record the replacement in the account-management system before closing the
+current session; neither a client credential nor the commercial billing token
+can perform this recovery action.
+
 Key rotation is staged to preserve recovery. `PATCH /v1/keys/{keyId}` with
 `{"action":"rotate"}` creates a replacement and marks the old key
 `rotating`; it remains able to unwrap its existing registered envelopes. Create

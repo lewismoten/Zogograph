@@ -35,6 +35,11 @@ try {
     try { keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], 'POST', $tamperedPath, $tamperedTime, $tamperedNonce, $tamperedSignature, '{"artifact_id":"changed"}'); throw new RuntimeException('body changed after signing was accepted'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'body changed after signing was accepted', $error->getMessage()); }
     custodyExpect($management['tenant_id'] === $client['tenant_id'], 'tenant tokens do not authenticate to the same tenant');
+    $replacementManagement = keyCustodyRotateManagementCredential($pdo, $management['tenant_id']);
+    try { keyCustodyAuthenticate($pdo, $tenant['management_token'], 'management'); throw new RuntimeException('rotated management credential remained active'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'rotated management credential remained active', $error->getMessage()); }
+    $management = keyCustodyAuthenticate($pdo, $replacementManagement, 'management');
+    custodyExpect($management['tenant_id'] === $client['tenant_id'], 'replacement management credential did not authenticate');
     $replacementCredential = keyCustodyRotateClientCredential($pdo, $management['tenant_id']);
     try { keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client'); throw new RuntimeException('rotated client credential remained active'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'rotated client credential remained active', $error->getMessage()); }

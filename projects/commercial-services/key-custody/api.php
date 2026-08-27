@@ -76,6 +76,12 @@ try {
         custodyReply(201, ['client_token' => $credential['token'], 'client_signing_private_key' => $credential['signing_private_key'],
             'warning' => 'Store both values now. The service cannot show them again; the previous enrolled-client credential has been revoked.']);
     }
+    if ($path === '/v1/management-credentials/rotate' && $method === 'POST') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management');
+        $token = keyCustodyRotateManagementCredential($pdo, $auth['tenant_id']);
+        custodyReply(201, ['management_token' => $token,
+            'warning' => 'Store this management token now. The service cannot show it again; every prior management token for this tenant has been revoked.']);
+    }
     if ($path === '/v1/audit' && $method === 'GET') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management');
         custodyReply(200, ['events' => keyCustodyAuditEvents($pdo, $auth['tenant_id'], (int)($_GET['limit'] ?? 50))]);

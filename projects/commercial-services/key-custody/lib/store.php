@@ -91,6 +91,20 @@ function keyCustodyRotateClientCredential(PDO $pdo, string $tenant): array
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
 }
 
+/** Revokes every prior management token and emits the replacement once. */
+function keyCustodyRotateManagementCredential(PDO $pdo, string $tenant): string
+{
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare("UPDATE access_tokens SET revoked_at = ? WHERE tenant_id = ? AND scope = 'management' AND revoked_at IS NULL")
+            ->execute([time(), $tenant]);
+        $token = keyCustodyCreateToken($pdo, $tenant, 'management');
+        keyCustodyAudit($pdo, $tenant, 'management_credential_rotate', $tenant, 'prior management credentials revoked');
+        $pdo->commit();
+        return $token;
+    } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
+}
+
 /** @return array{tenant_id:string,scope:string} */
 function keyCustodyAuthenticate(PDO $pdo, string $token, string $requiredScope): array
 {
