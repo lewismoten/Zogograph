@@ -45,6 +45,12 @@ reviewed permission boundary exist. Installing a package today may expose its
 metadata and settings schema, but cannot imply that its proposed protection is
 active.
 
+The Package runtime page nevertheless performs a non-executing readiness
+check. It reports missing PHP extensions, an unavailable SQLCipher PDO driver,
+or the absent isolation runtime in plain language before an administrator
+spends time entering package settings. “Platform ready” is only a prerequisite;
+it is never a live-encryption or provider-connection claim.
+
 ## Where a product owner changes this later
 
 | decision | authoritative future location | do not change it by |
