@@ -14,7 +14,7 @@
     "README.md": "09fa348077dda95432ab4a9bfe5e19da38813786826561eba39f9436826bb8f4",
     "settings.schema.json": "9ee915f584d6fcc6c68bb8e07e0f1c93e389b587b3e175a7486e114b7d425fbf",
     "src/KeyCustodyProvider.php": "0f5b2dada755086273dc2c52f5ab977ef6eda48034c57bb15f2a5feb0cdefe39",
-    "src/KeyCustodyHttpClient.php": "910164e5d9f944559c241c6b733b56d5cbe355ec0006dd2a1ea91b6fb3d128dd"
+    "src/KeyCustodyHttpClient.php": "51c85ec546098fa53c2be7432910d78fc4562029f186bd31a689a9ecbf805feb"
   }},
   "state": "design-preview"
 }

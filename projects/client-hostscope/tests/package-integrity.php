@@ -27,6 +27,8 @@ try {
     $custodySignature = sodium_crypto_sign_detached($custodyPayload, $custodySecret);
     packageExpect(sodium_crypto_sign_verify_detached($custodySignature, $custodyPayload, sodium_crypto_sign_publickey($custodyPair)),
         'custody request signature does not verify');
+    try { new \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient('https://user@example.test', 'test-token', base64_encode($custodySecret)); throw new RuntimeException('custody client accepted an ambiguous endpoint'); }
+    catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'custody client accepted an ambiguous endpoint', $error->getMessage()); }
     $custodySource = file_get_contents(__DIR__ . '/../plugins/hostscope-key-custody/src/KeyCustodyHttpClient.php');
     packageExpect($custodySource !== false && str_contains($custodySource, 'int $requestedTtl = 0')
         && str_contains($custodySource, "'requested_ttl_seconds' => \$requestedTtl")

@@ -13,7 +13,7 @@ final class KeyCustodyHttpClient
     public function __construct(private readonly string $baseUrl, private readonly string $clientToken, string $clientSigningKey)
     {
         $url = parse_url($baseUrl);
-        if (!is_array($url) || ($url['scheme'] ?? null) !== 'https' || !is_string($url['host'] ?? null)
+        if (!filter_var($baseUrl, FILTER_VALIDATE_URL) || !is_array($url) || strtolower((string)($url['scheme'] ?? '')) !== 'https' || !is_string($url['host'] ?? null)
             || $url['host'] === '' || isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment']) || $clientToken === '') {
             throw new \InvalidArgumentException('key custody endpoint or client credential is invalid');
         }
