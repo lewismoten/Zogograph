@@ -38,4 +38,24 @@ final class KeyCustodyProvider
                 ? 'The enrolled client credential is accepted and may store a future wrapped data-key envelope. No envelope or key was requested.'
                 : 'The enrolled client credential is accepted, but its current subscription or envelope quota does not permit a new envelope. No envelope or key was requested.'];
     }
+
+    /**
+     * Seals exactly one caller-created artifact DEK for the configured custody
+     * key and stores only that sealed envelope. The returned receipt deliberately
+     * excludes the envelope and data key.
+     * @return array{id:string,state:string,reason:string,envelope_sha256:string}
+     */
+    public function storeEnvelope(string $serviceBaseUrl, string $clientCredential, string $clientSigningKey, string $keyId, string $artifactId, string $dataKey, ?string $tlsSpkiPin = null): array
+    {
+        if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200
+            || preg_match('/[\x00-\x1F\x7F]/', $artifactId) || strlen($dataKey) !== 32) {
+            throw new \InvalidArgumentException('custody envelope storage input is invalid');
+        }
+        $client = new KeyCustodyHttpClient($serviceBaseUrl, $clientCredential, $clientSigningKey, $tlsSpkiPin);
+        $envelope = KeyCustodyHttpClient::sealDataKey($dataKey, $client->wrappingPublicKey($keyId));
+        $client->storeEnvelope($keyId, $artifactId, $envelope);
+        return ['id' => 'hostscope-key-custody', 'state' => 'envelope-stored',
+            'reason' => 'The custody service accepted one sealed data-key envelope. The data key and envelope were not returned to HostScope core.',
+            'envelope_sha256' => hash('sha256', $envelope)];
+    }
 }
