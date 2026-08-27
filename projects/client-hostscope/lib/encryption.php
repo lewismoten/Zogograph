@@ -648,6 +648,32 @@ function encryptionRecordArtifacts(PDO $pdo, array $artifacts): void
     }
 }
 
+/** Records an intended optional custody envelope after local artifact recovery
+ * has already been verified. It stores identifiers and hashes, never a DEK or
+ * provider envelope body. */
+function encryptionRecordRemoteEnvelopePending(PDO $pdo, string $artifactId, string $providerPackage, string $providerKeyId): void
+{
+    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $providerPackage) || !preg_match('/^key_[a-f0-9]{32}$/', $providerKeyId)) {
+        throw new InvalidArgumentException('remote custody provider identity is invalid');
+    }
+    $artifact = $pdo->prepare("SELECT ciphertext_sha256 FROM encryption_artifacts WHERE artifact_id = ? AND state = 'verified'"); $artifact->execute([$artifactId]); $hash = $artifact->fetchColumn();
+    if (!is_string($hash) || !preg_match('/^[a-f0-9]{64}$/', $hash)) throw new InvalidArgumentException('a verified local artifact is required before remote custody can be recorded');
+    $pdo->prepare('INSERT INTO encryption_remote_envelopes (artifact_id, provider_package, provider_key_id, ciphertext_sha256, envelope_sha256, state, requested_at, stored_at, verified_at, detail)
+        VALUES (?, ?, ?, ?, NULL, ?, ?, NULL, NULL, NULL)
+        ON CONFLICT(artifact_id, provider_package, provider_key_id) DO UPDATE SET ciphertext_sha256 = excluded.ciphertext_sha256, envelope_sha256 = NULL, state = excluded.state, requested_at = excluded.requested_at, stored_at = NULL, verified_at = NULL, detail = NULL')
+        ->execute([$artifactId, $providerPackage, $providerKeyId, $hash, 'pending', time()]);
+}
+
+/** Marks a provider receipt only when it matches the original ciphertext fact. */
+function encryptionRecordRemoteEnvelopeStored(PDO $pdo, string $artifactId, string $providerPackage, string $providerKeyId, string $ciphertextSha256, string $envelopeSha256): void
+{
+    if (!preg_match('/^[a-f0-9]{64}$/', $ciphertextSha256) || !preg_match('/^[a-f0-9]{64}$/', $envelopeSha256)) throw new InvalidArgumentException('remote envelope receipt hashes are invalid');
+    $stmt = $pdo->prepare("UPDATE encryption_remote_envelopes SET envelope_sha256 = ?, state = 'stored', stored_at = ?, detail = NULL
+        WHERE artifact_id = ? AND provider_package = ? AND provider_key_id = ? AND ciphertext_sha256 = ? AND state = 'pending'");
+    $stmt->execute([$envelopeSha256, time(), $artifactId, $providerPackage, $providerKeyId, $ciphertextSha256]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('remote envelope receipt does not match a pending verified artifact');
+}
+
 /** Re-authenticates retained artifacts without leaving plaintext on disk.
  * It is intentionally an explicit CLI/scheduled operation, not page-load work. */
 function encryptionVerifyConfiguredCopies(array $config, PDO $pdo, string $webRoot): array

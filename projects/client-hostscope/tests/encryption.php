@@ -266,9 +266,20 @@ try {
         encryptionExpect(str_contains((string)file_get_contents($root . '/restored-config.php'), "'private' => true"),
             'sealed configuration copy differs from source');
         $live->exec('CREATE TABLE encryption_artifacts (artifact_id TEXT PRIMARY KEY, store TEXT, created_at INTEGER, last_verified_at INTEGER, last_recovery_drill_at INTEGER, local_path TEXT, ciphertext_bytes INTEGER, ciphertext_sha256 TEXT, state TEXT)');
+        $live->exec('CREATE TABLE encryption_remote_envelopes (artifact_id TEXT NOT NULL, provider_package TEXT NOT NULL, provider_key_id TEXT NOT NULL, ciphertext_sha256 TEXT NOT NULL, envelope_sha256 TEXT, state TEXT NOT NULL, requested_at INTEGER NOT NULL, stored_at INTEGER, verified_at INTEGER, detail TEXT, PRIMARY KEY (artifact_id, provider_package, provider_key_id))');
         encryptionRecordArtifacts($live, $copies);
         encryptionExpect((int)$live->query('SELECT COUNT(*) FROM encryption_artifacts')->fetchColumn() === 2,
             'sealed artifacts were not recorded for replication');
+        $remoteArtifact = (string)$copies[1]['artifact_id']; $remoteCiphertext = (string)$copies[1]['sha256'];
+        encryptionRecordRemoteEnvelopePending($live, $remoteArtifact, 'hostscope-key-custody', 'key_' . str_repeat('a', 32));
+        encryptionExpect((string)$live->query("SELECT state FROM encryption_remote_envelopes WHERE artifact_id = '" . $remoteArtifact . "'")->fetchColumn() === 'pending',
+            'remote custody intent was not recorded against a verified local artifact');
+        $envelopeHash = hash('sha256', 'test remote envelope receipt');
+        encryptionRecordRemoteEnvelopeStored($live, $remoteArtifact, 'hostscope-key-custody', 'key_' . str_repeat('a', 32), $remoteCiphertext, $envelopeHash);
+        encryptionExpect((string)$live->query("SELECT state FROM encryption_remote_envelopes WHERE artifact_id = '" . $remoteArtifact . "'")->fetchColumn() === 'stored',
+            'matching remote custody receipt did not become stored evidence');
+        try { encryptionRecordRemoteEnvelopeStored($live, $remoteArtifact, 'hostscope-key-custody', 'key_' . str_repeat('a', 32), str_repeat('0', 64), $envelopeHash); throw new RuntimeException('mismatched remote custody receipt was accepted'); }
+        catch (InvalidArgumentException $error) { encryptionExpect($error->getMessage() !== 'mismatched remote custody receipt was accepted', $error->getMessage()); }
         $reverified = encryptionVerifyConfiguredCopies($config, $live, $web);
         encryptionExpect($reverified['verified'] === 2 && $reverified['failed'] === 0,
             'retained encrypted artifacts were not re-verified');

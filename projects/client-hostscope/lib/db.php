@@ -194,6 +194,24 @@ function migrationStatementApplied(PDO $pdo, string $sql): bool
 function migrations(): array
 {
     return [
+        56 => [
+            /* Remote custody is additive recovery evidence for a local sealed
+             * artifact. This ledger deliberately stores no DEK or envelope. */
+            'CREATE TABLE encryption_remote_envelopes (
+                artifact_id TEXT NOT NULL REFERENCES encryption_artifacts(artifact_id) ON DELETE CASCADE,
+                provider_package TEXT NOT NULL,
+                provider_key_id TEXT NOT NULL,
+                ciphertext_sha256 TEXT NOT NULL,
+                envelope_sha256 TEXT,
+                state TEXT NOT NULL,
+                requested_at INTEGER NOT NULL,
+                stored_at INTEGER,
+                verified_at INTEGER,
+                detail TEXT,
+                PRIMARY KEY (artifact_id, provider_package, provider_key_id)
+            )',
+            'CREATE INDEX encryption_remote_envelopes_state ON encryption_remote_envelopes (provider_package, state, requested_at DESC)',
+        ],
         55 => [
             /* A recovery drill is deliberately separate from routine artifact
              * verification: it is the operator's recorded proof that current
