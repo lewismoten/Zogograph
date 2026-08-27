@@ -20,6 +20,7 @@ file_put_contents($source . '/settings.schema.json', json_encode([
 file_put_contents($source . '/migrations/001-private-evidence.sql', "CREATE TABLE private_evidence (value TEXT NOT NULL);\n");
 try {
     $api = file_get_contents(__DIR__ . '/../api.php'); $dashboard = file_get_contents(__DIR__ . '/../index.js'); $page = file_get_contents(__DIR__ . '/../index.html');
+    $sandboxTemplate = file_get_contents(__DIR__ . '/../deploy/package-worker.compose.example.yml');
     runtimeExpect($api !== false && str_contains($api, "'package-runtime-enable' => 'sys-packages'")
         && str_contains($api, "'package-runtime-secret-create' => 'sys-packages'")
         && str_contains($api, "'package-runtime-revoke' => 'sys-packages'"), 'package runtime writes are not page-access gated');
@@ -28,6 +29,10 @@ try {
         && str_contains($dashboard, 'Platform unavailable') && str_contains($dashboard, 'no-secret capability probe'), 'dashboard does not explain the package execution boundary');
     runtimeExpect($page !== false && str_contains($page, 'data-view="sys-packages"')
         && str_contains($page, 'id="packageRuntimeBody"'), 'package runtime dashboard view is unavailable');
+    runtimeExpect($sandboxTemplate !== false && str_contains($sandboxTemplate, 'network_mode: none')
+        && str_contains($sandboxTemplate, 'read_only: true') && str_contains($sandboxTemplate, 'cap_drop:')
+        && str_contains($sandboxTemplate, 'stdin_open: true') && !str_contains($sandboxTemplate, 'config.php'),
+        'package worker deployment template no longer preserves its sandbox boundary');
     $pair = sodium_crypto_sign_keypair();
     $trustedKey = ['test-publisher' => ['publisher' => 'Test publisher',
         'public_key' => base64_encode(sodium_crypto_sign_publickey($pair))]];
