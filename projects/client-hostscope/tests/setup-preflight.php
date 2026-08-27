@@ -28,6 +28,8 @@ try {
         @unlink($root . '/data/setup.db');
     }
     @unlink($root . '/setup-target.db');
+    saveConfiguredSettings(['database' => $root . '/data/stats.db', 'scan_root' => $root, 'timezone' => 'UTC'], $config, $root . '/lib');
+    setupExpect((fileperms($config) & 0077) === 0, 'bootstrap configuration has broad permissions');
     $setup = setupStoreOpen(['database' => $root . '/data/stats.db'], true);
     foreach ([$root . '/data/setup.db', $root . '/data/setup.db-wal', $root . '/data/setup.db-shm'] as $privateFile) if (is_file($privateFile)) {
         setupExpect((fileperms($privateFile) & 0077) === 0, 'setup SQLite file has broad permissions');

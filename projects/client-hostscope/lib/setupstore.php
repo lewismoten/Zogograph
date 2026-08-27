@@ -101,11 +101,14 @@ function saveConfiguredSettings(array $config, string $configFile, string $libDi
     $text = "<?php\ndeclare(strict_types=1);\n\n/* Boot settings. The rest live in ../data/setup.db. */\n\nreturn "
         . setupStoreRender($bootstrap, $libDir) . ";\n";
     $temporary = $configFile . '.new';
-    if (@file_put_contents($temporary, $text, LOCK_EX) === false || !@rename($temporary, $configFile)) {
-        @unlink($temporary);
-        throw new RuntimeException('could not replace the bootstrap config');
-    }
-    @chmod($configFile, 0600);
+    $previousUmask = umask(0077);
+    try {
+        if (@file_put_contents($temporary, $text, LOCK_EX) === false || !@rename($temporary, $configFile)) {
+            @unlink($temporary);
+            throw new RuntimeException('could not replace the bootstrap config');
+        }
+        @chmod($configFile, 0600);
+    } finally { umask($previousUmask); }
 }
 
 /** Whether settings can be saved without changing the PHP bootstrap. */
