@@ -66,6 +66,13 @@ Complete the form, set an administrator password, and save. The wizard writes
 the minimal `lib/config.php` bootstrap and stores the remaining settings in
 `data/setup.db`.
 
+If you configure a local encryption key, HostScope also encrypts the complete
+settings record in `setup.db` automatically. The bootstrap retains only the
+key's absolute path—not the key material—so retain an owner-only offline copy
+of that key with your private setup-database backup. Without a configured key,
+`setup.db` relies on its owner-only file permissions and is not encrypted at
+rest.
+
 Alternatively, from the deployed directory, run the same wizard in a terminal:
 
 ```bash

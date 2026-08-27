@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__ . '/encryption.php';
 
 /*
  * Durable setup configuration, separate from the measurement database.
@@ -61,17 +62,25 @@ function loadConfiguredSettings(string $configFile): array
     try {
         $store = setupStoreOpen($bootstrap, false);
         if ($store === null) return $bootstrap;
-        $value = $store->query("SELECT value FROM setup_values WHERE name = 'config'")->fetchColumn();
-        $saved = is_string($value) ? json_decode($value, true) : null;
+        $sealed = $store->query("SELECT value FROM setup_values WHERE name = 'config_encrypted'")->fetchColumn();
+        if (is_string($sealed) && $sealed !== '') {
+            $saved = setupStoreOpenConfig($sealed, (string)($bootstrap['setup_key_file'] ?? ''));
+        } else {
+            $value = $store->query("SELECT value FROM setup_values WHERE name = 'config'")->fetchColumn();
+            $saved = is_string($value) ? json_decode($value, true) : null;
+        }
         if (!is_array($saved)) return $bootstrap;
         // Paths required before setup.db opens always come from the bootstrap.
         foreach (['database', 'scan_root', 'timezone'] as $key) {
             if (array_key_exists($key, $bootstrap)) $saved[$key] = $bootstrap[$key];
         }
         return $saved;
-    } catch (Throwable) {
+    } catch (Throwable $error) {
         // A damaged optional setup store must not turn a recoverable legacy
-        // config into a blank dashboard. setup.php can repair it explicitly.
+        // config into a blank dashboard. An encrypted setup record is
+        // different: falling back without its password/access policy would be
+        // unsafe, so setup.php must repair it with the configured key.
+        if (trim((string)($bootstrap['setup_key_file'] ?? '')) !== '') throw $error;
         return $bootstrap;
     }
 }
@@ -83,6 +92,14 @@ function saveConfiguredSettings(array $config, string $configFile, string $libDi
     foreach (['scan_root', 'timezone', 'database'] as $key) {
         if (array_key_exists($key, $config)) $bootstrap[$key] = $config[$key];
     }
+    $encryption = (array)($config['encryption'] ?? []);
+    $keyPath = trim((string)($encryption['local_key_file'] ?? ''));
+    if ($keyPath !== '') {
+        /* Keep only a locator in config.php. The key remains outside the web
+         * root and is required to open the full setup policy. */
+        setupStoreConfigKey($keyPath, dirname($libDir));
+        $bootstrap['setup_key_file'] = $keyPath;
+    }
     $current = is_file($configFile) ? require $configFile : null;
     $replaceBootstrap = !is_array($current) || $current !== $bootstrap;
     if ($replaceBootstrap && !is_writable(is_file($configFile) ? $configFile : dirname($configFile))) {
@@ -90,11 +107,22 @@ function saveConfiguredSettings(array $config, string $configFile, string $libDi
     }
     $store = setupStoreOpen($bootstrap, true);
     if ($store === null) throw new RuntimeException('could not open setup.db');
-    $encoded = json_encode($config, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    if (!is_string($encoded)) throw new RuntimeException('could not encode settings');
-    $store->prepare('INSERT INTO setup_values (name, value, updated_at) VALUES (?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
-        ->execute(['config', $encoded, time()]);
+    $encoded = json_encode($config, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+    $store->beginTransaction();
+    try {
+        if ($keyPath !== '') {
+            $store->prepare('INSERT INTO setup_values (name, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+                ->execute(['config_encrypted', setupStoreSealConfig($encoded, $keyPath, dirname($libDir)), time()]);
+            $store->prepare('DELETE FROM setup_values WHERE name = ?')->execute(['config']);
+        } else {
+            $store->prepare('INSERT INTO setup_values (name, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at')
+                ->execute(['config', $encoded, time()]);
+            $store->prepare('DELETE FROM setup_values WHERE name = ?')->execute(['config_encrypted']);
+        }
+        $store->commit();
+    } catch (Throwable $error) { $store->rollBack(); throw $error; }
 
     if (!$replaceBootstrap) return;
 
@@ -109,6 +137,43 @@ function saveConfiguredSettings(array $config, string $configFile, string $libDi
         }
         @chmod($configFile, 0600);
     } finally { umask($previousUmask); }
+}
+
+/** Derive a distinct key so configuration encryption cannot be confused with a sealed artifact. */
+function setupStoreConfigKey(string $path, string $webRoot): string
+{
+    if (!encryptionAvailable()) throw new RuntimeException('OpenSSL AES-256-GCM support is required to encrypt setup settings');
+    $key = hash_hkdf('sha256', encryptionReadLocalKey($path, $webRoot), 32, 'HostScope setup configuration v1');
+    if (!is_string($key) || strlen($key) !== 32) throw new RuntimeException('could not derive the setup configuration key');
+    return $key;
+}
+
+/** @return string compact JSON envelope, suitable only for the private setup store */
+function setupStoreSealConfig(string $plain, string $path, string $webRoot): string
+{
+    $nonce = random_bytes(12);
+    $ciphertext = openssl_encrypt($plain, 'aes-256-gcm', setupStoreConfigKey($path, $webRoot), OPENSSL_RAW_DATA,
+        $nonce, $tag, 'HostScope setup configuration v1', 16);
+    if (!is_string($ciphertext) || !is_string($tag)) throw new RuntimeException('could not encrypt setup settings');
+    return json_encode(['v' => 1, 'n' => base64_encode($nonce), 'c' => base64_encode($ciphertext), 't' => base64_encode($tag)], JSON_THROW_ON_ERROR);
+}
+
+/** @return array<string,mixed> */
+function setupStoreOpenConfig(string $envelope, string $path): array
+{
+    $data = json_decode($envelope, true, 16, JSON_THROW_ON_ERROR);
+    if (!is_array($data) || ($data['v'] ?? null) !== 1 || trim($path) === '') throw new RuntimeException('encrypted setup settings are unavailable');
+    $nonce = base64_decode((string)($data['n'] ?? ''), true);
+    $ciphertext = base64_decode((string)($data['c'] ?? ''), true);
+    $tag = base64_decode((string)($data['t'] ?? ''), true);
+    if (!is_string($nonce) || strlen($nonce) !== 12 || !is_string($ciphertext) || $ciphertext === '' || !is_string($tag) || strlen($tag) !== 16) {
+        throw new RuntimeException('encrypted setup settings are invalid');
+    }
+    $plain = openssl_decrypt($ciphertext, 'aes-256-gcm', setupStoreConfigKey($path, dirname(__DIR__)), OPENSSL_RAW_DATA,
+        $nonce, $tag, 'HostScope setup configuration v1');
+    $decoded = is_string($plain) ? json_decode($plain, true, 128, JSON_THROW_ON_ERROR) : null;
+    if (!is_array($decoded)) throw new RuntimeException('encrypted setup settings could not be opened');
+    return $decoded;
 }
 
 /** Whether settings can be saved without changing the PHP bootstrap. */

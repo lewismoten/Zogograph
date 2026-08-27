@@ -43,34 +43,35 @@ authenticated website/API.
 | TLS public-key pin | before enabling it or rotating a pinned service certificate key | provider package settings | A pin supplements CA validation but can block recovery if it is not migrated before the service certificate key changes. |
 | Product/domain naming | before public launch or rebrand | commercial-site deployment settings | Domains and labels must not change encrypted artifact identifiers, peer identities, signing keys, or stored customer data. |
 
-## Deferred setup-credential vault
+## Setup configuration at rest
 
-`setup.db` currently holds the authenticated settings record. Its portable
-protection is a sealed copy; live protection remains the operator's encrypted
-volume or a future verified SQLCipher package. A future optional field vault
-may encrypt bounded credentials inside that record, but it must be introduced
-as a migration, not as a blanket recursive transformation.
+When a valid local HostScope key file is configured, `lib/setupstore.php`
+automatically stores the complete authenticated configuration as an
+AES-256-GCM encrypted, versioned record in `setup.db`. It derives a distinct
+configuration key from the local key, uses fixed authenticated associated data,
+and deletes the old plaintext `config` record in the same SQLite transaction.
+This covers bounded settings such as password hashes, TOTP secrets, provider
+credentials, package policies, and access settings without making each caller
+implement its own field vault.
 
-- Keep the minimal bootstrap (`database`, `scan_root`, timezone, and any
-  vault-key locator) readable before `setup.db` opens; never encrypt the only
-  information needed to locate its recovery key.
-- Start only with bounded secret values such as TOTP secrets, Telegram tokens,
-  model-provider keys, private signing keys, and enrolled-provider credentials.
-  Do not field-encrypt queryable paths, metrics, access groups, or policy
-  structures without defining their indexing and migration behavior.
-- Require an external owner-only key file, a successful decrypt/restart check,
-  and a retained verified recovery artifact before replacing any plaintext
-  value. Keep the feature off by default.
-- Preserve a versioned envelope, key identifier, authenticated associated data
-  naming the exact setting, and an explicit key-rotation/recovery procedure.
-  Never store the vault key, plaintext fallback, or recovery password in
-  `setup.db`, logs, browser storage, or a URL.
+`lib/config.php` retains only the database/scan/timezone bootstrap and the
+absolute locator of the external key; it never contains the key itself. If an
+encrypted configuration cannot be opened, HostScope fails closed instead of
+silently falling back to a bootstrap without its authentication policy. Keep a
+private backup of both the setup database and the owner-only key file, then
+verify a restart/recovery before relying on the change.
 
-The initial implementation location is `lib/setupstore.php`; configuration UI
-must be added through the authenticated setup flow, and every consumer of a
-vaulted value must receive plaintext only in process memory. Review this design
-before treating field protection as a substitute for volume or SQLCipher
-encryption.
+An installation with no local key keeps its setup configuration plaintext but
+requires private `0600` SQLite permissions. That preserves the low-cost SQLite
+quick-start path, but it is not encrypted at rest. Enabling a local key on the
+next authenticated setup save migrates the record automatically. Removing the
+key path deliberately returns to the private-permissions-only form, so do not
+do that until a recovery copy is verified.
+
+This is not live database/volume encryption: `setup.db` is decrypted by the
+HostScope process while in use. Use encrypted storage/volume protection or a
+verified future SQLCipher package when an attacker with offline disk access is
+in scope.
 
 ## Recommended initial product direction
 
