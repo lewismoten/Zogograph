@@ -18,6 +18,10 @@ try {
     catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'replayed relay request was accepted', $error->getMessage()); }
     try { replicaRelayStoreArtifact($pdo, $config, $client['tenant_id'], $artifact, $ciphertext, str_repeat('0', 64)); throw new RuntimeException('relay accepted mismatched ciphertext digest'); }
     catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'relay accepted mismatched ciphertext digest', $error->getMessage()); }
+    $largeContent = random_bytes(1025); $large = fopen('php://temp', 'w+b'); fwrite($large, $largeContent); rewind($large);
+    try { replicaRelayStoreArtifactStream($pdo, $config, $client['tenant_id'], 'account:oversize', $large, hash('sha256', $largeContent)); throw new RuntimeException('relay accepted oversized ciphertext'); }
+    catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'relay accepted oversized ciphertext', $error->getMessage()); }
+    finally { fclose($large); }
     replicaRelayDeleteArtifact($pdo, $config, $management['tenant_id'], $artifact);
     relayExpect(replicaRelayListArtifacts($pdo, $management['tenant_id']) === [], 'relay ciphertext metadata remained after deletion');
     echo "replica relay store checks passed\n";

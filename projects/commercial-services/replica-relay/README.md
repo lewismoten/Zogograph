@@ -31,8 +31,9 @@ credential is a key-custody credential and neither grants any unwrap access.
 
 `PUT /v1/artifacts/{artifactId}` accepts raw ciphertext, requires an exact
 SHA-256 in `X-HostScope-Ciphertext-SHA256`, verifies it before recording
-metadata, and atomically replaces the private ciphertext file. A signed client
-can later `GET` that artifact; the relay rehashes it before delivery. Management
+metadata, streams it to a private temporary file under the configured size
+ceiling, and atomically replaces the ciphertext file. A signed client can later
+`GET` that artifact; the relay rehashes it before delivery. Management
 may list metadata with `GET /v1/artifacts` or delete one artifact. Deletion is
 irreversible at this relay, so the management UI must require confirmation of
 another verified recovery copy first.

@@ -34,12 +34,20 @@ function replicaRelayAuthenticate(PDO $pdo, string $bearer, string $scope): arra
 /** @return array{tenant_id:string,scope:string,token_id:string} */
 function replicaRelayAuthenticateClientRequest(PDO $pdo, string $bearer, string $method, string $path, string $timestamp, string $nonce, string $signature, string $body): array
 {
+    return replicaRelayAuthenticateClientDigestRequest($pdo, $bearer, $method, $path, $timestamp, $nonce, $signature, hash('sha256', $body, true));
+}
+
+/** Authenticates a signed request from a known SHA-256 digest without buffering
+ * the ciphertext body. The digest is the exact final line of the signature
+ * payload, Base64-encoded, matching the normal in-memory request form. */
+function replicaRelayAuthenticateClientDigestRequest(PDO $pdo, string $bearer, string $method, string $path, string $timestamp, string $nonce, string $signature, string $digest): array
+{
     $auth = replicaRelayAuthenticate($pdo, $bearer, 'client');
     if (!ctype_digit($timestamp) || abs(time() - (int)$timestamp) > 300 || !preg_match('/^[A-Za-z0-9_-]{16,200}$/', $nonce)) throw new InvalidArgumentException('relay request timestamp or nonce is invalid');
     $key = $pdo->prepare('SELECT public_key FROM access_tokens WHERE id = ? AND tenant_id = ? AND scope = ? AND revoked_at IS NULL');
     $key->execute([$auth['token_id'], $auth['tenant_id'], 'client']); $public = $key->fetchColumn();
     $decoded = base64_decode($signature, true);
-    if (!is_string($public) || !is_string($decoded) || !function_exists('sodium_crypto_sign_verify_detached') || !sodium_crypto_sign_verify_detached($decoded, replicaRelayClientPayload($method, $path, $timestamp, $nonce, $body), $public)) throw new InvalidArgumentException('relay request signature is invalid');
+    if (!is_string($public) || !is_string($decoded) || strlen($digest) !== 32 || !function_exists('sodium_crypto_sign_verify_detached') || !sodium_crypto_sign_verify_detached($decoded, replicaRelayClientDigestPayload($method, $path, $timestamp, $nonce, $digest), $public)) throw new InvalidArgumentException('relay request signature is invalid');
     try { $pdo->prepare('INSERT INTO client_nonces (token_id, nonce, expires_at) VALUES (?, ?, ?)')->execute([$auth['token_id'], $nonce, time() + 600]); }
     catch (PDOException) { throw new InvalidArgumentException('relay request nonce was already used'); }
     return $auth;
@@ -47,7 +55,13 @@ function replicaRelayAuthenticateClientRequest(PDO $pdo, string $bearer, string 
 
 function replicaRelayClientPayload(string $method, string $path, string $timestamp, string $nonce, string $body): string
 {
-    return strtoupper($method) . "\n" . $path . "\n" . $timestamp . "\n" . $nonce . "\n" . hash('sha256', $body);
+    return replicaRelayClientDigestPayload($method, $path, $timestamp, $nonce, hash('sha256', $body, true));
+}
+
+function replicaRelayClientDigestPayload(string $method, string $path, string $timestamp, string $nonce, string $digest): string
+{
+    if (strlen($digest) !== 32) throw new InvalidArgumentException('relay ciphertext digest is invalid');
+    return strtoupper($method) . "\n" . $path . "\n" . $timestamp . "\n" . $nonce . "\n" . base64_encode($digest);
 }
 
 /** @return array{tenant_id:string,management_token:string,client_token:string,client_signing_private_key:string} */
@@ -87,16 +101,38 @@ function replicaRelayArtifactPath(array $config, string $tenant, string $artifac
 /** @return array{artifact_id:string,sha256:string,bytes:int,created_at:int} */
 function replicaRelayStoreArtifact(PDO $pdo, array $config, string $tenant, string $artifact, string $ciphertext, string $providedHash): array
 {
+    $stream = fopen('php://temp', 'w+b'); if ($stream === false) throw new RuntimeException('could not prepare relay artifact');
+    try { fwrite($stream, $ciphertext); rewind($stream); return replicaRelayStoreArtifactStream($pdo, $config, $tenant, $artifact, $stream, $providedHash); }
+    finally { fclose($stream); }
+}
+
+/** Streams ciphertext to private storage, verifies its supplied digest, then
+ * atomically makes the file visible with matching SQLite metadata.
+ * @return array{artifact_id:string,sha256:string,bytes:int,created_at:int} */
+function replicaRelayStoreArtifactStream(PDO $pdo, array $config, string $tenant, string $artifact, $stream, string $providedHash): array
+{
     $maximum = (int)($config['maximum_artifact_bytes'] ?? 0);
-    if ($maximum < 1 || strlen($ciphertext) < 1 || strlen($ciphertext) > $maximum || !preg_match('/^[a-f0-9]{64}$/', $providedHash) || !hash_equals($providedHash, hash('sha256', $ciphertext))) throw new InvalidArgumentException('relay artifact content or digest is invalid');
+    if ($maximum < 1 || !preg_match('/^[a-f0-9]{64}$/', $providedHash)) throw new InvalidArgumentException('relay artifact content or digest is invalid');
     $path = replicaRelayArtifactPath($config, $tenant, $artifact); $directory = dirname($path);
     if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) throw new RuntimeException('could not create private relay artifact directory');
     $temporary = $path . '.tmp.' . bin2hex(random_bytes(8));
-    if (file_put_contents($temporary, $ciphertext, LOCK_EX) !== strlen($ciphertext) || !rename($temporary, $path)) { @unlink($temporary); throw new RuntimeException('could not store relay artifact'); }
+    $output = fopen($temporary, 'xb'); if ($output === false) throw new RuntimeException('could not prepare relay artifact storage');
+    $hash = hash_init('sha256'); $bytes = 0;
+    try {
+        while (!feof($stream)) {
+            $chunk = fread($stream, 1048576); if ($chunk === false) throw new RuntimeException('could not read relay ciphertext');
+            if ($chunk === '') continue;
+            $bytes += strlen($chunk); if ($bytes > $maximum) throw new InvalidArgumentException('relay artifact exceeds its configured size limit');
+            hash_update($hash, $chunk); if (fwrite($output, $chunk) !== strlen($chunk)) throw new RuntimeException('could not write relay ciphertext');
+        }
+    } catch (Throwable $error) { @unlink($temporary); throw $error; }
+    finally { fclose($output); }
+    if ($bytes < 1 || !hash_equals($providedHash, hash_final($hash))) { @unlink($temporary); throw new InvalidArgumentException('relay artifact content or digest is invalid'); }
+    if (!rename($temporary, $path)) { @unlink($temporary); throw new RuntimeException('could not store relay artifact'); }
     @chmod($path, 0600); $now = time();
-    $pdo->prepare('INSERT INTO artifacts (tenant_id, artifact_id, sha256, bytes, created_at, verified_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, artifact_id) DO UPDATE SET sha256=excluded.sha256, bytes=excluded.bytes, created_at=excluded.created_at, verified_at=excluded.verified_at')->execute([$tenant, $artifact, $providedHash, strlen($ciphertext), $now, $now]);
+    $pdo->prepare('INSERT INTO artifacts (tenant_id, artifact_id, sha256, bytes, created_at, verified_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, artifact_id) DO UPDATE SET sha256=excluded.sha256, bytes=excluded.bytes, created_at=excluded.created_at, verified_at=excluded.verified_at')->execute([$tenant, $artifact, $providedHash, $bytes, $now, $now]);
     replicaRelayAudit($pdo, $tenant, 'artifact_store', $artifact, 'ciphertext hash verified');
-    return ['artifact_id' => $artifact, 'sha256' => $providedHash, 'bytes' => strlen($ciphertext), 'created_at' => $now];
+    return ['artifact_id' => $artifact, 'sha256' => $providedHash, 'bytes' => $bytes, 'created_at' => $now];
 }
 
 /** @return list<array{artifact_id:string,sha256:string,bytes:int,created_at:int,verified_at:int}> */
