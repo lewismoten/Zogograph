@@ -121,6 +121,31 @@ function keyCustodyStoreEnvelope(PDO $pdo, string $tenant, string $keyId, string
     return ['id' => $id, 'artifact_id' => $artifactId, 'created_at' => $now];
 }
 
+function keyCustodyDisableKey(PDO $pdo, string $tenant, string $id): void
+{
+    $stmt = $pdo->prepare("UPDATE custody_keys SET state = 'disabled' WHERE id = ? AND tenant_id = ? AND state = 'active'");
+    $stmt->execute([$id, $tenant]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('active custody key is unavailable');
+    keyCustodyAudit($pdo, $tenant, 'key_disable', $id, 'management request');
+}
+
+/** @return array{id:string,name:string,authorization_ttl:int,state:string} */
+function keyCustodyRotateKey(PDO $pdo, string $tenant, string $id, string $master): array
+{
+    $old = $pdo->prepare("SELECT name, authorization_ttl FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'");
+    $old->execute([$id, $tenant]); $row = $old->fetch();
+    if (!is_array($row)) throw new InvalidArgumentException('active custody key is unavailable');
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare("UPDATE custody_keys SET state = 'rotating', rotated_at = ? WHERE id = ?")->execute([time(), $id]);
+        $replacement = keyCustodyCreateKey($pdo, $tenant, $row['name'], (int)$row['authorization_ttl'], $master);
+        $pdo->prepare("UPDATE custody_keys SET state = 'retired' WHERE id = ?")->execute([$id]);
+        keyCustodyAudit($pdo, $tenant, 'key_rotate', $id, 'replacement=' . $replacement['id']);
+        $pdo->commit();
+        return $replacement;
+    } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
+}
+
 /** @return list<array{id:string,artifact_id:string,created_at:int}> */
 function keyCustodyListEnvelopes(PDO $pdo, string $tenant, string $keyId): array
 {
