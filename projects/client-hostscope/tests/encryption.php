@@ -38,7 +38,7 @@ try {
         'dashboard does not explain encrypted-copy limitations');
     encryptionExpect($page !== false && str_contains($page, 'data-view="sys-encryption"')
         && str_contains($page, 'id="encryptionBody"'), 'dashboard protection view is unavailable');
-    encryptionExpect($rotation !== false && str_contains($rotation, "state = 'superseded'")
+    encryptionExpect($rotation !== false && str_contains($rotation, 'encryptionRotateConfiguredArtifacts')
         && str_contains($rotation, 'saveConfiguredSettings') && str_contains($rotation, '--confirm'),
         'configured sealed-copy rotation does not preserve recovery evidence before switching keys');
 
@@ -168,6 +168,16 @@ try {
         $failedStatus = encryptionStatus($live, $retentionConfig, $web);
         encryptionExpect(str_contains(implode(' ', $failedStatus['warnings']), 'failed their last verification'),
             'failed encrypted artifact was not visible in protection status');
+        $rotationConfig = $config; $rotationSaved = false;
+        $rotatedConfigured = encryptionRotateConfiguredArtifacts($rotationConfig, $live, $web, $replacementKeyPath,
+            function (array $updated) use (&$rotationSaved): void { $rotationSaved = isset($updated['encryption']['local_key_file']); });
+        encryptionExpect(count($rotatedConfigured) === 1 && $rotationSaved
+            && $rotationConfig['encryption']['local_key_file'] === $replacementKeyPath,
+            'configured sealed-copy rotation did not prepare recovery evidence before switching keys');
+        encryptionExpect((int)$live->query("SELECT COUNT(*) FROM encryption_artifacts WHERE state = 'superseded'")->fetchColumn() >= 1
+            && (int)$live->query("SELECT COUNT(*) FROM encryption_artifacts WHERE state = 'verified'")->fetchColumn() >= 1,
+            'configured sealed-copy rotation did not retain old and new recovery evidence separately');
+        encryptionOpenFile((string)$rotatedConfigured[0]['local_path'], $root . '/rotated-configured.db', $replacement);
     }
 
     $tampered = $root . '/tampered.sealed';
