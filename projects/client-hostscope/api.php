@@ -5618,6 +5618,7 @@ function packageRuntimeView(array $config, PDO $pdo, bool $signedIn): array
     foreach ($packages as &$package) {
         $package['probe_configured'] = isset($invokers[$package['id']]);
         $package['probe_evidence'] = $evidence[$package['id']] ?? null;
+        $package['provider_readiness'] = packageRuntimeProviderReadiness($pdo, $config, $package['id']);
     }
     unset($package);
     return ['packages' => $packages, 'trusted_publishers' => $publishers,

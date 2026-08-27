@@ -448,7 +448,14 @@ function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $
     packageRuntimeValidateSettings($settings);
     packageRuntimeValidateSettingsSecretReferences($settings, $id);
     packageRuntimeValidateManifestSettings($pdo, $id, $settings);
-    foreach (packageRuntimeSettingsSecretReferences($settings, $id) as $reference) {
+    $references = packageRuntimeSettingsSecretReferences($settings, $id);
+    if ($id === 'hostscope-key-custody' && $references !== []) {
+        $probe = packageRuntimeProbeOperationEvidence($config, $id, 'custody_endpoint_probe');
+        if ($probe === null || $probe['state'] !== 'endpoint-ready' || $probe['probed_at'] < time() - 86400) {
+            throw new InvalidArgumentException('run a successful custody endpoint test within the last 24 hours before saving enrollment secret references');
+        }
+    }
+    foreach ($references as $reference) {
         if (!packageRuntimeSecretExists($config, $id, $reference)) {
             throw new InvalidArgumentException('store the referenced package secret before saving these settings');
         }
@@ -822,4 +829,45 @@ function packageRuntimeProbeEvidence(array $config): array
         'operation' => (string)$row['operation'], 'state' => (string)$row['state'], 'reason' => (string)$row['reason'], 'probed_at' => (int)$row['probed_at'],
     ];
     return $out;
+}
+
+/** @return ?array{operation:string,state:string,reason:string,probed_at:int} */
+function packageRuntimeProbeOperationEvidence(array $config, string $id, string $operation): ?array
+{
+    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id) || !in_array($operation, ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe'], true)) {
+        throw new InvalidArgumentException('package probe operation is invalid');
+    }
+    $store = setupStoreOpen($config, false);
+    if ($store === null || (int)$store->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'package_runtime_probe_evidence'")->fetchColumn() !== 1) return null;
+    $stmt = $store->prepare('SELECT operation, state, reason, probed_at FROM package_runtime_probe_evidence WHERE package_id = ? AND operation = ?');
+    $stmt->execute([$id, $operation]); $row = $stmt->fetch();
+    return is_array($row) ? ['operation' => (string)$row['operation'], 'state' => (string)$row['state'],
+        'reason' => (string)$row['reason'], 'probed_at' => (int)$row['probed_at']] : null;
+}
+
+/** @return array{state:string,reason:string,endpoint_tested:bool,enrollment_references_ready:bool} */
+function packageRuntimeProviderReadiness(PDO $registry, array $config, string $id): array
+{
+    packageRuntimeInstalled($registry, $id);
+    if ($id !== 'hostscope-key-custody') return ['state' => 'not-applicable', 'reason' => 'This package has no remote-provider enrollment flow.',
+        'endpoint_tested' => false, 'enrollment_references_ready' => false];
+    $settings = packageRuntimeSettings($registry, $config, $id);
+    $endpointConfigured = is_string($settings['service_base_url'] ?? null) && $settings['service_base_url'] !== ''
+        && is_string($settings['tenant_id'] ?? null) && preg_match('/^ten_[a-f0-9]{24}$/', $settings['tenant_id']) === 1;
+    if (!$endpointConfigured) return ['state' => 'needs-endpoint', 'reason' => 'Save the HTTPS custody service URL and tenant identifier before testing the endpoint.',
+        'endpoint_tested' => false, 'enrollment_references_ready' => false];
+    $probe = packageRuntimeProbeOperationEvidence($config, $id, 'custody_endpoint_probe');
+    $endpointTested = $probe !== null && $probe['state'] === 'endpoint-ready' && $probe['probed_at'] >= time() - 86400;
+    if (!$endpointTested) return ['state' => 'needs-endpoint-test', 'reason' => 'Run a successful custody endpoint test after saving this endpoint. Tests older than 24 hours must be repeated before enrollment references are accepted.',
+        'endpoint_tested' => false, 'enrollment_references_ready' => false];
+    $referencesReady = true;
+    foreach (['client_credential_secret', 'client_signing_secret'] as $field) {
+        $reference = $settings[$field] ?? null;
+        try { if (!is_string($reference) || !packageRuntimeSecretExists($config, $id, $reference)) $referencesReady = false; }
+        catch (InvalidArgumentException) { $referencesReady = false; }
+    }
+    if (!$referencesReady) return ['state' => 'needs-enrollment-references', 'reason' => 'Create and save separate encrypted client-credential and signing-key references after the endpoint test. Never enter raw credentials in settings.',
+        'endpoint_tested' => true, 'enrollment_references_ready' => false];
+    return ['state' => 'awaiting-isolated-runtime', 'reason' => 'Endpoint identity and encrypted enrollment references are ready. Remote custody remains inactive until a reviewed isolated runtime is installed and the provider operation release gate is complete.',
+        'endpoint_tested' => true, 'enrollment_references_ready' => true];
 }

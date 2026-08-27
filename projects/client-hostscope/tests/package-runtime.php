@@ -99,6 +99,9 @@ try {
     migrate($pdo, true);
     $installed = packageRuntimeInstall($config, $pdo, $source, 'administrator');
     runtimeExpect(is_file($installed['install_path'] . '/src/Provider.php'), 'signed package file was not installed');
+    $genericReadiness = packageRuntimeProviderReadiness($pdo, $config, 'test-runtime');
+    runtimeExpect($genericReadiness['state'] === 'not-applicable' && !$genericReadiness['endpoint_tested'],
+        'non-provider package received an incorrect custody readiness state');
     runtimeExpect(packageRuntimeSettings($pdo, $config, 'test-runtime')['retention_days'] === 30,
         'signed package settings defaults were not shown before setup');
     if (function_exists('proc_open')) {

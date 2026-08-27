@@ -11666,6 +11666,7 @@ function renderPackageRuntime(data) {
     { label: "Platform", render: row => row.compatibility?.status === "ready" ? "Ready" : row.compatibility?.detail || "Not checked" },
     { label: "Requested capabilities", render: row => row.capabilities.join(", ") },
     { label: "Granted", render: row => row.grants.length ? row.grants.join(", ") : "None" },
+    { label: "Provider setup", render: row => row.provider_readiness?.state === "not-applicable" ? "—" : row.provider_readiness?.reason || "Not applicable" },
     { label: "Last isolated probe", render: row => row.probe_evidence ? `${humanTime(row.probe_evidence.probed_at)} · ${row.probe_evidence.operation}: ${row.probe_evidence.state} — ${row.probe_evidence.reason}` : "Not run" },
     { label: "Status", render: row => row.state },
     { label: "", className: "row-actions", render: row => packageRuntimeActions(row, data.can_change) },
@@ -11749,8 +11750,8 @@ function showCustodyPackageSettings(row, saved) {
     fieldRow("Tenant ID", tenant, "The ten_… identifier from enrollment. It is not a credential."),
     fieldRow("TLS public-key pin", pin, "Optional. Leave blank for the recommended normal CA/hostname validation. A pin needs an endpoint certificate-key rotation plan."),
     fieldRow("Data-key cache", cache, "Recommended: 0 seconds. A nonzero cache can keep a released data key usable until it expires; 900 seconds is the maximum."),
-    fieldRow("Client credential reference", credential, "Create an encrypted package secret first, then paste only its secret_ref: value. Never paste a raw bearer token here."),
-    fieldRow("Client signing-key reference", signing, "Create a second encrypted package secret for the one-time Base64 Ed25519 signing key. Never paste the private key here."),
+    fieldRow("Client credential reference", credential, "After a successful endpoint test within 24 hours, create an encrypted package secret and paste only its secret_ref: value. Never paste a raw bearer token here."),
+    fieldRow("Client signing-key reference", signing, "After that same test, create a second encrypted package secret for the one-time Base64 Ed25519 signing key. Never paste the private key here."),
   ], async () => {
     const settings = { service_base_url: base.value.trim(), tenant_id: tenant.value.trim(), authorization_cache_seconds: Number(cache.value) };
     if (pin.value.trim()) settings.tls_spki_pin = pin.value.trim();

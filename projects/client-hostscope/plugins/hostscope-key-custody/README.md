@@ -32,6 +32,10 @@ create package-scoped secret references for the enrolled-client bearer and
 signing key. A successful probe is not enrollment, a package activation, or a
 proof that a live database can be recovered.
 
+HostScope requires a successful endpoint result less than 24 hours old before
+it accepts either enrollment reference. Save only opaque `secret_ref:` values;
+the raw bearer and private signing key never belong in normal package settings.
+
 It first reads only the custody key's X25519 public wrapping key, generates a
 fresh artifact data key locally, and sends that key only as a sealed envelope
 with its artifact identifier and authenticated request metadata. It must not
