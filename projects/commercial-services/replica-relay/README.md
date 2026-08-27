@@ -22,8 +22,11 @@ tenant-specific limits without changing the ciphertext protocol.
 
 The deployed API enforces that its SQLite directory and ciphertext directory
 are absolute, non-symlinked private paths outside its web root. It creates them
-with owner-only permissions; a relative or web-root path is refused instead of
-silently storing ciphertext beside the application.
+with owner-only permissions, including SQLite WAL/SHM companion files; a
+relative or web-root path is refused instead of silently storing ciphertext
+beside the application. Private permissions prevent accidental local reads but
+are not a substitute for encrypted volume storage when the service metadata
+also requires live at-rest encryption.
 
 ## Quick deployment
 

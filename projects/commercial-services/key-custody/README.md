@@ -13,8 +13,12 @@ combined tenant credential.
 
 The custody API enforces that its SQLite metadata directory is an absolute,
 non-symlinked private path outside the deployed web root. It creates the
-directory and database with owner-only permissions; a relative or web-served
-database location is refused rather than treated as a convenience default.
+directory, database, and SQLite WAL/SHM companion files with owner-only
+permissions; a relative or web-served database location is refused rather than
+treated as a convenience default. This filesystem hardening limits accidental
+local disclosure but is not itself live database encryption; use encrypted
+volume storage or a later verified database-encryption deployment when that is
+required.
 
 ### Existing symmetric records
 
