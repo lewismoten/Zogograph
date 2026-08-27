@@ -198,6 +198,16 @@ try {
             'mode' => 'sealed_copies_local', 'local_key_file' => $keyPath,
             'artifact_directory' => $root . '/sealed', 'stores' => ['config', 'account'],
         ]];
+        if (function_exists('symlink')) {
+            $configTarget = $web . '/lib/config.php'; $configReal = $root . '/real-config.php';
+            copy($configTarget, $configReal); @unlink($configTarget);
+            if (@symlink($configReal, $configTarget)) {
+                try { encryptionSealConfiguredCopies($config, $live, $web); throw new RuntimeException('symlinked selected configuration source was sealed'); }
+                catch (RuntimeException $error) { encryptionExpect($error->getMessage() !== 'symlinked selected configuration source was sealed', $error->getMessage()); }
+                @unlink($configTarget); copy($configReal, $configTarget); chmod($configTarget, 0600);
+            } else { copy($configReal, $configTarget); chmod($configTarget, 0600); }
+            @unlink($configReal);
+        }
         $copies = encryptionSealConfiguredCopies($config, $live, $web);
         encryptionExpect(count($copies) === 2 && $copies[0]['store'] === 'config'
             && $copies[1]['store'] === 'account', 'configured sealed copies were not made');

@@ -270,6 +270,7 @@ function encryptionSealConfiguredCopies(array $config, PDO $account, string $web
     $out = [];
     foreach ($stores as $store) {
         if (!is_file($paths[$store])) continue;
+        if (is_link($paths[$store])) throw new RuntimeException("selected {$store} source must not be a symbolic link");
         $stamp = gmdate('Ymd\\THis\\Z') . '-' . bin2hex(random_bytes(4));
         $artifact = $store . ':' . $stamp;
         $sealed = $directory . '/' . $store . '.' . $stamp . '.sealed';
