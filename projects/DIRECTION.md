@@ -120,6 +120,30 @@ Keep these as administration records, not source edits:
 - whether a customer can bring its own KMS/HSM, and which provider packages
   have been tested and supported.
 
+## What can be enabled now
+
+The customer client can use local, verified sealed copies with a local key file
+outside the web root. The administrator selects stores and schedule through
+the Protection interface, records recovery evidence, and can periodically
+rehash and authenticate retained artifacts without leaving decrypted copies on
+disk. This is the recommended first deployment on a VPS, shared host, or
+single machine.
+
+The following are intentionally visible only as future, optional package
+directions: live SQLCipher conversion, fleet custody, ciphertext relays,
+external KMS/HSM providers, MySQL/MariaDB storage, and Redis caching. An
+installed executable package can be reviewed, granted only its declared
+capabilities, configured using its signed schema, given a package-scoped secret
+reference, and revoked. It cannot execute until the isolated runtime is built.
+This preserves customer choice without claiming that an untested provider is
+already protecting live data.
+
+The key-custody service is a separate reference deployment, not a default
+customer dependency. If it is offered later, keep its base URL, plan/price,
+retention, recovery contacts, and supported-package matrix in commercial
+database-backed settings. A rebrand or domain migration then changes content
+and endpoint configuration, never an artifact identity or key format.
+
 The detailed encryption design and implementation state live in
 [`client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md`](client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md).
 The operator-facing review checklist is

@@ -223,21 +223,24 @@ and migrations but do not get broad access to core or other-package data.
 Marketplace packages provide encryption methods: sealed copies, SQLCipher,
 self-managed fleet custody, ciphertext replicas, cloud KMS/HSM adapters,
 commercial HostScope key hosting, storage backends, and optional caches. The
-current marketplace intentionally accepts data-only manifests, so it must be
-upgraded to a signed isolated runtime with capability grants, secret references,
-per-package storage, revocation, compatibility tests, and audit logging before
-any of these packages can execute. Commercial key hosting remains optional and
-must not become a hidden dependency of local encryption.
+client now has a signed package registry, explicit capability grants,
+schema-validated database-backed settings, encrypted secret references,
+per-package SQLite data, declarative private migrations, integrity rechecks,
+and administrator revocation. It deliberately still does **not** load package
+PHP: code execution awaits an isolation runtime and a reviewed permission
+boundary. Commercial key hosting remains optional and must not become a hidden
+dependency of local encryption.
 
 ## Delivery order and evidence
 
 1. Add the signed isolated marketplace runtime, package settings/secrets store,
    capability grants, private package migrations, and audit/revocation model.
-   The initial registry, signed installation, explicit grants, private SQLite
-   storage, CLI workflow, status API, encrypted secret references, and signed
-   declarative private migrations are implemented. Isolated code loading,
-   package settings UI, revocation, and a runtime permission boundary remain
-   before packages may execute.
+   The registry, signed installation, explicit grants, schema-validated
+   database-backed settings UI/API, private SQLite storage, CLI workflow,
+   status API, encrypted secret references, signed declarative private
+   migrations, integrity rechecks, and revocation are implemented. Isolated
+   code loading and a runtime permission boundary remain before packages may
+   execute.
 2. Move the current sealed-copy implementation behind a built-in disabled
    `sealed-copies` package; add setup inventory, recovery proof, restore,
    retention, status, and alerting.
@@ -258,3 +261,24 @@ Every stage needs tests proving that a ciphertext-only copy cannot be read with
 no key, that tampering is detected, that keys never appear in logs/exported
 diagnostics, that an interrupted conversion retains the original readable data,
 and that a key-loss/recovery scenario behaves exactly as the UI states.
+
+## Current release gate
+
+The portable sealed-copy path is ready for an administrator to configure,
+exercise, and monitor. It produces verified AES-GCM artifacts and can recheck
+retained ciphertext without retaining plaintext. The Protection dashboard must
+continue to call this **backup protection**, not live database encryption.
+
+The SQLCipher adapter can detect a real SQLCipher PDO build and opens no normal
+SQLite fallback, but it is not activatable: the package runtime does not yet
+execute package code and no recovery-tested conversion path exists. Fleet
+replication, self-managed custody, third-party KMS/HSM packages, MySQL/MariaDB
+storage, and Redis remain design/package work. The commercial key-custody
+reference service is separately testable and requires signed enrollment plus
+an active service entitlement for new envelopes; it is not connected to a
+client runtime or needed for local recovery.
+
+Before enabling any one of these gated capabilities, record the exact package
+version, supported platform image, recovery drill result, responsible operator,
+and next review date in the commercial/admin settings database. Do not make
+that decision by editing a client source file.
