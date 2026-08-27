@@ -209,9 +209,12 @@ list. This management token remains separate from every enrolled-client,
 billing-control, and recovery-key credential.
 
 An account-management client may delete one named envelope with
-`DELETE /v1/keys/{keyId}/envelopes/{artifactId}`. This does not delete the
-custody key or any other artifact envelope. It is irreversible from the
-service's perspective: verify another recovery path before making the request.
+`DELETE /v1/keys/{keyId}/envelopes/{artifactId}` with JSON
+`{"confirm_recovery":true}`. The management CLI requires the corresponding
+`delete-envelope KEY_ID ARTIFACT_ID --confirm-recovery` flag. This does not
+delete the custody key or any other artifact envelope. It is irreversible from
+the service's perspective: verify another recovery path before making the
+request.
 `GET /v1/keys` includes each key's `envelope_count`, so an operator can see
 which key still protects retained artifacts before attempting a staged rotation,
 retirement, or disablement.

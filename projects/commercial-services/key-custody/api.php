@@ -69,6 +69,10 @@ try {
     }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/envelopes/(.+)$#', $path, $match) && $method === 'DELETE') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management');
+        $body = custodyBody($rawBody);
+        if (($body['confirm_recovery'] ?? false) !== true) {
+            throw new InvalidArgumentException('confirm_recovery must be true after verifying another recovery path');
+        }
         $artifactId = rawurldecode($match[2]);
         keyCustodyDeleteEnvelope($pdo, $auth['tenant_id'], $match[1], $artifactId);
         custodyReply(200, ['key_id' => $match[1], 'artifact_id' => $artifactId, 'state' => 'deleted',

@@ -7,7 +7,7 @@ if (PHP_SAPI !== 'cli') { http_response_code(403); exit("This management command
 function custodyManageUsage(): never
 {
     fwrite(STDERR, "Usage: php scripts/manage-remote.php --base-url https://custody.example/v1 [--token-file /secure/management.token] [--tls-spki-pin sha256//...] COMMAND [ARGUMENTS]\n\n"
-        . "Commands:\n  health\n  keys\n  create-key NAME TTL_SECONDS\n  update-policy KEY_ID TTL_SECONDS [NAME]\n  rotate-key KEY_ID\n  disable-key KEY_ID\n  retire-key KEY_ID\n  envelopes KEY_ID\n  delete-envelope KEY_ID ARTIFACT_ID\n  subscription\n  request-plan PLAN\n  request-cancel\n  withdraw-request REQUEST_ID\n  billing-portal\n  checkout\n");
+        . "Commands:\n  health\n  keys\n  create-key NAME TTL_SECONDS\n  update-policy KEY_ID TTL_SECONDS [NAME]\n  rotate-key KEY_ID\n  disable-key KEY_ID\n  retire-key KEY_ID\n  envelopes KEY_ID\n  delete-envelope KEY_ID ARTIFACT_ID --confirm-recovery\n  subscription\n  request-plan PLAN\n  request-cancel\n  withdraw-request REQUEST_ID\n  billing-portal\n  checkout\n");
     exit(64);
 }
 
@@ -65,6 +65,7 @@ if (!function_exists('curl_init')) { fwrite(STDERR, "cURL is required for remote
 $options = []; $arguments = [];
 for ($index = 1; $index < $argc; $index++) {
     $argument = $argv[$index];
+    if ($argument === '--confirm-recovery') { $options['confirm-recovery'] = true; continue; }
     foreach (['base-url', 'token-file', 'tls-spki-pin'] as $name) {
         if ($argument === '--' . $name) {
             if (!isset($argv[++$index])) custodyManageUsage();
@@ -89,7 +90,7 @@ try {
     elseif ($command === 'update-policy' && (count($arguments) === 2 || count($arguments) === 3) && preg_match('/^key_[a-f0-9]{32}$/', $arguments[0]) && ctype_digit($arguments[1])) { $method = 'PATCH'; $path = '/keys/' . $arguments[0]; $body = ['action' => 'update_policy', 'authorization_ttl_seconds' => (int)$arguments[1]] + (isset($arguments[2]) ? ['name' => $arguments[2]] : []); }
     elseif (in_array($command, ['rotate-key', 'disable-key', 'retire-key'], true) && count($arguments) === 1 && preg_match('/^key_[a-f0-9]{32}$/', $arguments[0])) { $method = 'PATCH'; $path = '/keys/' . $arguments[0]; $body = ['action' => str_replace('-key', '', $command)]; }
     elseif ($command === 'envelopes' && count($arguments) === 1 && preg_match('/^key_[a-f0-9]{32}$/', $arguments[0])) $path = '/keys/' . $arguments[0] . '/envelopes';
-    elseif ($command === 'delete-envelope' && count($arguments) === 2 && preg_match('/^key_[a-f0-9]{32}$/', $arguments[0])) { $method = 'DELETE'; $path = '/keys/' . $arguments[0] . '/envelopes/' . rawurlencode($arguments[1]); }
+    elseif ($command === 'delete-envelope' && count($arguments) === 2 && !empty($options['confirm-recovery']) && preg_match('/^key_[a-f0-9]{32}$/', $arguments[0])) { $method = 'DELETE'; $path = '/keys/' . $arguments[0] . '/envelopes/' . rawurlencode($arguments[1]); $body = ['confirm_recovery' => true]; }
     elseif ($command === 'subscription' && $arguments === []) $path = '/subscription';
     elseif ($command === 'request-plan' && count($arguments) === 1) { $method = 'PATCH'; $path = '/subscription'; $body = ['action' => 'change_plan', 'plan' => $arguments[0]]; }
     elseif ($command === 'request-cancel' && $arguments === []) { $method = 'PATCH'; $path = '/subscription'; $body = ['action' => 'cancel']; }
