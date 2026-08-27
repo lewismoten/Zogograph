@@ -22,6 +22,9 @@
     "/keys/{keyId}/unwrap-authorizations": {
       "post": {"summary": "Request short-lived authorization to unwrap one named envelope", "security": [{"enrolledClient": []}], "parameters": [{"$ref": "#/components/parameters/KeyId"}, {"$ref": "#/components/parameters/ClientTimestamp"}, {"$ref": "#/components/parameters/ClientNonce"}, {"$ref": "#/components/parameters/ClientSignature"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UnwrapRequest"}}}}, "responses": {"201": {"description": "Short-lived authorization or provider-wrapped response"}, "403": {"description": "Policy, subscription, or enrollment refusal"}}}
     },
+    "/client-credentials/rotate": {
+      "post": {"summary": "Replace all enrolled-client credentials", "security": [{"accountSession": []}], "responses": {"201": {"description": "One-time replacement bearer token and Ed25519 private signing key; all prior enrolled-client credentials are revoked."}}}
+    },
     "/subscription": {
       "get": {"summary": "Read plan, quota, renewal, and custody availability", "responses": {"200": {"description": "Subscription state"}}},
       "patch": {"summary": "Request a plan change or cancellation", "responses": {"202": {"description": "Auditable pending billing request"}}}

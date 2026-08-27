@@ -24,6 +24,11 @@ try {
     try { keyCustodyAuthenticateClientRequest($pdo, $tenant['client_token'], 'POST', $tamperedPath, $tamperedTime, $tamperedNonce, $tamperedSignature, '{"artifact_id":"changed"}'); throw new RuntimeException('body changed after signing was accepted'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'body changed after signing was accepted', $error->getMessage()); }
     custodyExpect($management['tenant_id'] === $client['tenant_id'], 'tenant tokens do not authenticate to the same tenant');
+    $replacementCredential = keyCustodyRotateClientCredential($pdo, $management['tenant_id']);
+    try { keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client'); throw new RuntimeException('rotated client credential remained active'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'rotated client credential remained active', $error->getMessage()); }
+    $client = keyCustodyAuthenticate($pdo, $replacementCredential['token'], 'client');
+    custodyExpect($client['tenant_id'] === $management['tenant_id'], 'replacement client credential did not authenticate');
     $master = random_bytes(32); $key = keyCustodyCreateKey($pdo, $management['tenant_id'], 'primary', 300, $master);
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $key['id'], 'management key list omitted created key');
     custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['state'] === 'active', 'initial subscription state is unavailable');

@@ -74,6 +74,22 @@ function keyCustodyCreateClientCredential(PDO $pdo, string $tenant): array
     ];
 }
 
+/** Revokes prior enrolled-client credentials and emits a replacement once.
+ * @return array{token:string,signing_private_key:string} */
+function keyCustodyRotateClientCredential(PDO $pdo, string $tenant): array
+{
+    $tenantCheck = $pdo->prepare('SELECT active FROM tenants WHERE id = ?'); $tenantCheck->execute([$tenant]);
+    if ($tenantCheck->fetchColumn() !== 1) throw new InvalidArgumentException('tenant is unavailable');
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare("UPDATE access_tokens SET revoked_at = ? WHERE tenant_id = ? AND scope = 'client' AND revoked_at IS NULL")->execute([time(), $tenant]);
+        $credential = keyCustodyCreateClientCredential($pdo, $tenant);
+        keyCustodyAudit($pdo, $tenant, 'client_credential_rotate', $tenant, 'prior enrolled-client credentials revoked');
+        $pdo->commit();
+        return $credential;
+    } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
+}
+
 /** @return array{tenant_id:string,scope:string} */
 function keyCustodyAuthenticate(PDO $pdo, string $token, string $requiredScope): array
 {

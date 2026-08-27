@@ -60,6 +60,13 @@ timestamp/nonce replay protection with signed client requests are included.
 mTLS enrollment and payment-provider integration remain the next service
 increments.
 
+If an enrolled client is replaced or its credentials might have been exposed,
+an account-management client can `POST /v1/client-credentials/rotate`. The
+response contains a new client bearer token and Base64 Ed25519 private key once
+and immediately revokes all previous enrolled-client credentials for that
+tenant. Update the client package's two `secret_ref:` values together before
+retiring the old deployment.
+
 On Apache, the included `.htaccess` routes `/v1/...` requests to `api.php` and
 denies direct configuration/database files. Nginx and other servers must apply
 the equivalent route and direct-file-denial rules in their own configuration.

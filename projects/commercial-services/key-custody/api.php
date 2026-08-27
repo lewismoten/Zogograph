@@ -51,6 +51,12 @@ try {
         $key = keyCustodyUnwrapKey($pdo, $auth['tenant_id'], $match[1], keyCustodyReadMasterKey($config, __DIR__));
         custodyReply(201, ['key_id' => $match[1], 'key_material' => base64_encode($key), 'expires_in_seconds' => min(900, max(60, (int)($body['requested_ttl_seconds'] ?? 60)))]);
     }
+    if ($path === '/v1/client-credentials/rotate' && $method === 'POST') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management');
+        $credential = keyCustodyRotateClientCredential($pdo, $auth['tenant_id']);
+        custodyReply(201, ['client_token' => $credential['token'], 'client_signing_private_key' => $credential['signing_private_key'],
+            'warning' => 'Store both values now. The service cannot show them again; the previous enrolled-client credential has been revoked.']);
+    }
     if ($path === '/v1/subscription' && $method === 'GET') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['subscription' => keyCustodySubscription($pdo, $auth['tenant_id'])]);
     }
