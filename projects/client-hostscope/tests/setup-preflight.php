@@ -36,7 +36,7 @@ try {
     }
     unset($setup);
     $checks = setupPreflight($root, $config, [
-        'php_version' => '8.0.30', 'sqlite' => false, 'commands' => [], 'https' => false, 'cli' => false, 'encryption' => false,
+        'php_version' => '8.0.30', 'sqlite' => false, 'commands' => [], 'https' => false, 'cli' => false, 'encryption' => false, 'sqlcipher' => false,
     ]);
     $byLabel = array_column($checks, null, 'label');
     setupExpect($byLabel['PHP']['state'] === 'error', 'unsupported PHP was not a blocking installer error');
@@ -49,12 +49,14 @@ try {
         'shared-host cron guidance was not shown without command execution');
     setupExpect($byLabel['HTTPS']['state'] === 'warning', 'plain HTTP was not called out before credential entry');
     setupExpect($byLabel['Encrypted copies']['state'] === 'warning', 'missing encryption capability was not reported');
+    setupExpect($byLabel['Live SQLCipher option']['state'] === 'warning' && str_contains($byLabel['Live SQLCipher option']['detail'], 'recommended SQLite sealed-copy'),
+        'missing SQLCipher driver was not explained as optional');
     setupExpect($byLabel['Setup configuration at rest']['state'] === 'warning'
         && str_contains($byLabel['Setup configuration at rest']['detail'], 'not encrypted at rest'),
         'plaintext setup configuration was not explained in preflight');
 
     $live = setupPreflight($root, $config, [
-        'php_version' => '8.1.0', 'sqlite' => true, 'commands' => ['proc_open'], 'https' => true, 'cli' => true, 'encryption' => true,
+        'php_version' => '8.1.0', 'sqlite' => true, 'commands' => ['proc_open'], 'https' => true, 'cli' => true, 'encryption' => true, 'sqlcipher' => true,
     ]);
     $liveByLabel = array_column($live, null, 'label');
     setupExpect($liveByLabel['PHP']['state'] === 'ok' && $liveByLabel['SQLite']['state'] === 'ok',
@@ -62,6 +64,7 @@ try {
     setupExpect($liveByLabel['Command capability']['state'] === 'ok' && $liveByLabel['Cron']['state'] === 'ok',
         'available CLI capabilities were not reported as usable');
     setupExpect($liveByLabel['Encrypted copies']['state'] === 'ok', 'available encryption capability was not reported');
+    setupExpect($liveByLabel['Live SQLCipher option']['state'] === 'ok', 'available SQLCipher driver was not reported');
 } finally {
     @unlink($config);
     foreach (['setup.db', 'setup.db-wal', 'setup.db-shm'] as $file) @unlink($root . '/data/' . $file);

@@ -16,7 +16,7 @@ function setupCommandCapability(): array
  *
  * `$runtime` is only an injectable observation seam for reproducible checks;
  * normal setup calls it with no override and reads the live PHP runtime.
- * @param array{php_version?: string, sqlite?: bool, commands?: list<string>, https?: bool, cli?: bool, encryption?: bool}|null $runtime
+ * @param array{php_version?: string, sqlite?: bool, commands?: list<string>, https?: bool, cli?: bool, encryption?: bool, sqlcipher?: bool}|null $runtime
  * @return list<array{label: string, state: string, detail: string}>
  */
 function setupPreflight(string $root, string $targetPath, ?array $runtime = null): array
@@ -30,6 +30,8 @@ function setupPreflight(string $root, string $targetPath, ?array $runtime = null
     $commands = $runtime['commands'] ?? setupCommandCapability();
     $encryption = $runtime['encryption'] ?? (extension_loaded('openssl')
         && in_array('aes-256-gcm', array_map('strtolower', openssl_get_cipher_methods()), true));
+    $sqlcipher = $runtime['sqlcipher'] ?? (function_exists('encryptionSqlcipherCapability')
+        && encryptionSqlcipherCapability()['state'] === 'driver-ready');
     $data = $root . '/data';
     $phpOk = version_compare($phpVersion, '8.1.0', '>=');
     $configurationProtection = setupStoreConfigurationProtection($targetPath);
@@ -58,5 +60,8 @@ function setupPreflight(string $root, string $targetPath, ?array $runtime = null
         ['label' => 'Encrypted copies', 'state' => $encryption ? 'ok' : 'warning',
             'detail' => $encryption ? 'OpenSSL AES-256-GCM is available for optional sealed copies.'
                 : 'Optional sealed copies need PHP OpenSSL with AES-256-GCM; ordinary collection is unaffected.'],
+        ['label' => 'Live SQLCipher option', 'state' => $sqlcipher ? 'ok' : 'warning',
+            'detail' => $sqlcipher ? 'A SQLCipher PDO driver was detected; it still needs the signed isolated provider and recovery migration.'
+                : 'No SQLCipher PDO driver was detected. The recommended SQLite sealed-copy protection remains available without it.'],
     ];
 }
