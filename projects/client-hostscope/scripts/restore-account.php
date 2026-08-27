@@ -58,7 +58,7 @@ if ($targetDirectory === false || is_link(dirname($target)) || !is_dir($targetDi
 $target = $targetDirectory . '/' . basename($target);
 
 $temporary = $target . '.restore-' . bin2hex(random_bytes(8));
-$decrypted = null; $kek = null;
+$decrypted = null; $kek = null; $rollbackPlain = null;
 try {
     if ($sealedKey !== null) {
         $decrypted = $target . '.sealed-restore-' . bin2hex(random_bytes(8)) . '.db';
@@ -85,11 +85,12 @@ try {
         $live = null;
         $recovery = $made['path'];
         if ($kek !== null) {
+            $rollbackPlain = $recovery;
             $stamp = gmdate('Ymd\THis\Z') . '-' . bin2hex(random_bytes(4));
             $sealedRecovery = dirname($recovery) . '/before-restore-account-' . $stamp . '.sealed';
             $record = encryptionSealFile($recovery, $sealedRecovery, $kek, 'account:before-restore:' . $stamp);
             encryptionVerifySealedStoreArtifact($sealedRecovery, $kek, (int)$record['plaintext_bytes'], 'account');
-            @unlink($recovery); $recovery = $sealedRecovery;
+            @unlink($recovery); $rollbackPlain = null; $recovery = $sealedRecovery;
         }
         fwrite(STDOUT, 'Saved the current database to ' . $recovery . "\n");
     }
@@ -109,6 +110,7 @@ try {
     @unlink($temporary);
     // exit does not run finally on every supported PHP runtime.
     if ($decrypted !== null) @unlink($decrypted);
+    if ($rollbackPlain !== null) @unlink($rollbackPlain);
     fwrite(STDERR, 'Restore refused: ' . $e->getMessage() . "\n");
     exit(1);
 } finally {

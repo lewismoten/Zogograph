@@ -52,7 +52,8 @@ try {
         'sealed bootstrap configuration has no guarded recovery command');
     encryptionExpect($accountRestore !== false && $storeRestore !== false
         && str_contains($accountRestore, 'encryptionSealFile') && str_contains($storeRestore, 'encryptionSealFile')
-        && str_contains($accountRestore, 'encryptionVerifySealedStoreArtifact') && str_contains($storeRestore, 'encryptionVerifySealedStoreArtifact'),
+        && str_contains($accountRestore, 'encryptionVerifySealedStoreArtifact') && str_contains($storeRestore, 'encryptionVerifySealedStoreArtifact')
+        && str_contains($accountRestore, 'rollbackPlain') && str_contains($storeRestore, 'rollbackPlain'),
         'sealed database restoration does not retain a verified sealed rollback artifact');
     encryptionExpect($accountRestore !== false && $storeRestore !== false && str_contains($accountRestore, 'is_link($sourceArgument)')
         && str_contains($accountRestore, 'is_link($target)') && str_contains($storeRestore, 'is_link($sourceArgument)')

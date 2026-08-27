@@ -43,7 +43,7 @@ $targetDirectory = realpath(dirname($target));
 if ($targetDirectory === false || is_link(dirname($target)) || !is_dir($targetDirectory) || !is_writable($targetDirectory)) { fwrite(STDERR, "The selected store directory is unavailable or unsafe.\n"); exit(1); }
 $target = $targetDirectory . '/' . basename($target);
 
-$temporary = $target . '.restore-' . bin2hex(random_bytes(8)); $decrypted = null; $kek = null;
+$temporary = $target . '.restore-' . bin2hex(random_bytes(8)); $decrypted = null; $kek = null; $rollbackPlain = null;
 try {
     if ($sealedKey !== null) {
         $decrypted = $target . '.sealed-restore-' . bin2hex(random_bytes(8)) . '.db';
@@ -63,10 +63,11 @@ try {
         $recovery = dirname($target) . '/before-restore-' . $store . '-' . $stamp . '.db';
         $live->exec('VACUUM INTO ' . $live->quote($recovery)); $live = null; @chmod($recovery, 0600);
         if ($kek !== null) {
+            $rollbackPlain = $recovery;
             $sealedRecovery = dirname($target) . '/before-restore-' . $store . '-' . $stamp . '.sealed';
             $record = encryptionSealFile($recovery, $sealedRecovery, $kek, $store . ':before-restore:' . $stamp);
             encryptionVerifySealedStoreArtifact($sealedRecovery, $kek, (int)$record['plaintext_bytes'], $store);
-            @unlink($recovery); $recovery = $sealedRecovery;
+            @unlink($recovery); $rollbackPlain = null; $recovery = $sealedRecovery;
         }
         fwrite(STDOUT, 'Saved the current database to ' . $recovery . "\n");
     }
@@ -76,6 +77,6 @@ try {
     @unlink($target . '-wal'); @unlink($target . '-shm');
     fwrite(STDOUT, "Restored {$store} database. Start writers only after this command exits.\n");
 } catch (Throwable $error) {
-    @unlink($temporary); if ($decrypted !== null) @unlink($decrypted);
+    @unlink($temporary); if ($decrypted !== null) @unlink($decrypted); if ($rollbackPlain !== null) @unlink($rollbackPlain);
     fwrite(STDERR, 'Restore refused: ' . $error->getMessage() . "\n"); exit(1);
 } finally { if ($decrypted !== null) @unlink($decrypted); }
