@@ -189,6 +189,15 @@ function migrationStatementApplied(PDO $pdo, string $sql): bool
 function migrations(): array
 {
     return [
+        49 => [
+            'CREATE TABLE marketplace_packages (
+                package_id TEXT PRIMARY KEY,
+                version TEXT NOT NULL,
+                enabled_at INTEGER,
+                changed_at INTEGER NOT NULL,
+                changed_by TEXT
+            )',
+        ],
         48 => [
             /* Deferred notification evidence survives a cron restart. Each
              * alert is queued once; transport records its final outcome on

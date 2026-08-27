@@ -19,6 +19,13 @@ return [
 
     'database' => __DIR__ . '/../data/stats.db',
 
+    /* Local-only marketplace catalog. Packages are data manifests until a
+     * future signed-package installer is implemented; copying a package here
+     * never executes PHP, shell, or browser code. */
+    'marketplace' => [
+        'directory' => __DIR__ . '/../marketplace',
+    ],
+
     // Sign-in. Without this nobody can unmask paths or delete anything, which
     // is a safe default for a fresh install.
     'password_hash' => '',

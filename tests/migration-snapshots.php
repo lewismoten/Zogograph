@@ -76,7 +76,7 @@ try {
     $partial->exec('CREATE INDEX alert_mutes_rule_expiry ON alert_mutes (rule, expires_at DESC)');
     $partial->exec('CREATE INDEX actions_actor_at ON actions (actor, at)');
     migrate($partial);
-    migrationTestExpect((int)$partial->query('SELECT MAX(version) FROM schema_version')->fetchColumn() === 48,
+    migrationTestExpect((int)$partial->query('SELECT MAX(version) FROM schema_version')->fetchColumn() === 49,
         'interrupted migration did not recover to the current schema version');
     $partial = null;
 

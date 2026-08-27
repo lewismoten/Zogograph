@@ -91,6 +91,7 @@ require_once __DIR__ . '/lib/dnsrecords.php';
 require_once __DIR__ . '/lib/external.php';
 require_once __DIR__ . '/lib/updates.php';
 require_once __DIR__ . '/lib/peers.php';
+require_once __DIR__ . '/lib/marketplace.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
@@ -298,6 +299,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'event-delete' => doEventDelete($pdo, $post),
         'event-resolve' => doEventResolve($pdo, $post),
         'peers' => peersView($config, $pdo, $signedIn),
+        'marketplace' => marketplaceView($config, $pdo, $signedIn),
+        'marketplace-enable' => doMarketplaceEnable($config, $pdo, $post),
         'peer-save' => doPeerSave($config, $pdo, $post),
         'peer-delete' => doPeerDelete($config, $pdo, $post),
         'peer-transport-rotate' => doPeerTransportRotate($config, $pdo, $post),
@@ -333,7 +336,7 @@ function requireActionAccess(array $config, string $action): void
         'terminal-session' => 'sys-sessions', 'notes' => 'sys-notes',
         'note-marks' => 'sys-notes', 'note-snapshots' => 'sys-notes',
         'chart-series' => 'charts', 'charts' => 'charts',
-        'peers' => 'sys-peers',
+        'peers' => 'sys-peers', 'marketplace' => 'sys-marketplace',
         'labels' => 'net-labels', 'descriptions' => 'sys-descriptions',
         'changed' => 'sys-changed', 'capability-changes' => 'sys-changed',
         'installed' => 'sys-installed', 'symlinks' => 'storage-links',
@@ -5518,6 +5521,27 @@ function doAlertUnmute(PDO $pdo, bool $post): array
     if ($mute === null) throw new ActionRefused('that alert mute does not exist');
     logAction($pdo, 'alert_unmute', (string)$mute['rule'], 'ok', 0, 0, (string)$mute['reason']);
     return ['ok' => true, 'mutes' => alertMutes($pdo)];
+}
+
+/** The local catalog is administrative metadata; never expose publisher data to public pages. */
+function marketplaceView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) throw new ActionRefused('sign in to view the marketplace');
+    $catalog = marketplaceCatalog($config);
+    return ['packages' => marketplacePackages($config, $pdo), 'errors' => $catalog['errors'],
+        'can_change' => accessAllows($config, 'write')];
+}
+
+function doMarketplaceEnable(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $id = trim((string)($_POST['id'] ?? ''));
+    $enabled = (string)($_POST['enabled'] ?? '') === '1';
+    try { $package = marketplaceSetEnabled($config, $pdo, $id, $enabled, currentAccountName()); }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, $enabled ? 'marketplace_enable' : 'marketplace_disable', $id, 'ok', 0, 0,
+        $package['version'] . '; ' . implode(', ', $package['capabilities']));
+    return ['ok' => true, 'package' => $package];
 }
 
 function doClearProblems(array $config, PDO $pdo, bool $post): array
