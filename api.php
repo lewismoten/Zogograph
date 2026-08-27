@@ -147,13 +147,15 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'whoami' => whoAmIView($config, $pdo, $signedIn),
         'dns-records' => dnsRecordsView($config, $pdo, $signedIn),
         'urls' => urlsView($pdo, $signedIn),
-        'fetch' => fetchView($pdo, $signedIn),
+        'fetch' => fetchView($config, $pdo, $signedIn),
         'store' => storeView($config, $pdo, $signedIn),
         'ai-store' => aiStoreView($config, $signedIn),
         'terminal' => terminalView($config, $pdo, $signedIn),
         'terminal-run' => doTerminalRun($config, $pdo, $post),
+        'terminal-editor-browse' => terminalEditorBrowseView($config, $pdo, $signedIn),
         'terminal-editor' => terminalEditorView($config, $pdo, $signedIn),
         'terminal-editor-save' => doTerminalEditorSave($config, $pdo, $post),
+        'terminal-editor-restore' => doTerminalEditorRestore($config, $pdo, $post),
         'terminal-read' => terminalReadView($config, $pdo, $signedIn),
         'terminal-stop' => doTerminalStop($config, $pdo, $post),
         'terminal-unlock' => doTerminalUnlock($config, $pdo, $post),
@@ -174,6 +176,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'store-purge' => doStorePurge($config, $pdo, $post),
         'store-compact' => doStoreCompact($config, $pdo, $post),
         'store-rollup' => doStoreRollup($config, $pdo, $post),
+        'store-integrity' => doStoreIntegrity($config, $pdo, $post),
         'domains' => domainsView($config, $pdo, $signedIn),
         'whois' => whoisView($config, $pdo, $signedIn),
         'calendar' => calendarView($config, $pdo, $signedIn),
@@ -253,7 +256,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
         'signin' => doSignIn($config, $post, $pdo),
-        'signout' => doSignOut($pdo),
+        'signout' => doSignOut($pdo, $post),
         'delete-file' => doDeleteFile($config, $pdo, $post),
         'delete-dir' => doDeleteDir($config, $pdo, $post),
         'empty' => doEmpty($config, $pdo, $post),
@@ -290,9 +293,10 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'event-save' => doEventSave($pdo, $post),
         'event-delete' => doEventDelete($pdo, $post),
         'event-resolve' => doEventResolve($pdo, $post),
-        'peers' => peersView($config, $signedIn),
+        'peers' => peersView($config, $pdo, $signedIn),
         'peer-save' => doPeerSave($config, $pdo, $post),
         'peer-delete' => doPeerDelete($config, $pdo, $post),
+        'peer-transport-rotate' => doPeerTransportRotate($config, $pdo, $post),
         'peer-test' => doPeerTest($config, $pdo, $post),
         'peer-read' => doPeerRead($config, $pdo, $post),
         'check-capabilities' => doCheckCapabilities($config, $pdo, $post),
@@ -1884,7 +1888,7 @@ function doEventResolve(PDO $pdo, bool $post): array
  * never inserted as markup: fetching an arbitrary page and putting its HTML
  * into this document would hand that page the dashboard's session.
  */
-function fetchView(PDO $pdo, bool $signedIn): array
+function fetchView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) {
         throw new ActionRefused('sign in to make a request');
@@ -1900,7 +1904,7 @@ function fetchView(PDO $pdo, bool $signedIn): array
     $follow = ($_GET['follow'] ?? '1') === '1';
 
     $started = microtime(true);
-    $result = urlWatchFetch($url, ['method' => $method, 'follow_redirects' => $follow]);
+    $result = urlWatchFetch($url, ['method' => $method, 'follow_redirects' => $follow], $config);
     $ms = (int)round((microtime(true) - $started) * 1000);
 
     if ($result['error'] !== null && $result['status'] === 0) {
@@ -2123,7 +2127,7 @@ function doUrlSave(array $config, PDO $pdo, bool $post): array
         'follow_redirects' => ($_POST['follow_redirects'] ?? '1') === '1',
         'send_etag' => ($_POST['send_etag'] ?? '0') === '1',
         'method' => $_POST['method'] ?? 'GET',
-    ]);
+    ], $config);
 
     logAction($pdo, 'url_save', (string)($_POST['url'] ?? ''), 'ok', 0, 0, null);
 
@@ -5432,7 +5436,7 @@ function doDaemonWatch(array $config, PDO $pdo, bool $post): array
 }
 
 /**
- * Marks alerts read, or removes them.
+ * Marks alerts read or unread, or removes them.
  *
  * Two different things and both are wanted. Acknowledging stops an alert
  * counting towards the badge while leaving it in the history - which is what
@@ -5461,16 +5465,20 @@ function doAlertAction(array $config, PDO $pdo, bool $post): array
         return ['ok' => true, 'changed' => $stmt->rowCount()];
     }
 
-    $marks = implode(',', array_fill(0, count($ids), '?'));
-
     if ($what === 'ack') {
-        $stmt = $pdo->prepare("UPDATE alerts SET acknowledged_at = ? WHERE id IN ($marks)");
-        $stmt->execute([time(), ...$ids]);
+        $changed = setAlertsAcknowledged($pdo, $ids, true);
         logAction($pdo, 'ack_alerts', implode(',', $ids), 'ok', 0, 0, 'marked read');
-        return ['ok' => true, 'changed' => $stmt->rowCount()];
+        return ['ok' => true, 'changed' => $changed];
+    }
+
+    if ($what === 'unack') {
+        $changed = setAlertsAcknowledged($pdo, $ids, false);
+        logAction($pdo, 'unack_alerts', implode(',', $ids), 'ok', 0, 0, 'marked unread');
+        return ['ok' => true, 'changed' => $changed];
     }
 
     if ($what === 'delete') {
+        $marks = implode(',', array_fill(0, count($ids), '?'));
         $stmt = $pdo->prepare("DELETE FROM alerts WHERE id IN ($marks)");
         $stmt->execute($ids);
         logAction($pdo, 'delete_alerts', implode(',', $ids), 'ok', 0, 0,
@@ -5656,7 +5664,15 @@ function doSignIn(array $config, bool $post, PDO $pdo): array
         throw new ActionRefused('sign in must be a POST');
     }
     $username = trim((string)($_POST['username'] ?? ''));
-    if (!signIn($config, (string)($_POST['password'] ?? ''), $username)) {
+    if (signInRateLimited($pdo)) {
+        // Match wrong-password timing and wording. A rate limit must not be an
+        // oracle for account existence or a way to enumerate client state.
+        usleep(random_int(150000, 350000));
+        logAction($pdo, 'sign_in_limited', null, 'refused', 0, 0, 'rate limited');
+        http_response_code(401);
+        return ['error' => 'Incorrect password.'];
+    }
+    if (!signIn($config, (string)($_POST['password'] ?? ''), $username, (string)($_POST['totp'] ?? ''))) {
         /*
          * A failed attempt is recorded; the password is not.
          *
@@ -5677,12 +5693,13 @@ function doSignIn(array $config, bool $post, PDO $pdo): array
     return ['signed_in' => true, 'csrf' => csrfToken(), 'access' => accessView($config)];
 }
 
-function doSignOut(PDO $pdo): array
+function doSignOut(PDO $pdo, bool $post): array
 {
-    // Only worth a line if there was a session to end.
-    if (isSignedIn()) {
-        logAction($pdo, 'sign_out', null, 'ok', 0, 0, null);
+    if (!$post || !isSignedIn() || !csrfValid($_POST['csrf'] ?? null)) {
+        throw new ActionRefused('sign in with a current form token to sign out');
     }
+    // Only worth a line if there was a session to end.
+    logAction($pdo, 'sign_out', null, 'ok', 0, 0, null);
     signOut();
     return ['signed_in' => false];
 }
@@ -5708,9 +5725,11 @@ function requireWrite(bool $post): void
 /** Records a browser failure in the same log as server failures. */
 function doClientProblem(bool $post): array
 {
-    if (!$post) {
-        throw new ActionRefused('that must be a POST');
-    }
+    // This is diagnostic data written to a durable server log. Leaving it open
+    // would make an otherwise harmless browser error endpoint a way to fill
+    // that log with forged reports, so it has the same protection as every
+    // other administrative write.
+    requireWrite($post);
     $message = trim((string)($_POST['message'] ?? ''));
     $stack = trim((string)($_POST['stack'] ?? ''));
     if ($message === '') {
@@ -5750,19 +5769,29 @@ function requireAiUse(array $config, bool $post): void
 
 /* ----------------------------------------------------------- peer access -- */
 
-function peersView(array $config, bool $signedIn): array
+function peersView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn || !accessAllows($config, 'write')) {
         throw new ActionRefused('administrators manage trusted servers');
     }
     $rows = peerDefinitions($config);
+    $deliveries = [];
+    try {
+        $deliveries = peerTransportLatest($pdo);
+    } catch (Throwable) {
+        // A pre-migration or damaged database still lets an administrator
+        // repair peer settings; delivery status is supplementary evidence.
+    }
     foreach ($rows as &$row) {
         $token = $_SESSION['peer_tokens'][$row['name']] ?? null;
         $row['connected_as'] = is_array($token) && (int)($token['expires_at'] ?? 0) >= time()
             ? (string)($token['subject'] ?? '') : null;
+        $row['remote_vitals'] = $deliveries[$row['name']] ?? null;
+        $row['last_received_at'] = $row['remote_vitals']['received_at'] ?? null;
     }
     unset($row);
-    return ['rows' => $rows, 'writable' => configuredSettingsWritable(__DIR__ . '/lib/config.php')];
+    return ['rows' => $rows, 'capacity' => peerCapacity($config),
+        'writable' => configuredSettingsWritable(__DIR__ . '/lib/config.php')];
 }
 
 function peerName(string $name): string
@@ -5780,22 +5809,55 @@ function doPeerSave(array $config, PDO $pdo, bool $post): array
     $name = peerName((string)($_POST['name'] ?? ''));
     $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     $prior = (array)($current['peers'][$name] ?? []);
+    if ($prior === [] && peerCapacity($current)['remaining'] === 0) {
+        throw new ActionRefused('this edition has reached its remote-host limit');
+    }
     $secret = trim((string)($_POST['client_secret'] ?? ''));
+    $oidc = [
+        'base_url' => trim((string)($_POST['base_url'] ?? '')),
+        'redirect_uri' => trim((string)($_POST['redirect_uri'] ?? '')),
+        'issuer' => trim((string)($_POST['issuer'] ?? '')),
+        'client_id' => mb_substr(trim((string)($_POST['client_id'] ?? '')), 0, 255),
+    ];
+    $storedSecret = $secret !== '' ? $secret : (string)($prior['client_secret'] ?? '');
+    $hasOidcInput = $secret !== '' || array_filter($oidc, fn(string $value): bool => $value !== '') !== [];
+    if ($hasOidcInput && (in_array('', $oidc, true) || $storedSecret === '')) {
+        throw new ActionRefused('configure every OIDC field and client secret, or leave all OIDC fields blank');
+    }
+    if ($hasOidcInput) {
+        foreach (['base_url', 'redirect_uri', 'issuer'] as $field) $oidc[$field] = peerUrl($oidc[$field]);
+    } else {
+        $oidc = ['base_url' => '', 'redirect_uri' => '', 'issuer' => '', 'client_id' => ''];
+        $storedSecret = '';
+    }
+    $endpoint = trim((string)($_POST['transport_endpoint'] ?? ''));
+    if ($endpoint !== '') $endpoint = peerUrl($endpoint);
+    $transport = (string)($prior['transport_secret'] ?? '');
+    $newTransport = $transport === '';
+    if ($newTransport) {
+        $transport = bin2hex(random_bytes(32));
+    }
     $peer = [
         'label' => mb_substr(trim((string)($_POST['label'] ?? $name)), 0, 80),
-        'base_url' => peerUrl((string)($_POST['base_url'] ?? '')),
-        'redirect_uri' => peerUrl((string)($_POST['redirect_uri'] ?? '')),
-        'issuer' => peerUrl((string)($_POST['issuer'] ?? '')),
-        'client_id' => mb_substr(trim((string)($_POST['client_id'] ?? '')), 0, 255),
-        'client_secret' => $secret !== '' ? $secret : (string)($prior['client_secret'] ?? ''),
-    ];
-    if ($peer['label'] === '' || $peer['client_id'] === '' || $peer['client_secret'] === '') {
-        throw new ActionRefused('a peer needs a label, client ID, and client secret');
+        ...$oidc,
+        'client_secret' => $storedSecret,
+        'transport_endpoint' => $endpoint,
+        'transport_secret' => $transport,
+        'transport_pending_until' => $newTransport
+            ? time() + PEER_TRANSPORT_PAIR_TTL : (int)($prior['transport_pending_until'] ?? 0),
+    ] + peerMetadata($_POST);
+    if ($peer['label'] === '') {
+        throw new ActionRefused('a peer needs a label');
     }
     $current['peers'][$name] = $peer;
     writeConfigFile($current);
-    logAction($pdo, 'peer_save', $name, 'ok', 0, 0, $peer['issuer']);
-    return ['ok' => true] + peersView($current, true);
+    logAction($pdo, 'peer_save', $name, 'ok', 0, 0, peerHasOidc($peer) ? $peer['issuer'] : 'remote delivery only');
+    $out = ['ok' => true] + peersView($current, $pdo, true);
+    if ($newTransport) {
+        $out['transport_secret'] = $transport;
+        $out['transport_endpoint'] = peerTransportEndpoint($peer);
+    }
+    return $out;
 }
 
 function doPeerDelete(array $config, PDO $pdo, bool $post): array
@@ -5807,9 +5869,30 @@ function doPeerDelete(array $config, PDO $pdo, bool $post): array
     }
     $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
     unset($current['peers'][$name]);
+    unset($_SESSION['peer_tokens'][$name]);
     writeConfigFile($current);
     logAction($pdo, 'peer_delete', $name, 'ok', 0, 0, null);
-    return ['ok' => true] + peersView($current, true);
+    return ['ok' => true] + peersView($current, $pdo, true);
+}
+
+/** Replaces a remote-delivery credential without touching OIDC credentials. */
+function doPeerTransportRotate(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $name = peerName((string)($_POST['name'] ?? ''));
+    $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
+    $peer = $current['peers'][$name] ?? null;
+    if (!is_array($peer)) {
+        throw new ActionRefused('that trusted server does not exist');
+    }
+    $credential = bin2hex(random_bytes(32));
+    $peer['transport_secret'] = $credential;
+    $peer['transport_pending_until'] = time() + PEER_TRANSPORT_PAIR_TTL;
+    $current['peers'][$name] = $peer;
+    writeConfigFile($current);
+    logAction($pdo, 'peer_transport_rotate', $name, 'ok', 0, 0, 'old remote credential revoked');
+    return ['ok' => true, 'transport_secret' => $credential,
+        'transport_endpoint' => peerTransportEndpoint($peer)] + peersView($current, $pdo, true);
 }
 
 function doPeerTest(array $config, PDO $pdo, bool $post): array
@@ -6007,6 +6090,16 @@ function aiStoreView(array $config, bool $signedIn): array
     }
 
     return aiStoreReport($config) + ['who' => aiPersona($config)];
+}
+
+/** Runs the slower full check only when an administrator asks for it. */
+function doStoreIntegrity(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $result = databaseFullIntegrity($pdo);
+    logAction($pdo, 'database_integrity_check', 'account', $result['ok'] ? 'ok' : 'failed', 0, 0,
+        implode("\n", array_slice($result['messages'], 0, 5)));
+    return ['ok' => $result['ok'], 'result' => $result] + storeView($config, $pdo, true);
 }
 
 /** Reclaims the empty space in the assistant's database. */
@@ -8724,8 +8817,8 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
     }
 
     $base = trim((string)($_POST['base_url'] ?? ''));
-    if ($base !== '' && !filter_var($base, FILTER_VALIDATE_URL)) {
-        throw new ActionRefused('that is not a web address');
+    if ($base !== '') {
+        aiEndpointPolicy($provider, $base);
     }
 
     $current['ai']['enabled'] = ($_POST['enabled'] ?? '0') === '1';
@@ -8821,6 +8914,10 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
         array_filter(explode(',', (string)($_POST['styles'] ?? ''))),
         fn(string $key): bool => isset(aiImageStyles()[$key])
     ));
+    $searchBase = trim((string)($_POST['search_base'] ?? ''));
+    if ($searchBase !== '') {
+        aiEndpointPolicy('openai', $searchBase);
+    }
 
     /*
      * Merged over what is there, not replacing it.
@@ -8843,7 +8940,7 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
         'reactions' => ($_POST['reactions_on'] ?? '0') === '1',
         'search_service' => isset(aiReactionServices()[$_POST['search_service'] ?? ''])
             ? (string)$_POST['search_service'] : 'tenor',
-        'search_base' => trim((string)($_POST['search_base'] ?? '')),
+        'search_base' => $searchBase,
         /*
          * Lower than the published allowance, never higher.
          *
@@ -9263,6 +9360,15 @@ function doTerminalRun(array $config, PDO $pdo, bool $post): array
 }
 
 /** Reads a text file for the browser-based replacement for vi/nano. */
+function terminalEditorBrowseView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) throw new ActionRefused('sign in to browse files');
+    $listing = terminalEditorBrowse($config, $pdo, (string)($_GET['path'] ?? ''));
+    logAction($pdo, 'terminal_editor_browse', $listing['path'], 'ok', 0, count($listing['rows']), currentAccountName());
+    return $listing;
+}
+
+/** Reads a text file for the browser-based replacement for vi/nano. */
 function terminalEditorView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) throw new ActionRefused('sign in to use the web editor');
@@ -9276,8 +9382,21 @@ function doTerminalEditorSave(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
     $saved = terminalEditorSave($config, $pdo, (string)($_POST['path'] ?? ''),
-        (string)($_POST['text'] ?? ''));
-    logAction($pdo, 'terminal_editor_save', $saved['path'], 'ok', 0, $saved['bytes'], currentAccountName());
+        (string)($_POST['text'] ?? ''), (string)($_POST['fingerprint'] ?? ''),
+        (string)($_POST['line_ending'] ?? ''));
+    logAction($pdo, 'terminal_editor_save', $saved['path'], 'ok', 0, $saved['bytes'],
+        currentAccountName() . ($saved['backup'] === null ? '; no recovery copy' : '; recovery copy made'));
+    return ['ok' => true] + $saved;
+}
+
+/** Restores a selected private editor recovery copy. */
+function doTerminalEditorRestore(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $saved = terminalEditorRestore($config, $pdo, (string)($_POST['path'] ?? ''),
+        (string)($_POST['backup'] ?? ''), (string)($_POST['fingerprint'] ?? ''));
+    logAction($pdo, 'terminal_editor_restore', $saved['path'], 'ok', 0, $saved['bytes'],
+        currentAccountName() . '; prior current version copied before restore');
     return ['ok' => true] + $saved;
 }
 

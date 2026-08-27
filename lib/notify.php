@@ -592,7 +592,7 @@ function selfDiagnosis(array $config): array
     return [
         'who' => 'account',
         'why' => 'This dashboard\'s own error log, if the site itself is misbehaving.',
-        'when' => 'Hostscope itself is not loading',
+        'when' => 'HostScope itself is not loading',
         'command' => 'tail -40 '
             . escapeshellarg(dirname((string)($config['database'] ?? '')) . '/error.log'),
     ];

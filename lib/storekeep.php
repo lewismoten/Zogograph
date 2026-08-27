@@ -175,6 +175,28 @@ function retentionCatalogue(): array
             'why' => 'Matches the disk scans, so the two can be read side by side.',
             'rolls_up' => false,
         ],
+        [
+            'key' => 'remote_vital_days',
+            'label' => 'Remote vital deliveries',
+            'table' => 'remote_peer_vitals',
+            'column' => 'taken_at',
+            'recommended' => 400,
+            'never_recommended' => false,
+            'what' => 'Accepted vital payloads sent by paired remote HostScope installations.',
+            'why' => 'Matches local scan history while keeping fleet-delivery evidence bounded.',
+            'rolls_up' => false,
+        ],
+        [
+            'key' => 'remote_receipt_days',
+            'label' => 'Remote replay receipts',
+            'table' => 'remote_peer_receipts',
+            'column' => 'received_at',
+            'recommended' => 2,
+            'never_recommended' => false,
+            'what' => 'Recently accepted peer/nonces used to reject replayed deliveries.',
+            'why' => 'Two days exceeds the replay window while avoiding a permanent ledger of request nonces.',
+            'rolls_up' => false,
+        ],
     ];
 }
 
@@ -486,7 +508,60 @@ function databaseFacts(PDO $pdo, array $config, ?string $path = null): array
         'free_share' => $pages > 0 ? $free / $pages : 0.0,
         'journal' => (string)$pdo->query('PRAGMA journal_mode')->fetchColumn(),
         'writable' => is_writable($path) && is_writable(dirname($path)),
+        'integrity' => databaseIntegrity($pdo, $path),
     ];
+}
+
+/**
+ * A bounded integrity check and the recovery snapshots available beside a DB.
+ *
+ * `quick_check(1)` is intentionally used on an interactive dashboard: it
+ * catches corruption without turning a storage page into an unbounded full
+ * table scan. The full check remains a maintenance operation for a future
+ * recovery surface. Snapshot names never contain credentials and the files
+ * remain under data/, which the web server denies.
+ */
+function databaseIntegrity(PDO $pdo, string $path): array
+{
+    try {
+        $result = $pdo->query('PRAGMA quick_check(1)')->fetchColumn();
+        $ok = $result === 'ok';
+        $message = $ok ? 'SQLite quick check passed.' : (string)$result;
+    } catch (Throwable $e) {
+        $ok = false;
+        $message = 'SQLite quick check could not run: ' . $e->getMessage();
+    }
+    $backups = glob(dirname($path) . '/migration-backups/' . basename($path) . '.schema-*.db') ?: [];
+    $newest = 0;
+    foreach ($backups as $backup) {
+        $newest = max($newest, (int)@filemtime($backup));
+    }
+    return ['ok' => $ok, 'message' => $message, 'checked_at' => time(),
+        'migration_backups' => count($backups), 'newest_backup_at' => $newest ?: null];
+}
+
+/**
+ * The deliberately explicit full SQLite maintenance check.
+ *
+ * Unlike `quick_check`, this verifies table and index content as well as the
+ * b-tree structure. SQLite still stops after fifty findings so a damaged file
+ * cannot make an API response unbounded; the operator gets a clear direction
+ * to restore the private migration copy or a known-good backup.
+ *
+ * @return array{ok: bool, messages: list<string>, checked_at: int}
+ */
+function databaseFullIntegrity(PDO $pdo): array
+{
+    try {
+        $messages = array_map('strval', $pdo->query('PRAGMA integrity_check(50)')->fetchAll(PDO::FETCH_COLUMN));
+    } catch (Throwable $e) {
+        return ['ok' => false, 'messages' => ['SQLite integrity check could not run: ' . $e->getMessage()],
+            'checked_at' => time()];
+    }
+
+    $ok = $messages === ['ok'];
+    return ['ok' => $ok, 'messages' => $ok ? ['SQLite integrity check passed.'] : $messages,
+        'checked_at' => time()];
 }
 
 /**

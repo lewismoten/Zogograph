@@ -89,6 +89,12 @@ function retentionRules(array $config): array
 
         'scan_days' => 400,
         'process_days' => 400,
+        // Remote payloads are already summarized vitals, not the local raw
+        // series. Keep their fleet context for a comparable year by default.
+        'remote_vital_days' => 400,
+        // Nonces need only outlive the replay window; two days also leaves
+        // useful security evidence without making a permanent nonce ledger.
+        'remote_receipt_days' => 2,
     ];
 }
 
@@ -184,6 +190,18 @@ function compactVitals(PDO $pdo, array $rules, ?int $now = null): array
             continue;
         }
         $column = $table === 'alerts' ? 'raised_at' : 'at';
+        $stmt = $pdo->prepare("DELETE FROM {$table} WHERE {$column} < ?");
+        $stmt->execute([$now - $days * 86400]);
+        $removed += $stmt->rowCount();
+    }
+
+    foreach (['remote_peer_vitals' => ['remote_vital_days', 'taken_at'],
+              'remote_peer_receipts' => ['remote_receipt_days', 'received_at']] as $table => [$key, $column]) {
+        // A replay ledger must always expire; zero otherwise means forever in
+        // retention settings, which is unsuitable for request nonces.
+        $days = $key === 'remote_receipt_days' ? max(1, (int)$rules[$key]) : (int)$rules[$key];
+        $kept[$table] = $days;
+        if ($days <= 0) continue;
         $stmt = $pdo->prepare("DELETE FROM {$table} WHERE {$column} < ?");
         $stmt->execute([$now - $days * 86400]);
         $removed += $stmt->rowCount();

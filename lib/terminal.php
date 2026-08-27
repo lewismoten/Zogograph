@@ -52,6 +52,69 @@ const TERMINAL_MAX_BYTES = 4 * 1024 * 1024;
 const TERMINAL_KEEP = 40;
 /** Largest text file opened in the browser editor. */
 const TERMINAL_EDITOR_MAX_BYTES = 1024 * 1024;
+/** Most direct children shown by the browser at once. */
+const TERMINAL_EDITOR_BROWSE_LIMIT = 200;
+
+/** A real, readable directory below the watched root, for the browser picker. */
+function terminalEditorBrowseDirectory(string $root, string $asked): string
+{
+    $root = realpath($root);
+    if ($root === false) throw new ActionRefused('the watched root is not available');
+    $asked = trim($asked);
+    $candidate = $asked === '' ? $root : (str_starts_with($asked, '/') ? $asked : $root . '/' . $asked);
+    $directory = realpath($candidate);
+    if ($directory === false || !is_dir($directory) || !is_readable($directory)) {
+        throw new ActionRefused('that directory cannot be opened');
+    }
+    if ($directory !== $root && !str_starts_with($directory, rtrim($root, '/') . '/')) {
+        throw new ActionRefused('the web editor is limited to the watched directory');
+    }
+    return $directory;
+}
+
+/**
+ * A bounded, non-recursive browser for the watched root.
+ *
+ * Symbolic links are reported but never followed here. Opening a regular file
+ * still repeats the canonical-path and write checks, so a directory listing
+ * cannot become authority to read or save a path after it changes.
+ *
+ * @return array{path:string,parent:?string,rows:list<array{name:string,path:string,kind:string,bytes:?int,modified:?int,writable:bool}>,more:int}
+ */
+function terminalEditorBrowse(array $config, PDO $pdo, string $asked): array
+{
+    $settings = terminalSettings($config, $pdo);
+    if (!$settings['enabled']) throw new ActionRefused('unlock the terminal before browsing its files');
+    $root = realpath((string)($config['scan_root'] ?? ''));
+    if ($root === false) throw new ActionRefused('the watched root is not available');
+    $directory = terminalEditorBrowseDirectory($root, $asked);
+    $names = scandir($directory);
+    if ($names === false) throw new ActionRefused('that directory cannot be listed');
+
+    $rows = [];
+    foreach ($names as $name) {
+        if ($name === '.' || $name === '..') continue;
+        $path = $directory . '/' . $name;
+        if (is_link($path)) {
+            $rows[] = ['name' => $name, 'path' => $path, 'kind' => 'link', 'bytes' => null,
+                'modified' => null, 'writable' => false];
+            continue;
+        }
+        $directoryEntry = is_dir($path);
+        $file = is_file($path);
+        $rows[] = ['name' => $name, 'path' => $path, 'kind' => $directoryEntry ? 'directory' : ($file ? 'file' : 'other'),
+            'bytes' => $file ? (int)filesize($path) : null,
+            'modified' => @filemtime($path) ?: null, 'writable' => is_writable($path)];
+    }
+    usort($rows, fn(array $a, array $b): int =>
+        (($a['kind'] === 'directory') === ($b['kind'] === 'directory'))
+            ? strnatcasecmp($a['name'], $b['name'])
+            : ($a['kind'] === 'directory' ? -1 : 1));
+    $more = max(0, count($rows) - TERMINAL_EDITOR_BROWSE_LIMIT);
+    $rows = array_slice($rows, 0, TERMINAL_EDITOR_BROWSE_LIMIT);
+    $parent = $directory === $root ? null : dirname($directory);
+    return ['path' => $directory, 'parent' => $parent, 'rows' => $rows, 'more' => $more];
+}
 
 /** Resolves one browser-editable file without letting a path escape scan_root. */
 function terminalEditorPath(array $config, PDO $pdo, string $asked, bool $forWrite = false): string
@@ -90,7 +153,66 @@ function terminalEditorPath(array $config, PDO $pdo, string $asked, bool $forWri
     return $path;
 }
 
-/** @return array{path:string,text:string,exists:bool,bytes:int,writable:bool} */
+function terminalEditorFingerprint(string $text): string
+{
+    return hash('sha256', $text);
+}
+
+/** @return 'lf'|'crlf'|'cr' */
+function terminalEditorLineEnding(string $text): string
+{
+    if (str_contains($text, "\r\n")) return 'crlf';
+    return str_contains($text, "\r") ? 'cr' : 'lf';
+}
+
+/** Preserves a file's original newline convention after textarea normalization. */
+function terminalEditorWithLineEndings(string $text, string $lineEnding): string
+{
+    if (!in_array($lineEnding, ['lf', 'crlf', 'cr'], true)) {
+        throw new ActionRefused('the editor line-ending marker is invalid');
+    }
+    $normalized = str_replace(["\r\n", "\r"], "\n", $text);
+    return $lineEnding === 'lf' ? $normalized : str_replace("\n", $lineEnding === 'crlf' ? "\r\n" : "\r", $normalized);
+}
+
+/** Keeps a private pre-save copy, bounded per file, beside terminal evidence. */
+function terminalEditorBackup(array $config, string $path, string $text): ?string
+{
+    $directory = terminalDirectory($config) . '/editor-backups';
+    if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) return null;
+    @chmod($directory, 0700);
+    $prefix = hash('sha256', $path) . '-';
+    $name = $prefix . gmdate('Ymd\THis\Z') . '-' . bin2hex(random_bytes(4)) . '.txt';
+    $target = $directory . '/' . $name;
+    $temporary = $target . '.tmp';
+    if (file_put_contents($temporary, $text, LOCK_EX) === false || !rename($temporary, $target)) {
+        @unlink($temporary);
+        return null;
+    }
+    @chmod($target, 0600);
+    $old = glob($directory . '/' . $prefix . '*.txt') ?: [];
+    sort($old, SORT_STRING);
+    foreach (array_slice($old, 0, max(0, count($old) - 10)) as $file) @unlink($file);
+    return $name;
+}
+
+/** @return list<array{name:string,at:int,bytes:int}> */
+function terminalEditorBackups(array $config, string $path): array
+{
+    $directory = terminalDirectory($config) . '/editor-backups';
+    $prefix = hash('sha256', $path) . '-';
+    $rows = [];
+    foreach (glob($directory . '/' . $prefix . '*.txt') ?: [] as $file) {
+        $name = basename($file);
+        if (!str_starts_with($name, $prefix) || !preg_match('/\.txt$/', $name)) continue;
+        $rows[] = ['name' => $name, 'at' => (int)(@filemtime($file) ?: 0),
+            'bytes' => (int)(@filesize($file) ?: 0)];
+    }
+    usort($rows, fn(array $a, array $b): int => $b['at'] <=> $a['at']);
+    return $rows;
+}
+
+/** @return array{path:string,text:string,exists:bool,bytes:int,writable:bool,fingerprint:string,line_ending:string,backups:list<array>} */
 function terminalEditorRead(array $config, PDO $pdo, string $asked): array
 {
     $path = terminalEditorPath($config, $pdo, $asked);
@@ -103,23 +225,49 @@ function terminalEditorRead(array $config, PDO $pdo, string $asked): array
         throw new ActionRefused('the web editor only opens readable text files');
     }
     return ['path' => $path, 'text' => $text, 'exists' => true, 'bytes' => $bytes,
-        'writable' => is_writable($path)];
+        'writable' => is_writable($path), 'fingerprint' => terminalEditorFingerprint($text),
+        'line_ending' => terminalEditorLineEnding($text), 'backups' => terminalEditorBackups($config, $path)];
 }
 
-/** @return array{path:string,bytes:int} */
-function terminalEditorSave(array $config, PDO $pdo, string $asked, string $text): array
+/** Restores one private editor copy, preserving a current-file recovery copy first. */
+function terminalEditorRestore(array $config, PDO $pdo, string $asked, string $backup, string $expected): array
+{
+    $path = terminalEditorPath($config, $pdo, $asked, true);
+    $allowed = array_column(terminalEditorBackups($config, $path), 'name');
+    if (!in_array($backup, $allowed, true)) throw new ActionRefused('that recovery copy does not belong to this file');
+    $text = file_get_contents(terminalDirectory($config) . '/editor-backups/' . $backup);
+    if ($text === false || str_contains($text, "\0")) throw new ActionRefused('the recovery copy cannot be read as text');
+    return terminalEditorSave($config, $pdo, $path, $text, $expected, terminalEditorLineEnding($text));
+}
+
+/** @return array{path:string,bytes:int,backup:?string,fingerprint:string} */
+function terminalEditorSave(array $config, PDO $pdo, string $asked, string $text, string $expected, string $lineEnding): array
 {
     if (strlen($text) > TERMINAL_EDITOR_MAX_BYTES) {
         throw new ActionRefused('the web editor cannot save more than 1 MB at once');
     }
     if (str_contains($text, "\0")) throw new ActionRefused('text files cannot contain NUL bytes');
     $path = terminalEditorPath($config, $pdo, $asked, true);
+    $before = is_file($path) ? file_get_contents($path) : '';
+    if ($before === false) throw new ActionRefused('could not re-read that file before saving');
+    if (!preg_match('/^[a-f0-9]{64}$/', $expected) || !hash_equals(terminalEditorFingerprint($before), $expected)) {
+        throw new ActionRefused('that file changed after it was opened; re-open it and merge the changes before saving');
+    }
+    $text = terminalEditorWithLineEndings($text, $lineEnding);
+    if (strlen($text) > TERMINAL_EDITOR_MAX_BYTES) {
+        throw new ActionRefused('the original line endings make this file larger than the web editor limit');
+    }
+    $backup = is_file($path) ? terminalEditorBackup($config, $path, $before) : null;
+    if (is_file($path) && $backup === null) {
+        throw new ActionRefused('could not make a private recovery copy; the file was not changed');
+    }
     $temporary = $path . '.hostscope-edit-' . bin2hex(random_bytes(4));
     if (file_put_contents($temporary, $text, LOCK_EX) === false || !rename($temporary, $path)) {
         @unlink($temporary);
         throw new ActionRefused('could not save that file');
     }
-    return ['path' => $path, 'bytes' => strlen($text)];
+    return ['path' => $path, 'bytes' => strlen($text), 'backup' => $backup,
+        'fingerprint' => terminalEditorFingerprint($text)];
 }
 
 /** Is it turned on, and can this machine actually do it? */

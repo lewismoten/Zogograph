@@ -527,7 +527,7 @@ function aiToolCatalogue(): array
             'description' =>
                 "Presents data you already have in the conversation as a small interactive "
                 . "visual. Unlike show_chart, this is not limited to a chart built into "
-                . "Hostscope. Use it to make a trend, composition, or current-versus-limit "
+                . "HostScope. Use it to make a trend, composition, or current-versus-limit "
                 . "clear. Do not invent measurements: the data must come from the user or "
                 . "a tool result. The browser shows it beside the conversation; you only "
                 . "receive confirmation that it was shown.\n\n"
@@ -2317,7 +2317,7 @@ function aiViews(): array
         'sys-ai-try' => 'a form for testing each available assistant tool',
         'sys-ai-billing' => 'assistant usage and cost history',
         'sys-ai-data' => 'data and retained material owned by the assistant',
-        'sys-peers' => 'trusted Hostscope servers and their OpenID discovery health',
+        'sys-peers' => 'trusted HostScope servers and their OpenID discovery health',
         'scans-account' => 'the account collector schedule and its configured jobs',
         'scans-host' => 'the host collector schedule and its configured jobs',
         'sys-ai' => 'the current assistant conversation',

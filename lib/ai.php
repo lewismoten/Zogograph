@@ -25,6 +25,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/spans.php';
 require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/aidb.php';
+require_once __DIR__ . '/outbound.php';
 
 /** How long one request to the model may take before it is abandoned. */
 const AI_TIMEOUT = 120;
@@ -86,6 +87,48 @@ function aiProviders(): array
             'models' => [],
         ],
     ];
+}
+
+/**
+ * Validates a model endpoint and returns cURL host pinning for public providers.
+ *
+ * A configurable provider URL is an administrative setting, but it still must
+ * not let a compromised administrator session make PHP fetch local metadata or
+ * a private control panel. Public names are resolved here and pinned on the
+ * outgoing request, closing the DNS-rebinding gap between validation and cURL.
+ * Compatible/local models intentionally retain loopback HTTP support.
+ *
+ * @return array{url: string, resolve: list<string>, local: bool}
+ */
+function aiEndpointPolicy(string $provider, string $base, bool $allowQuery = false): array
+{
+    $url = rtrim(trim($base), '/');
+    $parts = parse_url($url);
+    if ($url === '' || $parts === false || empty($parts['host']) || isset($parts['user'])
+        || isset($parts['pass']) || (!$allowQuery && isset($parts['query'])) || isset($parts['fragment'])) {
+        throw new ActionRefused('the model endpoint must be a plain URL');
+    }
+    $scheme = strtolower((string)($parts['scheme'] ?? ''));
+    $host = trim((string)$parts['host'], '[]');
+    $port = (int)($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+
+    if ($provider === 'compatible') {
+        if (!in_array($scheme, ['http', 'https'], true) || !outboundLoopbackHost($host)) {
+            throw new ActionRefused('compatible models must use a loopback HTTP(S) endpoint');
+        }
+        return ['url' => $url, 'resolve' => [], 'local' => true];
+    }
+
+    if ($scheme !== 'https') {
+        throw new ActionRefused('hosted model endpoints must use HTTPS');
+    }
+    $addresses = outboundHostAddresses($host);
+    if ($addresses === [] || array_filter($addresses, 'outboundPublicAddress') !== $addresses) {
+        throw new ActionRefused('the model endpoint must resolve only to public addresses');
+    }
+    return ['url' => $url,
+        'resolve' => array_map(fn(string $address): string => $host . ':' . $port . ':' . $address, $addresses),
+        'local' => false];
 }
 
 /**
@@ -295,6 +338,11 @@ function aiReady(array $config): array
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'why' => 'This PHP has no curl, so it cannot reach a model.'];
     }
+    try {
+        aiEndpointPolicy($set['provider'], $set['base_url']);
+    } catch (ActionRefused $e) {
+        return ['ok' => false, 'why' => $e->getMessage()];
+    }
 
     return ['ok' => true, 'why' => ''];
 }
@@ -362,6 +410,14 @@ function aiAsk(
     $started = microtime(true);
     $provider = $settings['provider'];
 
+    try {
+        $endpoint = aiEndpointPolicy($provider, (string)$settings['base_url']);
+    } catch (ActionRefused $e) {
+        return ['ok' => false, 'error' => $e->getMessage(), 'status' => 0, 'ms' => 0,
+            'request' => null, 'response' => null];
+    }
+    $settings['base_url'] = $endpoint['url'];
+
     /*
      * A per-conversation effort, never above the configured one.
      *
@@ -380,6 +436,7 @@ function aiAsk(
     };
 
     $handle = curl_init($url);
+    $protocols = $endpoint['local'] ? CURLPROTO_HTTP | CURLPROTO_HTTPS : CURLPROTO_HTTPS;
     curl_setopt_array($handle, [
         CURLOPT_POST => true,
         CURLOPT_RETURNTRANSFER => true,
@@ -387,6 +444,10 @@ function aiAsk(
         CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
         CURLOPT_TIMEOUT => AI_TIMEOUT,
         CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_PROTOCOLS => $protocols,
+        CURLOPT_REDIR_PROTOCOLS => $protocols,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_RESOLVE => $endpoint['resolve'],
         // A model endpoint is somebody else's service over the internet; the
         // certificate check is the only thing standing between the API key and
         // whoever is on the path.

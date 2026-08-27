@@ -28,6 +28,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/spans.php';
 require_once __DIR__ . '/storekeep.php';
+require_once __DIR__ . '/db.php';
 
 /** Where it lives: beside the other two, which .htaccess already denies. */
 function aiDatabasePath(array $config): string
@@ -65,6 +66,7 @@ function aiDb(array $config, bool $forWriting = true): ?PDO
             return null;
         }
 
+        $fresh = !is_file($path);
         $pdo = new PDO('sqlite:' . $path, null, null, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -82,7 +84,7 @@ function aiDb(array $config, bool $forWriting = true): ?PDO
          */
         $pdo->exec('PRAGMA busy_timeout = 3000');
 
-        aiMigrate($pdo);
+        aiMigrate($pdo, $fresh);
         @chmod($path, 0600);
 
         $handle = $pdo;
@@ -92,11 +94,18 @@ function aiDb(array $config, bool $forWriting = true): ?PDO
     }
 }
 
-function aiMigrate(PDO $pdo): void
+function aiMigrate(PDO $pdo, bool $fresh = false): void
 {
     $at = (int)$pdo->query('PRAGMA user_version')->fetchColumn();
 
-    foreach (aiMigrations() as $version => $statements) {
+    $steps = aiMigrations();
+    ksort($steps);
+    $pending = array_filter(array_keys($steps), fn(int $version): bool => $version > $at);
+    if (!$fresh && $pending !== []) {
+        migrationBackup($pdo, $at, min($pending));
+    }
+
+    foreach ($steps as $version => $statements) {
         if ($version <= $at) {
             continue;
         }

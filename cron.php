@@ -50,6 +50,7 @@ require_once __DIR__ . '/lib/urlwatch.php';
 // Domain expiry, which is the one outage no amount of server monitoring sees.
 require_once __DIR__ . '/lib/domains.php';
 require_once __DIR__ . '/lib/hostdb.php';
+require_once __DIR__ . '/lib/peertransport.php';
 // Update-result alerts are measured by the root collector and read here.
 require_once __DIR__ . '/lib/updates.php';
 
@@ -273,6 +274,24 @@ try {
         $say('prune   ' . prune($config, $pdo));
     }
 
+    if ($wants('--vitals')) {
+        try {
+            $delivery = peerTransportSend($config, $pdo);
+            if ($delivery !== null) {
+                $say($delivery['skipped'] && $delivery['delivered'] === 0
+                    ? 'remote  next new delivery is rate-limited'
+                    : ($delivery['queued']
+                    ? 'remote  queued vital reading for ' . $delivery['peer']
+                    : 'remote  delivered ' . $delivery['delivered'] . ' vital reading(s) to ' . $delivery['peer']));
+            }
+        } catch (Throwable $e) {
+            // Delivery is an extra path: an offline controller must never make
+            // a successful local collection look like missing local data.
+            logProblem('warning', 'remote delivery: ' . $e->getMessage());
+            $say('remote  could not deliver: ' . $e->getMessage());
+        }
+    }
+
     /*
      * The scheduled summaries, on whichever run happens to be first past due.
      *
@@ -349,7 +368,7 @@ function sendReportEmail(array $config, PDO $pdo, string $period, array $report)
     $label = aiReportPeriods()[$period]['label'] ?? ucfirst($period);
 
     $body = [
-        'Hostscope on ' . $host,
+        'HostScope on ' . $host,
         '',
         $report['body'],
         '',

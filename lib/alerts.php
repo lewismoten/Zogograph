@@ -45,11 +45,50 @@ require_once __DIR__ . '/updates.php';
  */
 const TREND_WINDOW_SECONDS = 86400;
 
+/**
+ * Change the read state of named alerts without touching their evidence.
+ *
+ * Keeping this separate from the request handler makes the important part of
+ * acknowledgement testable: a mistaken click is reversible, while deletion
+ * remains the only operation that removes history.
+ *
+ * @param list<int> $ids
+ */
+function setAlertsAcknowledged(PDO $pdo, array $ids, bool $acknowledged): int
+{
+    $ids = array_values(array_unique(array_filter(
+        array_map('intval', $ids),
+        fn(int $id): bool => $id > 0
+    )));
+    if ($ids === []) return 0;
+
+    $marks = implode(',', array_fill(0, count($ids), '?'));
+    if ($acknowledged) {
+        $stmt = $pdo->prepare(
+            "UPDATE alerts SET acknowledged_at = ? WHERE acknowledged_at IS NULL AND id IN ($marks)"
+        );
+        $stmt->execute([time(), ...$ids]);
+    } else {
+        $stmt = $pdo->prepare(
+            "UPDATE alerts SET acknowledged_at = NULL WHERE acknowledged_at IS NOT NULL AND id IN ($marks)"
+        );
+        $stmt->execute($ids);
+    }
+
+    return $stmt->rowCount();
+}
+
 function evaluateAlerts(array $config, PDO $pdo): array
 {
     $rules = $config['alerts'] ?? [];
     if (!($rules['enabled'] ?? false)) {
         return [];
+    }
+
+    $retries = retryAlertEmails($pdo);
+    if ($retries['attempted'] > 0) {
+        logAction($pdo, 'alert_email_retry', null, $retries['failed'] === 0 ? 'ok' : 'failed', 0, 0,
+            sprintf('%d retried, %d still refused', $retries['sent'], $retries['failed']));
     }
 
     $raised = [];
@@ -940,7 +979,7 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
             : count($raised) . ' things need looking at'
     );
 
-    $lines = ['Hostscope on ' . $host, ''];
+    $lines = ['HostScope on ' . $host, ''];
 
     $link = dashboardLink($config);
     if ($link !== null) {
@@ -1056,11 +1095,12 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
     $ids = array_map(intval(...), array_column($raised, 'id'));
 
     $pdo->prepare(
-        'INSERT INTO alert_emails (at, subject, body, recipients, headers, sent, error, alert_ids)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO alert_emails (at, subject, body, recipients, headers, sent, error, alert_ids, attempts, next_attempt_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )->execute([
         time(), $subject, $body, implode('; ', $recipients),
         implode("\n", $headers), $sentAny ? 1 : 0, $error, implode(',', $ids),
+        0, $sentAny ? null : alertEmailRetryAt(0),
     ]);
     $emailId = (int)$pdo->lastInsertId();
 
@@ -1085,6 +1125,81 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
     );
 }
 
+/** A bounded retry schedule for mail that the local MTA refused outright. */
+function alertEmailRetryAt(int $attempts, ?int $now = null): int
+{
+    $now ??= time();
+    return $now + min(3600, 60 * (2 ** min(6, max(0, $attempts))));
+}
+
+/**
+ * Retries only wholly refused batches. `mail()` accepting even one recipient
+ * means delivery has become MTA work; retrying then could duplicate an alert.
+ *
+ * @return array{attempted: int, sent: int, failed: int}
+ */
+function retryAlertEmails(PDO $pdo, int $limit = 3, ?callable $send = null): array
+{
+    if (!function_exists('mail') && $send === null) return ['attempted' => 0, 'sent' => 0, 'failed' => 0];
+    $limit = max(1, min(10, $limit));
+    $stmt = $pdo->prepare('SELECT id, subject, body, recipients, headers, attempts
+        FROM alert_emails WHERE sent = 0 AND next_attempt_at <= ? ORDER BY next_attempt_at, id LIMIT ?');
+    $stmt->execute([time(), $limit]);
+    $update = $pdo->prepare('UPDATE alert_emails SET sent = ?, error = ?, attempts = ?, next_attempt_at = ? WHERE id = ?');
+    $alerts = $pdo->prepare('UPDATE alerts SET emailed_at = ?, email_error = ? WHERE email_id = ?');
+    $result = ['attempted' => 0, 'sent' => 0, 'failed' => 0];
+    foreach ($stmt->fetchAll() as $row) {
+        $result['attempted']++;
+        $accepted = false;
+        foreach (preg_split('/\s*;\s*/', (string)$row['recipients']) ?: [] as $recipient) {
+            if ($recipient === '') continue;
+            $accepted = $send !== null
+                ? (bool)$send($recipient, (string)$row['subject'], (string)$row['body'], (string)($row['headers'] ?? ''))
+                : @mail($recipient, (string)$row['subject'], (string)$row['body'], (string)($row['headers'] ?? ''));
+            if (!$accepted) break;
+        }
+        $attempts = (int)$row['attempts'] + 1;
+        $error = $accepted ? null : 'mail() refused retry ' . $attempts;
+        $update->execute([$accepted ? 1 : 0, $error, $attempts,
+            $accepted ? null : alertEmailRetryAt($attempts), (int)$row['id']]);
+        $alerts->execute([$accepted ? time() : null, $error, (int)$row['id']]);
+        $result[$accepted ? 'sent' : 'failed']++;
+    }
+    return $result;
+}
+
+const TELEGRAM_ALERT_TEXT_LIMIT = 3900;
+
+/**
+ * Telegram has a hard message limit. Summarize before transport so an operator
+ * knows when a batch was shortened and keeps the dashboard link that answers it.
+ */
+function telegramAlertText(array $config, array $raised): string
+{
+    usort($raised, fn(array $a, array $b): int =>
+        severityRank((string)$b['severity']) <=> severityRank((string)$a['severity']));
+    $worst = worstSeverity(array_column($raised, 'severity'));
+    $lines = [sprintf('HostScope %s on %s', strtoupper($worst), php_uname('n'))];
+    $shown = 0;
+    foreach ($raised as $alert) {
+        $subject = preg_replace('/\s+/', ' ', trim((string)($alert['subject'] ?? ''))) ?: 'Untitled alert';
+        $line = strtoupper((string)($alert['severity'] ?? 'info')) . ' — ' . $subject;
+        // Leave space for the omitted count and the dashboard link.
+        if ($shown >= 20 || mb_strlen(implode("\n", [...$lines, $line])) > TELEGRAM_ALERT_TEXT_LIMIT - 220) {
+            break;
+        }
+        $lines[] = mb_substr($line, 0, 300);
+        $shown++;
+    }
+    $remaining = count($raised) - $shown;
+    if ($remaining > 0) {
+        $lines[] = '… plus ' . $remaining . ' more alert' . ($remaining === 1 ? '' : 's') . '.';
+    }
+    $link = dashboardLink($config);
+    if ($link !== null) $lines[] = $link;
+    return mb_substr(implode("\n", $lines), 0, TELEGRAM_ALERT_TEXT_LIMIT);
+}
+
 /** Sends a compact duplicate of an alert batch to the configured Telegram chat. */
 function sendTelegramAlerts(array $config, PDO $pdo, array $raised): void
 {
@@ -1093,15 +1208,7 @@ function sendTelegramAlerts(array $config, PDO $pdo, array $raised): void
         return;
     }
 
-    $lines = ['Hostscope on ' . php_uname('n')];
-    foreach ($raised as $alert) {
-        $lines[] = strtoupper((string)$alert['severity']) . ' — ' . (string)$alert['subject'];
-    }
-    $link = dashboardLink($config);
-    if ($link !== null) {
-        $lines[] = $link;
-    }
-    $result = sendTelegramMessage($telegram, implode("\n", $lines));
+    $result = sendTelegramMessage($telegram, telegramAlertText($config, $raised));
     logAction($pdo, 'alert_telegram', (string)($telegram['chat_id'] ?? ''),
         $result['sent'] ? 'ok' : 'failed', 0, 0, $result['error']);
 }
@@ -1123,7 +1230,7 @@ function sendTelegramMessage(array $telegram, string $text): array
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => http_build_query([
             'chat_id' => $chat,
-            'text' => mb_substr($text, 0, 4000),
+            'text' => mb_substr($text, 0, TELEGRAM_ALERT_TEXT_LIMIT),
             'disable_web_page_preview' => 'true',
         ]),
         CURLOPT_RETURNTRANSFER => true,
@@ -1144,7 +1251,7 @@ function sendTelegramMessage(array $telegram, string $text): array
 function sendTestTelegram(array $config): array
 {
     $telegram = (array)($config['alerts']['telegram'] ?? []);
-    $result = sendTelegramMessage($telegram, 'Hostscope test on ' . php_uname('n') . "\nNothing has tripped.");
+    $result = sendTelegramMessage($telegram, 'HostScope test on ' . php_uname('n') . "\nNothing has tripped.");
     return ['sent' => $result['sent'], 'to' => (string)($telegram['chat_id'] ?? ''), 'error' => $result['error']];
 }
 

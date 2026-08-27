@@ -1,10 +1,20 @@
 <?php
 declare(strict_types=1);
 
-/* Trusted Hostscope peers are configured locally, never discovered from a
- * browser-supplied address.  A peer is only a saved OIDC relying-party record
- * for now; exchanging tokens and rendering remote measurements comes after the
- * authorization-code callback and token validation exist. */
+require_once __DIR__ . '/entitlement.php';
+require_once __DIR__ . '/peertransport.php';
+
+/* Trusted HostScope peers are configured locally, never discovered from a
+ * browser-supplied address. OIDC is an optional read-connection; signed vital
+ * delivery works independently and never grants a remote control access. */
+
+function peerHasOidc(array $peer): bool
+{
+    foreach (['base_url', 'redirect_uri', 'issuer', 'client_id', 'client_secret'] as $key) {
+        if (trim((string)($peer[$key] ?? '')) === '') return false;
+    }
+    return true;
+}
 
 function peerDefinitions(array $config): array
 {
@@ -20,10 +30,65 @@ function peerDefinitions(array $config): array
             'base_url' => (string)($peer['base_url'] ?? ''),
             'redirect_uri' => (string)($peer['redirect_uri'] ?? ''),
             'client_id' => (string)($peer['client_id'] ?? ''),
+            'transport_endpoint' => peerTransportEndpoint($peer),
+            'description' => (string)($peer['description'] ?? ''),
+            'tags' => array_values((array)($peer['tags'] ?? [])),
+            'group' => (string)($peer['group'] ?? ''),
+            'environment' => (string)($peer['environment'] ?? ''),
+            'timezone' => (string)($peer['timezone'] ?? ''),
+            'maintenance' => (string)($peer['maintenance'] ?? ''),
             'has_secret' => trim((string)($peer['client_secret'] ?? '')) !== '',
+            'has_oidc' => peerHasOidc($peer),
+            'transport_configured' => trim((string)($peer['transport_secret'] ?? '')) !== '',
+            'transport_pending_until' => (int)($peer['transport_pending_until'] ?? 0),
         ];
     }
     return $rows;
+}
+
+/** Normalizes non-secret remote-host context used for fleet organization. */
+function peerMetadata(array $input): array
+{
+    $tags = [];
+    foreach (preg_split('/\s*,\s*/', trim((string)($input['tags'] ?? ''))) ?: [] as $tag) {
+        $tag = strtolower(trim($tag));
+        if ($tag === '') continue;
+        if (!preg_match('/^[a-z0-9][a-z0-9._ -]{0,39}$/', $tag)) {
+            throw new ActionRefused('tags use letters, numbers, spaces, dots, underscores, or hyphens');
+        }
+        $tags[$tag] = true;
+    }
+    if (count($tags) > 20) throw new ActionRefused('use at most 20 tags');
+    $timezone = trim((string)($input['timezone'] ?? ''));
+    if ($timezone !== '' && !in_array($timezone, timezone_identifiers_list(), true)) {
+        throw new ActionRefused('choose a valid IANA timezone');
+    }
+    return [
+        'description' => mb_substr(trim((string)($input['description'] ?? '')), 0, 240),
+        'tags' => array_keys($tags),
+        'group' => mb_substr(trim((string)($input['group'] ?? '')), 0, 80),
+        'environment' => mb_substr(trim((string)($input['environment'] ?? '')), 0, 80),
+        'timezone' => $timezone,
+        'maintenance' => mb_substr(trim((string)($input['maintenance'] ?? '')), 0, 240),
+    ];
+}
+
+/** The controller endpoint paired remote cron jobs deliver signed readings to. */
+function peerTransportEndpoint(array $peer): ?string
+{
+    $configured = trim((string)($peer['transport_endpoint'] ?? ''));
+    if ($configured !== '') return $configured;
+    $redirect = (string)($peer['redirect_uri'] ?? '');
+    return str_ends_with($redirect, '/peer-connect.php')
+        ? substr($redirect, 0, -strlen('/peer-connect.php')) . '/peer-push.php' : null;
+}
+
+/** The controller is included separately; this is the remote-host allowance. */
+function peerCapacity(array $config): array
+{
+    $entitlement = hostEntitlement($config);
+    $used = count(peerDefinitions($config));
+    return $entitlement + ['used' => $used, 'remaining' => max(0, $entitlement['remote_host_limit'] - $used)];
 }
 
 function peerUrl(string $url): string
@@ -38,9 +103,47 @@ function peerUrl(string $url): string
     return $url;
 }
 
+/** The scheme, host, and effective port that define one trusted origin. */
+function peerOrigin(string $url): string
+{
+    $parts = parse_url(trim($url));
+    if ($parts === false || ($parts['scheme'] ?? '') !== 'https' || empty($parts['host'])
+        || isset($parts['user']) || isset($parts['pass'])) {
+        throw new ActionRefused('a peer endpoint must use HTTPS without credentials');
+    }
+    $scheme = strtolower((string)$parts['scheme']);
+    $host = strtolower((string)$parts['host']);
+    $port = (int)($parts['port'] ?? 443);
+    return $scheme . '://' . $host . ':' . $port;
+}
+
+/**
+ * Discovery metadata may name paths, but must not turn a trusted peer into an
+ * HTTP proxy for another origin. A compromised peer can therefore not direct
+ * the controller to a cloud metadata service or another private web service.
+ */
+function peerEndpoint(string $issuer, string $endpoint, string $name): string
+{
+    $issuer = peerUrl($issuer);
+    $endpoint = trim($endpoint);
+    $parts = parse_url($endpoint);
+    if ($endpoint === '' || $parts === false || ($parts['scheme'] ?? '') !== 'https'
+        || empty($parts['host']) || isset($parts['user']) || isset($parts['pass'])
+        || isset($parts['fragment'])) {
+        throw new ActionRefused('peer discovery named an invalid ' . $name);
+    }
+    if (!hash_equals(peerOrigin($issuer), peerOrigin($endpoint))) {
+        throw new ActionRefused('peer discovery named a ' . $name . ' outside its trusted origin');
+    }
+    return $endpoint;
+}
+
 /** Read discovery over TLS and require its issuer to match exactly. */
 function peerTest(array $peer): array
 {
+    if (!peerHasOidc($peer)) {
+        return ['ok' => false, 'error' => 'OIDC read connection is not configured for this transport-only peer.'];
+    }
     $issuer = peerUrl((string)($peer['issuer'] ?? ''));
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'error' => 'PHP cURL is not available on this host.'];
@@ -70,9 +173,14 @@ function peerTest(array $peer): array
         || !is_string($discovery['jwks_uri'] ?? null)) {
         return ['ok' => false, 'error' => 'discovery is incomplete or its issuer does not match'];
     }
-    return ['ok' => true, 'issuer' => $issuer,
-        'authorization_endpoint' => $discovery['authorization_endpoint'],
-        'token_endpoint' => $discovery['token_endpoint'], 'jwks_uri' => $discovery['jwks_uri']];
+    try {
+        return ['ok' => true, 'issuer' => $issuer,
+            'authorization_endpoint' => peerEndpoint($issuer, $discovery['authorization_endpoint'], 'authorization endpoint'),
+            'token_endpoint' => peerEndpoint($issuer, $discovery['token_endpoint'], 'token endpoint'),
+            'jwks_uri' => peerEndpoint($issuer, $discovery['jwks_uri'], 'key endpoint')];
+    } catch (ActionRefused $e) {
+        return ['ok' => false, 'error' => $e->getMessage()];
+    }
 }
 
 function peerDecodeBase64Url(string $value): string|false
@@ -81,11 +189,12 @@ function peerDecodeBase64Url(string $value): string|false
     return base64_decode(strtr($value . ($pad ? str_repeat('=', 4 - $pad) : ''), '-_', '+/'), true);
 }
 
-function peerGetJson(string $url, array $headers = []): array
+function peerGetJson(string $url, array $headers = [], ?string $issuer = null): array
 {
     if (!function_exists('curl_init')) {
         throw new ActionRefused('PHP cURL is not available on this host.');
     }
+    $url = $issuer === null ? peerUrl($url) : peerEndpoint($issuer, $url, 'JSON endpoint');
     $curl = curl_init($url);
     curl_setopt_array($curl, [
         CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 15, CURLOPT_CONNECTTIMEOUT => 5,
@@ -107,9 +216,10 @@ function peerGetJson(string $url, array $headers = []): array
     return $decoded;
 }
 
-function peerPostFormJson(string $url, array $fields): array
+function peerPostFormJson(string $url, array $fields, ?string $issuer = null): array
 {
     if (!function_exists('curl_init')) throw new ActionRefused('PHP cURL is not available on this host.');
+    $url = $issuer === null ? peerUrl($url) : peerEndpoint($issuer, $url, 'token endpoint');
     $curl = curl_init($url);
     curl_setopt_array($curl, [
         CURLOPT_POST => true, CURLOPT_POSTFIELDS => http_build_query($fields, '', '&', PHP_QUERY_RFC3986),
@@ -135,8 +245,8 @@ function peerStartLogin(array $config, string $name): never
     if (!is_array($peer)) {
         throw new ActionRefused('unknown trusted server');
     }
-    if (trim((string)($peer['client_secret'] ?? '')) === '') {
-        throw new ActionRefused('this peer needs a confidential client secret before it can connect');
+    if (!peerHasOidc($peer)) {
+        throw new ActionRefused('this peer has remote delivery only; configure every OIDC field before connecting');
     }
     $test = peerTest($peer);
     if (empty($test['ok'])) {
@@ -152,7 +262,7 @@ function peerStartLogin(array $config, string $name): never
     $_SESSION['peer_oauth'][$state] = [
         'name' => $name, 'verifier' => $verifier, 'nonce' => $nonce,
         'expires_at' => time() + 300, 'authorization_endpoint' => $test['authorization_endpoint'],
-        'token_endpoint' => $test['token_endpoint'], 'jwks_uri' => $test['jwks_uri'],
+        'issuer' => $test['issuer'], 'token_endpoint' => $test['token_endpoint'], 'jwks_uri' => $test['jwks_uri'],
     ];
     $params = [
         'response_type' => 'code', 'client_id' => (string)$peer['client_id'], 'redirect_uri' => $redirect,
@@ -200,7 +310,7 @@ function peerVerifyToken(string $token, array $flow, array $peer): array
     if (!is_array($header) || !is_array($claims) || ($header['alg'] ?? '') !== 'RS256' || $signature === false) {
         throw new ActionRefused('remote ID token has an unsupported format');
     }
-    $keys = peerGetJson((string)$flow['jwks_uri'])['keys'] ?? [];
+    $keys = peerGetJson((string)$flow['jwks_uri'], [], (string)$flow['issuer'])['keys'] ?? [];
     $jwk = null;
     foreach ($keys as $candidate) if (is_array($candidate) && hash_equals((string)($candidate['kid'] ?? ''), (string)($header['kid'] ?? ''))) $jwk = $candidate;
     $public = is_array($jwk) ? peerJwkPublicKey($jwk) : null;
@@ -209,10 +319,15 @@ function peerVerifyToken(string $token, array $flow, array $peer): array
     }
     $aud = $claims['aud'] ?? null;
     $audiences = is_array($aud) ? $aud : [$aud];
+    $now = time();
     if (!hash_equals((string)$peer['issuer'], (string)($claims['iss'] ?? ''))
         || !in_array((string)$peer['client_id'], $audiences, true)
+        || (count($audiences) > 1 && !hash_equals((string)$peer['client_id'], (string)($claims['azp'] ?? '')))
         || !hash_equals((string)$flow['nonce'], (string)($claims['nonce'] ?? ''))
-        || (int)($claims['exp'] ?? 0) < time() || !is_string($claims['sub'] ?? null)) {
+        || (int)($claims['exp'] ?? 0) <= $now || (int)($claims['iat'] ?? 0) <= 0
+        || (int)($claims['iat'] ?? 0) > $now + 60
+        || (isset($claims['nbf']) && (int)$claims['nbf'] > $now + 60)
+        || !is_string($claims['sub'] ?? null) || $claims['sub'] === '') {
         throw new ActionRefused('remote ID token claims did not match this login');
     }
     return $claims;
@@ -225,7 +340,8 @@ function peerRemoteSnapshot(array $config, string $name): array
     if (!is_array($peer) || !is_array($token) || (int)($token['expires_at'] ?? 0) < time()) {
         throw new ActionRefused('connect this trusted server before reading its data');
     }
-    return peerGetJson(rtrim((string)$peer['base_url'], '/') . '/peer-data.php', [
+    $base = peerUrl((string)$peer['base_url']);
+    return peerGetJson($base . '/peer-data.php', [
         'Authorization: Bearer ' . (string)$token['id_token'],
-    ]);
+    ], $base);
 }

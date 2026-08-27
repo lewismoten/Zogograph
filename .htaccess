@@ -70,7 +70,14 @@ DirectoryIndex index.html
     Header always set Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
   </FilesMatch>
   Header always set X-Content-Type-Options "nosniff"
+  # CSP frame-ancestors is authoritative; this keeps older embedding engines
+  # from presenting the dashboard inside an attacker-controlled frame too.
+  Header always set X-Frame-Options "DENY"
   Header always set Referrer-Policy "no-referrer"
+  # The dashboard has no camera, microphone, location, payment, or USB use.
+  # Explicitly disabling them keeps a future embedded widget from gaining a
+  # browser capability merely because a host changes its defaults.
+  Header always set Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
   # Nothing here should ever be cached by a shared proxy: even masked, the
   # sizes are information about a private machine.
   Header always set Cache-Control "no-store"

@@ -46,7 +46,7 @@ function db(array $config): PDO
     $pdo->exec('PRAGMA foreign_keys = ON');
     $pdo->exec('PRAGMA busy_timeout = 5000');
 
-    migrate($pdo);
+    migrate($pdo, $fresh);
 
     return $pdo;
 }
@@ -58,7 +58,7 @@ function db(array $config): PDO
  * running for a year picks up new tables without being rebuilt, and so this
  * function is safe to call on every request.
  */
-function migrate(PDO $pdo): void
+function migrate(PDO $pdo, bool $fresh = false): void
 {
     $pdo->exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
     $at = (int)($pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_version')->fetchColumn());
@@ -75,6 +75,11 @@ function migrate(PDO $pdo): void
      */
     $steps = migrations();
     ksort($steps);
+
+    $pending = array_filter(array_keys($steps), fn(int $version): bool => $version > $at);
+    if (!$fresh && $pending !== []) {
+        migrationBackup($pdo, $at, min($pending));
+    }
 
     foreach ($steps as $version => $statements) {
         if ($version <= $at) {
@@ -107,6 +112,49 @@ function migrate(PDO $pdo): void
     }
 }
 
+/**
+ * Takes a consistent SQLite copy before changing an existing schema.
+ *
+ * `VACUUM INTO` is SQLite's backup operation: unlike copying a main database
+ * file beside an active WAL, it includes committed WAL pages in one standalone
+ * snapshot. It uses only PDO/SQLite, so it works on the shared hosts where this
+ * product must not depend on the sqlite3 executable.
+ */
+function migrationBackup(PDO $pdo, int $fromVersion, int $toVersion): string
+{
+    $listed = $pdo->query('PRAGMA database_list')->fetchAll();
+    $file = '';
+    foreach ($listed as $database) {
+        if (($database['name'] ?? '') === 'main') {
+            $file = (string)($database['file'] ?? '');
+            break;
+        }
+    }
+    if ($file === '' || $file === ':memory:') {
+        return '';
+    }
+
+    $directory = dirname($file) . '/migration-backups';
+    if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
+        throw new RuntimeException('Unable to create the private migration backup directory.');
+    }
+    @chmod($directory, 0700);
+
+    $name = sprintf('%s.schema-%d-to-%d.%s.db', basename($file), $fromVersion, $toVersion,
+        gmdate('Ymd\\THis\\Z') . '-' . bin2hex(random_bytes(4)));
+    $backup = $directory . '/' . $name;
+
+    try {
+        $pdo->exec('VACUUM INTO ' . $pdo->quote($backup));
+        @chmod($backup, 0600);
+    } catch (Throwable $e) {
+        @unlink($backup);
+        throw new RuntimeException('Unable to make a migration backup; the schema was not changed.', 0, $e);
+    }
+
+    return $backup;
+}
+
 function columnExists(PDO $pdo, string $table, string $column): bool
 {
     $stmt = $pdo->prepare('SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?');
@@ -117,6 +165,70 @@ function columnExists(PDO $pdo, string $table, string $column): bool
 function migrations(): array
 {
     return [
+        44 => [
+            // A fully refused alert email can be retried without duplicating a
+            // message that mail() already accepted for at least one recipient.
+            'ALTER TABLE alert_emails ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE alert_emails ADD COLUMN next_attempt_at INTEGER',
+            'CREATE INDEX alert_emails_retry ON alert_emails (sent, next_attempt_at)',
+        ],
+        43 => [
+            // Fleet summaries need one current row per peer, not every retained
+            // reading. This follows the comparison in peerTransportLatest().
+            'CREATE INDEX remote_peer_vitals_latest ON remote_peer_vitals (peer, received_at DESC, taken_at DESC)',
+        ],
+        42 => [
+            'CREATE INDEX actions_signin_throttle ON actions (action, outcome, remote_addr, at)',
+        ],
+        41 => [
+            'CREATE TABLE remote_delivery_state (
+                endpoint TEXT NOT NULL,
+                peer TEXT NOT NULL,
+                last_scheduled_at INTEGER NOT NULL,
+                PRIMARY KEY (endpoint, peer)
+            )',
+        ],
+        40 => [
+            'ALTER TABLE remote_delivery_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE remote_delivery_queue ADD COLUMN next_attempt_at INTEGER NOT NULL DEFAULT 0',
+            'ALTER TABLE remote_delivery_queue ADD COLUMN last_error TEXT',
+            'CREATE INDEX remote_delivery_queue_due ON remote_delivery_queue (endpoint, peer, next_attempt_at)',
+        ],
+        39 => [
+            /* Offline remote delivery is bounded: a controller outage keeps
+             * local evidence rather than dropping it or consuming the disk. */
+            'CREATE TABLE remote_delivery_queue (
+                id INTEGER PRIMARY KEY,
+                endpoint TEXT NOT NULL,
+                peer TEXT NOT NULL,
+                taken_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                UNIQUE (peer, taken_at)
+            )',
+            'CREATE INDEX remote_delivery_queue_pending ON remote_delivery_queue (endpoint, peer, created_at)',
+        ],
+        38 => [
+            /* A nonce is retained long enough to reject a replayed remote
+             * delivery. Remote vitals keep their own collection timestamp so
+             * delayed delivery remains visible rather than impersonating now. */
+            'CREATE TABLE remote_peer_receipts (
+                peer TEXT NOT NULL,
+                nonce TEXT NOT NULL,
+                received_at INTEGER NOT NULL,
+                PRIMARY KEY (peer, nonce)
+            )',
+            'CREATE INDEX remote_peer_receipts_at ON remote_peer_receipts (received_at)',
+            'CREATE TABLE remote_peer_vitals (
+                peer TEXT NOT NULL,
+                host TEXT NOT NULL,
+                taken_at INTEGER NOT NULL,
+                received_at INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                PRIMARY KEY (peer, taken_at)
+            )',
+            'CREATE INDEX remote_peer_vitals_received ON remote_peer_vitals (received_at)',
+        ],
         37 => [
             'CREATE TABLE collector_runs (
                 id INTEGER PRIMARY KEY,

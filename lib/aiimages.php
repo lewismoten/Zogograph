@@ -22,6 +22,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/spans.php';
 require_once __DIR__ . '/aidb.php';
+require_once __DIR__ . '/ai.php';
 
 /**
  * Every style the generator offers, read from data rather than written here.
@@ -471,18 +472,22 @@ function aiFetchBytes(string $url): array
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'why' => 'this PHP has no curl'];
     }
-    if (!str_starts_with($url, 'https://')) {
-        return ['ok' => false, 'why' => 'only https addresses are fetched'];
+    try {
+        $endpoint = aiEndpointPolicy('openai', $url, true);
+    } catch (ActionRefused $e) {
+        return ['ok' => false, 'why' => $e->getMessage()];
     }
 
-    $handle = curl_init($url);
+    $handle = curl_init($endpoint['url']);
     curl_setopt_array($handle, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 30,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_MAXREDIRS => 3,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_RESOLVE => $endpoint['resolve'],
         /*
          * Stopped mid-download rather than checked afterwards.
          *
@@ -646,7 +651,13 @@ function aiPostForm(string $url, array $fields, array $headers, int $timeout = 3
         return ['ok' => false, 'error' => 'this PHP has no curl'];
     }
 
-    $handle = curl_init($url);
+    try {
+        $endpoint = aiEndpointPolicy('openai', $url);
+    } catch (ActionRefused $e) {
+        return ['ok' => false, 'error' => $e->getMessage()];
+    }
+
+    $handle = curl_init($endpoint['url']);
     curl_setopt_array($handle, [
         CURLOPT_POST => true,
         CURLOPT_RETURNTRANSFER => true,
@@ -654,6 +665,10 @@ function aiPostForm(string $url, array $fields, array $headers, int $timeout = 3
         CURLOPT_HTTPHEADER => $headers,
         CURLOPT_TIMEOUT => $timeout,
         CURLOPT_CONNECTTIMEOUT => 15,
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_RESOLVE => $endpoint['resolve'],
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
     ]);
@@ -816,13 +831,22 @@ function aiFindReaction(array $settings, string $mood, ?callable $ask = null): a
     if (!function_exists('curl_init')) {
         return ['ok' => false, 'error' => 'this PHP has no curl'];
     }
+    try {
+        $endpoint = aiEndpointPolicy('openai', $url, true);
+    } catch (ActionRefused $e) {
+        return ['ok' => false, 'error' => $e->getMessage()];
+    }
 
-    $handle = curl_init($url);
+    $handle = curl_init($endpoint['url']);
     curl_setopt_array($handle, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 15,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_RESOLVE => $endpoint['resolve'],
     ]);
     $raw = curl_exec($handle);
     // No curl_close; see the note above.

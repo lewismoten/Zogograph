@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Hostscope is a private, self-hosted dashboard for understanding server capacity, health, and activity.">
+<meta name="description" content="HostScope is a private, self-hosted dashboard for understanding server capacity, health, and activity.">
 <meta name="theme-color" content="#0b1018">
-<title>Hostscope — server monitoring</title>
+<title>HostScope — server monitoring</title>
 <link rel="stylesheet" href="index.css">
 <script src="index.js" defer></script>
 </head>
@@ -32,7 +32,7 @@
 
   <a class="brand" href="#/overview">
     <span class="brand-text">
-      <strong>Hostscope</strong>
+      <strong>HostScope</strong>
       <small>clear server monitoring</small>
     </span>
   </a>
@@ -510,7 +510,7 @@
   <div class="scrim" id="scrim" hidden></div>
 
   <main id="main">
-    <h1 id="pageTitle" class="sr-only">Hostscope server monitoring dashboard</h1>
+    <h1 id="pageTitle" class="sr-only">HostScope server monitoring dashboard</h1>
     <div id="notice"></div>
     <!--
       Something a person said, as opposed to something the machine noticed.
@@ -2053,6 +2053,7 @@
         <label class="pill"><input type="checkbox" id="alertUnreadOnly"> Unread only</label>
         <button class="link" id="alertAckAll">Mark all read</button>
         <button class="link" id="alertAckSome" disabled>Mark read</button>
+        <button class="link" id="alertUnackSome" disabled>Mark unread</button>
         <button class="link danger" id="alertDeleteSome" disabled>Delete</button>
       </div>
     </div>
@@ -2113,6 +2114,7 @@
     <div class="panel-head">
       <h2>Everything this monitor has done</h2>
       <div class="panel-tools">
+        <button id="actionExport" class="link" title="Download the full audit history as a CSV file">Download CSV</button>
         <button id="actionClear" class="link danger" title="Remove earlier audit entries and retain a record of this reset">Clear audit</button>
         <label class="pill">What
           <select id="actionKind"><option value="">everything</option></select>
@@ -2194,7 +2196,10 @@
 <section class="panel" id="selfPanel">
   <div class="panel-head">
     <h2>The monitor itself</h2>
-    <button id="selfRefresh" class="link">Recheck</button>
+    <div class="panel-controls">
+      <button id="selfDiagnosticExport" class="link">Download diagnostic</button>
+      <button id="selfRefresh" class="link">Recheck</button>
+    </div>
   </div>
   <p class="muted small sub-note">
     A disk monitor should be able to answer for its own disk use, and should
@@ -2552,7 +2557,7 @@
 
 <section class="view" data-view="sys-peers" hidden>
 <section class="panel">
-  <div class="panel-head"><h2>Trusted Hostscope servers</h2></div>
+  <div class="panel-head"><h2>Trusted HostScope servers</h2></div>
   <p class="muted small sub-note">A trusted server is explicitly configured here and checked through HTTPS OpenID Connect discovery. Saving it does not share data or sign anyone in; those authorization-code steps are deliberately separate.</p>
   <div id="peersAdminBody"></div>
 </section>
@@ -2711,6 +2716,8 @@
   <div class="panel-head">
     <h2>The account's database</h2>
     <div class="panel-controls">
+      <button id="storeExport" class="link">Download safe export</button>
+      <button id="storeIntegrity" class="link">Run full integrity check</button>
       <button id="storeRollup" class="link">Roll up old readings now</button>
       <button id="storeCompact" class="link">Reclaim empty space</button>
     </div>
@@ -2943,10 +2950,14 @@
       Username <span class="muted small">(optional for the administrator password)</span>
       <input type="text" id="username" autocomplete="username">
     </label>
-    <label>
-      Password
-      <input type="password" id="password" autocomplete="current-password" required>
-    </label>
+      <label>
+        Password
+        <input type="password" id="password" autocomplete="current-password" required>
+      </label>
+      <label>
+        Verification code <span class="muted small">(if enabled)</span>
+        <input type="text" id="totp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code">
+      </label>
     <p class="error small" id="signInError" hidden></p>
     <div class="dialog-buttons">
       <button type="button" id="signInCancel">Cancel</button>

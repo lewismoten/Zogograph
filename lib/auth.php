@@ -48,6 +48,21 @@ function isSignedIn(): bool
     return !empty($_SESSION['signed_in']);
 }
 
+const SIGNIN_THROTTLE_WINDOW = 900;
+const SIGNIN_THROTTLE_LIMIT = 8;
+
+/** Uses only prior wrong-password rows; rate-limit noise cannot extend a lock. */
+function signInRateLimited(PDO $pdo, ?string $address = null, ?int $now = null): bool
+{
+    $now ??= time();
+    $address ??= (string)($_SERVER['REMOTE_ADDR'] ?? '');
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM actions
+        WHERE action = 'sign_in' AND outcome = 'refused' AND detail = 'wrong password'
+          AND COALESCE(remote_addr, '') = ? AND at >= ?");
+    $stmt->execute([$address, $now - SIGNIN_THROTTLE_WINDOW]);
+    return (int)$stmt->fetchColumn() >= SIGNIN_THROTTLE_LIMIT;
+}
+
 /**
  * Checks a password.
  *
@@ -55,7 +70,51 @@ function isSignedIn(): bool
  * password is configured", "wrong password" and "right password" is measurable,
  * and password_verify against an empty hash returns instantly.
  */
-function signIn(array $config, string $password, string $username = ''): bool
+/** Decodes a provisioning-style Base32 TOTP secret without a dependency. */
+function totpBase32Decode(string $secret): string|false
+{
+    $secret = strtoupper(preg_replace('/[\s-]+/', '', $secret) ?? '');
+    if ($secret === '' || !preg_match('/^[A-Z2-7]+=*$/', $secret)) return false;
+    $alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    $bits = 0;
+    $buffer = 0;
+    $out = '';
+    foreach (str_split(rtrim($secret, '=')) as $char) {
+        $buffer = ($buffer << 5) | strpos($alphabet, $char);
+        $bits += 5;
+        while ($bits >= 8) {
+            $bits -= 8;
+            $out .= chr(($buffer >> $bits) & 0xff);
+        }
+    }
+    return $out === '' ? false : $out;
+}
+
+/** Validates a six-digit TOTP code with one clock step of skew in either direction. */
+function totpValid(string $secret, string $code, ?int $now = null): bool
+{
+    $key = totpBase32Decode($secret);
+    if ($key === false || !preg_match('/^\d{6}$/', trim($code))) return false;
+    $counter = intdiv($now ?? time(), 30);
+    for ($step = -1; $step <= 1; $step++) {
+        $value = $counter + $step;
+        $digest = hash_hmac('sha1', pack('N2', 0, $value), $key, true);
+        $offset = ord($digest[19]) & 0x0f;
+        $number = ((ord($digest[$offset]) & 0x7f) << 24) | (ord($digest[$offset + 1]) << 16)
+            | (ord($digest[$offset + 2]) << 8) | ord($digest[$offset + 3]);
+        if (hash_equals(sprintf('%06d', $number % 1000000), trim($code))) return true;
+    }
+    return false;
+}
+
+/** A named user may set their own secret; the legacy administrator uses auth.totp_secret. */
+function signInTotpSecret(array $config, ?array $named): string
+{
+    return trim((string)(is_array($named)
+        ? ($named['totp_secret'] ?? '') : ($config['auth']['totp_secret'] ?? '')));
+}
+
+function signIn(array $config, string $password, string $username = '', string $totp = ''): bool
 {
     $users = (array)($config['access']['users'] ?? []);
     $named = null;
@@ -77,6 +136,11 @@ function signIn(array $config, string $password, string $username = ''): bool
     }
 
     if (!password_verify($password, $hash)) {
+        usleep(random_int(150000, 350000));
+        return false;
+    }
+    $totpSecret = signInTotpSecret($config, $named);
+    if ($totpSecret !== '' && !totpValid($totpSecret, $totp)) {
         usleep(random_int(150000, 350000));
         return false;
     }

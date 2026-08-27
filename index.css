@@ -2054,6 +2054,15 @@ svg.dial.is-dead { animation: none; }
   font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   tab-size: 2;
 }
+.editor-browser { border-top: 1px solid var(--line-soft); }
+.editor-browser-row { display: flex; gap: 12px; align-items: baseline; justify-content: space-between;
+  padding: 7px 0; border-bottom: 1px solid var(--line-soft); }
+.editor-browser-row > :first-child { min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.editor-browser-row > :last-child { flex: 0 0 auto; text-align: right; }
+@media (max-width: 520px) {
+  .editor-browser-row { display: block; }
+  .editor-browser-row > :last-child { display: block; margin-top: 2px; text-align: left; }
+}
 #listDialogBody .settings-row > div { min-width: 0; }
 
 /* ---------------------------------------------------------------- notes -- */

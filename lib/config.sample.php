@@ -23,11 +23,18 @@ return [
     // is a safe default for a fresh install.
     'password_hash' => '',
 
+    // Optional Base32 TOTP second factor for the legacy administrator. This is
+    // checked only after the password and is never returned through the API.
+    'auth' => [
+        'totp_secret' => '',
+    ],
+
     /*
      * People and their permissions. The legacy password above remains an
      * Administrators login. Named users are optional and carry their own
-     * password hash and group membership. Public is always active; the other
-     * built-in groups are Staff and Administrators, both configurable here.
+     * password hash and group membership. A named user may also carry its own
+     * private Base32 `totp_secret`. Public is always active; the other built-in
+     * groups are Staff and Administrators, both configurable here.
      */
     'access' => [
         'groups' => [],
@@ -346,10 +353,37 @@ return [
     // The dashboard writes this list when an operator presses Ignore.
     'diagnostic_ignores' => [],
 
-    /* Named, explicitly trusted Hostscope installations. A peer is tested
-     * through OIDC discovery before it may be used. Leave it empty until the
-     * remote server exposes its HTTPS issuer and this host has a client ID. */
+    /* Named, explicitly trusted HostScope installations. Signed remote vital
+     * delivery has its own one-time credential and does not need OIDC. OIDC is
+     * an optional interactive read connection and must be configured in full. */
     'peers' => [],
+
+    /* Set these only on a remote HostScope installation after its controller
+     * shows the one-time pairing credential. The remote cron sends its newest
+     * local vital reading over HTTPS; private controller names need an exact
+     * allowlist entry to avoid accidental internal SSRF. */
+    'remote_delivery' => [
+        'endpoint' => '',
+        'peer' => '',
+        'credential' => '',
+        'interval_seconds' => 60,
+        'private_controller_hosts' => [],
+    ],
+
+    /* URL checks may monitor public HTTP(S) targets. To monitor an internal
+     * service, list its exact hostname or address here; this prevents a saved
+     * check or DNS change from becoming an accidental SSRF request. */
+    'url_watch' => [
+        'private_hosts' => [],
+    ],
+
+    /* The self-hosted Free edition includes this controller plus three remote
+     * HostScope installations. Future offline licenses or hosted plans use the
+     * same single entitlement field; no user data is withheld when it expires. */
+    'edition' => [
+        'name' => 'Free',
+        'remote_host_limit' => 3,
+    ],
 
     /* OpenID Connect provider. Registered trusted clients use the
      * authorization-code flow with PKCE and receive a short-lived RS256 ID
@@ -838,6 +872,16 @@ return [
 
         'scan_days' => 400,
         'process_days' => 400,
+        // Accepted remote readings and short-lived replay-receipt evidence.
+        'remote_vital_days' => 400,
+        'remote_receipt_days' => 2,
+    ],
+
+    /* Private destination for vulnerability reports concerning this install.
+     * Leave blank only until the installation owner has chosen one; never use
+     * this value as a public contact or expose it to signed-out visitors. */
+    'security' => [
+        'contact' => '',
     ],
 
     'host' => [

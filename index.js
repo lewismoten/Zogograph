@@ -15,6 +15,7 @@ function reportClientProblem(message, stack = "") {
   reportingClientProblem = true;
   const body = new URLSearchParams({
     action: "client-problem",
+    csrf: state?.csrf ?? "",
     message: String(message || "Unknown browser error").slice(0, 4000),
     stack: String(stack || "").slice(0, 4000),
   });
@@ -11523,11 +11524,17 @@ async function refreshPeers() {
 function renderPeers(data) {
   const body = $("peersAdminBody");
   const parts = [];
+  const capacity = data.capacity || { name: "Free", remote_host_limit: 3, used: data.rows.length, remaining: 0 };
+  parts.push(note(`${capacity.name} edition: controller plus ${capacity.remote_host_limit} remote hosts. `
+    + `${count(capacity.used, "remote host")} configured; ${capacity.remaining} remaining.`));
   const add = document.createElement("button");
   add.type = "button";
   add.className = "primary";
   add.textContent = "Add trusted server";
-  add.disabled = !data.writable;
+  add.disabled = !data.writable || capacity.remaining === 0;
+  add.title = capacity.remaining === 0
+    ? "This edition has reached its remote-host limit. Remove or replace a server to free a slot."
+    : "Add a trusted remote HostScope server.";
   add.addEventListener("click", () => showPeerDialog());
   parts.push(add);
 
@@ -11539,10 +11546,17 @@ function renderPeers(data) {
     parts.push(holder);
     body.replaceChildren(...parts);
     renderTable("peerTable", data.rows, [
-      { label: "Server", className: "name", render: row => row.label },
-      { label: "Issuer", className: "cmd", render: row => row.issuer },
-      { label: "Client", render: row => row.client_id },
-      { label: "Secret", render: row => row.has_secret ? "configured" : "missing" },
+      { label: "Server", className: "name", render: row => row.description || row.tags?.length
+        ? `${row.label} — ${[row.description, row.tags?.join(", ")].filter(Boolean).join(" · ")}` : row.label },
+      { label: "Issuer", className: "cmd", render: row => row.has_oidc ? row.issuer : "not configured" },
+      { label: "Client", render: row => row.has_oidc ? row.client_id : "—" },
+      { label: "Secret", render: row => row.has_oidc ? "configured" : "not needed" },
+      { label: "Transport", render: row => !row.transport_configured ? "not paired"
+        : row.transport_pending_until ? `awaiting first delivery (${ago(row.transport_pending_until)})` : "paired" },
+      { label: "Last delivery", render: row => row.last_received_at ? ago(row.last_received_at) : "none yet" },
+      { label: "CPU", render: row => row.remote_vitals?.vitals?.cpu_percent == null ? "—" : `${Number(row.remote_vitals.vitals.cpu_percent).toFixed(1)}%` },
+      { label: "Memory", render: row => row.remote_vitals?.vitals?.mem_used_percent == null ? "—" : `${Number(row.remote_vitals.vitals.mem_used_percent).toFixed(1)}%` },
+      { label: "Disk free", render: row => row.remote_vitals?.vitals?.disk_free_bytes == null ? "—" : humanBytes(row.remote_vitals.vitals.disk_free_bytes) },
       { label: "Connected", render: row => row.connected_as || "not connected" },
       {
         label: "",
@@ -11552,6 +11566,8 @@ function renderPeers(data) {
           const test = document.createElement("button");
           test.className = "link";
           test.textContent = "Test";
+          test.disabled = !row.has_oidc;
+          test.title = row.has_oidc ? "Test OIDC discovery" : "Remote delivery is configured separately from OIDC.";
           test.addEventListener("click", async () => {
             try {
               const result = await post("peer-test", { name: row.name });
@@ -11562,6 +11578,7 @@ function renderPeers(data) {
           connect.className = "link";
           connect.href = `peer-connect.php?peer=${encodeURIComponent(row.name)}`;
           connect.textContent = row.connected_as ? "Reconnect" : "Connect";
+          connect.hidden = !row.has_oidc;
           const read = document.createElement("button");
           read.className = "link";
           read.textContent = "View data";
@@ -11585,6 +11602,25 @@ function renderPeers(data) {
           edit.className = "link";
           edit.textContent = "Edit";
           edit.addEventListener("click", () => showPeerDialog(row));
+          const rotate = document.createElement("button");
+          rotate.className = "link";
+          rotate.textContent = "Rotate delivery key";
+          rotate.addEventListener("click", async () => {
+            if (!(await confirmDialog(
+              `Rotate ${row.label}’s remote-delivery credential?\n\nThe remote stops delivering until its configuration uses the new key.`,
+              "Rotate delivery key"
+            ))) return;
+            try {
+              const result = await post("peer-transport-rotate", { name: row.name });
+              renderPeers(result);
+              showListDialog(`Pair ${row.label}`, [
+                note("The previous credential is revoked. Copy this replacement to the remote HostScope within 24 hours; it activates on first delivery and is not shown again."),
+                paste(result.transport_secret),
+                ...(result.transport_endpoint ? [note("Remote delivery endpoint:"), paste(result.transport_endpoint)] : []),
+              ]);
+              notice("Remote-delivery credential rotated.", true);
+            } catch (error) { notice(String(error.message || error)); }
+          });
           const drop = document.createElement("button");
           drop.className = "link danger";
           drop.textContent = "Remove";
@@ -11593,7 +11629,7 @@ function renderPeers(data) {
             try { renderPeers(await post("peer-delete", { name: row.name })); }
             catch (error) { notice(String(error.message || error)); }
           });
-          wrap.append(test, connect, read, edit, drop);
+          wrap.append(test, connect, read, edit, rotate, drop);
           return wrap;
         },
       },
@@ -11616,21 +11652,43 @@ function showPeerDialog(row = null) {
   const name = input("Short name", row?.name, "Lowercase letters, numbers, hyphens, and underscores.");
   name.disabled = Boolean(row);
   const label = input("Label", row?.label, "What people see in this dashboard.");
-  const base = input("Dashboard URL", row?.base_url, "HTTPS base address of the remote Hostscope.", "url");
+  const description = input("Description", row?.description, "Optional operational context, such as the service it runs.");
+  const tags = input("Tags", row?.tags?.join(", "), "Optional comma-separated fleet tags.");
+  const group = input("Group", row?.group, "Optional fleet group; organization only for now.");
+  const environment = input("Environment", row?.environment, "Optional environment, such as production or staging.");
+  const timezone = input("Timezone", row?.timezone, "Optional IANA timezone, such as America/New_York.");
+  const maintenance = input("Maintenance note", row?.maintenance, "Optional expected-offline or maintenance context.");
+  const endpoint = input("Controller delivery endpoint", row?.transport_endpoint || new URL("peer-push.php", window.location.href).href,
+    "HTTPS peer-push.php address the remote will deliver signed readings to.", "url");
+  const base = input("Dashboard URL", row?.base_url, "Optional: HTTPS base address for the OIDC read connection.", "url");
   const redirect = input("Registered callback URL", row?.redirect_uri,
-    "This Hostscope’s HTTPS peer-connect.php address, registered at the remote issuer.", "url");
-  const issuer = input("OpenID issuer", row?.issuer, "HTTPS issuer whose discovery document will be checked.", "url");
-  const client = input("Client ID", row?.client_id, "Registered by the remote OpenID provider.");
+    "Optional OIDC callback URL. Configure all OIDC fields together.", "url");
+  const issuer = input("OpenID issuer", row?.issuer, "Optional HTTPS issuer whose discovery document will be checked.", "url");
+  const client = input("Client ID", row?.client_id, "Optional OIDC client ID; needs every OIDC field.");
   const secret = input("Client secret", "", row?.has_secret
     ? "Leave blank to keep the existing secret."
-    : "Kept only in local config.php.", "password");
+    : "Optional; kept only in local config.php. Supply it only with every OIDC field.", "password");
   showFormDialog(row ? "Edit trusted server" : "Add trusted server", fields, async () => {
     const result = await post("peer-save", {
-      name: name.value, label: label.value, base_url: base.value, redirect_uri: redirect.value,
+      name: name.value, label: label.value, transport_endpoint: endpoint.value, base_url: base.value, redirect_uri: redirect.value,
       issuer: issuer.value, client_id: client.value, client_secret: secret.value,
+      description: description.value, tags: tags.value, group: group.value, environment: environment.value,
+      timezone: timezone.value, maintenance: maintenance.value,
     });
     renderPeers(result);
-    notice("Trusted server saved. Test discovery before using it.", true);
+    if (result.transport_secret) {
+      showListDialog(`Pair ${label.value || name.value}`, [
+        note("Copy this one-time transport credential to the remote HostScope configuration within 24 hours. It activates on first delivery and is not shown again."),
+        paste(result.transport_secret),
+        ...(result.transport_endpoint ? [
+          note("Remote delivery endpoint:"),
+          paste(result.transport_endpoint),
+        ] : [note("Set the remote delivery endpoint to this controller’s HTTPS peer-push.php URL.")]),
+      ]);
+    }
+    notice(result.rows.find(item => item.name === name.value)?.has_oidc
+      ? "Trusted server saved. Test OIDC discovery before using the read connection."
+      : "Remote delivery peer saved. Copy its one-time delivery key to the remote HostScope.", true);
   });
 }
 
@@ -12242,6 +12300,10 @@ function databaseCard(file, projection) {
       ? ` + ${humanBytes(file.wal_bytes)} write-ahead log` : ""}`],
     ["Empty space inside it",
       `${humanBytes(file.free_bytes)} (${Math.round(file.free_share * 100)}% of it)`],
+    ["Integrity", file.integrity?.ok ? "✓ Quick check passed" : `⚠ ${file.integrity?.message || "not checked"}`],
+    ["Migration recovery", file.integrity?.migration_backups
+      ? `${count(file.integrity.migration_backups, "private snapshot")} · newest ${ago(file.integrity.newest_backup_at)}`
+      : "No migration snapshot needed yet"],
     ["Pages", `${humanCount(file.pages)} of ${humanBytes(file.page_size)}`],
     ["Journal", file.journal],
   ];
@@ -13293,6 +13355,13 @@ function renderTerminal(data) {
 
   parts.push(openForNow(data));
 
+  const browse = document.createElement("button");
+  browse.type = "button";
+  browse.className = "link";
+  browse.textContent = "Browse watched files";
+  browse.addEventListener("click", () => browseTerminalEditor().catch(error => notice(String(error.message || error))));
+  parts.push(browse);
+
   /*
    * What the assistant has asked somebody to run.
    *
@@ -13885,20 +13954,184 @@ function terminalEditorCommand(command) {
 
 async function openTerminalEditor(path) {
   const data = await api("terminal-editor", { path });
+  const editable = Boolean(data.writable && state.access?.write);
   const location = document.createElement("code");
   location.textContent = data.path;
   const text = document.createElement("textarea");
   text.className = "wide terminal-editor";
   text.rows = 22;
   text.spellcheck = false;
+  text.readOnly = !editable;
   text.value = data.text;
+  const find = document.createElement("input");
+  find.type = "search";
+  find.placeholder = "Find";
+  find.setAttribute("aria-label", "Find text in file");
+  const replace = document.createElement("input");
+  replace.type = "text";
+  replace.placeholder = "Replace with";
+  replace.setAttribute("aria-label", "Replacement text");
+  const searchStatus = document.createElement("span");
+  searchStatus.className = "muted small";
+  const findNext = () => {
+    const needle = find.value;
+    if (!needle) { searchStatus.textContent = "Enter text to find."; return false; }
+    let at = text.value.indexOf(needle, text.selectionEnd);
+    const wrapped = at < 0;
+    if (wrapped) at = text.value.indexOf(needle);
+    if (at < 0) { searchStatus.textContent = "No matches."; return false; }
+    text.focus();
+    text.setSelectionRange(at, at + needle.length);
+    searchStatus.textContent = wrapped ? "Wrapped to the first match." : "Match selected.";
+    return true;
+  };
+  const replaceNext = () => {
+    if (!editable) return;
+    if (!find.value) { searchStatus.textContent = "Enter text to find."; return; }
+    if (text.value.slice(text.selectionStart, text.selectionEnd) !== find.value && !findNext()) return;
+    text.setRangeText(replace.value, text.selectionStart, text.selectionEnd, "select");
+    searchStatus.textContent = "One match replaced.";
+  };
+  const replaceAll = () => {
+    if (!editable) return;
+    const needle = find.value;
+    if (!needle) { searchStatus.textContent = "Enter text to find."; return; }
+    let count = 0;
+    let from = 0;
+    while ((from = text.value.indexOf(needle, from)) >= 0) {
+      text.setRangeText(replace.value, from, from + needle.length, "end");
+      from += replace.value.length;
+      count++;
+    }
+    searchStatus.textContent = count ? `${count} match${count === 1 ? "" : "es"} replaced.` : "No matches.";
+  };
+  const findButton = document.createElement("button");
+  findButton.type = "button";
+  findButton.className = "link";
+  findButton.textContent = "Find next";
+  findButton.addEventListener("click", findNext);
+  const replaceButton = document.createElement("button");
+  replaceButton.type = "button";
+  replaceButton.className = "link";
+  replaceButton.textContent = "Replace";
+  replaceButton.disabled = !editable;
+  replaceButton.addEventListener("click", replaceNext);
+  const allButton = document.createElement("button");
+  allButton.type = "button";
+  allButton.className = "link";
+  allButton.textContent = "Replace all";
+  allButton.disabled = !editable;
+  allButton.addEventListener("click", replaceAll);
+  find.addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); findNext(); }
+  });
+  replace.addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); replaceNext(); }
+  });
+  const searchTools = document.createElement("div");
+  searchTools.className = "panel-controls";
+  searchTools.append(find, findButton);
+  if (editable) searchTools.append(replace, replaceButton, allButton);
+  searchTools.append(searchStatus);
+  text.addEventListener("keydown", event => {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    if (event.key.toLowerCase() === "f") { event.preventDefault(); find.focus(); }
+    if (editable && event.key.toLowerCase() === "h") { event.preventDefault(); replace.focus(); }
+  });
   const note_ = document.createElement("p");
   note_.className = "muted small";
-  note_.textContent = `${humanBytes(data.bytes)} · changes are saved as this web account · text files up to 1 MB.`;
-  showFormDialog(`Edit ${data.path.split("/").pop()}`, [location, note_, text], async () => {
-    const saved = await post("terminal-editor-save", { path: data.path, text: text.value });
-    notice(`Saved ${saved.path} (${humanBytes(saved.bytes)}).`, true);
+  note_.textContent = editable
+    ? `${humanBytes(data.bytes)} · text files up to 1 MB · saves preserve line endings, make a private recovery copy, and refuse to overwrite newer changes.`
+    : `${humanBytes(data.bytes)} · read-only: this account cannot save this file.`;
+  const parts = [location, note_, searchTools];
+  if (editable && data.backups?.length) {
+    const backup = document.createElement("select");
+    for (const copy of data.backups) {
+      const option = document.createElement("option");
+      option.value = copy.name;
+      option.textContent = `${humanTime(copy.at)} · ${humanBytes(copy.bytes)}`;
+      backup.appendChild(option);
+    }
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.className = "link danger";
+    restore.textContent = "Restore selected recovery copy";
+    restore.addEventListener("click", async () => {
+      if (!(await confirmDialog("Restore this recovery copy?\n\nYour current file is copied privately before the restore. Any unsaved text in this dialog will be discarded.", "Restore copy"))) return;
+      try {
+        const saved = await post("terminal-editor-restore", {
+          path: data.path, backup: backup.value, fingerprint: data.fingerprint,
+        });
+        $("noteDialog").close();
+        notice(`Restored ${saved.path}; the prior version was copied for recovery.`, true);
+      } catch (error) { notice(String(error.message || error)); }
+    });
+    parts.push(fieldRow("Recovery copy", backup, "Private pre-save copy. Restoring creates a new copy of the current version."), restore);
+  }
+  parts.push(text);
+  if (!editable) {
+    showListDialog(`View ${data.path.split("/").pop()}`, parts,
+      "This file is shown for review only. Find works locally; no text is sent back to the server.");
+    return;
+  }
+  showFormDialog(`Edit ${data.path.split("/").pop()}`, parts, async () => {
+    const saved = await post("terminal-editor-save", {
+      path: data.path, text: text.value, fingerprint: data.fingerprint, line_ending: data.line_ending,
+    });
+    notice(`Saved ${saved.path} (${humanBytes(saved.bytes)})${saved.backup ? "; recovery copy made." : "."}`, true);
   });
+}
+
+/** A bounded picker is safer and more approachable than asking for a shell path. */
+async function browseTerminalEditor(path = "") {
+  const data = await api("terminal-editor-browse", { path });
+  const nodes = [];
+  const location = document.createElement("code");
+  location.textContent = data.path;
+  nodes.push(location);
+
+  if (data.parent) {
+    const up = document.createElement("button");
+    up.type = "button";
+    up.className = "link";
+    up.textContent = "↑ Parent directory";
+    up.addEventListener("click", () => browseTerminalEditor(data.parent).catch(error => notice(String(error.message || error))));
+    nodes.push(up);
+  }
+
+  const list = document.createElement("div");
+  list.className = "editor-browser";
+  for (const row of data.rows) {
+    const entry = document.createElement("div");
+    entry.className = "editor-browser-row";
+    const label = document.createElement(row.kind === "link" || row.kind === "other" ? "span" : "button");
+    if (label instanceof HTMLButtonElement) {
+      label.type = "button";
+      label.className = "link";
+      label.addEventListener("click", () => {
+        if (row.kind === "directory") {
+          browseTerminalEditor(row.path).catch(error => notice(String(error.message || error)));
+        } else {
+          $("noteDialog").close();
+          openTerminalEditor(row.path).catch(error => notice(String(error.message || error)));
+        }
+      });
+    } else label.className = "muted";
+    label.textContent = `${row.kind === "directory" ? "▸ " : row.kind === "link" ? "↗ " : ""}${row.name}`;
+    entry.appendChild(label);
+    const facts = document.createElement("span");
+    facts.className = "muted small";
+    facts.textContent = row.kind === "link" ? "symbolic link — not followed"
+      : row.kind === "directory" ? (row.writable ? "directory · writable" : "directory · read-only")
+      : row.kind === "file" ? `${humanBytes(row.bytes || 0)} · ${row.writable ? "writable" : "read-only"}`
+      : "not a regular file";
+    entry.appendChild(facts);
+    list.appendChild(entry);
+  }
+  nodes.push(list);
+  if (data.more) nodes.push(note(`${count(data.more, "additional entry")} not shown. Open a narrower directory to keep browsing responsive.`));
+  showListDialog("Browse watched files", nodes,
+    "Only direct children are shown. Symbolic links are never followed here, and opening a file repeats its path and access checks.");
 }
 
 /**
@@ -20629,8 +20862,10 @@ async function alertAction(what, ids) {
 function syncAlertTools() {
   const chosen = alertState.selected.size;
   $("alertAckSome").disabled = !chosen;
+  $("alertUnackSome").disabled = !chosen;
   $("alertDeleteSome").disabled = !chosen;
   $("alertAckSome").textContent = chosen ? `Mark ${chosen} read` : "Mark read";
+  $("alertUnackSome").textContent = chosen ? `Mark ${chosen} unread` : "Mark unread";
   $("alertDeleteSome").textContent = chosen ? `Delete ${chosen}` : "Delete";
 }
 
@@ -20697,7 +20932,7 @@ async function refreshAlerts() {
     return row.acknowledged_at ? "read" : "unread";
   });
 
-  for (const id of ["alertAckAll", "alertAckSome", "alertDeleteSome"]) {
+  for (const id of ["alertAckAll", "alertAckSome", "alertUnackSome", "alertDeleteSome"]) {
     $(id).hidden = !state.signedIn || !state.access?.write;
   }
   syncAlertTools();
@@ -20969,12 +21204,22 @@ function alertRowActions(row) {
     ack.textContent = "Mark read";
     ack.addEventListener("click", () => alertAction("ack", [row.id]));
     cell.appendChild(ack);
+  } else {
+    const unack = document.createElement("button");
+    unack.className = "link";
+    unack.textContent = "Mark unread";
+    unack.addEventListener("click", () => alertAction("unack", [row.id]));
+    cell.appendChild(unack);
   }
 
   const remove = document.createElement("button");
   remove.className = "link danger";
   remove.textContent = "Delete";
-  remove.addEventListener("click", () => alertAction("delete", [row.id]));
+  remove.addEventListener("click", async () => {
+    if (await confirmDialog("Delete this alert? The history goes with it.", "Delete alert")) {
+      alertAction("delete", [row.id]);
+    }
+  });
   cell.appendChild(remove);
 
   return cell;
@@ -21733,8 +21978,8 @@ function syncRangeAccess() {
   }
 }
 
-async function doSignIn(password, username = "") {
-  const body = new URLSearchParams({ action: "signin", password, username });
+async function doSignIn(password, username = "", totp = "") {
+  const body = new URLSearchParams({ action: "signin", password, username, totp });
   const response = await fetch(API, {
     method: "POST",
     body,
@@ -24675,8 +24920,8 @@ function openUrlForm(row = null) {
   follow.type = "checkbox";
   follow.checked = row ? Boolean(Number(row.follow_redirects)) : true;
   field("urlFollow", "Follow redirects", follow,
-    "On, a 301 to HTTPS is followed and you see the page. Off, the 301 itself is the answer "
-    + "\u2014 which is what you want when the redirect is the thing being tested.");
+    "Each redirect is checked as a new destination. A redirect into an unapproved private "
+    + "host is refused rather than followed.");
 
   const etag = document.createElement("input");
   etag.type = "checkbox";
@@ -30725,7 +30970,7 @@ const HELP_PROFILES = {
     ],
   },
   system: {
-    purpose: "Shows how Hostscope itself is configured, scheduled, and retaining the data it collects.",
+    purpose: "Shows how HostScope itself is configured, scheduled, and retaining the data it collects.",
     useful: "Use it to verify that the monitor is healthy before drawing conclusions from its measurements or changing its configuration.",
     commands: ["php health.php", "php cron.php --vitals --quiet", "crontab -l"],
     links: [
@@ -30937,9 +31182,9 @@ function showView(view, push = true) {
       || (Boolean(query) && !navSearchMatches(link));
   }
 
-  document.title = `${VIEWS[view].label} · Hostscope`;
+  document.title = `${VIEWS[view].label} · HostScope`;
   const pageTitle = $("pageTitle");
-  if (pageTitle) pageTitle.textContent = `${VIEWS[view].label} — Hostscope server monitoring`;
+  if (pageTitle) pageTitle.textContent = `${VIEWS[view].label} — HostScope server monitoring`;
 
   /*
    * The pending strip is per-page, so changing page changes what belongs in it.
@@ -32089,6 +32334,50 @@ $("storeCompact").addEventListener("click", async () => {
   }
 });
 
+$("storeIntegrity").addEventListener("click", async () => {
+  if (!(await confirmDialog(
+    "Run SQLite's full integrity check?\n\nIt only reads the database, but can take a while on a large history. "
+    + "If it reports a problem, stop writes and restore a known-good snapshot."
+  ))) return;
+
+  const button = $("storeIntegrity");
+  button.disabled = true;
+  button.textContent = "Checking…";
+  try {
+    const result = await post("store-integrity");
+    notice(result.result.messages.join(" "), result.ok);
+    renderStore(result);
+  } catch (error) {
+    notice(String(error.message || error));
+  } finally {
+    button.disabled = false;
+    button.textContent = "Run full integrity check";
+  }
+});
+
+$("storeExport").addEventListener("click", async () => {
+  if (!(await confirmDialog(
+    "Download a consistent SQLite export?\n\nThe export can contain private paths, audit history, "
+    + "and monitoring evidence. Store it securely; it is removed from the server immediately after download."
+  ))) return;
+
+  const form = document.createElement("form");
+  form.method = "post";
+  form.action = "database-export.php";
+  form.hidden = true;
+  for (const [name, value] of Object.entries({ csrf: state.csrf || "" })) {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = value;
+    form.appendChild(input);
+  }
+  document.body.appendChild(form);
+  form.submit();
+  form.remove();
+  notice("Preparing the safe database export…", true);
+});
+
 $("storeRollup").addEventListener("click", async () => {
   const button = $("storeRollup");
   button.disabled = true;
@@ -32206,6 +32495,7 @@ $("signInOut").addEventListener("click", async () => {
   $("signInError").hidden = true;
   $("username").value = "";
   $("password").value = "";
+  $("totp").value = "";
   $("signInDialog").showModal();
   $("password").focus();
 });
@@ -32217,7 +32507,7 @@ $("signInForm").addEventListener("submit", async event => {
   const error = $("signInError");
   error.hidden = true;
   try {
-    await doSignIn($("password").value, $("username").value.trim());
+    await doSignIn($("password").value, $("username").value.trim(), $("totp").value.trim());
     $("signInDialog").close();
     await refreshAll();
   } catch (failure) {
@@ -32265,6 +32555,26 @@ $("actionClear")?.addEventListener("click", async () => {
     await refreshActionLog();
     notice(`Cleared ${count(result.removed, "earlier audit entry")}. The reset is recorded.`, true);
   } catch (error) { notice(String(error.message || error)); }
+});
+
+$("actionExport")?.addEventListener("click", async () => {
+  if (!(await confirmDialog(
+    "Download the full audit history as CSV?\n\nIt can contain private paths and client addresses. Store the file securely."
+  ))) return;
+
+  const form = document.createElement("form");
+  form.method = "post";
+  form.action = "audit-export.php";
+  form.hidden = true;
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "csrf";
+  input.value = state.csrf || "";
+  form.appendChild(input);
+  document.body.appendChild(form);
+  form.submit();
+  form.remove();
+  notice("Preparing the full audit CSV…", true);
 });
 
 $("navToggle").addEventListener("click", () => {
@@ -32555,6 +32865,25 @@ $("dnsForm").addEventListener("submit", event => {
 $("selfRefresh").addEventListener("click",
   () => refreshSelf().catch(error => notice(String(error.message || error))));
 
+$("selfDiagnosticExport")?.addEventListener("click", async () => {
+  if (!(await confirmDialog(
+    "Download a sanitized diagnostic snapshot?\n\nIt includes runtime, storage, and collector states but no credentials, paths, hostnames, or collected content."
+  ))) return;
+  const form = document.createElement("form");
+  form.method = "post";
+  form.action = "diagnostic-export.php";
+  form.hidden = true;
+  const input = document.createElement("input");
+  input.type = "hidden";
+  input.name = "csrf";
+  input.value = state.csrf || "";
+  form.appendChild(input);
+  document.body.appendChild(form);
+  form.submit();
+  form.remove();
+  notice("Preparing the sanitized diagnostic snapshot…", true);
+});
+
 $("cagefsRefresh").addEventListener("click",
   () => refreshMounts().catch(error => notice(String(error.message || error))));
 
@@ -32587,6 +32916,8 @@ $("alertUnreadOnly").addEventListener("change", event => {
 $("alertAckAll").addEventListener("click", () => alertAction("ack-all", []));
 $("alertAckSome").addEventListener("click",
   () => alertAction("ack", [...alertState.selected]));
+$("alertUnackSome").addEventListener("click",
+  () => alertAction("unack", [...alertState.selected]));
 
 $("alertDeleteSome").addEventListener("click", async () => {
   const ids = [...alertState.selected];

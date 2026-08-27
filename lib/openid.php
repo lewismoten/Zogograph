@@ -147,7 +147,7 @@ function openIdIdToken(array $config, array $code): string
     return $head . '.' . $body . '.' . openIdBase64Url($signature);
 }
 
-/** Validates a token this Hostscope instance itself signed. */
+/** Validates a token this HostScope instance itself signed. */
 function openIdVerifyOwnToken(array $config, string $token): ?array
 {
     $parts = explode('.', $token);

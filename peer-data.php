@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /* Read-only peer surface. It deliberately returns no paths, process command
- * lines, logs, tokens, or configuration. A connected Hostscope starts with the
+ * lines, logs, tokens, or configuration. A connected HostScope starts with the
  * same safe capacity summary that its public Overview can show. */
 require_once __DIR__ . '/lib/boot.php';
 installErrorBoundary('json');

@@ -4,7 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/lib/boot.php';
 installErrorBoundary('html');
 $file = __DIR__ . '/lib/config.php';
-if (!is_file($file)) { http_response_code(503); exit('Hostscope is not configured.'); }
+if (!is_file($file)) { http_response_code(503); exit('HostScope is not configured.'); }
 $config = require $file;
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
@@ -29,7 +29,7 @@ try {
         'grant_type' => 'authorization_code', 'code' => (string)($_GET['code'] ?? ''),
         'redirect_uri' => (string)$peer['redirect_uri'], 'client_id' => (string)$peer['client_id'],
         'client_secret' => (string)($peer['client_secret'] ?? ''), 'code_verifier' => (string)$flow['verifier'],
-    ]);
+    ], (string)($flow['issuer'] ?? ''));
     $claims = peerVerifyToken((string)($token['id_token'] ?? ''), $flow, $peer);
     $_SESSION['peer_tokens'][$flow['name']] = [
         'id_token' => (string)$token['id_token'], 'subject' => $claims['sub'],

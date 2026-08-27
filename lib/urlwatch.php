@@ -28,6 +28,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/actions.php';
+require_once __DIR__ . '/outbound.php';
 
 /** How long to wait for a response before calling it a failure. */
 const URLWATCH_TIMEOUT = 15;
@@ -184,7 +185,7 @@ function urlWatchRunDue(
             continue;
         }
 
-        $result = urlWatchRunOne($check, $fetcher);
+        $result = urlWatchRunOne($check, $fetcher, $config);
 
         /*
          * Noticed before it is stored, because storing overwrites last_text.
@@ -211,7 +212,7 @@ function urlWatchRunDue(
  *
  * @return array<string, mixed>
  */
-function urlWatchRunOne(array $check, ?callable $fetcher = null): array
+function urlWatchRunOne(array $check, ?callable $fetcher = null, array $config = []): array
 {
     $started = microtime(true);
     $fetched = $fetcher === null
@@ -221,7 +222,7 @@ function urlWatchRunOne(array $check, ?callable $fetcher = null): array
             // Only when asked, and only with something to send: a conditional
             // request with no ETag is just an ordinary one with extra words.
             'etag' => !empty($check['send_etag']) ? ($check['last_etag'] ?? null) : null,
-        ])
+        ], $config)
         : $fetcher((string)$check['url']);
 
     $result = [
@@ -524,8 +525,14 @@ function urlWatchNumber(mixed $value): ?float
  *
  * @return array{status: int, body: string, error: ?string}
  */
-function urlWatchFetch(string $url, array $how = []): array
+function urlWatchFetch(string $url, array $how = [], array $config = []): array
 {
+    try {
+        $endpoint = urlWatchEndpointPolicy($url, $config);
+    } catch (ActionRefused $e) {
+        return ['status' => 0, 'body' => '', 'headers' => '', 'error' => $e->getMessage(),
+            'hops' => 0, 'landed' => null, 'etag' => null, 'method' => 'GET'];
+    }
     $parts = parse_url($url);
     if ($parts === false || !in_array($parts['scheme'] ?? '', ['http', 'https'], true)) {
         return ['status' => 0, 'body' => '', 'error' => 'that is not an http or https URL'];
@@ -538,114 +545,117 @@ function urlWatchFetch(string $url, array $how = []): array
     }
 
     if (function_exists('curl_init')) {
-        $handle = curl_init($url);
-        $options = [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => URLWATCH_TIMEOUT,
-            CURLOPT_CONNECTTIMEOUT => 8,
-            /*
-             * Following redirects is a choice, not a default to hide.
-             *
-             * Following is right for "is the site up". It is exactly wrong when
-             * the redirect is the thing being tested: a check on the plain-HTTP
-             * address that follows to HTTPS reports 200 for ever and never
-             * notices the day the redirect stops happening.
-             */
-            CURLOPT_FOLLOWLOCATION => $follow,
-            CURLOPT_MAXREDIRS => 5,
-            CURLOPT_USERAGENT => 'Hostscope/1.0 (+uptime check)',
-            CURLOPT_ENCODING => '',
-            CURLOPT_HEADER => true,
-            // A monitor that ignored certificate problems would report a site
-            // with an expired certificate as perfectly healthy, which is one of
-            // the failures it most needs to catch.
-            CURLOPT_SSL_VERIFYPEER => true,
-            CURLOPT_SSL_VERIFYHOST => 2,
-        ];
-
-        if ($method === 'HEAD') {
-            $options[CURLOPT_NOBODY] = true;
-        } elseif ($method !== 'GET') {
-            $options[CURLOPT_CUSTOMREQUEST] = $method;
-        }
-
-        /*
-         * A conditional request, when asked for.
-         *
-         * With the last response's ETag this asks "has it changed", and a well
-         * behaved server answers 304 with no body. That is a legitimate and
-         * useful thing to check - a page that stops sending 304 is a caching
-         * problem - and it is nonsense as a default, because a 304 has no body
-         * to run a content rule against.
-         */
-        if (!empty($how['etag'])) {
-            $options[CURLOPT_HTTPHEADER] = ['If-None-Match: ' . $how['etag']];
-        }
-
-        curl_setopt_array($handle, $options);
-
-        $raw = curl_exec($handle);
-        $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
-        $hops = (int)curl_getinfo($handle, CURLINFO_REDIRECT_COUNT);
-        $landed = (string)curl_getinfo($handle, CURLINFO_EFFECTIVE_URL);
-        $headerSize = (int)curl_getinfo($handle, CURLINFO_HEADER_SIZE);
-        $error = curl_errno($handle) === 0 ? null : curl_error($handle);
-
-        /*
-         * No curl_close: it has done nothing since PHP 8.0 and is deprecated
-         * from 8.5, which would put a notice in the problem log on every single
-         * check. The handle is released when it goes out of scope.
-         */
-
-        $headers = is_string($raw) ? substr($raw, 0, $headerSize) : '';
-        $body = is_string($raw) ? substr($raw, $headerSize) : '';
-
-        return [
-            'status' => $status,
-            'body' => substr($body, 0, URLWATCH_MAX_BYTES),
-            'headers' => $headers,
-            'error' => $error,
-            'hops' => $hops,
-            // Only when it actually went somewhere else, so the column means
-            // "this moved" rather than repeating the address on every row.
-            'landed' => ($landed !== '' && $landed !== $url) ? $landed : null,
-            'etag' => urlWatchHeader($headers, 'etag'),
-            'method' => $method,
-        ];
-    }
-
-    $context = stream_context_create(['http' => [
-        'timeout' => URLWATCH_TIMEOUT,
-        'ignore_errors' => true,
-        'user_agent' => 'Hostscope/1.0 (+uptime check)',
-        'method' => $method,
-        'max_redirects' => $follow ? 5 : 1,
-        'follow_location' => $follow ? 1 : 0,
-        'header' => empty($how['etag']) ? '' : 'If-None-Match: ' . $how['etag'],
-    ]]);
-
-    $body = @file_get_contents($url, false, $context, 0, URLWATCH_MAX_BYTES);
-    if ($body === false) {
-        return ['status' => 0, 'body' => '', 'error' => 'the request failed'];
-    }
-
-    $status = 0;
-    foreach ($http_response_header ?? [] as $header) {
-        if (preg_match('#^HTTP/\S+\s+(\d{3})#', $header, $m)) {
-            $status = (int)$m[1];
+        $requested = $endpoint['url'];
+        $hops = 0;
+        $requestMethod = $method;
+        while (true) {
+            $reply = urlWatchCurlOnce($requested, $endpoint, $requestMethod, $how['etag'] ?? null);
+            $location = urlWatchHeader($reply['headers'], 'location');
+            $redirect = $follow && in_array($reply['status'], [301, 302, 303, 307, 308], true)
+                && $location !== null && $reply['error'] === null;
+            if (!$redirect) {
+                return $reply + ['hops' => $hops,
+                    'landed' => $requested === $url ? null : $requested,
+                    'etag' => urlWatchHeader($reply['headers'], 'etag'), 'method' => $requestMethod];
+            }
+            if ($hops >= 5) {
+                return array_replace($reply, ['hops' => $hops, 'landed' => $requested,
+                    'etag' => null, 'method' => $requestMethod, 'error' => 'too many redirects']);
+            }
+            try {
+                $requested = urlWatchRedirectUrl($requested, $location);
+                $endpoint = urlWatchEndpointPolicy($requested, $config);
+            } catch (ActionRefused $e) {
+                return array_replace($reply, ['hops' => $hops, 'landed' => $requested,
+                    'etag' => null, 'method' => $requestMethod, 'error' => $e->getMessage()]);
+            }
+            $hops++;
+            if ($reply['status'] === 303) {
+                $requestMethod = 'GET';
+            }
         }
     }
 
-    return [
-        'status' => $status,
-        'body' => $body,
-        'headers' => implode("\n", $http_response_header ?? []),
-        'error' => null,
-        'hops' => 0,
-        'landed' => null,
-        'etag' => urlWatchHeader(implode("\n", $http_response_header ?? []), 'etag'),
-        'method' => $method,
+    return ['status' => 0, 'body' => '', 'headers' => '',
+        'error' => 'safe URL checks require PHP cURL on this host', 'hops' => 0,
+        'landed' => null, 'etag' => null, 'method' => $method];
+}
+
+/** One pinned HTTP request; redirect policy belongs to urlWatchFetch. */
+function urlWatchCurlOnce(string $url, array $endpoint, string $method, ?string $etag): array
+{
+    $handle = curl_init($url);
+    $options = [
+        CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => URLWATCH_TIMEOUT,
+        CURLOPT_CONNECTTIMEOUT => 8, CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+        CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+        CURLOPT_RESOLVE => $endpoint['resolve'], CURLOPT_USERAGENT => 'HostScope/1.0 (+uptime check)',
+        CURLOPT_ENCODING => '', CURLOPT_HEADER => true, CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_SSL_VERIFYHOST => 2,
     ];
+    if ($method === 'HEAD') $options[CURLOPT_NOBODY] = true;
+    elseif ($method !== 'GET') $options[CURLOPT_CUSTOMREQUEST] = $method;
+    if (is_string($etag) && $etag !== '') $options[CURLOPT_HTTPHEADER] = ['If-None-Match: ' . $etag];
+    curl_setopt_array($handle, $options);
+    $raw = curl_exec($handle);
+    $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+    $size = (int)curl_getinfo($handle, CURLINFO_HEADER_SIZE);
+    $error = curl_errno($handle) === 0 ? null : curl_error($handle);
+    $headers = is_string($raw) ? substr($raw, 0, $size) : '';
+    return ['status' => $status, 'body' => is_string($raw) ? substr($raw, $size, URLWATCH_MAX_BYTES) : '',
+        'headers' => $headers, 'error' => $error];
+}
+
+/** Resolves a Location header without accepting credentials or fragments. */
+function urlWatchRedirectUrl(string $from, string $location): string
+{
+    $location = trim($location);
+    if ($location === '') throw new ActionRefused('redirect had no destination');
+    $target = parse_url($location);
+    if ($target !== false && isset($target['scheme'])) return $location;
+    $base = parse_url($from);
+    if ($base === false || !isset($base['scheme'], $base['host'])) throw new ActionRefused('redirect source was invalid');
+    $origin = $base['scheme'] . '://' . (str_contains((string)$base['host'], ':') ? '[' . $base['host'] . ']' : $base['host'])
+        . (isset($base['port']) ? ':' . $base['port'] : '');
+    if (str_starts_with($location, '//')) return $base['scheme'] . ':' . $location;
+    if (str_starts_with($location, '/')) return $origin . $location;
+    if (str_starts_with($location, '?')) return $origin . ($base['path'] ?? '/') . $location;
+    $path = rtrim(str_replace('\\', '/', dirname((string)($base['path'] ?? '/'))), '/') . '/' . $location;
+    return $origin . '/' . ltrim($path, '/');
+}
+
+/**
+ * Validates and pins a URL-watch target. Private services require an exact
+ * administrator-configured hostname, so a saved public check cannot turn into
+ * an SSRF request if its DNS record changes.
+ *
+ * @return array{url: string, resolve: list<string>}
+ */
+function urlWatchEndpointPolicy(string $url, array $config = []): array
+{
+    $url = trim($url);
+    $parts = parse_url($url);
+    if ($url === '' || $parts === false || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['http', 'https'], true)
+        || empty($parts['host']) || isset($parts['user']) || isset($parts['pass']) || isset($parts['fragment'])) {
+        throw new ActionRefused('that is not a plain http or https URL');
+    }
+    $host = strtolower(trim((string)$parts['host'], '[]'));
+    $addresses = outboundHostAddresses($host);
+    if ($addresses === []) {
+        throw new ActionRefused('that URL host did not resolve');
+    }
+    $allowed = array_map(fn(mixed $value): string => strtolower(trim((string)$value)),
+        (array)($config['url_watch']['private_hosts'] ?? []));
+    $private = array_filter($addresses, fn(string $address): bool => !outboundPublicAddress($address));
+    if ($private !== [] && !in_array($host, $allowed, true)) {
+        throw new ActionRefused('private URL targets must be named in url_watch.private_hosts');
+    }
+    $scheme = strtolower((string)$parts['scheme']);
+    $port = (int)($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+    return ['url' => $url, 'resolve' => array_map(
+        fn(string $address): string => $host . ':' . $port . ':' . $address, $addresses
+    )];
 }
 
 /** One header out of a raw response head, case-insensitively. */
@@ -704,15 +714,12 @@ function urlWatchStore(PDO $pdo, int $id, array $result): void
  * reported as the site being down - so patterns are compiled here, once, where
  * the person who typed it is still looking at the screen.
  */
-function urlWatchSave(PDO $pdo, array $input): int
+function urlWatchSave(PDO $pdo, array $input, array $config = []): int
 {
     $url = trim((string)($input['url'] ?? ''));
+    $policy = urlWatchEndpointPolicy($url, $config);
+    $url = $policy['url'];
     $parts = parse_url($url);
-
-    if ($parts === false || !in_array($parts['scheme'] ?? '', ['http', 'https'], true)
-        || ($parts['host'] ?? '') === '') {
-        throw new ActionRefused('that is not an http or https URL');
-    }
 
     $interval = (int)($input['interval_seconds'] ?? 300);
     if (!isset(urlWatchIntervals()[$interval])) {

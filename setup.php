@@ -167,6 +167,46 @@ function startSetupSession(): void
     session_start();
 }
 
+/**
+ * Installation facts that decide what HostScope can safely promise.
+ *
+ * This is intentionally a report, not a gate for optional features: a shared
+ * host without proc_open can still run the PHP-and-SQLite dashboard, and the
+ * installer must say that rather than fail an otherwise useful installation.
+ * @return list<array{label: string, state: string, detail: string}>
+ */
+function setupPreflight(string $root, string $targetPath): array
+{
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+    $data = $root . '/data';
+    $phpOk = version_compare(PHP_VERSION, '8.1.0', '>=');
+    $sqlite = extension_loaded('pdo_sqlite') && in_array('sqlite', PDO::getAvailableDrivers(), true);
+    $commands = array_filter(['exec', 'shell_exec', 'proc_open'], 'function_exists');
+
+    return [
+        ['label' => 'PHP', 'state' => $phpOk ? 'ok' : 'error',
+            'detail' => 'PHP ' . PHP_VERSION . ($phpOk ? ' is supported.' : ' is too old; HostScope needs PHP 8.1 or newer.')],
+        ['label' => 'SQLite', 'state' => $sqlite ? 'ok' : 'error',
+            'detail' => $sqlite ? 'PDO SQLite is available.' : 'PDO SQLite is required for collected data and settings.'],
+        ['label' => 'Data directory', 'state' => is_dir($data) && is_writable($data) ? 'ok' : 'error',
+            'detail' => is_dir($data) && is_writable($data) ? 'data/ is writable.' : 'data/ must exist and be writable by PHP.'],
+        ['label' => 'Configuration', 'state' => configuredSettingsWritable($targetPath) ? 'ok' : 'error',
+            'detail' => configuredSettingsWritable($targetPath) ? 'The configuration store can be written.' : 'PHP cannot write the configuration store.'],
+        ['label' => 'HTTPS', 'state' => $https ? 'ok' : 'warning',
+            'detail' => $https ? 'This setup page is using HTTPS.' : 'Serve setup and the dashboard over HTTPS before entering credentials.'],
+        ['label' => 'Timezone', 'state' => date_default_timezone_get() !== '' ? 'ok' : 'warning',
+            'detail' => 'PHP currently uses ' . date_default_timezone_get() . '. You can choose the dashboard timezone below.'],
+        ['label' => 'Command capability', 'state' => $commands === [] ? 'warning' : 'ok',
+            'detail' => $commands === [] ? 'Command execution is unavailable; PHP-only collection still works.'
+                : 'Available: ' . implode(', ', $commands) . '. Features remain individually capability-gated.'],
+        ['label' => 'Cron', 'state' => PHP_SAPI === 'cli' || $commands !== [] ? 'ok' : 'warning',
+            'detail' => PHP_SAPI === 'cli' ? 'CLI PHP is available for cron.'
+                : ($commands === [] ? 'Configure cron through your host panel; this web request cannot inspect it.'
+                    : 'Schedule cron through your host panel or account crontab.')],
+    ];
+}
+
 /** A message left behind by a redirect, shown once. */
 function takeSetupError(): ?string
 {
@@ -358,7 +398,7 @@ function runWeb(
     echo webPage(
         $fields, $values, $errors, $rendered, $written, $writeError,
         $configured, $authorised, $posted, $existing, $refusal, $unlocked,
-        $root . '/lib/config.sample.php', $activeSection
+        $root . '/lib/config.sample.php', $activeSection, setupPreflight($root, $targetPath)
     );
 }
 
@@ -414,12 +454,13 @@ function webPage(
     ?string $refusal,
     bool $unlocked,
     string $samplePath,
-    string $activeSection
+    string $activeSection,
+    array $preflight
 ): string {
     $out = [];
     $out[] = '<!doctype html><html lang="en"><head><meta charset="utf-8">';
     $out[] = '<meta name="viewport" content="width=device-width, initial-scale=1">';
-    $out[] = '<title>Disk Usage Monitor — setup</title>';
+    $out[] = '<title>HostScope — setup</title>';
     $out[] = '<link rel="stylesheet" href="index.css">';
     $out[] = '<style>'
         . 'body{max-width:1180px;padding-top:0}'
@@ -447,6 +488,7 @@ function webPage(
         . '.banner.warn{border-color:#7a5a30;background:#2b2114}'
         . '.banner.ok{border-color:#2f6f3a;background:#152b1c}'
         . '.banner.crit{border-color:#7a3030;background:#2b1414}'
+        . '.preflight{width:100%;border-collapse:collapse;margin:0 0 16px}.preflight th,.preflight td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;font-size:.85rem}.preflight th{color:var(--muted);font-weight:500}.preflight .ok{color:#8be0a8}.preflight .warning{color:#f0c27b}.preflight .error{color:#ff9ca3}'
         . 'code{background:#111;padding:1px 5px;border-radius:4px}'
         . 'details{border:1px solid var(--line);border-radius:10px;margin:0 0 12px;padding:0 14px}'
         . 'details[open]{padding-bottom:8px}'
@@ -464,8 +506,15 @@ function webPage(
 
     $out[] = '<header class="setup-header"><a class="setup-brand" href="?section=basics">'
         . '<span class="poll" aria-hidden="true"><svg viewBox="0 0 36 36"><circle class="poll-track" cx="18" cy="18" r="15"></circle><circle class="poll-fill" cx="18" cy="18" r="15"></circle><circle class="poll-host-track" cx="18" cy="18" r="9"></circle><circle class="poll-host-fill" cx="18" cy="18" r="9"></circle></svg><span class="poll-dot"></span></span>'
-        . '<strong>Hostscope</strong><small>Setup</small></a><a href="./">Open dashboard</a></header>';
+        . '<strong>HostScope</strong><small>Setup</small></a><a href="./">Open dashboard</a></header>';
     $out[] = '<h1>Setup</h1>';
+
+    $out[] = '<details open><summary>Installation checks</summary><table class="preflight"><thead><tr><th>Check</th><th>State</th><th>Detail</th></tr></thead><tbody>';
+    foreach ($preflight as $check) {
+        $out[] = '<tr><th>' . h($check['label']) . '</th><td class="' . h($check['state']) . '">' . h(strtoupper($check['state']))
+            . '</td><td>' . h($check['detail']) . '</td></tr>';
+    }
+    $out[] = '</tbody></table></details>';
 
     if (($_GET['saved'] ?? '') === '1') {
         $out[] = '<div class="banner ok"><strong>Saved.</strong> This section is now stored in '
@@ -727,7 +776,7 @@ function runCli(
 
     if ($has('--help') || $has('-h')) {
         echo <<<TEXT
-        Disk Usage Monitor — config wizard
+        HostScope — config wizard
 
           php setup.php              ask, then print the config to paste
           php setup.php --write      ask, then write lib/config.php
@@ -746,7 +795,10 @@ function runCli(
     $quiet = $has('--defaults');
 
     say('');
-    say('  Disk Usage Monitor — config wizard');
+    say('  HostScope — config wizard');
+    foreach (setupPreflight($root, $targetPath) as $check) {
+        say('  [' . strtoupper($check['state']) . '] ' . $check['label'] . ': ' . $check['detail']);
+    }
     say($configured
         ? '  lib/config.php exists. Replacing it needs the password it already holds.'
         : '  Press enter to accept the value in brackets.');

@@ -72,6 +72,20 @@ php cron.php --scan
 
 Then open the site. `data/stats.db` is created on the first run.
 
+### Migration safety
+
+Before HostScope applies a schema migration to an existing SQLite database, it
+creates a consistent private snapshot in `data/migration-backups/`. It uses
+SQLite's own backup operation, so the copy includes committed WAL data and does
+not need the `sqlite3` executable. Keep this directory outside the web root or
+protected by the existing `data/.htaccess` rule.
+
+If an upgrade must be rolled back, stop the web and cron processes first, keep
+a copy of the current database, then replace the affected database file with
+the corresponding snapshot. Start HostScope again with the matching application
+version; a newer application will correctly see the old schema as needing an
+upgrade and will make a new snapshot before changing it.
+
 **If you have root on the machine**, there is a second collector. The wizard asks
 about it — *Also collect host-wide readings* — and prints the crontab line when
 it finishes, with your real paths already filled in. It has to go in **root's**
@@ -1307,6 +1321,10 @@ Everything raised in one run becomes one email, and each rule is rate limited by
 `cooldown_seconds`. A disk filling up trips several rules at once, and five
 separate messages about one event is how people learn to ignore them.
 
+The Alerts page keeps the evidence even after an alert is marked read. A read
+mark can be reversed if it was accidental; deleting is separate, always asks
+for confirmation, and is the only action that removes the alert history.
+
 A directory is not blamed for its child's growth: one runaway log would
 otherwise alert for itself, for its directory, and for the home directory.
 
@@ -1745,12 +1763,25 @@ the right status code.
 
 ## Security
 
+See [SECURITY.md](SECURITY.md) for the vulnerability-reporting procedure. Set
+`security.contact` in `lib/config.php` to the installation owner's private
+security inbox or ticket destination; it is intentionally not exposed to
+signed-out visitors.
+
+Optional TOTP MFA uses a private Base32 `auth.totp_secret` for the legacy
+administrator or a per-user `access.users.<name>.totp_secret`. Enter the
+current six-digit authenticator code at sign-in. MFA failures intentionally
+receive the same generic response and throttle accounting as bad passwords.
+
 - `lib/config.php` holds the password hash and the mask secret. It is
   gitignored, and `lib/.htaccess` denies the whole directory.
 - `data/.htaccess` denies the database. Serving it would hand over every path,
   every size and the password hash in one request.
 - Sessions are `HttpOnly`, `SameSite=Strict`, `Secure` over HTTPS, and time out
   after `session_lifetime`.
+- Eight wrong-password attempts from one client address within fifteen minutes
+  receive the same generic refusal and are then rate-limited until the window
+  clears. Limited attempts are audited separately so they do not prolong it.
 - `.htaccess` redirects to HTTPS and sets a content security policy. A login
   sends a password; never over plain HTTP.
 - The policy is `default-src 'self'` with no `style-src`, which means **a single
@@ -1775,6 +1806,167 @@ the right status code.
   dashboard. `processes.may_stop = false` removes that; pid 1, this dashboard's
   own ancestry and other users' processes are refused regardless. Patterns from
   the browser are matched in PHP and never handed to a shell.
+
+### Policy checks
+
+Run the dependency-free security boundary checks after changing outbound,
+trusted-peer, or edition code:
+
+```sh
+php tests/security-policies.php
+php tests/migration-snapshots.php
+php tests/sqlite-contention.php
+php tests/http-protections.php
+php tests/peer-transport.php
+php tests/auth-throttle.php
+php tests/telegram-alert-text.php
+php tests/alert-email-retry.php
+php tests/alert-acknowledgement.php
+php tests/terminal-editor-safety.php
+php tests/totp.php
+```
+
+They do not make network requests. They verify the constraints that must stay
+server-side: hosted AI cannot reach private addresses, compatible AI is
+loopback-only, URL checks require an explicit private-host allowlist, peer
+discovery cannot leave its configured origin, and the Free remote-host allowance
+remains three.
+
+The migration check creates a throwaway SQLite database, verifies that the
+shared account/host/assistant recovery routine creates a private, readable
+pre-migration copy, then removes its temporary files.
+
+The action history keeps the newest 500 entries responsive in the browser;
+**Download CSV** streams the complete retained history in UTC. It requires the
+same signed-in page access and current form token as the history itself,
+records the export, marks spreadsheet-formula-looking cells as text, and is not
+appropriate for untrusted storage because it can contain paths and addresses.
+
+**System → The monitor itself → Download diagnostic** creates a smaller support
+snapshot with runtime versions, extension availability, database integrity and
+size, collector timestamps, and feature counts. It requires signed-in System
+access plus the current form token, records the download, and intentionally
+omits credentials, configuration values, paths, hostnames, and collected data.
+
+The browser editor is available only while the separately unlocked terminal is
+enabled and only beneath the watched directory. It refuses binary or oversized
+files, preserves the original line-ending convention, compares the opened
+content fingerprint before saving, writes atomically, and creates a private
+pre-save recovery copy. If the file changed after it was opened or the recovery
+copy cannot be made, the save is refused rather than overwriting newer content.
+The editor lists up to ten private copies for that exact file; restoring one
+requires confirmation and first captures the currently live version as another
+recovery copy.
+Its local Find Next, Replace, and Replace All controls never send file text
+until the normal protected save is chosen; `Ctrl/Cmd+F` focuses Find and
+`Ctrl/Cmd+H` focuses Replace.
+**Browse watched files** opens a bounded, non-recursive picker rather than
+requiring a shell path. It does not follow symbolic links; opening a file still
+performs the same canonical-path and access checks before any content is read.
+Files the web account cannot write open in an explicit review-only dialog, so
+the browser never offers a save that the server must reject.
+
+### Database recovery
+
+Storage shows a fast SQLite quick check during normal use. Administrators can
+run the slower full integrity check from **System → This account's database**;
+it is read-only, requires the current form token, and is recorded in the audit
+history. If it reports corruption, stop collector writes first, preserve the
+file for diagnosis, then restore the matching private migration snapshot or a
+known-good backup rather than attempting repairs in place.
+
+The same panel can download a one-time consistent account export. It requires
+an administrator session and current form token, uses SQLite `VACUUM INTO` so
+WAL commits are included, records the download in audit history, and removes
+the temporary server copy immediately. The downloaded database contains private
+paths and audit evidence; keep it outside the web root and encrypt it at rest.
+
+To restore an account export, first stop the web server and every `cron.php`
+writer, then run the CLI-only recovery command. It checks the candidate with
+SQLite's full integrity check, verifies it is an account store, snapshots the
+current live database before replacement, uses an atomic rename, and removes
+stale WAL files:
+
+```sh
+php scripts/restore-account.php --from /secure/hostscope-account.db --writers-stopped
+```
+
+Do not use it while web or collector writers are running. The explicit flag is
+an acknowledgement, not a process detector; on shared hosts only the operator
+knows which scheduled jobs and PHP workers remain active.
+
+### Remote vital delivery
+
+Saving a trusted server creates a separate one-time transport credential. OIDC
+is optional for this delivery-only setup: leave every OIDC field blank, enter
+the controller's `https://…/peer-push.php` endpoint, then copy the credential
+and trusted-server short name to the remote installation's `remote_delivery`
+configuration within 24 hours. Its first valid signed delivery activates the
+credential; an unused credential expires and needs rotation. Configuring every
+OIDC field additionally enables the separate interactive read connection. On
+its normal vital run, the remote sends the newest reading with a
+pinned HTTPS connection, HMAC signature, bounded body, timestamp, and nonce.
+The controller rejects stale, forged, or replayed deliveries and records the
+latest accepted delivery beside that trusted server. A controller outage leaves
+local collection intact: up to fifty undelivered readings are queued locally,
+then retried in order with fresh signed request headers. A full queue keeps the
+newest fifty readings rather than filling the database indefinitely. Repeated
+failures back off from one minute to at most one hour between attempts. When
+PHP gzip support makes the payload smaller, delivery uses signed gzip bytes and
+the receiver verifies before bounded decompression.
+
+Both ends explicitly acknowledge transport protocol version 1. A sender treats
+a missing or different acknowledgement as incompatible and queues the reading
+with its normal backoff, making an incomplete rolling upgrade visible instead
+of silently claiming delivery.
+
+`remote_delivery.interval_seconds` controls how often newly collected readings
+are scheduled for delivery (60–86,400 seconds; the default is 60). Queued
+retries remain independent so an outage can recover without waiting for the
+next new-reading interval.
+
+Retention settings include accepted remote vital payloads (400 days by default)
+and remote replay receipts (two days). Replay receipts always retain at least
+one day, even if a configuration says zero, because an unbounded nonce ledger
+is not a safe interpretation of “keep forever.”
+Use **Rotate delivery key** in the trusted-server table to revoke a remote
+credential immediately; copy the one-time replacement to the remote before its
+next vital run.
+
+The trusted-server table uses the signed delivery record as a compact fleet
+summary, showing the latest collection/delivery time plus CPU, memory, and
+disk-free values. A missing value is shown as unavailable rather than zero.
+The first accepted payload for a peer and collection timestamp is immutable;
+later deliveries for that timestamp are recorded as receipts but cannot rewrite
+the original evidence.
+
+Telegram alert batches are deliberately compact: the highest severity comes
+first, at most twenty short alert subjects are included, any omitted count is
+stated, and the dashboard link is retained inside Telegram's message limit.
+
+If PHP's `mail()` refuses every recipient in an alert batch, HostScope retains
+the exact message and retries it from later alert runs with one-minute to
+one-hour backoff. A batch accepted for any recipient is never retried, avoiding
+duplicate messages after the local mail queue takes ownership.
+
+Trusted-server records also retain optional description, tags, group,
+environment, timezone, and maintenance context. These fields organize fleet
+records today; they do not grant access or suppress monitoring on their own.
+
+The contention check uses two SQLite connections and verifies that a competing
+writer respects its busy timeout, reports contention rather than silently
+discarding a write, and succeeds once the first transaction commits.
+
+The HTTP check verifies the committed Apache policy retains the dashboard CSP,
+clickjacking, MIME-sniffing, referrer, and browser-capability protections, plus
+the direct-web denial rules for databases and collector entry points.
+
+For Nginx/PHP-FPM installs, start with
+[`deploy/nginx.conf.example`](deploy/nginx.conf.example). Set the site root and
+PHP-FPM socket for the host, install the shown HTTP-to-HTTPS redirect in a
+separate port-80 server block, then test it with `nginx -t`. The example mirrors
+the Apache direct-file denial and response-header policy while retaining the
+intentionally inline styles only for `health.php` and `setup.php`.
 
 ## Configuration
 

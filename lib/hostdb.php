@@ -113,7 +113,7 @@ function hostDb(array $config, bool $forWriting): ?PDO
     $pdo->exec('PRAGMA foreign_keys = ON');
     $pdo->exec('PRAGMA busy_timeout = 10000');
 
-    hostMigrate($pdo);
+    hostMigrate($pdo, $fresh);
 
     if ($fresh) {
         hostHandOver($config, $file);
@@ -152,7 +152,7 @@ function hostHandOver(array $config, string $file): void
     }
 }
 
-function hostMigrate(PDO $pdo): void
+function hostMigrate(PDO $pdo, bool $fresh = false): void
 {
     $pdo->exec('CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)');
     $at = (int)($pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_version')->fetchColumn());
@@ -169,6 +169,11 @@ function hostMigrate(PDO $pdo): void
      */
     $steps = hostMigrations();
     ksort($steps);
+
+    $pending = array_filter(array_keys($steps), fn(int $version): bool => $version > $at);
+    if (!$fresh && $pending !== []) {
+        migrationBackup($pdo, $at, min($pending));
+    }
 
     foreach ($steps as $version => $statements) {
         if ($version <= $at) {
