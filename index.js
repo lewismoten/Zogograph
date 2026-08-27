@@ -11650,7 +11650,13 @@ function renderMarketplace(data) {
     { label: "License", render: row => row.license },
     { label: "Status", render: row => row.enabled ? "enabled" : "not enabled" },
     { label: "", className: "row-actions", render: row => {
-      if (!data.can_change) return "";
+      const wrap = document.createDocumentFragment();
+      if (row.recommendations?.length) {
+        const review = document.createElement("button"); review.className = "link"; review.textContent = "Review guidance";
+        review.addEventListener("click", () => showListDialog(`${row.name} guidance`, [factGrid(row.recommendations.flatMap(item => [[`${item.rule} · ${item.severity}`, item.reason]]))], "Recommendations are advisory only. This package cannot change alert settings or run code."));
+        wrap.appendChild(review);
+      }
+      if (!data.can_change) return wrap;
       const button = document.createElement("button"); button.className = row.enabled ? "link danger" : "link";
       button.textContent = row.enabled ? "Disable" : "Enable";
       button.addEventListener("click", async () => {
@@ -11658,7 +11664,8 @@ function renderMarketplace(data) {
         try { await post("marketplace-enable", { id: row.id, enabled: row.enabled ? "0" : "1" }); await refreshMarketplace(); notice(`${row.name} ${row.enabled ? "disabled" : "enabled"}.`, true); }
         catch (error) { notice(String(error.message || error)); }
       });
-      return button;
+      wrap.appendChild(button);
+      return wrap;
     }},
   ], null, row => row.enabled ? "row-ok" : "", row => row.id);
 }

@@ -4,11 +4,11 @@ declare(strict_types=1);
 /* A local marketplace is deliberately data-only. A manifest advertises a
  * package for review; it does not load files, register hooks, or execute code. */
 
-const MARKETPLACE_CAPABILITIES = ['alert_recommendations', 'dashboard_cards', 'integration_settings'];
+const MARKETPLACE_CAPABILITIES = ['alert_recommendations'];
 const MARKETPLACE_MAX_PACKAGES = 200;
 const MARKETPLACE_MAX_MANIFEST_BYTES = 65536;
 
-/** @return array{id:string,version:string,name:string,publisher:string,summary:string,license:string,capabilities:list<string>} */
+/** @return array{id:string,version:string,name:string,publisher:string,summary:string,license:string,capabilities:list<string>,recommendations:list<array{rule:string,severity:string,reason:string}>} */
 function marketplaceManifest(array $raw): array
 {
     $id = trim((string)($raw['id'] ?? ''));
@@ -26,8 +26,32 @@ function marketplaceManifest(array $raw): array
     if ($capabilities === [] || count($capabilities) > 8 || array_diff($capabilities, MARKETPLACE_CAPABILITIES) !== []) {
         throw new InvalidArgumentException('package capabilities are invalid');
     }
+    $recommendations = [];
+    $rules = [];
+    foreach ((array)($raw['recommendations'] ?? []) as $recommendation) {
+        if (!is_array($recommendation) || !in_array('alert_recommendations', $capabilities, true)) throw new InvalidArgumentException('package recommendations are invalid');
+        $rule = trim((string)($recommendation['rule'] ?? ''));
+        $severity = trim((string)($recommendation['severity'] ?? ''));
+        $reason = trim((string)($recommendation['reason'] ?? ''));
+        if (!preg_match('/^[a-z][a-z0-9_:-]{1,80}$/', $rule) || !in_array($severity, ['info', 'warning', 'error', 'critical'], true) || $reason === '' || mb_strlen($reason) > 400) throw new InvalidArgumentException('package recommendation is invalid');
+        if (isset($rules[$rule])) throw new InvalidArgumentException('package recommendation rule is duplicated');
+        $rules[$rule] = true;
+        $recommendations[] = compact('rule', 'severity', 'reason');
+    }
+    if (count($recommendations) > 30) throw new InvalidArgumentException('package has too many recommendations');
     sort($capabilities, SORT_STRING);
-    return compact('id', 'version', 'name', 'publisher', 'summary', 'license', 'capabilities');
+    return compact('id', 'version', 'name', 'publisher', 'summary', 'license', 'capabilities', 'recommendations');
+}
+
+/** @return list<array{package:string,rule:string,severity:string,reason:string}> */
+function marketplaceAlertRecommendations(array $config, PDO $pdo): array
+{
+    $out = [];
+    foreach (marketplacePackages($config, $pdo) as $package) {
+        if (!$package['enabled']) continue;
+        foreach ($package['recommendations'] as $recommendation) $out[] = ['package' => $package['id']] + $recommendation;
+    }
+    return $out;
 }
 
 /** @return array{packages:list<array>,errors:list<string>} */
