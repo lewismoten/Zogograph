@@ -205,15 +205,17 @@ cannot be recovered from a sealed copy. See
 [ENCRYPTION_AND_FLEET_PLAN.md](ENCRYPTION_AND_FLEET_PLAN.md) for the current
 scope, limitations, rotation design, and planned self-managed fleet custody.
 
-Optional remote custody is deliberately not selectable in this release. The
-separate key-custody service already provides tenant key, envelope,
-enrolled-client credential, audit, and subscription APIs, but the customer
-client does not yet execute its provider package. Do not put a management token
-or billing credential in this installation to try to enable it. When the
-isolated provider runtime is released, setup will ask only for the configured
-service base URL and package-scoped encrypted references to the enrolled-client
-credential and signing key; management and billing credentials stay outside the
-client entirely.
+Optional remote custody and ciphertext-replica storage are deliberately not
+selectable in this release. The separate key-custody service already provides
+tenant key, envelope, enrolled-client credential, audit, and subscription APIs;
+the separate replica relay accepts only signed, hash-verified ciphertext. The
+customer client does not yet execute either provider package. Do not put a
+management token, billing credential, recovery key, or plaintext database in
+this installation to try to enable them. When the isolated provider runtime is
+released, setup will ask only for the configured service base URL and
+package-scoped encrypted references to the enrolled-client credential and
+signing key; management and billing credentials stay outside the client
+entirely.
 
 To inspect a copy during recovery, decrypt it to a new private file and remove
 that plaintext file when you finish:

@@ -33,7 +33,7 @@ try {
         'encryption status is not protected by its dashboard page access rule');
     encryptionExpect($dashboard !== false && str_contains($dashboard, 'function renderEncryptionStatus')
         && str_contains($dashboard, 'Verified encrypted copies protect backup artifacts')
-        && str_contains($dashboard, 'Optional remote key custody is not selectable yet'),
+        && str_contains($dashboard, 'Optional remote key custody and ciphertext replica storage are not selectable yet'),
         'dashboard does not explain encrypted-copy limitations');
     encryptionExpect($page !== false && str_contains($page, 'data-view="sys-encryption"')
         && str_contains($page, 'id="encryptionBody"'), 'dashboard protection view is unavailable');
