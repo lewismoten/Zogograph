@@ -174,6 +174,10 @@ root, then use a normal HTTPS endpoint:
 ```bash
 php scripts/manage-remote.php \
   --base-url https://custody.example/v1 \
+  health
+
+php scripts/manage-remote.php \
+  --base-url https://custody.example/v1 \
   --token-file /secure/hostscope-key-custody/management.token \
   keys
 

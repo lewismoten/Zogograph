@@ -6,8 +6,8 @@ if (PHP_SAPI !== 'cli') { http_response_code(403); exit("This management command
 
 function custodyManageUsage(): never
 {
-    fwrite(STDERR, "Usage: php scripts/manage-remote.php --base-url https://custody.example/v1 --token-file /secure/management.token [--tls-spki-pin sha256//...] COMMAND [ARGUMENTS]\n\n"
-        . "Commands:\n  keys\n  create-key NAME TTL_SECONDS\n  update-policy KEY_ID TTL_SECONDS [NAME]\n  rotate-key KEY_ID\n  disable-key KEY_ID\n  retire-key KEY_ID\n  envelopes KEY_ID\n  delete-envelope KEY_ID ARTIFACT_ID\n  subscription\n  request-plan PLAN\n  request-cancel\n  withdraw-request REQUEST_ID\n  billing-portal\n  checkout\n");
+    fwrite(STDERR, "Usage: php scripts/manage-remote.php --base-url https://custody.example/v1 [--token-file /secure/management.token] [--tls-spki-pin sha256//...] COMMAND [ARGUMENTS]\n\n"
+        . "Commands:\n  health\n  keys\n  create-key NAME TTL_SECONDS\n  update-policy KEY_ID TTL_SECONDS [NAME]\n  rotate-key KEY_ID\n  disable-key KEY_ID\n  retire-key KEY_ID\n  envelopes KEY_ID\n  delete-envelope KEY_ID ARTIFACT_ID\n  subscription\n  request-plan PLAN\n  request-cancel\n  withdraw-request REQUEST_ID\n  billing-portal\n  checkout\n");
     exit(64);
 }
 
@@ -37,14 +37,16 @@ function custodyManageBaseUrl(string $base): string
     return rtrim($base, '/');
 }
 
-function custodyManageRequest(string $base, string $token, ?string $pin, string $method, string $path, ?array $body = null): array
+function custodyManageRequest(string $base, ?string $token, ?string $pin, string $method, string $path, ?array $body = null): array
 {
     $handle = curl_init($base . $path);
     if ($handle === false) throw new RuntimeException('could not initialize custody management request');
     try {
+        $headers = ['Accept: application/json'];
+        if ($token !== null) array_unshift($headers, 'Authorization: Bearer ' . $token);
         $options = [CURLOPT_CUSTOMREQUEST => $method, CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT => 30, CURLOPT_FOLLOWLOCATION => false, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $token, 'Accept: application/json']];
+            CURLOPT_HTTPHEADER => $headers];
         if ($pin !== null) $options[CURLOPT_PINNEDPUBLICKEY] = $pin;
         if ($body !== null) {
             $encoded = json_encode($body, JSON_THROW_ON_ERROR); $options[CURLOPT_POSTFIELDS] = $encoded;
@@ -73,13 +75,16 @@ for ($index = 1; $index < $argc; $index++) {
     if (str_starts_with($argument, '--')) custodyManageUsage();
     $arguments[] = $argument;
 }
-if (!isset($options['base-url'], $options['token-file']) || $arguments === []) custodyManageUsage();
+if (!isset($options['base-url']) || $arguments === []) custodyManageUsage();
 try {
-    $base = custodyManageBaseUrl((string)$options['base-url']); $token = custodyManageToken((string)$options['token-file']);
+    $base = custodyManageBaseUrl((string)$options['base-url']);
     $pin = isset($options['tls-spki-pin']) ? (string)$options['tls-spki-pin'] : null;
     if ($pin !== null && preg_match('~^sha256//[A-Za-z0-9+/]{43}=$~', $pin) !== 1) throw new InvalidArgumentException('TLS public-key pin is invalid');
     $command = array_shift($arguments); $method = 'GET'; $path = ''; $body = null;
-    if ($command === 'keys' && $arguments === []) $path = '/keys';
+    $token = $command === 'health' ? null : (isset($options['token-file']) ? custodyManageToken((string)$options['token-file']) : null);
+    if ($command !== 'health' && $token === null) custodyManageUsage();
+    if ($command === 'health' && $arguments === []) $path = '/health';
+    elseif ($command === 'keys' && $arguments === []) $path = '/keys';
     elseif ($command === 'create-key' && count($arguments) === 2 && ctype_digit($arguments[1])) { $method = 'POST'; $path = '/keys'; $body = ['name' => $arguments[0], 'authorization_ttl_seconds' => (int)$arguments[1]]; }
     elseif ($command === 'update-policy' && (count($arguments) === 2 || count($arguments) === 3) && preg_match('/^key_[a-f0-9]{32}$/', $arguments[0]) && ctype_digit($arguments[1])) { $method = 'PATCH'; $path = '/keys/' . $arguments[0]; $body = ['action' => 'update_policy', 'authorization_ttl_seconds' => (int)$arguments[1]] + (isset($arguments[2]) ? ['name' => $arguments[2]] : []); }
     elseif (in_array($command, ['rotate-key', 'disable-key', 'retire-key'], true) && count($arguments) === 1 && preg_match('/^key_[a-f0-9]{32}$/', $arguments[0])) { $method = 'PATCH'; $path = '/keys/' . $arguments[0]; $body = ['action' => str_replace('-key', '', $command)]; }
