@@ -154,7 +154,7 @@ function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artif
     $envelope = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE envelopes.key_id = ? AND keys.tenant_id = ? AND envelopes.artifact_id = ?');
     $envelope->execute([$id, $tenant, $artifactId]);
     if ((int)$envelope->fetchColumn() !== 1) throw new InvalidArgumentException('the requested artifact envelope is unavailable');
-    $stmt = $pdo->prepare("SELECT wrapped_key, wrap_nonce, wrap_tag FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'"); $stmt->execute([$id, $tenant]); $row = $stmt->fetch();
+    $stmt = $pdo->prepare("SELECT wrapped_key, wrap_nonce, wrap_tag FROM custody_keys WHERE id = ? AND tenant_id = ? AND state IN ('active', 'rotating')"); $stmt->execute([$id, $tenant]); $row = $stmt->fetch();
     if (!is_array($row)) throw new InvalidArgumentException('custody key is unavailable');
     $plain = openssl_decrypt($row['wrapped_key'], 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $row['wrap_nonce'], $row['wrap_tag'], $id);
     if (!is_string($plain) || strlen($plain) !== 32) throw new RuntimeException('custody key could not be unwrapped');
@@ -180,7 +180,10 @@ function keyCustodyStoreEnvelope(PDO $pdo, string $tenant, string $keyId, string
 
 function keyCustodyDisableKey(PDO $pdo, string $tenant, string $id): void
 {
-    $stmt = $pdo->prepare("UPDATE custody_keys SET state = 'disabled' WHERE id = ? AND tenant_id = ? AND state = 'active'");
+    $envelopes = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE keys.id = ? AND keys.tenant_id = ?');
+    $envelopes->execute([$id, $tenant]);
+    if ((int)$envelopes->fetchColumn() !== 0) throw new InvalidArgumentException('move or delete every registered envelope before disabling this custody key');
+    $stmt = $pdo->prepare("UPDATE custody_keys SET state = 'disabled' WHERE id = ? AND tenant_id = ? AND state IN ('active', 'rotating')");
     $stmt->execute([$id, $tenant]);
     if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('active custody key is unavailable');
     keyCustodyAudit($pdo, $tenant, 'key_disable', $id, 'management request');
@@ -196,11 +199,22 @@ function keyCustodyRotateKey(PDO $pdo, string $tenant, string $id, string $maste
     try {
         $pdo->prepare("UPDATE custody_keys SET state = 'rotating', rotated_at = ? WHERE id = ?")->execute([time(), $id]);
         $replacement = keyCustodyCreateKey($pdo, $tenant, $row['name'], (int)$row['authorization_ttl'], $master);
-        $pdo->prepare("UPDATE custody_keys SET state = 'retired' WHERE id = ?")->execute([$id]);
-        keyCustodyAudit($pdo, $tenant, 'key_rotate', $id, 'replacement=' . $replacement['id']);
+        keyCustodyAudit($pdo, $tenant, 'key_rotate', $id, 'replacement=' . $replacement['id'] . '; old key remains available until envelopes are moved and it is retired');
         $pdo->commit();
         return $replacement;
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
+}
+
+/** Retiring is the final, recovery-preserving rotation step. */
+function keyCustodyRetireKey(PDO $pdo, string $tenant, string $id): void
+{
+    $envelopes = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE keys.id = ? AND keys.tenant_id = ?');
+    $envelopes->execute([$id, $tenant]);
+    if ((int)$envelopes->fetchColumn() !== 0) throw new InvalidArgumentException('move or delete every registered envelope before retiring this custody key');
+    $stmt = $pdo->prepare("UPDATE custody_keys SET state = 'retired' WHERE id = ? AND tenant_id = ? AND state = 'rotating'");
+    $stmt->execute([$id, $tenant]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('rotating custody key is unavailable');
+    keyCustodyAudit($pdo, $tenant, 'key_retire', $id, 'completed staged rotation');
 }
 
 /** @return list<array{id:string,artifact_id:string,created_at:int}> */

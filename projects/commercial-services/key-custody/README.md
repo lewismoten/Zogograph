@@ -91,6 +91,14 @@ and immediately revokes all previous enrolled-client credentials for that
 tenant. Update the client package's two `secret_ref:` values together before
 retiring the old deployment.
 
+Key rotation is staged to preserve recovery. `PATCH /v1/keys/{keyId}` with
+`{"action":"rotate"}` creates a replacement and marks the old key
+`rotating`; it remains able to unwrap its existing registered envelopes. Create
+replacement envelopes, prove recovery, and delete the old envelopes. Only then
+use `{"action":"retire"}`. The service refuses to retire or disable a key
+that still has envelopes, because doing so would silently strand customer
+artifacts.
+
 On Apache, the included `.htaccess` routes `/v1/...` requests to `api.php` and
 denies direct configuration/database files. Nginx and other servers must apply
 the equivalent route and direct-file-denial rules in their own configuration.

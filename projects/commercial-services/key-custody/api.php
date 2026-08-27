@@ -33,8 +33,10 @@ try {
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})$#', $path, $match) && $method === 'PATCH') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody); $action = (string)($body['action'] ?? '');
         if ($action === 'disable') { keyCustodyDisableKey($pdo, $auth['tenant_id'], $match[1]); custodyReply(200, ['key_id' => $match[1], 'state' => 'disabled']); }
-        if ($action === 'rotate') { custodyReply(200, ['replacement_key' => keyCustodyRotateKey($pdo, $auth['tenant_id'], $match[1], keyCustodyReadMasterKey($config, __DIR__))]); }
-        throw new InvalidArgumentException('key action must be disable or rotate');
+        if ($action === 'rotate') { custodyReply(200, ['replacement_key' => keyCustodyRotateKey($pdo, $auth['tenant_id'], $match[1], keyCustodyReadMasterKey($config, __DIR__)),
+            'warning' => 'The old key remains available for its registered envelopes. Rewrap each artifact under the replacement, delete its old envelope, then retire the old key.']); }
+        if ($action === 'retire') { keyCustodyRetireKey($pdo, $auth['tenant_id'], $match[1]); custodyReply(200, ['key_id' => $match[1], 'state' => 'retired']); }
+        throw new InvalidArgumentException('key action must be disable, rotate, or retire');
     }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/envelopes$#', $path, $match) && $method === 'POST') {
         $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody); $body = custodyBody($rawBody);
