@@ -90,3 +90,7 @@ Until these controls are implemented and independently tested, HostScope keeps
 the `isolated_package_runtime` capability unavailable. Packages that require it
 cannot be enabled, opened for private storage, or used to make encryption or
 remote-custody claims.
+
+[`PROVIDER_RPC_PLAN.md`](PROVIDER_RPC_PLAN.md) records the signed operation
+set, data boundary, deployment decision, and safe rollout order for the next
+implementation step.
