@@ -1,9 +1,11 @@
 # SQLCipher encrypted SQLite package
 
-This is the first executable-package scaffold for live SQLite encryption. It
-is deliberately **not installable by the current data-only marketplace**. Its
-manifest defines the compatibility, isolation, private-data, and settings
-contract the marketplace runtime must enforce before it can execute any package
+This is the first executable-package adapter for live SQLite encryption. It is
+deliberately **not installable by the current data-only marketplace**. Its
+provider positively checks `PRAGMA cipher_version` and refuses ordinary
+`pdo_sqlite`; it will never silently substitute a plaintext SQLite database.
+The manifest defines the compatibility, isolation, private-data, and settings
+contract the marketplace runtime must enforce before it can activate package
 code.
 
 The package must fail closed: if it cannot establish that the PHP PDO driver is
@@ -11,11 +13,13 @@ backed by the required SQLCipher build, it must leave existing plaintext files
 untouched and report the unavailable capability. It must never silently use
 normal SQLite after the administrator chose live database encryption.
 
-Before activation it must create and verify a sealed recovery artifact, convert
-one selected store at a time, validate schema and application queries, prove
-WAL and crash recovery, and retain the original until the administrator
+Before activation the runtime must create and verify a sealed recovery artifact,
+convert one selected store at a time, validate schema and application queries,
+prove WAL and crash recovery, and retain the original until the administrator
 confirms recovery. Each package version requires compatibility tests against
-the supported PHP/OS builds.
+the supported PHP/OS builds. The adapter currently reports a detected driver
+as *driver-ready*, not active: isolated execution and the recovery migration
+are separate requirements.
 
 ## Release integrity and signing
 
