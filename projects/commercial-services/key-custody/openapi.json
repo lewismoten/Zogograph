@@ -25,6 +25,9 @@
     "/client-credentials/rotate": {
       "post": {"summary": "Replace all enrolled-client credentials", "security": [{"accountSession": []}], "responses": {"201": {"description": "One-time replacement bearer token and Ed25519 private signing key; all prior enrolled-client credentials are revoked."}}}
     },
+    "/audit": {
+      "get": {"summary": "Read bounded, tenant-scoped custody audit metadata", "security": [{"accountSession": []}], "parameters": [{"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}}], "responses": {"200": {"description": "Recent operational events without keys, envelopes, tokens, or private signing material."}}}
+    },
     "/subscription": {
       "get": {"summary": "Read plan, quota, renewal, custody availability, and the tenant's recent change requests", "responses": {"200": {"description": "Subscription state and request history"}}},
       "patch": {"summary": "Request a plan change or cancellation", "responses": {"202": {"description": "Auditable pending billing request"}}}

@@ -60,6 +60,10 @@ try {
         custodyReply(201, ['client_token' => $credential['token'], 'client_signing_private_key' => $credential['signing_private_key'],
             'warning' => 'Store both values now. The service cannot show them again; the previous enrolled-client credential has been revoked.']);
     }
+    if ($path === '/v1/audit' && $method === 'GET') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management');
+        custodyReply(200, ['events' => keyCustodyAuditEvents($pdo, $auth['tenant_id'], (int)($_GET['limit'] ?? 50))]);
+    }
     if ($path === '/v1/subscription' && $method === 'GET') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['subscription' => keyCustodySubscription($pdo, $auth['tenant_id']), 'requests' => keyCustodySubscriptionRequests($pdo, $auth['tenant_id'])]);
     }

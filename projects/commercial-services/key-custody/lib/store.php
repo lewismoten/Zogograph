@@ -282,6 +282,16 @@ function keyCustodyAudit(PDO $pdo, string $tenant, string $action, string $targe
     $pdo->prepare('INSERT INTO custody_audit (tenant_id, at, action, target, detail) VALUES (?, ?, ?, ?, ?)')->execute([$tenant, time(), $action, $target, $detail]);
 }
 
+/** @return list<array{id:int,at:int,action:string,target:string,detail:string}> */
+function keyCustodyAuditEvents(PDO $pdo, string $tenant, int $limit = 50): array
+{
+    $limit = max(1, min(100, $limit));
+    $stmt = $pdo->prepare('SELECT id, at, action, target, detail FROM custody_audit WHERE tenant_id = ? ORDER BY id DESC LIMIT ?');
+    $stmt->bindValue(1, $tenant, PDO::PARAM_STR); $stmt->bindValue(2, $limit, PDO::PARAM_INT); $stmt->execute();
+    return array_map(fn(array $row): array => ['id' => (int)$row['id'], 'at' => (int)$row['at'], 'action' => $row['action'],
+        'target' => $row['target'], 'detail' => $row['detail']], $stmt->fetchAll());
+}
+
 function keyCustodyReadMasterKey(array $config, string $webRoot): string
 {
     $path = (string)($config['master_key_file'] ?? '');

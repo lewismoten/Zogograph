@@ -62,6 +62,12 @@ timestamp/nonce replay protection with signed client requests are included.
 mTLS enrollment and payment-provider integration remain the next service
 increments.
 
+Account-management clients can read their own recent `/v1/audit` events. The
+service returns only bounded tenant-local operational metadata—never plaintext
+keys, envelopes, tokens, or private signing material—so a commercial website
+can explain key, enrollment, and subscription changes without becoming a key
+recovery channel.
+
 The reference API can recommend a short in-memory cache duration, but it
 cannot revoke key material after a client has received it. Keep the client
 cache at zero by default, rotate a suspected key, and use an HSM/KMS-backed

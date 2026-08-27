@@ -31,6 +31,7 @@ try {
     custodyExpect($client['tenant_id'] === $management['tenant_id'], 'replacement client credential did not authenticate');
     $master = random_bytes(32); $key = keyCustodyCreateKey($pdo, $management['tenant_id'], 'primary', 300, $master);
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $key['id'], 'management key list omitted created key');
+    custodyExpect(in_array('key_create', array_column(keyCustodyAuditEvents($pdo, $management['tenant_id'], 1), 'action'), true), 'tenant audit history omitted the key creation');
     custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['state'] === 'active', 'initial subscription state is unavailable');
     $change = keyCustodyRequestSubscriptionChange($pdo, $management['tenant_id'], 'change_plan', 'pro');
     custodyExpect($change['state'] === 'pending' && $change['requested_plan'] === 'pro', 'subscription change request was not retained');
