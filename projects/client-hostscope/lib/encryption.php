@@ -511,16 +511,17 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     return $status;
 }
 
-/** Does not expose a source path, but calls out common live disclosure risks
- * for the two bootstrap/settings stores most likely to contain credentials. */
+/** Does not expose a source path, but calls out unsafe aliases for every
+ * selected store and disclosure risks for credential-bearing bootstrap stores. */
 function encryptionSensitiveSourceWarnings(array $paths, array $stores): array
 {
     $warnings = [];
-    foreach (array_intersect($stores, ['config', 'setup']) as $store) {
+    foreach ($stores as $store) {
         $path = (string)($paths[$store] ?? '');
         if ($path === '') continue;
         if (is_link($path)) { $warnings[] = "The selected {$store} source is a symbolic link; use an owner-controlled regular file before treating protection as ready."; continue; }
         if (!file_exists($path)) continue;
+        if (!in_array($store, ['config', 'setup'], true)) continue;
         $permissions = fileperms($path);
         if ($permissions !== false && ($permissions & 0077) !== 0) {
             $warnings[] = "The selected {$store} source is readable by group or other users; restrict it to the HostScope service account before treating protection as ready.";

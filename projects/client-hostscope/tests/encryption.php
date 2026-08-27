@@ -214,6 +214,12 @@ try {
             } else { copy($configReal, $configTarget); chmod($configTarget, 0600); }
             @unlink($configReal);
         }
+        if (function_exists('symlink') && @symlink($root . '/live.db', $root . '/linked-account.db')) {
+            $linkedAccount = $config; $linkedAccount['database'] = $root . '/linked-account.db'; $linkedAccount['encryption']['stores'] = ['account'];
+            encryptionExpect(str_contains(implode(' ', encryptionSensitiveSourceWarnings(encryptionStorePaths($linkedAccount, $web), ['account'])), 'account source is a symbolic link'),
+                'protection status did not report a selected account-database symlink');
+            @unlink($root . '/linked-account.db');
+        }
         $copies = encryptionSealConfiguredCopies($config, $live, $web);
         encryptionExpect(count($copies) === 2 && $copies[0]['store'] === 'config'
             && $copies[1]['store'] === 'account', 'configured sealed copies were not made');
