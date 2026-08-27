@@ -203,13 +203,7 @@ function encryptionSealConfiguredCopies(array $config, PDO $account, string $web
     $stores = encryptionSelectedStores($settings);
     if ($stores === []) throw new RuntimeException('select at least one database for sealed copies');
 
-    $base = dirname((string)$config['database']);
-    $paths = [
-        'config' => $webRoot . '/lib/config.php',
-        'setup' => $base . '/setup.db', 'account' => (string)$config['database'],
-        'host' => (string)($config['host']['database'] ?? '') ?: $base . '/host.db',
-        'ai' => (string)($config['ai']['database'] ?? '') ?: $base . '/ai.db',
-    ];
+    $paths = encryptionStorePaths($config, $webRoot);
     $out = [];
     foreach ($stores as $store) {
         if (!is_file($paths[$store])) continue;
@@ -271,7 +265,7 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     $settings = (array)($config['encryption'] ?? []);
     $mode = (string)($settings['mode'] ?? 'none');
     $stores = encryptionSelectedStores($settings);
-    $status = ['mode' => $mode, 'stores' => $stores, 'ready' => false, 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null];
+    $status = ['mode' => $mode, 'stores' => $stores, 'waiting_stores' => [], 'ready' => false, 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null];
     if ($mode === 'none') {
         $status['warnings'][] = 'Encryption is off. Live SQLite files and copies remain unencrypted unless host storage protection is configured separately.';
         return $status;
@@ -299,20 +293,30 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
         foreach ($stmt->fetchAll() as $row) $status['artifacts'][] = ['store' => $row['store'], 'created_at' => (int)$row['created_at'],
             'last_verified_at' => (int)$row['last_verified_at'], 'copies' => (int)$row['copies']];
     } catch (Throwable) { $status['warnings'][] = 'No encrypted artifact ledger is available yet.'; }
+    $paths = encryptionStorePaths($config, $webRoot);
+    $expected = [];
+    foreach ($stores as $store) {
+        if (in_array($store, ['host', 'ai'], true) && !is_file($paths[$store])) {
+            $status['waiting_stores'][] = $store;
+            $status['warnings'][] = "The optional {$store} database is not present yet, so it is waiting rather than protected.";
+            continue;
+        }
+        $expected[] = $store;
+    }
     $covered = array_column($status['artifacts'], 'store');
     $latest = array_column($status['artifacts'], 'created_at', 'store');
     try {
         $failed = $pdo->query("SELECT store, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verification_failed' GROUP BY store")->fetchAll();
         foreach ($failed as $artifact) $status['warnings'][] = 'One or more retained encrypted copies for ' . $artifact['store'] . ' failed their last verification.';
     } catch (Throwable) { /* Older/partial ledgers already carry a general warning above. */ }
-    foreach ($stores as $store) {
+    foreach ($expected as $store) {
         if (!in_array($store, $covered, true)) { $status['warnings'][] = "No verified encrypted copy exists yet for {$store}."; continue; }
         $maximumAge = encryptionScheduleMaximumAge((string)($settings['backup_schedule'] ?? 'manual'));
         if ($maximumAge !== null && (int)$latest[$store] < time() - $maximumAge) {
             $status['warnings'][] = "The newest verified encrypted copy for {$store} is older than the configured schedule allows.";
         }
     }
-    $status['ready'] = $stores !== [] && encryptionAvailable() && count($status['warnings']) === 0;
+    $status['ready'] = $expected !== [] && encryptionAvailable() && count(array_filter($status['warnings'], fn(string $warning): bool => !str_contains($warning, 'is not present yet, so it is waiting'))) === 0;
     return $status;
 }
 
@@ -325,15 +329,20 @@ function encryptionSealingStorageEstimate(array $config, string $webRoot, array 
     $directory = (string)($settings['artifact_directory'] ?? '') ?: $base . '/sealed';
     $probe = $directory;
     while (!is_dir($probe) && dirname($probe) !== $probe) $probe = dirname($probe);
-    $paths = [
-        'config' => $webRoot . '/lib/config.php', 'setup' => $base . '/setup.db', 'account' => (string)($config['database'] ?? ''),
-        'host' => (string)($config['host']['database'] ?? '') ?: $base . '/host.db', 'ai' => (string)($config['ai']['database'] ?? '') ?: $base . '/ai.db',
-    ];
+    $paths = encryptionStorePaths($config, $webRoot);
     $sourceBytes = 0;
     foreach ($stores as $store) if (isset($paths[$store]) && is_file($paths[$store])) $sourceBytes += max(0, (int)filesize($paths[$store]));
     $free = is_dir($probe) ? @disk_free_space($probe) : false;
     return ['source_bytes' => $sourceBytes, 'required_bytes' => $sourceBytes === 0 ? 0 : $sourceBytes * 2 + 10485760,
         'free_bytes' => is_float($free) || is_int($free) ? (int)$free : null];
+}
+
+/** @return array{config:string,setup:string,account:string,host:string,ai:string} */
+function encryptionStorePaths(array $config, string $webRoot): array
+{
+    $base = dirname((string)($config['database'] ?? ''));
+    return ['config' => $webRoot . '/lib/config.php', 'setup' => $base . '/setup.db', 'account' => (string)($config['database'] ?? ''),
+        'host' => (string)($config['host']['database'] ?? '') ?: $base . '/host.db', 'ai' => (string)($config['ai']['database'] ?? '') ?: $base . '/ai.db'];
 }
 
 /** Allows one missed scheduled run before reporting recovery coverage as stale. */

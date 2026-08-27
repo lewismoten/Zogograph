@@ -11743,6 +11743,7 @@ function renderEncryptionStatus(data) {
     const free = data.storage_estimate.free_bytes == null ? "free space unavailable" : `${humanBytes(data.storage_estimate.free_bytes)} free`;
     overview.push(["Space for next seal", `${humanBytes(data.storage_estimate.required_bytes)} estimated · ${free}`]);
   }
+  if (data.waiting_stores?.length) overview.push(["Waiting until present", data.waiting_stores.join(", ")]);
   const parts = [factGrid(overview)];
   if (data.mode === "none") {
     parts.push(note("Protection is off. Live SQLite databases and ordinary copies remain unencrypted unless your host protects their storage separately. Start with the setup wizard's Encryption section; HostScope will not generate, upload, or store a private key from this page."));

@@ -130,6 +130,10 @@ try {
         encryptionExpect($status['ready'] && count($status['artifacts']) === 2, 'sealed-copy status did not report verified coverage');
         encryptionExpect(is_array($status['storage_estimate']) && $status['storage_estimate']['required_bytes'] > $status['storage_estimate']['source_bytes'],
             'sealed-copy status did not estimate next-run storage needs');
+        $optional = $config; $optional['encryption']['stores'] = ['account', 'host', 'ai'];
+        $optionalStatus = encryptionStatus($live, $optional, $web);
+        encryptionExpect($optionalStatus['ready'] && $optionalStatus['waiting_stores'] === ['host', 'ai'],
+            'missing optional databases were treated as failed encryption coverage');
         $stale = $config; $stale['encryption']['backup_schedule'] = 'daily';
         $live->prepare("UPDATE encryption_artifacts SET created_at = ? WHERE store = 'account'")->execute([time() - 3 * 86400]);
         $staleStatus = encryptionStatus($live, $stale, $web);

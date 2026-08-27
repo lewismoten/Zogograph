@@ -309,6 +309,7 @@ function encryptionRecoveryAlerts(array $config, PDO $pdo): array
     if (($settings['mode'] ?? 'none') !== 'sealed_copies_local') return [];
     $stores = encryptionSelectedStores($settings);
     if ($stores === []) return [];
+    $paths = encryptionStorePaths($config, dirname(__DIR__));
     try {
         $rows = $pdo->query("SELECT store, MAX(created_at) AS created_at FROM encryption_artifacts WHERE state = 'verified' GROUP BY store")->fetchAll();
         $failed = $pdo->query("SELECT store FROM encryption_artifacts WHERE state = 'verification_failed' GROUP BY store")->fetchAll(PDO::FETCH_COLUMN);
@@ -324,6 +325,7 @@ function encryptionRecoveryAlerts(array $config, PDO $pdo): array
     foreach ($failed as $store) $problems[] = "A retained encrypted copy for {$store} failed verification.";
     $maximumAge = encryptionScheduleMaximumAge((string)($settings['backup_schedule'] ?? 'manual'));
     foreach ($stores as $store) {
+        if (in_array($store, ['host', 'ai'], true) && !is_file($paths[$store])) continue;
         if (!isset($latest[$store])) { $problems[] = "No verified encrypted copy exists for {$store}."; continue; }
         if ($maximumAge !== null && $latest[$store] < time() - $maximumAge) $problems[] = "The newest verified encrypted copy for {$store} is older than the selected schedule.";
     }
