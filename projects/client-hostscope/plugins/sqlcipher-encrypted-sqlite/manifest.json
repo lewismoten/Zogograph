@@ -14,6 +14,7 @@
     "kind": "hostscope-isolated-php-package",
     "entrypoint": "src/SqlcipherStorageProvider.php",
     "provider_class": "HostScope\\Plugin\\SqlcipherEncryptedSqlite\\SqlcipherStorageProvider",
+    "operations": ["capability"],
     "minimum_api": "1.0"
   },
   "settings_schema": "settings.schema.json",

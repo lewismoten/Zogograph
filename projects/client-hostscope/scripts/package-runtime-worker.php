@@ -20,7 +20,7 @@ try {
         || ($request['api'] ?? null) !== '1.0' || ($request['operation'] ?? null) !== 'capability'
         || !is_array($manifest) || ($request['package_id'] ?? null) !== ($manifest['id'] ?? null)) throw new RuntimeException('Worker request is invalid.');
     $runtime = (array)($manifest['runtime'] ?? []); $entrypoint = (string)($runtime['entrypoint'] ?? ''); $class = (string)($runtime['provider_class'] ?? '');
-    if ($entrypoint === '' || $class === '' || str_contains($entrypoint, '..') || str_starts_with($entrypoint, '/')) throw new RuntimeException('Package runtime declaration is invalid.');
+    if ($entrypoint === '' || $class === '' || (array)($runtime['operations'] ?? []) !== ['capability'] || str_contains($entrypoint, '..') || str_starts_with($entrypoint, '/')) throw new RuntimeException('Package runtime declaration is invalid.');
     $entry = realpath($root . '/' . $entrypoint);
     if ($entry === false || is_link($root . '/' . $entrypoint) || !str_starts_with($entry, $root . '/') || !is_file($entry)) throw new RuntimeException('Package entry point is unavailable.');
     require $entry;

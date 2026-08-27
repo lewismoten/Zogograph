@@ -49,7 +49,7 @@ try {
     $manifest = [
         'id' => 'test-runtime', 'version' => '1.0.0', 'publisher' => 'Test publisher',
         'capabilities' => ['package_private_database'],
-        'runtime' => ['kind' => 'hostscope-isolated-php-package', 'entrypoint' => 'src/Provider.php', 'provider_class' => 'TestRuntime\\Provider', 'minimum_api' => '1.0'],
+        'runtime' => ['kind' => 'hostscope-isolated-php-package', 'entrypoint' => 'src/Provider.php', 'provider_class' => 'TestRuntime\\Provider', 'operations' => ['capability'], 'minimum_api' => '1.0'],
         'settings_schema' => 'settings.schema.json',
         'data' => ['migrations' => ['migrations/001-private-evidence.sql']],
     ];
