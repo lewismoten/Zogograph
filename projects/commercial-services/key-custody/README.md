@@ -128,6 +128,12 @@ use `{"action":"retire"}`. The service refuses to retire or disable a key
 that still has envelopes, because doing so would silently strand customer
 artifacts.
 
+For a routine policy change, use the same endpoint with
+`{"action":"update_policy","authorization_ttl_seconds":120}` and an
+optional display `name`. This changes only the maximum cache recommendation
+for future unwraps; it neither re-encrypts data nor invalidates a key already
+received by a client.
+
 On Apache, the included `.htaccess` routes `/v1/...` requests to `api.php` and
 denies direct configuration/database files. Nginx and other servers must apply
 the equivalent route and direct-file-denial rules in their own configuration.

@@ -201,6 +201,23 @@ function keyCustodyDisableKey(PDO $pdo, string $tenant, string $id): void
 }
 
 /** @return array{id:string,name:string,authorization_ttl:int,state:string} */
+function keyCustodyUpdateKeyPolicy(PDO $pdo, string $tenant, string $id, int $ttl, ?string $name = null): array
+{
+    $name = $name === null ? null : trim($name);
+    if ($ttl < 60 || $ttl > 900 || ($name !== null && ($name === '' || mb_strlen($name) > 120))) {
+        throw new InvalidArgumentException('custody key policy is invalid');
+    }
+    $stmt = $pdo->prepare("UPDATE custody_keys SET authorization_ttl = ?, name = COALESCE(?, name) WHERE id = ? AND tenant_id = ? AND state IN ('active', 'rotating')");
+    $stmt->execute([$ttl, $name, $id, $tenant]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('active custody key is unavailable');
+    $key = $pdo->prepare('SELECT id, name, authorization_ttl, state FROM custody_keys WHERE id = ? AND tenant_id = ?');
+    $key->execute([$id, $tenant]); $row = $key->fetch();
+    if (!is_array($row)) throw new RuntimeException('custody key policy could not be read');
+    keyCustodyAudit($pdo, $tenant, 'key_policy_update', $id, 'ttl=' . $ttl . ($name === null ? '' : '; name updated'));
+    return ['id' => $row['id'], 'name' => $row['name'], 'authorization_ttl' => (int)$row['authorization_ttl'], 'state' => $row['state']];
+}
+
+/** @return array{id:string,name:string,authorization_ttl:int,state:string} */
 function keyCustodyRotateKey(PDO $pdo, string $tenant, string $id, string $master): array
 {
     $old = $pdo->prepare("SELECT name, authorization_ttl FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'");

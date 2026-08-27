@@ -12,7 +12,7 @@
       "post": {"summary": "Create a tenant custody key record", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KeyCreate"}}}}, "responses": {"201": {"description": "Created"}}}
     },
     "/keys/{keyId}": {
-      "patch": {"summary": "Disable, rotate, or retire a key", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KeyAction"}}}}, "responses": {"200": {"description": "Updated"}}}
+      "patch": {"summary": "Update policy, disable, rotate, or retire a key", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KeyAction"}}}}, "responses": {"200": {"description": "Updated"}}}
     },
     "/keys/{keyId}/envelopes": {
       "post": {"summary": "Store a wrapped DEK envelope", "security": [{"enrolledClient": []}], "parameters": [{"$ref": "#/components/parameters/KeyId"}, {"$ref": "#/components/parameters/ClientTimestamp"}, {"$ref": "#/components/parameters/ClientNonce"}, {"$ref": "#/components/parameters/ClientSignature"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EnvelopeStore"}}}}, "responses": {"201": {"description": "Envelope recorded"}}},
@@ -61,7 +61,7 @@
     },
     "schemas": {
       "KeyCreate": {"type": "object", "additionalProperties": false, "required": ["name", "authorization_ttl_seconds"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 120}, "authorization_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 900}}},
-      "KeyAction": {"type": "object", "additionalProperties": false, "required": ["action"], "properties": {"action": {"enum": ["disable", "rotate", "retire"]}}},
+      "KeyAction": {"type": "object", "additionalProperties": false, "required": ["action"], "properties": {"action": {"enum": ["disable", "rotate", "retire", "update_policy"]}, "name": {"type": "string", "minLength": 1, "maxLength": 120}, "authorization_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 900}}, "allOf": [{"if": {"properties": {"action": {"const": "update_policy"}}}, "then": {"required": ["authorization_ttl_seconds"]}}]},
       "EnvelopeStore": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "envelope_base64"], "properties": {"artifact_id": {"type": "string", "minLength": 1, "maxLength": 200}, "envelope_base64": {"type": "string", "minLength": 1, "maxLength": 1398104}}},
       "SubscriptionApply": {"type": "object", "additionalProperties": false, "required": ["plan", "state", "key_quota"], "properties": {"plan": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,62}$"}, "state": {"enum": ["active", "past_due", "cancelled"]}, "key_quota": {"type": "integer", "minimum": 0, "maximum": 10000}, "renews_at": {"type": ["integer", "null"], "minimum": 0, "maximum": 4102444800}}},
       "UnwrapRequest": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "nonce"], "properties": {"artifact_id": {"type": "string", "minLength": 1, "maxLength": 200}, "nonce": {"type": "string", "minLength": 1, "maxLength": 200}, "requested_ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 900, "default": 0}}}
