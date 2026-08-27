@@ -47,7 +47,7 @@ return [
         // Re-run a non-destructive recovery drill at least this often; 0 disables reminders.
         'recovery_drill_max_age_days' => 90,
         // Optional long-term recovery copies: newest distinct UTC days/weeks/months to preserve.
-        'retention_keep_daily' => 0, 'retention_keep_weekly' => 0, 'retention_keep_monthly' => 0,
+        'retention_recovery_tiers' => ['daily' => 0, 'weekly' => 0, 'monthly' => 0],
         // Optional per-store overrides: config, setup, account, host, ai => 0..36500 days.
         'retention_days_by_store' => [],
     ],

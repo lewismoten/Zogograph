@@ -217,7 +217,7 @@ function configFields(array $sample): array
             'type' => 'json',
             'label' => 'Long-term recovery copies (advanced)',
             'help' => 'Optional JSON object such as {"daily":7,"weekly":4,"monthly":12}. It preserves the newest verified copy from each distinct UTC day, week, or month in addition to normal retention. Zero or omitted tiers keep the simple retention target.',
-            'default' => ['daily' => (int)($sample['encryption']['retention_keep_daily'] ?? 0), 'weekly' => (int)($sample['encryption']['retention_keep_weekly'] ?? 0), 'monthly' => (int)($sample['encryption']['retention_keep_monthly'] ?? 0)],
+            'default' => (array)($sample['encryption']['retention_recovery_tiers'] ?? ['daily' => 0, 'weekly' => 0, 'monthly' => 0]),
             'validate' => function (array $value): ?string {
                 foreach ($value as $tier => $copies) {
                     if (!in_array($tier, ['daily', 'weekly', 'monthly'], true) || !is_int($copies) || $copies < 0 || $copies > 36500) return 'Use daily, weekly, and/or monthly whole-number values from 0 to 36500.';
