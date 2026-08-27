@@ -213,7 +213,7 @@ function encryptionSealConfiguredCopies(array $config, PDO $account, string $web
         if ($store === 'config') {
             $record = ['store' => $store, 'local_path' => $sealed]
                 + encryptionSealFile($paths[$store], $sealed, $key, $artifact);
-            encryptionVerifySealedArtifact($sealed, $key, (int)$record['plaintext_bytes']);
+            encryptionVerifySealedStoreArtifact($sealed, $key, (int)$record['plaintext_bytes'], $store);
             $out[] = $record;
             continue;
         }
@@ -222,7 +222,7 @@ function encryptionSealConfiguredCopies(array $config, PDO $account, string $web
         ]);
         $record = ['store' => $store, 'local_path' => $sealed]
             + encryptionSealSqliteSnapshot($pdo, $sealed, $key, $artifact);
-        encryptionVerifySealedArtifact($sealed, $key, (int)$record['plaintext_bytes']);
+        encryptionVerifySealedStoreArtifact($sealed, $key, (int)$record['plaintext_bytes'], $store);
         $out[] = $record;
     }
     return $out;
@@ -238,6 +238,31 @@ function encryptionVerifySealedArtifact(string $source, string $kek, int $expect
     } finally {
         @unlink($temporary);
     }
+}
+
+/** Authenticates an artifact and checks that its recovered store is usable. */
+function encryptionVerifySealedStoreArtifact(string $source, string $kek, int $expectedBytes, string $store): void
+{
+    $temporary = dirname($source) . '/.verify-store-' . bin2hex(random_bytes(12));
+    try {
+        encryptionOpenFile($source, $temporary, $kek);
+        if ((int)filesize($temporary) !== $expectedBytes) throw new RuntimeException('sealed artifact recovery proof has an unexpected plaintext size');
+        encryptionVerifyRecoveredStore($temporary, $store);
+    } finally { @unlink($temporary); }
+}
+
+/** Checks only a decrypted temporary store; it never executes recovered PHP or
+ * changes a recovered SQLite database. */
+function encryptionVerifyRecoveredStore(string $path, string $store): void
+{
+    if ($store === 'config') {
+        $prefix = file_get_contents($path, false, null, 0, 32);
+        if (!is_string($prefix) || !str_starts_with(ltrim($prefix), '<?php')) throw new RuntimeException('recovered configuration artifact is not PHP bootstrap text');
+        return;
+    }
+    if (!in_array($store, ['setup', 'account', 'host', 'ai'], true)) throw new InvalidArgumentException('recovered store identity is invalid');
+    $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    if ($pdo->query('PRAGMA quick_check')->fetchColumn() !== 'ok') throw new RuntimeException('recovered SQLite artifact failed integrity check');
 }
 
 /** Rejects an unusable opt-in policy before setup records it. */
@@ -392,7 +417,7 @@ function encryptionVerifyConfiguredCopies(array $config, PDO $pdo, string $webRo
     if ($directory === '') $directory = dirname((string)$config['database']) . '/sealed';
     $root = realpath($directory);
     if ($root === false || !is_dir($root) || is_link($directory)) throw new RuntimeException('encrypted artifact directory is unavailable or unsafe');
-    $rows = $pdo->query("SELECT artifact_id, local_path, ciphertext_sha256 FROM encryption_artifacts WHERE state = 'verified' ORDER BY created_at ASC")->fetchAll();
+    $rows = $pdo->query("SELECT artifact_id, store, local_path, ciphertext_sha256 FROM encryption_artifacts WHERE state = 'verified' ORDER BY created_at ASC")->fetchAll();
     $verified = 0; $failed = 0; $warnings = [];
     $ok = $pdo->prepare("UPDATE encryption_artifacts SET last_verified_at = ? WHERE artifact_id = ? AND state = 'verified'");
     $bad = $pdo->prepare("UPDATE encryption_artifacts SET state = 'verification_failed' WHERE artifact_id = ? AND state = 'verified'");
@@ -405,7 +430,10 @@ function encryptionVerifyConfiguredCopies(array $config, PDO $pdo, string $webRo
             $hash = hash_file('sha256', $path);
             if (!is_string($hash) || !hash_equals((string)$artifact['ciphertext_sha256'], $hash)) throw new RuntimeException('ciphertext hash does not match the recorded artifact');
             $temporary = $root . '/.reverify-' . bin2hex(random_bytes(12));
-            try { encryptionOpenFile($path, $temporary, $key); }
+            try {
+                encryptionOpenFile($path, $temporary, $key);
+                encryptionVerifyRecoveredStore($temporary, (string)$artifact['store']);
+            }
             finally { @unlink($temporary); }
             $ok->execute([time(), $artifact['artifact_id']]); $verified++;
         } catch (Throwable $error) {

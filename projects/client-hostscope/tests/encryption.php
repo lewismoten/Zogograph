@@ -92,6 +92,9 @@ try {
     encryptionOpenFile($sealed, $opened, $key);
     encryptionExpect(hash_file('sha256', $source) === hash_file('sha256', $opened), 'opened copy differs from source');
     encryptionVerifySealedArtifact($sealed, $key, (int)filesize($source));
+    file_put_contents($root . '/not-a-store', 'not sqlite');
+    try { encryptionVerifyRecoveredStore($root . '/not-a-store', 'account'); throw new RuntimeException('invalid recovered SQLite was accepted'); }
+    catch (Throwable $error) { encryptionExpect($error->getMessage() !== 'invalid recovered SQLite was accepted', $error->getMessage()); }
     $replacementKeyPath = $keys . '/replacement.key';
     encryptionCreateLocalKey($replacementKeyPath, $web);
     $replacement = encryptionReadLocalKey($replacementKeyPath, $web);
