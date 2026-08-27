@@ -6,4 +6,7 @@ data/*
 !data/.htaccess
 projects/client-hostscope/data/*
 !projects/client-hostscope/data/.htaccess
+projects/commercial-services/key-custody/config.php
+projects/commercial-services/key-custody/data/*
+!projects/commercial-services/key-custody/data/.htaccess
 .DS_Store

@@ -21,8 +21,9 @@ enabled, HostScope uses the local key file or self-managed fleet options.
   short-lived scoped client assertion is the fallback).
 - Use a distinct account-management session/token for billing and key-policy
   management; never reuse it for collector or replica traffic.
-- Return key identifiers and short-lived authorization artifacts, not raw KEKs
-  or data-encryption keys.
+- Return key identifiers and policy only to management endpoints. The enrolled
+  client unwrap endpoint may return the requested key over HTTPS after scoped
+  authorization; it never exposes a key through billing or management APIs.
 - Log every enrollment, policy, authorization, rotation, disablement, and
   billing state change without recording plaintext keys, envelopes, or tokens.
 - Default to disabled remote custody, one tenant per account, 15-minute unwrap
@@ -32,3 +33,14 @@ enabled, HostScope uses the local key file or self-managed fleet options.
 The commercial website sets plans, prices, quotas, invoices, payment-provider
 references, and cancellation/retention policy. The custody API reports those
 states but does not receive card or bank details.
+
+## Current reference API
+
+Copy `config.sample.php` to `config.php`, create a private Base64 256-bit
+`master_key_file`, and provision the first tenant with the store/administration
+workflow. `api.php` currently implements key list/create, client unwrap,
+subscription read, and configured billing portal/checkout session links. It is
+a low-cost SQLite reference service; deploy it behind HTTPS and an authenticated
+reverse proxy before exposing it publicly. mTLS enrollment, envelope storage,
+key rotation, request replay protection, and payment-provider integration are
+the next service increments.
