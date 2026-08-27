@@ -23,5 +23,11 @@ try {
         secretScriptExpect($status === 1 && file_get_contents($path) === $first, $script . ' replaced an existing secret file');
         @unlink($path);
     }
+    foreach (['master-key.php', 'billing-token.php'] as $script) {
+        $source = file_get_contents(__DIR__ . '/../scripts/' . $script);
+        secretScriptExpect($source !== false && str_contains($source, "realpath(__DIR__ . '/..')")
+            && str_contains($source, "str_starts_with(\$private, rtrim(\$webRoot, '/') . '/')"),
+            $script . ' does not reject a secret destination inside the service web root');
+    }
     echo "key custody secret setup script checks passed\n";
 } finally { @rmdir($root); }

@@ -7,7 +7,9 @@ $path = $argv[1];
 if (is_link($path) || file_exists($path)) { fwrite(STDERR, "Refusing to replace an existing or symbolic-link master key.\n"); exit(1); }
 $directory = dirname($path);
 if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) { fwrite(STDERR, "Could not create the master-key directory.\n"); exit(1); }
-if (is_link($directory) || !is_writable($directory)) { fwrite(STDERR, "Could not write the master key.\n"); exit(1); }
+$private = realpath($directory); $webRoot = realpath(__DIR__ . '/..');
+if ($private === false || is_link($directory) || !is_writable($private) || (is_string($webRoot) && ($private === $webRoot || str_starts_with($private, rtrim($webRoot, '/') . '/')))) { fwrite(STDERR, "Could not write the master key.\n"); exit(1); }
+$path = $private . '/' . basename($path);
 $previous = umask(0077); $handle = @fopen($path, 'x'); umask($previous);
 if ($handle === false) { fwrite(STDERR, "Could not write the master key.\n"); exit(1); }
 try {
