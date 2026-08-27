@@ -35,11 +35,13 @@ $targets = [
 ];
 $expected = ['setup' => 'setup_values', 'account' => 'vitals', 'host' => 'host_samples', 'ai' => 'ai_sessions'];
 $target = $targets[$store]; $source = realpath($sourceArgument);
-if ($source === false || !is_file($source) || $target === '' || !str_starts_with($target, '/')) {
+if ($source === false || is_link($sourceArgument) || !is_file($source) || $target === '' || !str_starts_with($target, '/') || is_link($target)) {
     fwrite(STDERR, "The source must be readable and the selected store target must be an absolute configured path.\n"); exit(1);
 }
 if ($sealedKey === null && realpath($target) === $source) { fwrite(STDERR, "The source is already the live store; refusing to replace it with itself.\n"); exit(1); }
-if (!is_dir(dirname($target)) || !is_writable(dirname($target))) { fwrite(STDERR, "The selected store directory is unavailable or not writable.\n"); exit(1); }
+$targetDirectory = realpath(dirname($target));
+if ($targetDirectory === false || is_link(dirname($target)) || !is_dir($targetDirectory) || !is_writable($targetDirectory)) { fwrite(STDERR, "The selected store directory is unavailable or unsafe.\n"); exit(1); }
+$target = $targetDirectory . '/' . basename($target);
 
 $temporary = $target . '.restore-' . bin2hex(random_bytes(8)); $decrypted = null; $kek = null;
 try {

@@ -54,6 +54,9 @@ try {
         && str_contains($accountRestore, 'encryptionSealFile') && str_contains($storeRestore, 'encryptionSealFile')
         && str_contains($accountRestore, 'encryptionVerifySealedStoreArtifact') && str_contains($storeRestore, 'encryptionVerifySealedStoreArtifact'),
         'sealed database restoration does not retain a verified sealed rollback artifact');
+    encryptionExpect($accountRestore !== false && $storeRestore !== false && str_contains($accountRestore, 'is_link($sourceArgument)')
+        && str_contains($accountRestore, 'is_link($target)') && str_contains($storeRestore, 'is_link($sourceArgument)')
+        && str_contains($storeRestore, 'is_link($target)'), 'database restore commands do not reject symlinked recovery paths');
     encryptionExpect($setupGuide !== false && str_contains($setupGuide, '--recovery-drill --quiet')
         && str_contains($setupGuide, 'Quarterly non-destructive recovery drill'),
         'setup guide does not provide a recurring recovery-drill schedule');

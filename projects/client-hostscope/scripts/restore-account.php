@@ -42,7 +42,7 @@ require_once __DIR__ . '/../lib/encryption.php';
 
 $source = realpath($sourceArgument);
 $target = (string)($config['database'] ?? '');
-if ($source === false || !is_file($source) || $target === '') {
+if ($source === false || is_link($sourceArgument) || !is_file($source) || $target === '' || !str_starts_with($target, '/') || is_link($target)) {
     fwrite(STDERR, "The source must be a readable export/artifact and the account database must be configured.\n");
     exit(1);
 }
@@ -50,6 +50,12 @@ if ($sealedKey === null && realpath($target) === $source) {
     fwrite(STDERR, "The source is already the live account database; refusing to replace it with itself.\n");
     exit(1);
 }
+$targetDirectory = realpath(dirname($target));
+if ($targetDirectory === false || is_link(dirname($target)) || !is_dir($targetDirectory) || !is_writable($targetDirectory)) {
+    fwrite(STDERR, "The account database directory is unavailable or unsafe.\n");
+    exit(1);
+}
+$target = $targetDirectory . '/' . basename($target);
 
 $temporary = $target . '.restore-' . bin2hex(random_bytes(8));
 $decrypted = null; $kek = null;
