@@ -5,6 +5,7 @@ declare(strict_types=1);
  * does not include package entry points. Loading code comes only after a
  * separately reviewed isolation runtime is implemented. */
 require_once __DIR__ . '/package-integrity.php';
+require_once __DIR__ . '/setupstore.php';
 
 const PACKAGE_RUNTIME_CAPABILITIES = [
     'storage_backend', 'live_database_encryption', 'package_private_database',
@@ -190,4 +191,65 @@ function packageRuntimePrivateDatabase(array $config, string $id): PDO
     $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
     $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA busy_timeout = 5000'); @chmod($path, 0600);
     return $pdo;
+}
+
+/** Package settings live in setup.db, not the package's metric/database file.
+ * Secret values are references to the future secret provider, never raw keys. */
+function packageRuntimeSettings(PDO $pdo, array $config, string $id): array
+{
+    packageRuntimeInstalled($pdo, $id);
+    $store = setupStoreOpen($config, true);
+    if ($store === null) throw new RuntimeException('could not open package settings store');
+    $store->exec('CREATE TABLE IF NOT EXISTS package_runtime_settings (
+        package_id TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL
+    )');
+    $value = $store->prepare('SELECT value FROM package_runtime_settings WHERE package_id = ?');
+    $value->execute([$id]);
+    $decoded = json_decode((string)$value->fetchColumn(), true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $settings, string $actor): void
+{
+    packageRuntimeInstalled($pdo, $id);
+    packageRuntimeValidateSettings($settings);
+    $store = setupStoreOpen($config, true);
+    if ($store === null) throw new RuntimeException('could not open package settings store');
+    $store->exec('CREATE TABLE IF NOT EXISTS package_runtime_settings (
+        package_id TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL
+    )');
+    $value = json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+    if (strlen($value) > 65536) throw new InvalidArgumentException('package settings are too large');
+    $store->prepare('INSERT INTO package_runtime_settings (package_id, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
+        ON CONFLICT(package_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by')
+        ->execute([$id, $value, time(), mb_substr($actor, 0, 120)]);
+}
+
+function packageRuntimeInstalled(PDO $pdo, string $id): void
+{
+    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id)) throw new InvalidArgumentException('package id is invalid');
+    $stmt = $pdo->prepare('SELECT COUNT(*) FROM runtime_packages WHERE package_id = ?');
+    $stmt->execute([$id]);
+    if ((int)$stmt->fetchColumn() !== 1) throw new InvalidArgumentException('package is not installed');
+}
+
+function packageRuntimeValidateSettings(array $settings): void
+{
+    $walk = function (mixed $value, string $name, int $depth) use (&$walk): void {
+        if ($depth > 12) throw new InvalidArgumentException('package settings are nested too deeply');
+        if (is_array($value)) {
+            if (count($value) > 200) throw new InvalidArgumentException('package settings contain too many values');
+            foreach ($value as $key => $child) $walk($child, (string)$key, $depth + 1);
+            return;
+        }
+        if (!is_null($value) && !is_bool($value) && !is_int($value) && !is_float($value) && !is_string($value)) {
+            throw new InvalidArgumentException('package setting values are invalid');
+        }
+        if (is_string($value) && strlen($value) > 4096) throw new InvalidArgumentException('a package setting is too long');
+        if (preg_match('/(?:secret|token|password|private[_-]?key)/i', $name)
+            && is_string($value) && $value !== '' && !str_starts_with($value, 'secret_ref:')) {
+            throw new InvalidArgumentException('package secrets must use a secret_ref: reference, not a raw value');
+        }
+    };
+    $walk($settings, '', 0);
 }

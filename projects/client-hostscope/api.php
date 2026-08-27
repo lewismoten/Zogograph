@@ -307,6 +307,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'marketplace-rollback' => doMarketplaceRollback($config, $pdo, $post),
         'package-runtime' => packageRuntimeView($config, $pdo, $signedIn),
         'package-runtime-enable' => doPackageRuntimeEnable($pdo, $post),
+        'package-runtime-settings' => packageRuntimeSettingsView($config, $pdo, $signedIn),
+        'package-runtime-settings-save' => doPackageRuntimeSettingsSave($config, $pdo, $post),
         'peer-save' => doPeerSave($config, $pdo, $post),
         'peer-delete' => doPeerDelete($config, $pdo, $post),
         'peer-transport-rotate' => doPeerTransportRotate($config, $pdo, $post),
@@ -344,6 +346,7 @@ function requireActionAccess(array $config, string $action): void
         'chart-series' => 'charts', 'charts' => 'charts',
         'peers' => 'sys-peers', 'marketplace' => 'sys-marketplace',
         'package-runtime' => 'sys-marketplace',
+        'package-runtime-settings' => 'sys-marketplace',
         'labels' => 'net-labels', 'descriptions' => 'sys-descriptions',
         'changed' => 'sys-changed', 'capability-changes' => 'sys-changed',
         'installed' => 'sys-installed', 'symlinks' => 'storage-links',
@@ -5604,6 +5607,27 @@ function doPackageRuntimeEnable(PDO $pdo, bool $post): array
     logAction($pdo, $enabled ? 'package_runtime_enable' : 'package_runtime_disable', $id, 'ok', 0, 0,
         implode(', ', $grants));
     return ['ok' => true, 'packages' => packageRuntimePackages($pdo)];
+}
+
+function packageRuntimeSettingsView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn || !accessAllows($config, 'write')) throw new ActionRefused('administrator access is required for package settings');
+    try { return ['id' => trim((string)($_GET['id'] ?? '')), 'settings' => packageRuntimeSettings($pdo, $config, trim((string)($_GET['id'] ?? '')))]; }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+}
+
+function doPackageRuntimeSettingsSave(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $id = trim((string)($_POST['id'] ?? ''));
+    try {
+        $settings = json_decode((string)($_POST['settings'] ?? ''), true, 64, JSON_THROW_ON_ERROR);
+        if (!is_array($settings)) throw new InvalidArgumentException('package settings must be a JSON object');
+        packageRuntimeSaveSettings($pdo, $config, $id, $settings, currentAccountName());
+    } catch (JsonException) { throw new ActionRefused('package settings must be valid JSON'); }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'package_runtime_settings_save', $id, 'ok', 0, 0, 'package settings updated');
+    return ['ok' => true, 'id' => $id, 'settings' => packageRuntimeSettings($pdo, $config, $id)];
 }
 
 function doClearProblems(array $config, PDO $pdo, bool $post): array

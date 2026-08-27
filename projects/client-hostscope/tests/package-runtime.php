@@ -46,6 +46,11 @@ try {
     $private->exec('CREATE TABLE private_evidence (value TEXT)');
     runtimeExpect((int)$private->query("SELECT COUNT(*) FROM sqlite_master WHERE name = 'private_evidence'")->fetchColumn() === 1,
         'package private SQLite database is unavailable');
+    packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['retention_days' => 30, 'custody_secret' => 'secret_ref:local-key-file'], 'administrator');
+    runtimeExpect(packageRuntimeSettings($pdo, $config, 'test-runtime')['retention_days'] === 30,
+        'package SQLite-backed settings were not retained');
+    try { packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['custody_secret' => 'raw-secret'], 'administrator'); throw new RuntimeException('raw package secret was accepted'); }
+    catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'raw package secret was accepted', $error->getMessage()); }
     echo "package runtime checks passed\n";
 } finally {
     packageRuntimeRemoveDirectory($root . '/source');
