@@ -149,6 +149,37 @@ prints a SHA-256 value for the resulting private SQLite file. It deliberately
 does **not** copy `master_key_file`; maintain a separately protected offline
 master-key recovery copy and test restoring both paths together.
 
+### Service master-key rotation
+
+This is distinct from customer custody-key rotation. It rewraps the service's
+stored custody private keys, not customer artifacts or their data keys. Keep
+the API workers stopped throughout the operation: the command takes an
+exclusive SQLite transaction, but it cannot prevent a separately running PHP
+worker from opening a record with the old configured master key after the
+transaction commits.
+
+Create a new owner-only 256-bit key file, keep the old key available, then run
+the rotation with a new private metadata-backup destination:
+
+```bash
+php scripts/master-key.php /secure/hostscope-key-custody/master-2027.key
+php scripts/rotate-master-key.php \
+  --old-key /secure/hostscope-key-custody/master.key \
+  --new-key /secure/hostscope-key-custody/master-2027.key \
+  --backup /secure/hostscope-key-custody/backups/before-master-rotation.db \
+  --confirm
+```
+
+The command decrypts every service-held custody wrapping key with the old
+master key, encrypts and decrypts it again with the replacement inside one
+exclusive transaction, then records an audit event for each affected tenant.
+Only after it succeeds, update `master_key_file` to the replacement path while
+the service remains stopped, start the service, and perform artifact recovery
+checks. Retain both the old master key and the verified pre-rotation metadata
+backup until recovery with the replacement has been proven. This intentional
+maintenance window keeps the initial SQLite service simple; a future HA
+provider can supply a staged multi-master-key migration without downtime.
+
 ### Optional commercial billing control plane
 
 Customer management tokens can request a plan change and open the configured

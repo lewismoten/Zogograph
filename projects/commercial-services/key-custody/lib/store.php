@@ -547,6 +547,50 @@ function keyCustodyReadMasterKey(array $config, string $webRoot): string
     return $key;
 }
 
+/**
+ * Rewraps every service-held custody private key under a replacement service
+ * master key. Run only while the API workers are stopped: a live request using
+ * the old configured key after this transaction would be unable to open a new
+ * record. The caller must make a verified metadata backup before invoking it.
+ *
+ * @return array{keys:int,tenants:int}
+ */
+function keyCustodyRewrapMasterKey(PDO $pdo, string $oldMaster, string $newMaster): array
+{
+    if (strlen($oldMaster) !== 32 || strlen($newMaster) !== 32 || hash_equals($oldMaster, $newMaster)) {
+        throw new InvalidArgumentException('old and replacement custody master keys must be distinct 256-bit values');
+    }
+    $pdo->exec('BEGIN EXCLUSIVE');
+    try {
+        $rows = $pdo->query('SELECT id, tenant_id, wrapped_key, wrap_nonce, wrap_tag FROM custody_keys')->fetchAll();
+        $rewrapped = [];
+        foreach ($rows as $row) {
+            $plain = openssl_decrypt($row['wrapped_key'], 'aes-256-gcm', $oldMaster, OPENSSL_RAW_DATA, $row['wrap_nonce'], $row['wrap_tag'], $row['id']);
+            if (!is_string($plain) || strlen($plain) !== 32) throw new RuntimeException('could not open a custody key with the old master key');
+            $nonce = random_bytes(12);
+            $ciphertext = openssl_encrypt($plain, 'aes-256-gcm', $newMaster, OPENSSL_RAW_DATA, $nonce, $tag, $row['id'], 16);
+            $verified = is_string($ciphertext) && is_string($tag)
+                ? openssl_decrypt($ciphertext, 'aes-256-gcm', $newMaster, OPENSSL_RAW_DATA, $nonce, $tag, $row['id']) : false;
+            if (!is_string($ciphertext) || !is_string($tag) || !is_string($verified) || !hash_equals($plain, $verified)) {
+                throw new RuntimeException('could not verify replacement custody master-key wrapping');
+            }
+            $rewrapped[] = [$ciphertext, $nonce, $tag, $row['id'], $row['tenant_id']];
+        }
+        $update = $pdo->prepare('UPDATE custody_keys SET wrapped_key = ?, wrap_nonce = ?, wrap_tag = ? WHERE id = ?');
+        $tenants = [];
+        foreach ($rewrapped as [$ciphertext, $nonce, $tag, $id, $tenant]) {
+            $update->execute([$ciphertext, $nonce, $tag, $id]); $tenants[$tenant] = true;
+        }
+        foreach (array_keys($tenants) as $tenant) keyCustodyAudit($pdo, $tenant, 'master_key_rewrap', $tenant,
+            'all tenant custody-key wrapping records were moved under a replacement service master key');
+        $pdo->exec('COMMIT');
+        return ['keys' => count($rewrapped), 'tenants' => count($tenants)];
+    } catch (Throwable $error) {
+        try { $pdo->exec('ROLLBACK'); } catch (Throwable) { /* Nothing to roll back. */ }
+        throw $error;
+    }
+}
+
 /** Creates one consistent SQLite metadata backup without copying the distinct
  * custody master key. The destination must remain outside the web root. */
 function keyCustodyBackupMetadata(PDO $pdo, string $destination, string $webRoot): array

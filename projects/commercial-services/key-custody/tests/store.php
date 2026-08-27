@@ -175,6 +175,14 @@ try {
     custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['envelope_used'] === 1, 'subscription metadata omitted current envelope use');
     custodyExpect(keyCustodyClientSubscription($pdo, $client['tenant_id'])['envelope_used'] === 1,
         'enrolled client entitlement did not report current envelope usage');
+    $replacementMaster = random_bytes(32);
+    $rewrapped = keyCustodyRewrapMasterKey($pdo, $master, $replacementMaster);
+    custodyExpect($rewrapped['keys'] === 1 && $rewrapped['tenants'] === 1
+        && hash_equals($artifactDataKey, keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $replacementMaster)),
+        'service master-key rotation did not preserve artifact recovery');
+    try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master); throw new RuntimeException('old service master key still unwrapped custody material'); }
+    catch (RuntimeException $error) { custodyExpect($error->getMessage() !== 'old service master key still unwrapped custody material', $error->getMessage()); }
+    $master = $replacementMaster;
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'active', 2, null, 1);
     custodyExpect(!keyCustodyClientSubscription($pdo, $client['tenant_id'])['can_store_envelopes'],
         'enrolled client entitlement allowed an envelope after its quota was filled');
