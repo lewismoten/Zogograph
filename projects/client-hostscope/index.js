@@ -11693,6 +11693,19 @@ function packageRuntimeActions(row, canChange) {
     const failed = document.createElement("span"); failed.className = "muted small"; failed.textContent = "Review or remove altered files before enabling.";
     wrap.appendChild(failed); return wrap;
   }
+  if (row.probe_configured) {
+    const probe = document.createElement("button"); probe.className = "link";
+    const operation = row.id === "sqlcipher-encrypted-sqlite" ? "sqlcipher_preflight" : "capability";
+    probe.textContent = operation === "sqlcipher_preflight" ? "Run SQLCipher preflight" : "Run isolated probe";
+    probe.addEventListener("click", async () => {
+      if (!(await confirmDialog(`Run the isolated ${operation} probe for ${row.id}?\n\nIt receives no HostScope settings, secrets, or live database path. It does not enable the package or activate protection.`, "Run isolated probe"))) return;
+      try {
+        const result = await post("package-runtime-probe", { id: row.id, operation });
+        showListDialog("Isolated probe result", [factGrid([["Package", row.id], ["Operation", operation], ["State", result.result.state], ["Result", result.result.reason], ["Safety boundary", result.warning]])]);
+      } catch (error) { notice(String(error.message || error)); }
+    });
+    wrap.appendChild(probe);
+  }
   const toggle = document.createElement("button"); toggle.className = row.enabled ? "link danger" : "link";
   const platformReady = row.compatibility?.status === "ready";
   toggle.textContent = row.enabled ? "Disable" : (platformReady ? "Grant & enable" : "Platform unavailable");

@@ -307,6 +307,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'marketplace-history' => marketplaceHistoryView($config, $post),
         'marketplace-rollback' => doMarketplaceRollback($config, $pdo, $post),
         'package-runtime' => packageRuntimeView($config, $pdo, $signedIn),
+        'package-runtime-probe' => doPackageRuntimeProbe($config, $pdo, $post),
         'package-runtime-enable' => doPackageRuntimeEnable($pdo, $post),
         'package-runtime-revoke' => doPackageRuntimeRevoke($pdo, $post),
         'package-runtime-unrevoke' => doPackageRuntimeLiftRevocation($pdo, $post),
@@ -354,6 +355,7 @@ function requireActionAccess(array $config, string $action): void
         'chart-series' => 'charts', 'charts' => 'charts',
         'peers' => 'sys-peers', 'marketplace' => 'sys-marketplace',
         'package-runtime' => 'sys-packages',
+        'package-runtime-probe' => 'sys-packages',
         'package-runtime-enable' => 'sys-packages',
         'package-runtime-revoke' => 'sys-packages',
         'package-runtime-unrevoke' => 'sys-packages',
@@ -5609,8 +5611,24 @@ function packageRuntimeView(array $config, PDO $pdo, bool $signedIn): array
     foreach (packageRuntimeTrustedKeys((array)($config['package_runtime']['trusted_keys'] ?? [])) as $id => $key) {
         $publishers[] = ['key_id' => $id, 'publisher' => $key['publisher']];
     }
-    return ['packages' => packageRuntimePackages($pdo), 'trusted_publishers' => $publishers,
+    $packages = packageRuntimePackages($pdo);
+    $invokers = (array)((array)($config['package_runtime'] ?? [])['probe_invokers'] ?? []);
+    foreach ($packages as &$package) $package['probe_configured'] = isset($invokers[$package['id']]);
+    unset($package);
+    return ['packages' => $packages, 'trusted_publishers' => $publishers,
         'can_change' => accessAllows($config, 'write')];
+}
+
+/** Runs a bounded, no-secret diagnostic only; it does not enable the package. */
+function doPackageRuntimeProbe(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post); $id = trim((string)($_POST['id'] ?? ''));
+    $operation = trim((string)($_POST['operation'] ?? 'capability'));
+    try { $result = packageRuntimeInvokeProbe($pdo, $config, $id, $operation); }
+    catch (InvalidArgumentException|RuntimeException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'package_runtime_probe', $id, 'ok', 0, 0, $operation . '; state=' . $result['state']);
+    return ['ok' => true, 'id' => $id, 'operation' => $operation, 'result' => $result,
+        'warning' => 'This isolated no-secret probe is diagnostic evidence only. It did not enable the package or activate provider operations.'];
 }
 
 function doPackageRuntimeEnable(PDO $pdo, bool $post): array
