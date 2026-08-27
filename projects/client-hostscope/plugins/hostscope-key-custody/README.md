@@ -38,3 +38,12 @@ timestamp window plus a one-time request nonce. It signs the HTTP method, reques
 the exact request-body hash with Ed25519, so a stolen bearer alone cannot alter
 or create an enrolled-client request. It retains no key cache: an unwrapped
 artifact data key is returned only to the immediate caller for in-memory use.
+
+For a higher-assurance deployment, the optional `tls_spki_pin` package setting
+pins the service certificate's Base64 `sha256//...` Subject Public Key Info
+hash in addition to normal CA and hostname validation. Leave it unset for the
+recommended low-friction setup. A pin binds the enrollment to one certificate
+key, so an operator must test and update the setting through an authenticated,
+audited endpoint-identity migration before the service rotates that key. It is
+not a secret and must never be used as a substitute for the enrolled-client
+credential or service identity review.

@@ -40,11 +40,14 @@ try {
     catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'custody client accepted an ambiguous endpoint', $error->getMessage()); }
     try { new \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient('https://example.test', "tok_" . str_repeat('a', 20) . ".bad\r\nvalue", base64_encode($custodySecret)); throw new RuntimeException('custody client accepted a malformed bearer credential'); }
     catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'custody client accepted a malformed bearer credential', $error->getMessage()); }
+    try { new \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient('https://example.test', 'tok_' . str_repeat('a', 20) . '.good', base64_encode($custodySecret), 'not-a-pin'); throw new RuntimeException('custody client accepted a malformed TLS pin'); }
+    catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'custody client accepted a malformed TLS pin', $error->getMessage()); }
     $custodySource = file_get_contents(__DIR__ . '/../plugins/hostscope-key-custody/src/KeyCustodyHttpClient.php');
     packageExpect($custodySource !== false && str_contains($custodySource, 'int $requestedTtl = 0')
         && str_contains($custodySource, "'requested_ttl_seconds' => \$requestedTtl")
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYPEER => true')
-        && str_contains($custodySource, 'CURLOPT_SSL_VERIFYHOST => 2'), 'custody client does not enforce its secure transport defaults');
+        && str_contains($custodySource, 'CURLOPT_SSL_VERIFYHOST => 2')
+        && str_contains($custodySource, 'CURLOPT_PINNEDPUBLICKEY'), 'custody client does not enforce its secure transport defaults');
     $custodyDirectory = __DIR__ . '/../plugins/hostscope-key-custody';
     $custodyManifest = json_decode((string)file_get_contents($custodyDirectory . '/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
     packageExpect(is_array($custodyManifest) && packageVerifyIntegrity($custodyManifest, $custodyDirectory)['ok'],

@@ -10,7 +10,7 @@ final class KeyCustodyHttpClient
     private readonly string $clientSigningKey;
 
     /** The signing key is the Base64 Ed25519 private key printed at enrollment. */
-    public function __construct(private readonly string $baseUrl, private readonly string $clientToken, string $clientSigningKey)
+    public function __construct(private readonly string $baseUrl, private readonly string $clientToken, string $clientSigningKey, private readonly ?string $tlsSpkiPin = null)
     {
         $url = parse_url($baseUrl);
         if (!filter_var($baseUrl, FILTER_VALIDATE_URL) || !is_array($url) || strtolower((string)($url['scheme'] ?? '')) !== 'https' || !is_string($url['host'] ?? null)
@@ -19,6 +19,9 @@ final class KeyCustodyHttpClient
         }
         if (!preg_match('~^tok_[a-f0-9]{20}\.[A-Za-z0-9+/_-]+={0,2}$~', $clientToken)) {
             throw new \InvalidArgumentException('key custody client credential is invalid');
+        }
+        if ($tlsSpkiPin !== null && preg_match('~^sha256//[A-Za-z0-9+/]{43}=$~', $tlsSpkiPin) !== 1) {
+            throw new \InvalidArgumentException('key custody TLS public-key pin is invalid');
         }
         if (!function_exists('curl_init')) throw new \RuntimeException('cURL is required for remote key custody');
         if (!function_exists('sodium_crypto_sign_detached')) throw new \RuntimeException('libsodium is required for remote key custody');
@@ -121,6 +124,7 @@ final class KeyCustodyHttpClient
                     'X-HostScope-Timestamp: ' . $metadata['timestamp'], 'X-HostScope-Nonce: ' . $metadata['nonce'],
                     'X-HostScope-Signature: ' . $signature],
             ];
+            if ($this->tlsSpkiPin !== null) $options[CURLOPT_PINNEDPUBLICKEY] = $this->tlsSpkiPin;
             if ($body !== null) { $options[CURLOPT_POSTFIELDS] = $encoded; $options[CURLOPT_HTTPHEADER][] = 'Content-Type: application/json'; }
             curl_setopt_array($handle, $options);
             $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
