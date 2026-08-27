@@ -742,6 +742,8 @@ function renderCpuGauges(sample) {
   if (sample?.cpu_percent != null) {
     const monitoringCpu = sample.monitoring_cpu_percent == null
       ? null : Number(sample.monitoring_cpu_percent);
+    const workloadCpu = monitoringCpu == null ? null
+      : Math.max(0, Number(sample.cpu_percent) - monitoringCpu);
     dials.push({
       label: "Host CPU",
       value: Number(sample.cpu_percent),
@@ -749,7 +751,8 @@ function renderCpuGauges(sample) {
       overlay: monitoringCpu,
       overlayLabel: monitoringCpu == null ? null
         : `dark arc: collector tree ${monitoringCpu.toFixed(1)}%`,
-      sub: `total, of every core on the machine${cores ? ` (${cores})` : ""}`,
+      sub: `total, of every core on the machine${cores ? ` (${cores})` : ""}`
+        + (workloadCpu == null ? "" : ` · ${workloadCpu.toFixed(1)}% workload excluding monitor`),
     });
   }
 
@@ -773,6 +776,12 @@ function renderCpuGauges(sample) {
       // One job per core is a busy machine, not a broken one; past that work is
       // queueing, and half again is where it starts to be felt.
       warn: 100, crit: 150, max: 200,
+      // Load is an exponential average of both runnable and D-state tasks.
+      // This mark is a same-scale instantaneous queue equivalent, not a claim
+      // that it is the collector's exact share of the average.
+      overlay: monitorRunnable == null ? null : (monitorRunnable / cores) * 100,
+      overlayLabel: monitorRunnable == null ? null
+        : `dark arc: ${monitorRunnable} collector task${monitorRunnable === 1 ? "" : "s"} runnable now, not a load-average share`,
       sub: `${load1.toFixed(2)} over ${count(cores, "core")}`
         + (monitorRunnable == null ? "" : ` · collector tree has ${monitorRunnable} runnable now`),
     });
@@ -18575,6 +18584,13 @@ async function refreshHost() {
 
   setHostCard("Memory in use", humanBytes(s.used_bytes),
     `of ${humanBytes(s.mem_total)}`);
+  if (s.monitoring_pss_bytes != null || s.monitoring_rss_bytes != null) {
+    const measured = s.monitoring_pss_bytes != null
+      ? humanBytes(s.monitoring_pss_bytes) + " PSS"
+      : humanBytes(s.monitoring_rss_bytes) + " RSS";
+    setHostCard("Monitoring footprint", measured,
+      `${Number(s.monitoring_processes || 0)} collector-tree process${Number(s.monitoring_processes || 0) === 1 ? "" : "es"}`);
+  }
   /*
    * MemAvailable, not free. The kernel's own estimate of what a new process
    * could actually get, which counts reclaimable cache as available - `free` is
@@ -19947,16 +19963,20 @@ function renderHostGauges(sample, swapUsed, swap) {
      * figure that actually runs out.
      */
     const committed = Math.max(0, total - available);
+    const monitoringPss = sample.monitoring_pss_bytes == null
+      ? null : Number(sample.monitoring_pss_bytes);
+    const workloadCommitted = monitoringPss == null ? null
+      : Math.max(0, committed - monitoringPss);
     dials.push({
       label: "Memory committed",
       value: (committed / total) * 100,
       warn: 80, crit: 92,
-      overlay: sample.monitoring_pss_bytes == null ? null
-        : (Number(sample.monitoring_pss_bytes) / total) * 100,
-      overlayLabel: sample.monitoring_pss_bytes == null ? null
-        : `dark arc: collector tree ${humanBytes(sample.monitoring_pss_bytes)} PSS`,
+      overlay: monitoringPss == null ? null : (monitoringPss / total) * 100,
+      overlayLabel: monitoringPss == null ? null
+        : `dark arc: collector tree ${humanBytes(monitoringPss)} PSS`,
       sub: `${humanBytes(committed)} of ${humanBytes(total)} \u00b7 `
         + `${humanBytes(available)} still available`
+        + (workloadCommitted == null ? "" : ` · ${humanBytes(workloadCommitted)} non-monitor committed`)
         + (sample.monitoring_processes == null ? "" : ` \u00b7 ${sample.monitoring_processes} monitoring process${Number(sample.monitoring_processes) === 1 ? "" : "es"}`),
     });
   }
