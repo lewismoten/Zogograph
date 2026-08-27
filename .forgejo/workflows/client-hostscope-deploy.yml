@@ -44,6 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          command -v rsync >/dev/null || { apt-get update; apt-get install -y rsync; }
           release=release/client-hostscope
           mkdir -p "$release"
           rsync -a --delete \
@@ -109,10 +110,13 @@ jobs:
           snapshot_id=$3
           case "$snapshots" in "$site"|"$site"/*) echo 'Snapshot path must be outside the deploy path.' >&2; exit 1;; esac
           mkdir -p "$site" "$snapshots"
-          [ -n "$(find "$site" -mindepth 1 -maxdepth 1 -print -quit)" ] || exit 0
           snapshot="$snapshots/$snapshot_id"
           test ! -e "$snapshot" || { echo "Snapshot already exists: $snapshot" >&2; exit 1; }
           mkdir -p "$snapshot/site" "$snapshot/databases"
+          if [ -z "$(find "$site" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            printf '%s\n' "$snapshot_id" > "$snapshot/SNAPSHOT_ID"
+            exit 0
+          fi
           rsync -a --delete --exclude='*.db' --exclude='*.db-*' --exclude='*.sqlite' --exclude='*.sqlite-*' --exclude='*.sqlite3' --exclude='*.sqlite3-*' "$site/" "$snapshot/site/"
           if [ -d "$site/data" ]; then
             command -v sqlite3 >/dev/null || { echo 'sqlite3 is required on the deployment server for safe snapshots.' >&2; exit 1; }
