@@ -27,6 +27,8 @@ try {
     try { keyCustodyAuthenticate($pdo, $additionalClient['token'], 'client'); throw new RuntimeException('revoked individual enrolled-client credential remained active'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'revoked individual enrolled-client credential remained active', $error->getMessage()); }
     custodyExpect(keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client')['tenant_id'] === $client['tenant_id'], 'individual credential revocation affected another deployment');
+    try { keyCustodyCreateAdditionalClientCredential($pdo, $client['tenant_id'], "bad\nlabel"); throw new RuntimeException('multiline deployment label was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'multiline deployment label was accepted', $error->getMessage()); }
     $private = base64_decode($tenant['client_signing_private_key'], true);
     custodyExpect(is_string($private), 'tenant client signing credential is invalid');
     $signedRequest = function (string $nonce, string $body) use ($pdo, $tenant, $private): array {

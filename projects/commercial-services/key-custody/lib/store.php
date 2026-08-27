@@ -58,7 +58,10 @@ function keyCustodyCreateToken(PDO $pdo, string $tenant, string $scope, ?string 
     if (!in_array($scope, ['management', 'client'], true)) throw new InvalidArgumentException('token scope is invalid');
     if ($scope === 'client' && (!is_string($publicKey) || strlen($publicKey) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES)) throw new InvalidArgumentException('client signing public key is invalid');
     if ($scope === 'management' && $publicKey !== null) throw new InvalidArgumentException('management tokens cannot have a signing key');
-    if ($label !== null && ($label === '' || mb_strlen($label) > 120)) throw new InvalidArgumentException('credential label is invalid');
+    if ($label !== null) {
+        $label = trim($label);
+        if ($label === '' || mb_strlen($label) > 120 || preg_match('/[\x00-\x1F\x7F]/', $label)) throw new InvalidArgumentException('credential label is invalid');
+    }
     $id = 'tok_' . bin2hex(random_bytes(10)); $secret = base64_encode(random_bytes(KEY_CUSTODY_TOKEN_BYTES));
     $pdo->prepare('INSERT INTO access_tokens (id, tenant_id, scope, token_hash, public_key, label, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)')
         ->execute([$id, $tenant, $scope, password_hash($secret, PASSWORD_DEFAULT), $publicKey, $label, time()]);
@@ -84,8 +87,8 @@ function keyCustodyCreateAdditionalClientCredential(PDO $pdo, string $tenant, st
 {
     $tenantCheck = $pdo->prepare('SELECT active FROM tenants WHERE id = ?'); $tenantCheck->execute([$tenant]);
     if ($tenantCheck->fetchColumn() !== 1) throw new InvalidArgumentException('tenant is unavailable');
-    $credential = keyCustodyCreateClientCredential($pdo, $tenant, trim($label));
-    keyCustodyAudit($pdo, $tenant, 'client_credential_create', $credential['id'], 'additional enrolled-client credential; label=' . trim($label));
+    $credential = keyCustodyCreateClientCredential($pdo, $tenant, $label);
+    keyCustodyAudit($pdo, $tenant, 'client_credential_create', $credential['id'], 'additional enrolled-client credential; label=' . $label);
     return $credential;
 }
 
