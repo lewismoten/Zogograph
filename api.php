@@ -1065,6 +1065,8 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
             $stmt->fetchAll()
         ),
         'mutes' => $signedIn && accessAllows($config, 'write') ? alertMutes($pdo) : [],
+        'marketplace_recommendations' => $signedIn && accessAllows($config, 'write')
+            ? marketplaceAlertRecommendations($config, $pdo) : [],
     ];
 }
 

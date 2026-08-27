@@ -16,6 +16,9 @@ marketplaceExpect($enabled['enabled'] === true && marketplacePackages(['marketpl
     'catalog package enablement was not persisted');
 marketplaceExpect(marketplaceAlertRecommendations(['marketplace' => ['directory' => $root]], $pdo)[0]['rule'] === 'host_uptime',
     'enabled recommendation package was not exposed as data-only guidance');
+$disabled = marketplaceSetEnabled(['marketplace' => ['directory' => $root]], $pdo, 'uptime-pack', false, 'administrator');
+marketplaceExpect($disabled['enabled'] === false && marketplaceAlertRecommendations(['marketplace' => ['directory' => $root]], $pdo) === [],
+    'disabled recommendation package remained active');
 try { marketplaceManifest(['id'=>'Bad','version'=>'1','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['shell']]); throw new RuntimeException('unsafe manifest was accepted'); } catch (InvalidArgumentException) {}
 try { marketplaceManifest(['id'=>'bad-guidance','version'=>'1.0.0','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['alert_recommendations'], 'recommendations'=>[['rule'=>'same_rule','severity'=>'warning','reason'=>'x'], ['rule'=>'same_rule','severity'=>'error','reason'=>'y']]]); throw new RuntimeException('duplicate package guidance was accepted'); } catch (InvalidArgumentException) {}
 unlink($root . '/uptime-pack.json'); unlink($root . '/bad.json'); rmdir($root);

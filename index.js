@@ -21275,6 +21275,18 @@ async function refreshAlerts() {
   alertState.rows = data.rows;
   alertState.uptime = uptime;
   alertState.mutes = data.mutes || [];
+  const guidance = $("alertMarketplaceGuidance");
+  guidance.replaceChildren();
+  if (state.signedIn && state.access?.write && data.marketplace_recommendations?.length) {
+    const label = note("Enabled marketplace guidance is advisory only. It does not change alert rules or delivery.");
+    const list = document.createElement("ul"); list.className = "muted small";
+    for (const item of data.marketplace_recommendations) {
+      const entry = document.createElement("li");
+      entry.textContent = `${item.rule} · ${item.severity}: ${item.reason} (${item.package})`;
+      list.appendChild(entry);
+    }
+    guidance.append(label, list);
+  }
 
   // Selections that no longer exist - deleted, or filtered away - must not
   // keep the buttons lit for rows nobody can see.
