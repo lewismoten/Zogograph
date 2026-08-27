@@ -58,4 +58,17 @@ final class KeyCustodyProvider
             'reason' => 'The custody service accepted one sealed data-key envelope. The data key and envelope were not returned to HostScope core.',
             'envelope_sha256' => hash('sha256', $envelope)];
     }
+
+    /** Returns one named artifact DEK only to the core process through the
+     * one-shot worker pipe. Callers must use it immediately and never persist it. */
+    public function unwrapArtifact(string $serviceBaseUrl, string $clientCredential, string $clientSigningKey, string $keyId, string $artifactId, ?string $tlsSpkiPin = null): array
+    {
+        if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200 || preg_match('/[\x00-\x1F\x7F]/', $artifactId)) {
+            throw new \InvalidArgumentException('custody recovery input is invalid');
+        }
+        $key = (new KeyCustodyHttpClient($serviceBaseUrl, $clientCredential, $clientSigningKey, $tlsSpkiPin))->unwrap($keyId, $artifactId, 0);
+        return ['id' => 'hostscope-key-custody', 'state' => 'unwrap-released',
+            'reason' => 'The custody service released one named artifact data key for immediate in-memory recovery verification.',
+            'data_key' => base64_encode($key)];
+    }
 }

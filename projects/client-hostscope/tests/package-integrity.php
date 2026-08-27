@@ -61,9 +61,10 @@ try {
         && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::class, 'healthEndpoint'), 'custody client does not enforce its secure transport defaults');
     $custodyDirectory = __DIR__ . '/../plugins/hostscope-key-custody';
     $custodyManifest = json_decode((string)file_get_contents($custodyDirectory . '/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
-    packageExpect(is_array($custodyManifest) && ($custodyManifest['runtime']['operations'] ?? null) === ['capability', 'custody_endpoint_probe', 'custody_enrollment_check', 'custody_store_envelope']
+    packageExpect(is_array($custodyManifest) && ($custodyManifest['runtime']['operations'] ?? null) === ['capability', 'custody_endpoint_probe', 'custody_enrollment_check', 'custody_store_envelope', 'custody_unwrap_artifact']
         && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyProvider::class, 'preflight')
-        && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyProvider::class, 'storeEnvelope') && packageVerifyIntegrity($custodyManifest, $custodyDirectory)['ok'],
+        && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyProvider::class, 'storeEnvelope')
+        && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyProvider::class, 'unwrapArtifact') && packageVerifyIntegrity($custodyManifest, $custodyDirectory)['ok'],
         'key custody package manifest does not cover its installed files');
     $relayPair = sodium_crypto_sign_keypair(); $relaySecret = sodium_crypto_sign_secretkey($relayPair);
     try { new \HostScope\Plugin\ReplicaRelay\ReplicaRelayHttpClient('https://user@example.test', 'test-token', base64_encode($relaySecret)); throw new RuntimeException('relay client accepted an ambiguous endpoint'); }
