@@ -14,10 +14,13 @@ at runtime; the manifest and core both have to recognize it.
 | `store_ciphertext` | `ciphertext_replica` + `network_client` | already-sealed artifact bytes/digest and scoped client credential | plaintext store, artifact data key, recovery key |
 | `sqlcipher_preflight` | `live_database_encryption` + `storage_backend` | a disposable, core-created test database path in the package mount | selected live database, setup database, production key |
 
-The first operation remains `capability` only. Add each later operation only
-after its request and response schema, audit event, recovery behavior, and
-sandbox mount are implemented and tested. This keeps clients from granting a
-broad “provider” permission whose effects are unclear.
+`capability` and the SQLCipher-only `sqlcipher_preflight` are now implemented
+in the sandbox worker. The preflight uses a random temporary file/key and
+returns only `unavailable` or `preflight-ready`; it does not receive a selected
+store or production key. Add each remaining operation only after its request
+and response schema, audit event, recovery behavior, and sandbox mount are
+implemented and tested. This keeps clients from granting a broad “provider”
+permission whose effects are unclear.
 
 ## Core-owned invocation rules
 
@@ -50,9 +53,10 @@ into arbitrary command execution.
 
 ## Provider rollout
 
-1. **SQLCipher preflight:** create and destroy only a disposable database in
-   the package mount. Prove driver version, encrypted reopen, WAL behavior,
-   backup/restore, and wrong-key refusal before a user can select a live store.
+1. **SQLCipher preflight:** implemented for a disposable sandbox database.
+   It proves driver availability, encrypted reopen, and wrong-key refusal.
+   WAL, backup/restore, crash behavior, and all live-store migration evidence
+   remain required before a user can select a live store.
 2. **Ciphertext relay:** permit only sealed artifact upload and digest/receipt
    validation. It is safe to introduce before remote key custody because it
    never needs plaintext or a data key.
