@@ -177,7 +177,10 @@ function syncIpPrivacy() {
  * surfaces that otherwise forget the choice. */
 function redactAccountNodes(root) {
   const account = state.account;
-  if (!account) return;
+  /* Mutation records can retain a text node after its parent was replaced by
+   * this very redactor. A detached text node has no parentElement; do not hand
+   * that null through to createTreeWalker on the next observer turn. */
+  if (!account || !(root instanceof Node)) return;
   const token = new RegExp(`\\b(${escapeRegex(account)}|root)\\b`, "g");
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes = [];
