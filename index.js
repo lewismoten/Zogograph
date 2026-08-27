@@ -8,6 +8,33 @@
 
 const API = "./api.php";
 
+let reportingClientProblem = false;
+
+function reportClientProblem(message, stack = "") {
+  if (reportingClientProblem) return;
+  reportingClientProblem = true;
+  const body = new URLSearchParams({
+    action: "client-problem",
+    message: String(message || "Unknown browser error").slice(0, 4000),
+    stack: String(stack || "").slice(0, 4000),
+  });
+  fetch(API, {
+    method: "POST",
+    body,
+    credentials: "same-origin",
+    keepalive: true,
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  }).catch(() => {}).finally(() => { reportingClientProblem = false; });
+}
+
+window.addEventListener("error", event => {
+  reportClientProblem(event.message, event.error?.stack || `${event.filename}:${event.lineno}`);
+});
+window.addEventListener("unhandledrejection", event => {
+  const reason = event.reason;
+  reportClientProblem(reason?.message || reason, reason?.stack || "");
+});
+
 /**
  * The colours a chart draws its series in, in order.
  *
@@ -90,6 +117,7 @@ const state = {
 };
 
 const $ = id => document.getElementById(id);
+const escapeRegex = text => String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /*
  * Screenshot privacy is a browser-session view, not an access-control layer:
@@ -99,11 +127,16 @@ const $ = id => document.getElementById(id);
  * so ordinary polling never disturbs selection or scroll position.
  */
 const IPV4_TEXT = /(?<![\w.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\w.])/g;
-const IPV6_TEXT = /(?<![A-Fa-f0-9:])(?:[A-Fa-f0-9]{1,4}:){2,7}[A-Fa-f0-9]{0,4}(?![A-Fa-f0-9:])/g;
+/* A clock such as 12:34:56 is not IPv6. Full addresses have 3+ colons;
+ * shorter valid forms necessarily carry ::. */
+const IPV6_TEXT = /(?<![A-Fa-f0-9:])(?:(?:[A-Fa-f0-9]{1,4}:){3,7}[A-Fa-f0-9]{0,4}|(?:[A-Fa-f0-9]{1,4}:){0,6}[A-Fa-f0-9]{0,4}::(?:[A-Fa-f0-9]{1,4}:){0,5}[A-Fa-f0-9]{0,4})(?![A-Fa-f0-9:])/g;
+const IP_HOST_TEXT = /(?<![\w.-])(?:(?:[A-Za-z][\w-]*-)?(?:\d{1,3}[-.]){3}\d{1,3})(?:\.[A-Za-z][\w-]*)+(?![\w.-])/g;
 let ipPrivacyObserver = null;
+let accountPrivacyObserver = null;
 
 function redactIpText(text) {
-  return text.replace(IPV4_TEXT, "[IP hidden]").replace(IPV6_TEXT, "[IP hidden]");
+  return text.replace(IP_HOST_TEXT, "[IP host hidden]")
+    .replace(IPV4_TEXT, "[IP hidden]").replace(IPV6_TEXT, "[IP hidden]");
 }
 
 function redactIpNodes(root) {
@@ -136,6 +169,57 @@ function syncIpPrivacy() {
     }
   });
   ipPrivacyObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+/* Account privacy is presentation-only, like IP privacy. Structured rows and
+ * paths already carry richer treatment; this catches prose, labels, and future
+ * surfaces that otherwise forget the choice. */
+function redactAccountNodes(root) {
+  const account = state.account;
+  if (!account) return;
+  const token = new RegExp(`\\b(${escapeRegex(account)}|root)\\b`, "g");
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) {
+    const parent = walker.currentNode.parentElement;
+    if (parent && !["SCRIPT", "STYLE", "TEXTAREA", "OPTION"].includes(parent.tagName)
+      && !parent.closest(".user-me, .user-root")) nodes.push(walker.currentNode);
+  }
+  for (const node of nodes) {
+    const source = node.data;
+    token.lastIndex = 0;
+    if (!token.test(source)) continue;
+    const fragment = document.createDocumentFragment();
+    let at = 0;
+    token.lastIndex = 0;
+    let match;
+    while ((match = token.exec(source))) {
+      fragment.append(source.slice(at, match.index));
+      const span = document.createElement("span");
+      const mine = match[1] === account;
+      span.className = mine ? "user-me" : "user-root";
+      span.title = mine ? "This account — the one this dashboard runs as." : "root";
+      span.textContent = mine && state.access?.account_privacy ? "[self]" : match[1];
+      fragment.append(span);
+      at = match.index + match[0].length;
+    }
+    fragment.append(source.slice(at));
+    node.replaceWith(fragment);
+  }
+}
+
+function syncAccountPrivacy() {
+  if (!state.account || accountPrivacyObserver) return;
+  redactAccountNodes(document.body);
+  accountPrivacyObserver = new MutationObserver(records => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (node.nodeType === Node.TEXT_NODE) redactAccountNodes(node.parentElement);
+        else if (node.nodeType === Node.ELEMENT_NODE) redactAccountNodes(node);
+      }
+    }
+  });
+  accountPrivacyObserver.observe(document.body, { childList: true, subtree: true });
 }
 
 /* ----------------------------------------------------------------- format -- */
@@ -3344,7 +3428,14 @@ function renderTable(target, rows, columns, onRowClick, rowClass, key) {
   const head = table.createTHead().insertRow();
   for (const col of columns) {
     const th = document.createElement("th");
-    th.textContent = col.label;
+    if (col.onSort) {
+      const button = document.createElement("button");
+      button.className = "link table-sort";
+      button.textContent = col.label + (col.sortMark || "");
+      button.title = `Sort by ${col.label}`;
+      button.addEventListener("click", col.onSort);
+      th.appendChild(button);
+    } else th.textContent = col.label;
     if (col.className) th.className = col.className;
     head.appendChild(th);
   }
@@ -4664,7 +4755,7 @@ async function deletePicked() {
     + (dirs ? `, and ${count(dirs, "directory", "directories")} will be emptied recursively` : "")
     + ". This cannot be undone.";
 
-  if (!confirm(question)) return;
+  if (!(await confirmDialog(question, "Delete"))) return;
 
   const button = $("offenderDelete");
   button.disabled = true;
@@ -4783,7 +4874,7 @@ function deleteButton(row) {
       ? `Delete this directory and everything inside it?\n\n${row.display}\n`
         + `${humanBytes(row.bytes)} in ${count(row.files || 0, "file")}\n\nThis cannot be undone.`
       : `Delete this file permanently?\n\n${row.display}\n${humanBytes(row.bytes)}`;
-    if (!confirm(question)) return;
+    if (!(await confirmDialog(question, "Delete"))) return;
     button.disabled = true;
     try {
       const result = directory
@@ -4881,11 +4972,11 @@ function renderEmptyButtons() {
     button.disabled = !totals.bytes && !totals.files;
 
     button.addEventListener("click", async () => {
-      if (!confirm(
+      if (!(await confirmDialog(
         `Delete every file counted as ${category}?\n\n`
         + `${humanBytes(totals.bytes)} across ${count(totals.files, "file")}, `
         + `as of the last scan.\n\nThis cannot be undone.`
-      )) return;
+      ))) return;
 
       button.disabled = true;
       try {
@@ -5522,8 +5613,8 @@ function renderAiSettings(data) {
     forget.className = "link danger";
     forget.textContent = "Forget the key";
     forget.addEventListener("click", async () => {
-      if (!confirm("Remove the stored API key? The assistant will stop working until "
-        + "another is set.")) return;
+      if (!(await confirmDialog("Remove the stored API key? The assistant will stop working until "
+        + "another is set.", "Forget key"))) return;
       await saveAiSettings({ forget_key: "1" });
     });
     form.appendChild(fieldRow("", forget, ""));
@@ -6175,9 +6266,11 @@ function renderAiTools(data) {
   savePreset.textContent = "Save as toolset";
   savePreset.disabled = !data.writable;
   savePreset.addEventListener("click", async () => {
-    const name = prompt("Short preset name (lowercase letters, numbers, - or _):");
+    const name = await askTextDialog("Save toolset", "Short preset name", "",
+      "Use lowercase letters, numbers, - or _.");
     if (!name) return;
-    const label = prompt("Label for people reading this preset:", name);
+    const label = await askTextDialog("Save toolset", "Label", name,
+      "This is the name people see in the list.");
     if (label === null) return;
     try {
       const on = [...body.querySelectorAll("input.tool-on:checked")].map(box => box.dataset.tool).join(",");
@@ -6201,7 +6294,7 @@ function renderAiTools(data) {
       notice("Built-in toolsets cannot be deleted.");
       return;
     }
-    if (!confirm(`Delete toolset “${set.label}”?`)) return;
+    if (!(await confirmDialog(`Delete toolset “${set.label}”?`, "Delete toolset"))) return;
     try {
       renderAiSettings(await post("ai-toolset-delete", { name: set.name }));
       notice("Toolset deleted.", true);
@@ -6434,11 +6527,9 @@ function personalityPicker(data, boxes) {
   keep.type = "button";
   keep.className = "link";
   keep.textContent = "Save these as a personality";
-  keep.addEventListener("click", () => {
-    const label = prompt(
-      "What should this one be called in the list?",
-      boxes.name.value || "My assistant"
-    );
+  keep.addEventListener("click", async () => {
+    const label = await askTextDialog("Save personality", "Name", boxes.name.value || "My assistant",
+      "This is the name people see in the list.");
     if (label === null) return;
 
     post("ai-personality-save", {
@@ -7272,6 +7363,56 @@ function chatChartCard(message) {
   });
 
   return card;
+}
+
+/** A visual whose numbers came from the assistant, rather than a built-in chart. */
+function chatAssistantVisualCard(message) {
+  const cached = chatState.charts.get(message.id);
+  if (cached) return cached;
+  const card = document.createElement("div");
+  card.className = "chat-chart";
+  const head = document.createElement("div");
+  head.className = "chat-chart-head";
+  head.textContent = message.arguments.title || "Assistant visual";
+  const canvas = document.createElement("canvas");
+  canvas.className = "chat-chart-canvas";
+  const caption = document.createElement("div");
+  caption.className = "muted small";
+  caption.textContent = message.arguments.why || "";
+  card.append(head, canvas, caption);
+  chatState.charts.set(message.id, card);
+  requestAnimationFrame(() => {
+    try { drawAssistantVisual(canvas, message.arguments); }
+    catch (error) { caption.textContent = `Could not draw this visual: ${error.message || error}`; }
+  });
+  return card;
+}
+
+function drawAssistantVisual(canvas, args) {
+  const data = JSON.parse(String(args.data || "{}"));
+  if (args.kind === "pie") {
+    const slices = (data.slices || []).slice(0, 12).map(row => ({
+      label: String(row.label || "item").slice(0, 40), value: Number(row.value),
+    })).filter(row => Number.isFinite(row.value) && row.value >= 0);
+    if (!slices.length) throw new Error("pie data needs numeric slices");
+    drawPieChart(canvas, slices, { axis: plainAxis });
+    return;
+  }
+  if (args.kind === "gauge") {
+    const value = Number(data.value), max = Number(data.max);
+    if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) throw new Error("gauge needs value and a positive max");
+    drawGauge(canvas, {
+      value, max,
+      plain: data.label ? `${data.label}: ${value} / ${max}` : `${value} / ${max}`,
+    }, null);
+    return;
+  }
+  const series = (data.series || []).slice(0, 6).map(row => ({
+    key: String(row.key || ""), label: String(row.label || row.key || "series"),
+  })).filter(row => row.key);
+  const rows = (data.points || []).slice(0, 500).map((row, i) => ({ ...row, at: Number(row.at) || i }));
+  if (!series.length || !rows.length) throw new Error("line data needs series and points");
+  drawLineChart(canvas, rows, series, { xKey: "at", axis: plainAxis, zeroBased: false });
 }
 
 /**
@@ -8359,6 +8500,45 @@ const chatState = {
   who: { name: "Assistant", emoji: "✦", portrait: null },
 };
 
+const voiceState = { speak: false, listen: false, recognition: null, spoken: new Set() };
+
+function speakAssistantReply(session) {
+  if (!voiceState.speak || !window.speechSynthesis) return;
+  const last = [...(session.messages || [])].reverse().find(message => message.role === "assistant");
+  if (!last || voiceState.spoken.has(last.id)) return;
+  voiceState.spoken.add(last.id);
+  const utterance = new SpeechSynthesisUtterance(String(last.content || "").slice(0, 6000));
+  utterance.lang = navigator.language || "en-US";
+  window.speechSynthesis.cancel();
+  window.speechSynthesis.speak(utterance);
+}
+
+function toggleRecognition() {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) throw new Error("speech recognition is not available in this browser");
+  if (voiceState.listen) {
+    voiceState.listen = false;
+    voiceState.recognition?.stop();
+    $("chatListen").textContent = "Listen";
+    return;
+  }
+  const recognition = voiceState.recognition ?? new Recognition();
+  recognition.continuous = true;
+  recognition.interimResults = false;
+  recognition.lang = navigator.language || "en-US";
+  recognition.onresult = event => {
+    const text = event.results[event.results.length - 1][0].transcript.trim();
+    if (text) sayToChat(text).catch(error => notice(String(error.message || error)));
+  };
+  recognition.onend = () => {
+    if (voiceState.listen) recognition.start();
+  };
+  voiceState.recognition = recognition;
+  voiceState.listen = true;
+  recognition.start();
+  $("chatListen").textContent = "Listening…";
+}
+
 /** How often to ask, by what the session is doing. */
 function chatPollDelay(state) {
   // Nothing is happening: slow, just enough to notice a session ended.
@@ -8743,6 +8923,10 @@ async function runBrowserTool(run) {
        */
       const card = await drawChatChart(run.arguments);
       result = { shown: card.image };
+    } else if (run.tool === "present_visual") {
+      /* The tool arguments are persisted with the tool call; the card renderer
+       * rebuilds the exact visual from them on every transcript view. */
+      result = { shown: "presented" };
     } else if (run.tool === "get_chart_image") {
       result = { image: await renderChartImage(run.arguments) };
     } else if (run.tool === "open_page") {
@@ -8795,6 +8979,8 @@ async function runBrowserTool(run) {
       const edited = await editScreenshot(await captureScreen(), run.why);
       if (edited === null) throw new Error("the user decided not to send a screenshot");
       result = { image: edited };
+    } else if (run.tool === "inspect_current_page_html") {
+      result = { html: await reviewCurrentPageHtml(run.why) };
     } else {
       throw new Error(`this browser does not know how to ${run.tool}`);
     }
@@ -8811,6 +8997,29 @@ async function runBrowserTool(run) {
   }
 
   renderChat();
+}
+
+/** Lets the user inspect and redact page structure before it reaches a model. */
+function reviewCurrentPageHtml(why) {
+  return new Promise(resolve => {
+    const clone = $("main").cloneNode(true);
+    // The conversation and transient controls are not part of the page being diagnosed.
+    clone.querySelectorAll("#toasts, #chatPanel, dialog, script, style").forEach(node => node.remove());
+    const said = document.createElement("p");
+    said.className = "muted small";
+    said.textContent = why
+      ? `${chatState.who.name} asked for the page structure: ${why}`
+      : `${chatState.who.name} asked for the current page structure.`;
+    const help = document.createElement("p");
+    help.className = "muted small";
+    help.textContent = "Review this before sending it. Delete or replace any element or text you do not want shared.";
+    const text = document.createElement("textarea");
+    text.className = "wide terminal-editor";
+    text.rows = 24;
+    text.spellcheck = false;
+    text.value = clone.outerHTML.slice(0, 300 * 1024);
+    showFormDialog("Review page HTML", [said, help, text], async () => resolve(text.value));
+  });
 }
 
 /**
@@ -8991,6 +9200,7 @@ function renderChat() {
   renderChatCatchUp(log, session);
 
   renderChatStatus(session);
+  speakAssistantReply(session);
 
   $("chatCost").textContent = session.spent.known
     ? `${session.spent.said} · ${humanCount(session.tokens.in + session.tokens.out)} tokens`
@@ -9978,6 +10188,9 @@ function chatMessageNode(message, session) {
       if (message.tool === "show_chart") {
         return chatChartCard(message);
       }
+      if (message.tool === "present_visual") {
+        return chatAssistantVisualCard(message);
+      }
       if (message.tool === "show_progress") {
         return chatProgressCard(message);
       }
@@ -10160,6 +10373,8 @@ function chatToolPhrase(tool, args) {
     open_page: `Opened ${VIEWS[args.page]?.label ?? args.page}`,
     request_tool_group: `Requested ${TOOL_GROUP_NAMES[args.subject] ?? args.subject} tools`,
     take_screenshot: "Took a screenshot",
+    inspect_current_page_html: "Reviewed the current page structure",
+    present_visual: `Presented ${args.title || "a visual"}`,
     show_progress: `Showed progress on ${args.what ?? "something"}`,
     set_time_range: `Switched the view to the last ${args.range ?? "?"}`
       + (args.live ? ", live" : ""),
@@ -11374,7 +11589,7 @@ function renderPeers(data) {
           drop.className = "link danger";
           drop.textContent = "Remove";
           drop.addEventListener("click", async () => {
-            if (!confirm(`Remove trusted server “${row.label}”?`)) return;
+            if (!(await confirmDialog(`Remove trusted server “${row.label}”?`, "Remove server"))) return;
             try { renderPeers(await post("peer-delete", { name: row.name })); }
             catch (error) { notice(String(error.message || error)); }
           });
@@ -11525,7 +11740,7 @@ function noteDeleteButton(row) {
   remove.disabled = !state.access?.write;
   remove.addEventListener("click", async event => {
     event.stopPropagation();
-    if (!confirm(`Delete this note?${row.snapshots ? "\n\nWhatever it captured goes with it." : ""}`)) return;
+    if (!(await confirmDialog(`Delete this note?${row.snapshots ? "\n\nWhatever it captured goes with it." : ""}`, "Delete note"))) return;
     try { await post("note-delete", { id: row.id }); noteState.selected.delete(row.id); await refreshNotes(); }
     catch (error) { notice(String(error.message || error)); }
   });
@@ -11535,7 +11750,7 @@ function noteDeleteButton(row) {
 async function batchNotes(kind) {
   const ids = [...noteState.selected];
   if (!ids.length) return;
-  if (kind === "delete" && !confirm(`Delete ${count(ids.length, "selected note")}?`)) return;
+  if (kind === "delete" && !(await confirmDialog(`Delete ${count(ids.length, "selected note")}?`, "Delete notes"))) return;
   try {
     const data = await post("note-batch", { kind, ids: ids.join(",") });
     noteState.selected.clear();
@@ -11621,10 +11836,10 @@ function noteActions(row) {
   remove.className = "link danger";
   remove.textContent = "Delete";
   remove.addEventListener("click", async () => {
-    if (!confirm(
+    if (!(await confirmDialog(
       "Delete this note?"
       + (row.snapshots ? "\n\nWhatever it captured goes with it." : "")
-    )) return;
+    ))) return;
     try {
       await post("note-delete", { id: row.id });
       await refreshNotes();
@@ -11769,9 +11984,9 @@ function renderSnapshotFiles(data) {
         remove.textContent = "Delete";
         remove.disabled = !state.access?.write;
         remove.addEventListener("click", async () => {
-          if (!confirm(
+          if (!(await confirmDialog(
             `Delete ${row.name}?\n\nIt is ${humanBytes(row.bytes)} and nothing else has a copy.`
-          )) return;
+          ))) return;
           try {
             renderNotes(await post("snapshot-delete", { name: row.name }));
             notice("Removed.", true);
@@ -12252,15 +12467,9 @@ function purgeButton(entry) {
   button.title = `Delete ${entry.label.toLowerCase()} older than a given age`;
 
   button.addEventListener("click", async () => {
-    const asked = prompt(
-      `Delete ${entry.label.toLowerCase()} older than how many days?\n\n`
-      + "0 deletes all of them."
-      + (entry.table === "vitals"
-        ? "\n\nReadings within a couple of hours of an alert are never deleted, whatever "
-          + "you put here."
-        : ""),
-      String(entry.days || 30)
-    );
+    const asked = await askTextDialog("Clear old records", "Age in days", String(entry.days || 30),
+      `0 deletes all ${entry.label.toLowerCase()}.`
+      + (entry.table === "vitals" ? " Readings near an alert are always kept." : ""));
     if (asked === null) return;
 
     const days = Number(asked);
@@ -12269,10 +12478,10 @@ function purgeButton(entry) {
       return;
     }
 
-    if (days === 0 && !confirm(
+    if (days === 0 && !(await confirmDialog(
       `Delete every one of ${entry.label.toLowerCase()}?\n\n${entry.why}\n\n`
       + "This cannot be undone."
-    )) return;
+    ))) return;
 
     button.disabled = true;
     try {
@@ -14031,7 +14240,7 @@ function renderMemories(data) {
         drop.className = "link danger";
         drop.textContent = "Forget";
         drop.addEventListener("click", async () => {
-          if (!confirm(`Forget "${row.subject}"?`)) return;
+          if (!(await confirmDialog(`Forget "${row.subject}"?`, "Forget memory"))) return;
           try {
             renderMemories(await post("ai-memory-forget", { id: row.id }));
           } catch (error) {
@@ -14104,13 +14313,13 @@ function showMemoryDialog(row) {
  * and giving each small form its own would be three more elements to keep in
  * step for no gain.
  */
-function showFormDialog(title, parts, save) {
+function showFormDialog(title, parts, save, submitLabel = "Save it") {
   const actions = document.createElement("div");
   actions.className = "inspect-actions";
 
   const go = document.createElement("button");
   go.type = "submit";
-  go.textContent = "Save it";
+  go.textContent = submitLabel;
   actions.appendChild(go);
 
   $("noteFormBody").replaceChildren(...parts, actions);
@@ -14131,6 +14340,73 @@ function showFormDialog(title, parts, save) {
   };
 
   $("noteDialog").showModal();
+}
+
+/** A themed, asynchronous confirmation in place of the browser's bare prompt. */
+function confirmDialog(message, submitLabel = "Continue") {
+  return new Promise(resolve => {
+    const text = document.createElement("p");
+    text.className = "note";
+    text.textContent = message;
+    const dialog = $("noteDialog");
+    let settled = false;
+    const finish = answer => {
+      if (settled) return;
+      settled = true;
+      dialog.onclose = null;
+      resolve(answer);
+    };
+    const actions = document.createElement("div");
+    actions.className = "inspect-actions";
+    const go = document.createElement("button");
+    go.type = "submit";
+    go.textContent = submitLabel;
+    actions.appendChild(go);
+    $("noteFormBody").replaceChildren(text, actions);
+    $("noteDialogTitle").textContent = "Please confirm";
+    $("noteForm").onsubmit = event => {
+      event.preventDefault();
+      finish(true);
+      dialog.close();
+    };
+    dialog.onclose = () => finish(false);
+    dialog.showModal();
+  });
+}
+
+/** A themed one-line question. Closing it is the same as declining. */
+function askTextDialog(title, label, initial = "", hint = "") {
+  return new Promise(resolve => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "wide-field";
+    input.value = initial;
+    const field = fieldRow(label, input, hint);
+    const dialog = $("noteDialog");
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      dialog.onclose = null;
+      resolve(value);
+    };
+    const actions = document.createElement("div");
+    actions.className = "inspect-actions";
+    const go = document.createElement("button");
+    go.type = "submit";
+    go.textContent = "Continue";
+    actions.appendChild(go);
+    $("noteFormBody").replaceChildren(field, actions);
+    $("noteDialogTitle").textContent = title;
+    $("noteForm").onsubmit = event => {
+      event.preventDefault();
+      finish(input.value);
+      dialog.close();
+    };
+    dialog.onclose = () => finish(null);
+    dialog.showModal();
+    input.focus();
+  });
 }
 
 /* ---------------------------------------------------------- the summaries -- */
@@ -14223,7 +14499,7 @@ function renderReports(data) {
     drop.className = "link danger small";
     drop.textContent = "Delete";
     drop.addEventListener("click", async () => {
-      if (!confirm("Delete this summary?")) return;
+      if (!(await confirmDialog("Delete this summary?", "Delete summary"))) return;
       try {
         renderReports(await post("ai-report-forget", { id: report.id }));
       } catch (error) {
@@ -15004,21 +15280,28 @@ async function runAiTry(tool) {
  * form worth parsing, and a guessed price is the failure this is trying to
  * avoid - so these are the numbers you were quoted, and the page says so.
  */
+const aiPriceState = { field: "provider", direction: 1 };
+
 function renderAiPrices(data) {
   const body = $("aiPricesBody");
   if (!body) return;
 
-  const known = data.known_prices ?? {};
-  const rows = Object.entries(known).map(([key, price]) => {
-    const [provider, ...rest] = key.split("/");
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = (data.price_book ?? []).map(price => {
     return {
-      key,
-      provider,
-      model: rest.join("/"),
+      key: price.id,
+      provider: price.provider,
+      model: price.model,
       in: price.in ?? 0,
       out: price.out ?? 0,
       cached: price.cached ?? 0,
-      current: key === `${data.provider}/${data.model}`,
+      cache_write_5m: price.cache_write_5m ?? 0,
+      cache_write_1h: price.cache_write_1h ?? 0,
+      cache_refresh: price.cache_refresh ?? 0,
+      active_from: price.active_from,
+      retired_on: price.retired_on,
+      current: price.provider === data.provider && price.model === data.model
+        && price.active_from <= today && (!price.retired_on || price.retired_on >= today),
     };
   });
 
@@ -15034,16 +15317,45 @@ function renderAiPrices(data) {
     return;
   }
 
-  const holder = document.createElement("div");
-  holder.id = "aiPricesTable";
-  parts.push(holder);
+  const sort = field => {
+    aiPriceState.direction = aiPriceState.field === field ? -aiPriceState.direction : 1;
+    aiPriceState.field = field;
+    renderAiPrices(data);
+  };
+  const sortRows = list => [...list].sort((a, b) => {
+    const left = a[aiPriceState.field], right = b[aiPriceState.field];
+    return aiPriceState.direction * (typeof left === "number" ? left - right
+      : String(left ?? "").localeCompare(String(right ?? "")));
+  });
+  const panels = [];
+  const panel = (id, title, list) => {
+    if (!list.length) return;
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    const holder = document.createElement("div");
+    holder.id = id;
+    parts.push(heading, holder);
+    panels.push([holder.id, sortRows(list)]);
+  };
+  const current = rows.filter(row => row.active_from <= today && (!row.retired_on || row.retired_on >= today));
+  const upcoming = rows.filter(row => row.active_from > today);
+  const expired = rows.filter(row => row.retired_on && row.retired_on < today);
+  panel("aiPricesCurrent", "Current prices", current);
+  panel("aiPricesUpcoming", "Upcoming prices", upcoming);
+  panel("aiPricesExpired", "Expired prices", expired);
   body.replaceChildren(...parts);
+  for (const [id, list] of panels) renderPriceTable(id, list, sort);
+}
 
-  renderTable("aiPricesTable", rows.sort((a, b) => a.key.localeCompare(b.key)), [
-    { label: "Provider", render: row => row.provider },
+function renderPriceTable(target, rows, sort) {
+  const columns = [
+    { label: "Provider", render: row => row.provider, onSort: () => sort("provider"),
+      sortMark: aiPriceState.field === "provider" ? (aiPriceState.direction > 0 ? " ↑" : " ↓") : "" },
     {
       label: "Model",
       className: "name",
+      onSort: () => sort("model"),
+      sortMark: aiPriceState.field === "model" ? (aiPriceState.direction > 0 ? " ↑" : " ↓") : "",
       render: row => {
         const span = document.createElement("span");
         span.textContent = row.model;
@@ -15056,53 +15368,65 @@ function renderAiPrices(data) {
         return span;
       },
     },
-    { label: "In", className: "size", render: row => `${row.in}¢/M` },
-    { label: "Out", className: "size", render: row => `${row.out}¢/M` },
-    { label: "Cached", className: "size", render: row => `${row.cached}¢/M` },
+    { label: "In", className: "size", render: row => `${row.in}¢/M`, onSort: () => sort("in"),
+      sortMark: aiPriceState.field === "in" ? (aiPriceState.direction > 0 ? " ↑" : " ↓") : "" },
+    { label: "Out", className: "size", render: row => `${row.out}¢/M`, onSort: () => sort("out"),
+      sortMark: aiPriceState.field === "out" ? (aiPriceState.direction > 0 ? " ↑" : " ↓") : "" },
+    { label: "Cached", className: "size", render: row => `${row.cached}¢/M`, onSort: () => sort("cached"),
+      sortMark: aiPriceState.field === "cached" ? (aiPriceState.direction > 0 ? " ↑" : " ↓") : "" },
     {
       label: "",
       className: "row-actions",
       render: row => {
         const wrap = document.createDocumentFragment();
 
-        const use = document.createElement("button");
-        use.className = "link";
-        use.textContent = "Use these";
-        use.title = "Put these prices into the Model page's boxes";
-        use.addEventListener("click", () => {
-          $("aiPriceIn").value = String(row.in);
-          $("aiPriceOut").value = String(row.out);
-          $("aiPriceCached").value = String(row.cached);
-          notice(`Prices for ${row.model} filled in. Save on the Model page to keep them.`,
-                 true);
-          location.hash = "#/sys-ai-model";
-        });
-        wrap.appendChild(use);
+        if (row.current) {
+          const use = document.createElement("button");
+          use.className = "link icon-action";
+          use.textContent = "✓";
+          use.title = "Use this active price record on the Model page.";
+          use.addEventListener("click", () => {
+            $("aiPriceIn").value = String(row.in);
+            $("aiPriceOut").value = String(row.out);
+            $("aiPriceCached").value = String(row.cached);
+            notice(`Prices for ${row.model} filled in. Save on the Model page to keep them.`, true);
+            location.hash = "#/sys-ai-model";
+          });
+          wrap.appendChild(use);
+        }
 
         const edit = document.createElement("button");
-        edit.className = "link";
-        edit.textContent = "Edit";
+        edit.className = "link icon-action";
+        edit.textContent = "✎";
+        edit.title = `Edit the ${row.active_from} price record for ${row.model}`;
         edit.addEventListener("click", () => showPriceDialog(row));
         wrap.appendChild(edit);
 
+        const duplicate = document.createElement("button");
+        duplicate.className = "link icon-action";
+        duplicate.textContent = "⧉";
+        duplicate.title = "Duplicate this price record, then choose its next active date.";
+        duplicate.addEventListener("click", () => showPriceDialog({ ...row, key: null, active_from: today, retired_on: null }));
+        wrap.appendChild(duplicate);
+
         const drop = document.createElement("button");
-        drop.className = "link danger";
-        drop.textContent = "Forget";
-        drop.addEventListener("click", async () => {
-          if (!confirm(`Forget the prices for ${row.key}?`)) return;
-          try {
+        drop.className = "link danger icon-action";
+        drop.textContent = "⌫";
+        drop.title = `Remove this ${row.active_from} price record permanently.`;
+        drop.addEventListener("click", () => {
+          const warning = note(`Remove the ${row.active_from} price record for ${row.provider}/${row.model}? This cannot be undone.`);
+          showFormDialog("Remove price record", [warning], async () => {
             renderAiPrices(await post("ai-price-forget", { key: row.key }));
-            notice("Forgotten.", true);
-          } catch (error) {
-            notice(String(error.message || error));
-          }
+            notice("Removed.", true);
+          }, "Remove record");
         });
         wrap.appendChild(drop);
 
         return wrap;
       },
     },
-  ], null, row => (row.current ? "row-ok" : ""), row => row.key);
+  ];
+  renderTable(target, rows, columns, null, row => (row.current ? "row-ok" : ""), row => row.key);
 }
 
 /** Adding or editing one set of prices by hand. */
@@ -15135,6 +15459,9 @@ function showPriceDialog(row) {
     ["cached", "Cached input, per million",
       "In cents. Usually about a tenth of the input price, and most of the bill on a "
       + "long conversation."],
+    ["cache_write_5m", "Cache write (5 minutes), per million", "Anthropic prompt-cache write price, in cents."],
+    ["cache_write_1h", "Cache write (1 hour), per million", "Anthropic long prompt-cache write price, in cents."],
+    ["cache_refresh", "Cache hit / refresh, per million", "Provider cache-hit or refresh price, in cents."],
   ]) {
     const box = document.createElement("input");
     box.type = "number";
@@ -15146,14 +15473,27 @@ function showPriceDialog(row) {
     parts.push(fieldRow(label, box, hint));
   }
 
+  const from = document.createElement("input");
+  from.type = "date"; from.value = row?.active_from ?? new Date().toISOString().slice(0, 10);
+  parts.push(fieldRow("Active from", from, "Prices apply from this date."));
+  const retired = document.createElement("input");
+  retired.type = "date"; retired.value = row?.retired_on ?? "";
+  parts.push(fieldRow("Retired on", retired, "Leave blank until this price is retired."));
+
   showFormDialog(row ? "Edit remembered prices" : "Remember prices for a model", parts,
     async () => {
       renderAiPrices(await post("ai-price-save", {
+        price_id: row?.key ?? "",
         provider: provider.value,
         model: model.value.trim(),
         price_in: boxes.in.value,
         price_out: boxes.out.value,
         price_cached: boxes.cached.value,
+        cache_write_5m: boxes.cache_write_5m.value,
+        cache_write_1h: boxes.cache_write_1h.value,
+        cache_refresh: boxes.cache_refresh.value,
+        active_from: from.value,
+        retired_on: retired.value,
       }));
     });
 }
@@ -15369,11 +15709,11 @@ function aiForgetForm(who) {
   go.textContent = "Forget them";
   go.addEventListener("click", async () => {
     const chose = days.options[days.selectedIndex].textContent;
-    if (!confirm(
+    if (!(await confirmDialog(
       `Delete ${chose}?\n\n`
       + "The transcripts, the tool results and what each one cost all go. This cannot be "
       + "undone from here."
-    )) return;
+    ))) return;
 
     go.disabled = true;
     try {
@@ -15745,8 +16085,20 @@ function dimmedPath(path, against) {
   const span = document.createElement("span");
   span.className = "path";
 
-  const parts = pathParts(path);
-  const shared = against ? sharedDepth(parts, pathParts(against)) : 0;
+  const account = state.account;
+  const isSelfPath = Boolean(account && String(path).split("/").includes(account));
+  const isRootPath = String(path).split("/").includes("root");
+  const shownPath = isSelfPath && state.access?.account_privacy
+    ? String(path).replace(new RegExp(`(^|/)${escapeRegex(account)}(?=/|$)`, "g"), "$1[self]")
+    : String(path);
+  if (isSelfPath) span.classList.add("user-me");
+  if (isRootPath) span.classList.add("user-root");
+
+  const parts = pathParts(shownPath);
+  const shownAgainst = isSelfPath && state.access?.account_privacy
+    ? String(against || "").replace(new RegExp(`(^|/)${escapeRegex(account)}(?=/|$)`, "g"), "$1[self]")
+    : against;
+  const shared = shownAgainst ? sharedDepth(parts, pathParts(shownAgainst)) : 0;
 
   /*
    * The last segment is never dimmed.
@@ -15763,10 +16115,10 @@ function dimmedPath(path, against) {
   }
 
   const tail = document.createElement("span");
-  tail.textContent = dim > 0 ? parts.slice(dim).join("/") : path;
+  tail.textContent = dim > 0 ? parts.slice(dim).join("/") : shownPath;
   span.appendChild(tail);
 
-  span.title = path;
+  span.title = shownPath;
   return span;
 }
 
@@ -16082,13 +16434,13 @@ function ldconfigOffer() {
   ask.className = "link";
   ask.textContent = "Ask the host to rebuild the library cache";
   ask.addEventListener("click", async () => {
-    if (!confirm(
+    if (!(await confirmDialog(
       "Ask root's collector to run ldconfig?\n\n"
       + "Unlike everything else here, this changes something: it rewrites "
       + "/etc/ld.so.cache from what is on disk. It is safe to repeat and cannot make "
       + "the cache worse than the directories it is built from.\n\n"
       + "It runs on the collector's next pass, not now."
-    )) return;
+    ))) return;
 
     ask.disabled = true;
     try {
@@ -16145,28 +16497,24 @@ function linkActions(row) {
 
   for (const [text, title, run, danger] of [
     ["Repoint", "Point this link somewhere else", async () => {
-      const target = prompt(
-        `Where should ${basenameOf(row.path)} point?\n\n`
-        + "A path, absolute or relative to the directory the link is in. It does not have to "
-        + "exist yet — a link into a filesystem that mounts later is a normal thing to want.",
-        row.target || ""
-      );
+      const target = await askTextDialog("Repoint link", `Where should ${basenameOf(row.path)} point?`,
+        row.target || "", "Use an absolute path or a path relative to the link's directory.");
       if (target === null || target.trim() === "") return;
       await act("repoint", { target: target.trim() });
     }, false],
     ["Make it a folder", "Remove the link and create a real, empty directory in its place",
       async () => {
-        if (!confirm(
+        if (!(await confirmDialog(
           `Replace ${row.path} with a real, empty directory?\n\n`
           + "The link goes; whatever it pointed at is untouched."
-        )) return;
+        ))) return;
         await act("directory");
       }, false],
     ["Remove", "Delete the link itself", async () => {
-      if (!confirm(
+      if (!(await confirmDialog(
         `Delete the link ${row.path}?\n\n`
         + "Only the link is removed. Whatever it points at is not touched."
-      )) return;
+      ))) return;
       await act("delete");
     }, true],
   ]) {
@@ -16333,11 +16681,11 @@ async function sweepLinks(pattern, confirmed = false) {
     go.className = "danger";
     go.textContent = `Remove ${count(result.deleted.length, "broken link")}`;
     go.addEventListener("click", async () => {
-      if (!confirm(
+      if (!(await confirmDialog(
         `Delete ${result.deleted.length} broken symlinks?\n\n`
         + "Only the links are removed. Nothing they point at is touched — they point at "
         + "nothing, which is why they are on this list."
-      )) return;
+      ))) return;
       go.disabled = true;
       await sweepLinks(pattern, true);
       await checkSymlinks();
@@ -16510,7 +16858,7 @@ function stopButtons(row, grouped) {
       : `SIGTERM — ${many ? "each is" : "it is"} asked to exit and can tidy up first`;
 
     button.addEventListener("click", async () => {
-      if (!confirmStop(row, grouped, force)) return;
+      if (!(await confirmStop(row, grouped, force))) return;
 
       /*
        * The button waits for the process to actually go.
@@ -16628,13 +16976,13 @@ async function waitForProcessToGo(row, many, force) {
  * difference between the two signals are the whole content of the decision, so
  * they are the whole content of the box.
  */
-function confirmStop(row, grouped, force) {
+async function confirmStop(row, grouped, force) {
   const many = grouped && row.procs > 1;
   const what = many
     ? `all ${count(row.procs, "process", "processes")} named “${row.name}”`
     : `“${row.name}” (pid ${row.pid})`;
 
-  return confirm(
+  return confirmDialog(
     force
       ? `Force ${what} to stop?\n\nSIGKILL cannot be caught or ignored. `
         + `Anything part-way through being written stays part-way written.`
@@ -16890,14 +17238,14 @@ async function previewPattern() {
 
     button.addEventListener("click", async () => {
       const verb = force ? "Force" : "Ask";
-      if (!confirm(
+      if (!(await confirmDialog(
         `${verb} ${count(eligible.length, "process", "processes")} to stop?\n\n`
         + `Pattern: ${pattern}\n\n`
         + (force
           ? "SIGKILL cannot be caught or ignored. Anything part-way through "
             + "being written stays part-way written."
           : "SIGTERM lets each one close its files and exit cleanly.")
-      )) return;
+      ))) return;
 
       button.disabled = true;
       try {
@@ -20052,7 +20400,7 @@ async function saveSchedule(remove) {
   const what = remove
     ? "Remove this dashboard's lines from your crontab?"
     : `Write this into your crontab?\n\n${preview}`;
-  if (!confirm(`${what}\n\nNothing else in it is changed.`)) return;
+  if (!(await confirmDialog(`${what}\n\nNothing else in it is changed.`, "Apply crontab change"))) return;
 
   try {
     const result = await post("schedule-save", {
@@ -21330,6 +21678,7 @@ function syncNavigationSearch() {
 function applyAccessChrome() {
   syncNavigationSearch();
   syncIpPrivacy();
+  syncAccountPrivacy();
 
   const corner = $("cornerMenu");
   if (corner) {
@@ -21350,6 +21699,15 @@ function applyAccessChrome() {
     privacy.title = state.access?.ip_privacy
       ? "Show IP addresses again in this browser session"
       : "Hide IP addresses in this browser session";
+  }
+
+  const accountPrivacy = $("accountPrivacy");
+  if (accountPrivacy) {
+    accountPrivacy.hidden = !state.signedIn;
+    accountPrivacy.textContent = state.access?.account_privacy ? "Show account" : "Hide account";
+    accountPrivacy.title = state.access?.account_privacy
+      ? "Show this account name again in this browser session"
+      : "Hide this account name in this browser session";
   }
 
   if (!mayUsePage(state.view)) {
@@ -22398,7 +22756,7 @@ function findingRow(f) {
     ignore.textContent = "Ignore this finding";
     ignore.title = "Hide this exact diagnostic on future checks until the configuration is changed.";
     ignore.addEventListener("click", async () => {
-      if (!confirm(`Ignore “${f.title}” now and on future checks?\n\nUse this only for an intentional configuration.`)) return;
+      if (!(await confirmDialog(`Ignore “${f.title}” now and on future checks?\n\nUse this only for an intentional configuration.`, "Ignore finding"))) return;
       try {
         await post("diagnosis-ignore", { key: f.key });
         await refreshDiagnosis();
@@ -22463,7 +22821,7 @@ async function deleteFromInspect(data) {
       + "and it cannot be undone."
     : `Delete ${data.path}? That is ${humanBytes(data.facts.size_bytes)}, and it cannot be undone.`;
 
-  if (!confirm(what)) return;
+  if (!(await confirmDialog(what, "Delete"))) return;
 
   try {
     const result = data.kind === "dir"
@@ -23823,7 +24181,7 @@ function renderUrls(data) {
           ["Edit", "Change how it is checked", () => openUrlForm(row)],
           ["Remove", "Stop watching it and discard its history",
             async () => {
-              if (!confirm(`Stop watching ${row.label}? Its history goes with it.`)) return;
+              if (!(await confirmDialog(`Stop watching ${row.label}? Its history goes with it.`, "Stop watching"))) return;
               renderUrls(await post("url-delete", { id: row.id }));
             }],
         ]) {
@@ -24810,7 +25168,7 @@ function renderEventList(data) {
         remove.className = "link danger";
         remove.textContent = "Remove";
         remove.addEventListener("click", async () => {
-          if (!confirm(`Remove "${row.title}"?`)) return;
+          if (!(await confirmDialog(`Remove "${row.title}"?`, "Remove event"))) return;
           try {
             renderCalendar(await post("event-delete", { id: row.id }));
           } catch (error) {
@@ -25181,9 +25539,10 @@ function markWideTables(within = document) {
  */
 function userCell(user) {
   const span = document.createElement("span");
-  span.textContent = user;
+  const mine = user === state.account;
+  span.textContent = mine && state.access?.account_privacy ? "[self]" : user;
 
-  if (user === state.account) {
+  if (mine) {
     span.className = "user-me";
     span.title = "This account — the one this dashboard runs as.";
   } else if (user === "root") {
@@ -26650,7 +27009,7 @@ function renderDomains(data) {
         remove.textContent = "Stop";
         remove.title = "Stop watching this domain";
         remove.addEventListener("click", async () => {
-          if (!confirm(`Stop watching ${row.name}?`)) return;
+          if (!(await confirmDialog(`Stop watching ${row.name}?`, "Stop watching"))) return;
           try {
             renderDomains(await post("domain-delete", { id: row.id }));
           } catch (error) {
@@ -31124,9 +31483,9 @@ $("hostMetric").addEventListener("change", () => {
 });
 
 $("problemClear").addEventListener("click", async () => {
-  if (!confirm("Clear the problem log?\n\nThe entries are removed for good. Anything "
+  if (!(await confirmDialog("Clear the problem log?\n\nThe entries are removed for good. Anything "
       + "still broken will write a fresh one on its next failure, which is the point: "
-      + "what is left afterwards is what is still wrong.")) return;
+      + "what is left afterwards is what is still wrong.", "Clear log"))) return;
 
   try {
     const result = await post("clear-problems");
@@ -31273,10 +31632,8 @@ document.addEventListener("click", async event => {
 });
 
 $("reportNow").addEventListener("click", async () => {
-  const which = prompt(
-    "Write a summary now, covering which period?\n\ndaily, weekly or monthly",
-    "daily"
-  );
+  const which = await askTextDialog("Write a summary", "Period", "daily",
+    "Choose daily, weekly, or monthly.");
   if (!which) return;
 
   notice("Writing it — this asks the model, so it takes a few seconds.");
@@ -31421,11 +31778,8 @@ $("sessionClose").addEventListener("click", () => {
 $("sessionName").addEventListener("click", async () => {
   if (!sessionState.open) return;
 
-  const topic = prompt(
-    "What was this session about?\n\nName the thing: the path, the service, the "
-    + "symptom. Specific enough to pick out of a list of thirty.",
-    sessionState.log?.session?.topic || ""
-  );
+  const topic = await askTextDialog("Name session", "What was this session about?",
+    sessionState.log?.session?.topic || "", "Name the path, service, or symptom specifically.");
   if (topic === null) return;
 
   try {
@@ -31449,10 +31803,10 @@ $("memoryAdd").addEventListener("click", () => {
 });
 
 $("memoryClear").addEventListener("click", async () => {
-  if (!confirm(
+  if (!(await confirmDialog(
     "Forget everything it has remembered?\n\n"
     + "Every conversation starts from nothing again. This cannot be undone from here."
-  )) return;
+  ))) return;
 
   try {
     const result = await post("ai-memory-clear");
@@ -31478,6 +31832,14 @@ $("chatEffort").addEventListener("change", async event => {
 
 $("chatClose").addEventListener("click", () => hideChat());
 $("chatNew").addEventListener("click", () => startChat());
+$("chatSpeak").addEventListener("click", () => {
+  voiceState.speak = !voiceState.speak;
+  $("chatSpeak").textContent = voiceState.speak ? "Speaking" : "Speak";
+  if (!voiceState.speak) window.speechSynthesis?.cancel();
+});
+$("chatListen").addEventListener("click", () => {
+  try { toggleRecognition(); } catch (error) { notice(String(error.message || error)); }
+});
 
 $("chatStop").addEventListener("click", async () => {
   if (!chatState.session?.exists) return;
@@ -31673,11 +32035,11 @@ $("retentionReset").addEventListener("click", () => {
 $("aiCompact").addEventListener("click", async () => {
   const file = aiStoreState.data?.file;
 
-  if (!confirm(
+  if (!(await confirmDialog(
     `Rewrite the database to give back ${humanBytes(file?.free_bytes ?? 0)} of empty pages?\n\n`
     + "It needs room for a second copy of the file while it runs. Nothing is deleted — this "
     + "only returns space that deleted rows left behind."
-  )) return;
+  ))) return;
 
   const button = $("aiCompact");
   button.disabled = true;
@@ -31702,11 +32064,11 @@ $("storeCompact").addEventListener("click", async () => {
   const data = storeState.data;
   const free = data ? data.account.file.free_bytes : 0;
 
-  if (!confirm(
+  if (!(await confirmDialog(
     `Rewrite the database to give back ${humanBytes(free)} of empty pages?\n\n`
     + "It needs room for a second copy of the file while it runs, and the site will pause "
     + "for the few seconds it takes."
-  )) return;
+  ))) return;
 
   const button = $("storeCompact");
   button.disabled = true;
@@ -31896,7 +32258,7 @@ for (const link of document.querySelectorAll("[data-nav]")) {
 $("navSearch")?.addEventListener("input", syncNavigationSearch);
 
 $("actionClear")?.addEventListener("click", async () => {
-  if (!confirm("Clear every earlier audit entry?\n\nThis action stays as the first new audit entry.")) return;
+  if (!(await confirmDialog("Clear every earlier audit entry?\n\nThis action stays as the first new audit entry.", "Clear audit"))) return;
   try {
     const result = await post("clear-audit");
     actionState.kind = ""; actionState.who = ""; actionState.result = "";
@@ -32157,6 +32519,15 @@ $("ipPrivacy").addEventListener("click", async () => {
   }
 });
 
+$("accountPrivacy").addEventListener("click", async () => {
+  try {
+    await post("account-privacy", { hide: state.access?.account_privacy ? "0" : "1" });
+    location.reload();
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
 $("networkRefresh").addEventListener("click",
   () => refreshNetwork().catch(error => notice(String(error.message || error))));
 
@@ -32217,11 +32588,11 @@ $("alertAckAll").addEventListener("click", () => alertAction("ack-all", []));
 $("alertAckSome").addEventListener("click",
   () => alertAction("ack", [...alertState.selected]));
 
-$("alertDeleteSome").addEventListener("click", () => {
+$("alertDeleteSome").addEventListener("click", async () => {
   const ids = [...alertState.selected];
   if (!ids.length) return;
   // Deleting is the one thing here that cannot be undone from the interface.
-  if (!confirm(`Delete ${count(ids.length, "alert")}? The history goes with them.`)) return;
+  if (!(await confirmDialog(`Delete ${count(ids.length, "alert")}? The history goes with them.`, "Delete alerts"))) return;
   alertAction("delete", ids);
 });
 

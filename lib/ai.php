@@ -102,12 +102,15 @@ function aiSettings(array $config): array
     if (!isset($providers[$provider])) {
         $provider = 'openai';
     }
+    $model = trim((string)($set['model'] ?? '')) ?: ($providers[$provider]['models'][0] ?? '');
+    $activePrice = aiKnownPrice(['price_book' => $set['price_book'] ?? [],
+        'known_prices' => $set['known_prices'] ?? []], $provider, $model);
 
     return [
         'enabled' => (bool)($set['enabled'] ?? false),
         'provider' => $provider,
         'base_url' => trim((string)($set['base_url'] ?? '')) ?: $providers[$provider]['base'],
-        'model' => trim((string)($set['model'] ?? '')) ?: ($providers[$provider]['models'][0] ?? ''),
+        'model' => $model,
         // Never returned to the browser; see aiSettingsView.
         'api_key' => (string)($set['api_key'] ?? ''),
 
@@ -118,9 +121,9 @@ function aiSettings(array $config): array
          * reports token counts rather than money. A wrong price is worse than
          * no price, so nothing is guessed from the model name.
          */
-        'price_in' => (float)($set['price_in'] ?? 0),
-        'price_out' => (float)($set['price_out'] ?? 0),
-        'price_cached' => (float)($set['price_cached'] ?? 0),
+        'price_in' => $activePrice['in'] ?? (float)($set['price_in'] ?? 0),
+        'price_out' => $activePrice['out'] ?? (float)($set['price_out'] ?? 0),
+        'price_cached' => $activePrice['cached'] ?? (float)($set['price_cached'] ?? 0),
 
         // Limits on one session. Zero means no limit of that kind.
         'max_seconds' => max(0, (int)($set['max_seconds'] ?? 3600)),
@@ -183,6 +186,7 @@ function aiSettings(array $config): array
          * back does not silently corrupt every cost figure in between.
          */
         'known_prices' => is_array($set['known_prices'] ?? null) ? $set['known_prices'] : [],
+        'price_book' => aiPriceBook($set),
 
         'tools' => $set['tools'] ?? [],
     ];
@@ -195,6 +199,17 @@ function aiSettings(array $config): array
  */
 function aiKnownPrice(array $settings, string $provider, string $model): ?array
 {
+    $today = gmdate('Y-m-d');
+    $book = aiPriceBook($settings);
+    $matches = array_values(array_filter($book, fn(array $row): bool =>
+        $row['provider'] === $provider && $row['model'] === $model
+        && $row['active_from'] <= $today
+        && ($row['retired_on'] === null || $row['retired_on'] >= $today)
+    ));
+    usort($matches, fn(array $a, array $b): int => strcmp($b['active_from'], $a['active_from']));
+    if ($matches !== []) {
+        return ['in' => $matches[0]['in'], 'out' => $matches[0]['out'], 'cached' => $matches[0]['cached']];
+    }
     $found = $settings['known_prices'][$provider . '/' . $model] ?? null;
 
     return is_array($found) ? [
@@ -202,6 +217,33 @@ function aiKnownPrice(array $settings, string $provider, string $model): ?array
         'out' => (float)($found['out'] ?? 0),
         'cached' => (float)($found['cached'] ?? 0),
     ] : null;
+}
+
+/** Dated price records, with legacy provider/model map converted on read. */
+function aiPriceBook(array $settings): array
+{
+    $rows = is_array($settings['price_book'] ?? null) ? $settings['price_book'] : [];
+    foreach ((array)($settings['known_prices'] ?? []) as $key => $price) {
+        [$provider, $model] = array_pad(explode('/', (string)$key, 2), 2, '');
+        if ($provider === '' || $model === '' || !is_array($price)) continue;
+        $found = array_filter($rows, fn(mixed $row): bool => is_array($row)
+            && ($row['provider'] ?? '') === $provider && ($row['model'] ?? '') === $model);
+        if ($found === []) {
+            $rows[] = ['id' => sha1($key . '|legacy'), 'provider' => $provider, 'model' => $model,
+                'active_from' => '1970-01-01', 'retired_on' => null] + $price;
+        }
+    }
+    return array_values(array_map(fn(array $row): array => [
+        'id' => (string)($row['id'] ?? sha1(json_encode($row))),
+        'provider' => (string)($row['provider'] ?? ''), 'model' => (string)($row['model'] ?? ''),
+        'in' => (float)($row['in'] ?? 0), 'out' => (float)($row['out'] ?? 0),
+        'cached' => (float)($row['cached'] ?? 0),
+        'cache_write_5m' => (float)($row['cache_write_5m'] ?? 0),
+        'cache_write_1h' => (float)($row['cache_write_1h'] ?? 0),
+        'cache_refresh' => (float)($row['cache_refresh'] ?? 0),
+        'active_from' => (string)($row['active_from'] ?? gmdate('Y-m-d')),
+        'retired_on' => ($row['retired_on'] ?? null) ?: null,
+    ], array_filter($rows, 'is_array')));
 }
 
 /** The effort levels, cheapest first. The empty string means "do not send one". */

@@ -424,7 +424,7 @@ function webPage(
     $out[] = '<style>'
         . 'body{max-width:1180px;padding-top:0}'
         . '.setup-header{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;background:var(--bg)}'
-        . '.setup-brand{display:flex;align-items:baseline;gap:9px;color:var(--text);text-decoration:none}.setup-brand strong{font-size:1.08rem}.setup-brand small{color:var(--muted)}'
+        . '.setup-brand{display:flex;align-items:center;gap:9px;color:var(--text);text-decoration:none}.setup-brand strong{font-size:1.08rem}.setup-brand small{color:var(--muted)}.setup-brand .poll{display:inline-block}.setup-brand .poll-fill,.setup-brand .poll-host-fill{stroke:var(--accent);stroke-dasharray:none;stroke-dashoffset:0}'
         . '.setup-header a:not(.setup-brand){color:var(--muted);font-size:.86rem}'
         . '.setup-layout{display:grid;grid-template-columns:210px minmax(0,1fr);gap:24px;align-items:start}'
         . '.setup-nav{position:sticky;top:16px;border:1px solid var(--line);border-radius:10px;padding:10px}'
@@ -463,6 +463,7 @@ function webPage(
         . '</style></head><body class="wiz">';
 
     $out[] = '<header class="setup-header"><a class="setup-brand" href="?section=basics">'
+        . '<span class="poll" aria-hidden="true"><svg viewBox="0 0 36 36"><circle class="poll-track" cx="18" cy="18" r="15"></circle><circle class="poll-fill" cx="18" cy="18" r="15"></circle><circle class="poll-host-track" cx="18" cy="18" r="9"></circle><circle class="poll-host-fill" cx="18" cy="18" r="9"></circle></svg><span class="poll-dot"></span></span>'
         . '<strong>Hostscope</strong><small>Setup</small></a><a href="./">Open dashboard</a></header>';
     $out[] = '<h1>Setup</h1>';
 
@@ -502,12 +503,12 @@ function webPage(
         $out[] = '<div class="banner crit"><strong>Nothing is configured yet.</strong>'
             . '<p>Until you finish, anybody who can reach this page can set the password. '
             . 'Do it now, and delete <code>setup.php</code> afterwards.</p></div>';
-    } elseif ($existing['password_hash'] === '') {
+    } elseif (!$unlocked && $existing['password_hash'] === '') {
         $out[] = '<div class="banner warn"><strong>Already configured, with no password.</strong>'
             . '<p>There is no secret to prove, so nothing can authorise replacing the config '
             . 'from here. Fill this in and paste the result into <code>lib/config.php</code> '
             . 'yourself — having a file to edit is the authorisation.</p></div>';
-    } else {
+    } elseif (!$unlocked) {
         $out[] = '<div class="banner warn"><strong>Already configured.</strong>'
             . '<p>Enter the current password below and this will replace '
             . '<code>lib/config.php</code>. Without it you still get the finished text to '
@@ -554,7 +555,7 @@ function webPage(
             . '</fieldset></form><form method="post">';
     }
 
-    if ($unlocked) {
+    if ($unlocked && $activeSection === 'basics') {
         $out[] = '<fieldset><legend>Unlocked</legend>'
             . '<span class="help">These are the settings this install is running with. '
             . 'Saving updates <code>data/setup.db</code>.</span>'

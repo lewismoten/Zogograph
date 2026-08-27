@@ -519,6 +519,40 @@ function aiToolCatalogue(): array
             ],
         ],
 
+        'present_visual' => [
+            'group' => 'navigation',
+            'where' => 'browser',
+            'permission' => false,
+            'summary' => 'present supplied data as a line chart, pie, or gauge.',
+            'description' =>
+                "Presents data you already have in the conversation as a small interactive "
+                . "visual. Unlike show_chart, this is not limited to a chart built into "
+                . "Hostscope. Use it to make a trend, composition, or current-versus-limit "
+                . "clear. Do not invent measurements: the data must come from the user or "
+                . "a tool result. The browser shows it beside the conversation; you only "
+                . "receive confirmation that it was shown.\n\n"
+                . "data is JSON. For line use {series:[{key,label}],points:[{at,key:value}]}; "
+                . "for pie use {slices:[{label,value}]}; for gauge use {value,max,label}.",
+            'parameters' => [
+                'kind' => [
+                    'type' => 'string', 'enum' => ['line', 'pie', 'gauge'], 'required' => true,
+                    'description' => 'The visual type that best fits the supplied data.',
+                ],
+                'title' => [
+                    'type' => 'string', 'maxLength' => 100, 'required' => true,
+                    'description' => 'A concise title for the reader.',
+                ],
+                'data' => [
+                    'type' => 'string', 'maxLength' => 12000, 'required' => true,
+                    'description' => 'Valid compact JSON in the shape described above.',
+                ],
+                'why' => [
+                    'type' => 'string', 'maxLength' => 200, 'required' => true,
+                    'description' => 'One sentence telling the reader what to notice.',
+                ],
+            ],
+        ],
+
         'get_chart_image' => [
             'group' => 'navigation',
             'where' => 'browser',
@@ -1742,6 +1776,26 @@ function aiToolCatalogue(): array
                     'description' => 'What you expect to see and why the data cannot tell '
                         . 'you. This is shown to the user when asking permission, so it '
                         . 'has to be a real reason they can judge.',
+                ],
+            ],
+        ],
+
+        'inspect_current_page_html' => [
+            'group' => 'navigation',
+            'where' => 'browser',
+            'permission' => true,
+            'summary' => 'read a reviewed copy of the current page structure.',
+            'description' =>
+                "Asks the user to send the outer HTML of the current page's main content. "
+                . "This is usually more useful and much cheaper than a screenshot for a "
+                . "layout problem: it preserves labels, structure, and accessible state. "
+                . "The user sees an editable preview first and may redact any elements or "
+                . "text before it leaves the browser. Use this for page/layout questions, "
+                . "not to obtain diagnostic values that a normal tool can read.",
+            'parameters' => [
+                'why' => [
+                    'type' => 'string', 'maxLength' => 200, 'required' => true,
+                    'description' => 'What structural detail you need and why other tools cannot provide it.',
                 ],
             ],
         ],

@@ -73,6 +73,7 @@
 
   <div class="topbar-actions">
     <button id="ipPrivacy" class="link" hidden title="Hide IP addresses in this browser session">Hide IPs</button>
+    <button id="accountPrivacy" class="link" hidden title="Hide this account name in this browser session">Hide account</button>
     <button id="pageHelp" class="header-help" type="button" aria-label="Help for this page" title="Help for this page">?</button>
     <button id="signInOut" class="primary">Sign in</button>
   </div>
@@ -442,7 +443,12 @@
       <span class="nav-label">Data retention</span>
       <span class="nav-badge" data-badge="sys-retention" hidden></span>
     </a>
-    <a class="nav-item" href="#/sys-notes" data-nav="sys-notes">
+    <a class="nav-item nav-sub" href="#/sys-peers" data-nav="sys-peers" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Trusted servers</span>
+      <span class="nav-badge" data-badge="sys-peers" hidden></span>
+    </a>
+    <a class="nav-item nav-sub" href="#/sys-notes" data-nav="sys-notes" data-parent="system">
       <span class="nav-icon" aria-hidden="true">⌕</span>
       <span class="nav-label">Forensics</span>
       <span class="nav-badge" data-badge="sys-notes" hidden></span>
@@ -455,11 +461,6 @@
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Database copies</span>
       <span class="nav-badge" data-badge="sys-snapshots" hidden></span>
-    </a>
-    <a class="nav-item nav-sub" href="#/sys-peers" data-nav="sys-peers" data-parent="system">
-      <span class="nav-icon" aria-hidden="true">›</span>
-      <span class="nav-label">Trusted servers</span>
-      <span class="nav-badge" data-badge="sys-peers" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/sys-problems" data-nav="sys-problems" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
@@ -2837,6 +2838,8 @@
       <span class="muted small" id="chatCost"></span>
       <span class="chat-room" id="chatRoom" hidden></span>
       <select id="chatEffort" class="chat-effort" title="How hard to think"></select>
+      <button id="chatSpeak" class="link" type="button" title="Read replies aloud">Speak</button>
+      <button id="chatListen" class="link" type="button" title="Dictate a message">Listen</button>
       <button id="chatNew" class="link" title="Start a fresh conversation">New</button>
       <button id="chatInterrupt" class="link" hidden
               title="Stop what it is doing, keep the conversation">Interrupt</button>

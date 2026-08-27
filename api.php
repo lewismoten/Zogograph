@@ -219,6 +219,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'ai-toolset-delete' => doAiToolsetDelete($config, $pdo, $post),
         'ai-price-save' => doAiPriceSave($config, $pdo, $post),
         'ai-price-forget' => doAiPriceForget($config, $pdo, $post),
+        'client-problem' => doClientProblem($post),
         'ai-try' => doAiTry($config, $pdo, $post),
         'ai-reports' => aiReportsView($config, $pdo, $signedIn),
         'ai-report-now' => doAiReportNow($config, $pdo, $post),
@@ -264,6 +265,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'email-save' => doEmailSave($config, $pdo, $post),
         'clear-problems' => doClearProblems($config, $pdo, $post),
         'ip-privacy' => doIpPrivacy($config, $post),
+        'account-privacy' => doAccountPrivacy($config, $post),
         'diagnosis-ignore' => doDiagnosisIgnore($config, $pdo, $post),
         'diagnosis-unignore' => doDiagnosisUnignore($config, $pdo, $post),
         'clear-audit' => doClearAudit($pdo, $post),
@@ -3085,6 +3087,16 @@ function doIpPrivacy(array $config, bool $post): array
     return ['ok' => true, 'access' => accessView($config)];
 }
 
+/** Hides the dashboard account label for this browser session. */
+function doAccountPrivacy(array $config, bool $post): array
+{
+    if (!$post || !isSignedIn() || !csrfValid($_POST['csrf'] ?? null)) {
+        throw new ActionRefused('sign in with a current form token to change session privacy');
+    }
+    $_SESSION['hide_accounts'] = ($_POST['hide'] ?? '0') === '1';
+    return ['ok' => true, 'access' => accessView($config)];
+}
+
 /**
  * The end of a log file.
  *
@@ -5693,6 +5705,21 @@ function requireWrite(bool $post): void
     }
 }
 
+/** Records a browser failure in the same log as server failures. */
+function doClientProblem(bool $post): array
+{
+    if (!$post) {
+        throw new ActionRefused('that must be a POST');
+    }
+    $message = trim((string)($_POST['message'] ?? ''));
+    $stack = trim((string)($_POST['stack'] ?? ''));
+    if ($message === '') {
+        return ['ok' => true];
+    }
+    logProblem('client-error', substr('Browser: ' . $message . ($stack === '' ? '' : ' | ' . $stack), 0, 8000));
+    return ['ok' => true];
+}
+
 /** Notes are collaborative content, not administrative configuration. */
 function requireNoteWrite(array $config, bool $post): void
 {
@@ -7732,7 +7759,7 @@ function aiBrowserResult(PDO $ai, int $session, array $run): array
         return ['shown' => true];
     }
 
-    if ($tool === 'show_chart') {
+    if ($tool === 'show_chart' || $tool === 'present_visual') {
         /*
          * The model is told it was shown, not what it looked like.
          *
@@ -7746,7 +7773,7 @@ function aiBrowserResult(PDO $ai, int $session, array $run): array
 
         aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
             'shown' => true,
-            'chart' => (string)($arguments['chart'] ?? ''),
+            'chart' => (string)($arguments['chart'] ?? $arguments['title'] ?? ''),
             'note' => 'The chart is now visible in the conversation. You have not been '
                 . 'sent it - if you need its numbers, call get_chart_data.',
         ]);
@@ -7828,6 +7855,22 @@ function aiBrowserResult(PDO $ai, int $session, array $run): array
         aiAddMessage($ai, $session, 'user', $image, ['visible' => 0, 'tool_name' => 'screenshot']);
 
         return ['taken' => true, 'bytes' => strlen($image)];
+    }
+
+    if ($tool === 'inspect_current_page_html') {
+        $html = (string)($_POST['html'] ?? '');
+        if ($html === '' || strlen($html) > 300 * 1024) {
+            aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+                'error' => 'The reviewed page HTML was empty or too large.',
+            ]);
+            return ['error' => 'invalid page html'];
+        }
+        aiRecordToolResult($ai, $session, (string)$run['tool_id'], $tool, [
+            'html' => $html,
+            'note' => 'This is a user-reviewed copy of the current page main content. '
+                . 'Treat it as structure, not proof of data freshness.',
+        ]);
+        return ['reviewed' => true, 'bytes' => strlen($html)];
     }
 
     return ['error' => 'unknown browser tool'];
@@ -8185,6 +8228,7 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         'has_key' => $settings['api_key'] !== '',
         'reasoning_effort' => $settings['reasoning_effort'],
         'known_prices' => $settings['known_prices'],
+        'price_book' => $settings['price_book'],
         'price_in' => $settings['price_in'],
         'price_out' => $settings['price_out'],
         'price_cached' => $settings['price_cached'],
@@ -8604,14 +8648,35 @@ function doAiPriceSave(array $config, PDO $pdo, bool $post): array
     }
 
     $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
-    $current['ai']['known_prices'][$provider . '/' . $model] = [
+    $from = (string)($_POST['active_from'] ?? gmdate('Y-m-d'));
+    $retired = trim((string)($_POST['retired_on'] ?? ''));
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)
+        || ($retired !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $retired))
+        || ($retired !== '' && $retired < $from)) {
+        throw new ActionRefused('use a valid active date range');
+    }
+    $book = aiPriceBook($current['ai'] ?? []);
+    $id = (string)($_POST['price_id'] ?? '');
+    $entry = [
+        'id' => $id !== '' ? $id : bin2hex(random_bytes(12)),
+        'provider' => $provider, 'model' => $model,
         'in' => max(0.0, (float)($_POST['price_in'] ?? 0)),
         'out' => max(0.0, (float)($_POST['price_out'] ?? 0)),
         'cached' => max(0.0, (float)($_POST['price_cached'] ?? 0)),
+        'cache_write_5m' => max(0.0, (float)($_POST['cache_write_5m'] ?? 0)),
+        'cache_write_1h' => max(0.0, (float)($_POST['cache_write_1h'] ?? 0)),
+        'cache_refresh' => max(0.0, (float)($_POST['cache_refresh'] ?? 0)),
+        'active_from' => $from, 'retired_on' => $retired === '' ? null : $retired,
     ];
+    $replaced = false;
+    foreach ($book as $index => $row) {
+        if ($row['id'] === $entry['id']) { $book[$index] = $entry; $replaced = true; break; }
+    }
+    if (!$replaced) $book[] = $entry;
+    $current['ai']['price_book'] = $book;
 
     writeConfigFile($current);
-    logAction($pdo, 'ai_prices', $provider . '/' . $model, 'ok', 0, 0, null);
+    logAction($pdo, 'ai_prices', $provider . '/' . $model, 'ok', 0, 0, $replaced ? 'updated' : 'added');
 
     return ['ok' => true] + aiSettingsView($current, $pdo, true);
 }
@@ -8627,12 +8692,12 @@ function doAiPriceForget(array $config, PDO $pdo, bool $post): array
 
     $key = (string)($_POST['key'] ?? '');
     $current = loadConfiguredSettings(__DIR__ . '/lib/config.php');
-
-    if (!isset($current['ai']['known_prices'][$key])) {
+    $book = aiPriceBook($current['ai'] ?? []);
+    $kept = array_values(array_filter($book, fn(array $row): bool => $row['id'] !== $key));
+    if (count($kept) === count($book)) {
         throw new ActionRefused('nothing is remembered for that');
     }
-
-    unset($current['ai']['known_prices'][$key]);
+    $current['ai']['price_book'] = $kept;
     writeConfigFile($current);
 
     return ['ok' => true] + aiSettingsView($current, $pdo, true);
@@ -8681,13 +8746,28 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
      * that a model somebody has used before comes back with its own numbers
      * rather than the last model's.
      */
-    $key = $provider . '/' . trim((string)($_POST['model'] ?? ''));
-    if (trim((string)($_POST['model'] ?? '')) !== '') {
-        $current['ai']['known_prices'][$key] = [
-            'in' => max(0.0, (float)($_POST['price_in'] ?? 0)),
+    $model = trim((string)($_POST['model'] ?? ''));
+    if ($model !== '') {
+        $today = gmdate('Y-m-d');
+        $book = aiPriceBook($current['ai'] ?? []);
+        $updated = false;
+        foreach ($book as &$row) {
+            if ($row['provider'] === $provider && $row['model'] === $model
+                && $row['active_from'] <= $today && ($row['retired_on'] === null || $row['retired_on'] >= $today)) {
+                $row['in'] = max(0.0, (float)($_POST['price_in'] ?? 0));
+                $row['out'] = max(0.0, (float)($_POST['price_out'] ?? 0));
+                $row['cached'] = max(0.0, (float)($_POST['price_cached'] ?? 0));
+                $updated = true;
+                break;
+            }
+        }
+        unset($row);
+        if (!$updated) $book[] = ['id' => bin2hex(random_bytes(12)), 'provider' => $provider,
+            'model' => $model, 'in' => max(0.0, (float)($_POST['price_in'] ?? 0)),
             'out' => max(0.0, (float)($_POST['price_out'] ?? 0)),
             'cached' => max(0.0, (float)($_POST['price_cached'] ?? 0)),
-        ];
+            'active_from' => $today, 'retired_on' => null];
+        $current['ai']['price_book'] = $book;
     }
 
     $current['ai']['context_tokens'] = clampInt($_POST['context_tokens'] ?? 128000,

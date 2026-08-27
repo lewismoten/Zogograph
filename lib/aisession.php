@@ -785,12 +785,14 @@ function aiStep(
      */
     $ai->prepare(
         'INSERT INTO ai_calls (session_id, at, ms, model, tokens_in, tokens_out,
-                               tokens_cached, millicents, request, response, error, http_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                               tokens_cached, millicents, price_in, price_out, price_cached,
+                               request, response, error, http_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )->execute([
         $id, time(), (int)($answer['ms'] ?? 0), $settings['model'],
         (int)($answer['tokens_in'] ?? 0), (int)($answer['tokens_out'] ?? 0),
         (int)($answer['tokens_cached'] ?? 0), $millicents,
+        (float)$settings['price_in'], (float)$settings['price_out'], (float)$settings['price_cached'],
         json_encode($answer['request'] ?? null, JSON_PARTIAL_OUTPUT_ON_ERROR),
         json_encode($answer['response'] ?? null, JSON_PARTIAL_OUTPUT_ON_ERROR),
         $answer['error'] ?? null,

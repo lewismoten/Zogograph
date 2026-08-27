@@ -398,6 +398,15 @@ function aiMigrations(): array
              */
             'ALTER TABLE ai_sessions ADD COLUMN limit_hit TEXT',
         ],
+
+        9 => [
+            /* Prices are a property of the call, not of the settings page as it
+             * happens to look later. This keeps past billing explainable after
+             * a provider changes its rate or an operator corrects one. */
+            'ALTER TABLE ai_calls ADD COLUMN price_in REAL NOT NULL DEFAULT 0',
+            'ALTER TABLE ai_calls ADD COLUMN price_out REAL NOT NULL DEFAULT 0',
+            'ALTER TABLE ai_calls ADD COLUMN price_cached REAL NOT NULL DEFAULT 0',
+        ],
     ];
 }
 

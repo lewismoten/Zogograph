@@ -135,6 +135,7 @@ function accessView(array $config): array
         'ai' => accessAllows($config, 'ai'),
         'ips' => accessAllows($config, 'ips'),
         'ip_privacy' => !empty($_SESSION['hide_ips']),
+        'account_privacy' => !empty($_SESSION['hide_accounts']),
         'ranges' => $collect('ranges'),
         'write' => accessAllows($config, 'write'),
     ];
