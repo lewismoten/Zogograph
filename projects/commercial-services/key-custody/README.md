@@ -16,6 +16,17 @@ non-symlinked private path outside the deployed web root. It creates the
 directory and database with owner-only permissions; a relative or web-served
 database location is refused rather than treated as a convenience default.
 
+### Existing symmetric records
+
+Service databases created before the public-wrapping update retain their old
+wrapped symmetric custody keys and existing envelopes for recovery only. They
+are shown by `GET /v1/keys` as `legacy_symmetric`; no public wrapping key is
+available and new envelopes must not be added to them. Rotate the key, seal
+each artifact's fresh data key with the replacement's public key, verify
+recovery, then delete old envelopes and retire the legacy key. This preserves
+recovery during upgrade without claiming that the old design has the new
+asymmetric property.
+
 Every API JSON request is capped at 2 MiB before parsing. This safely leaves
 room for the 1 MiB wrapped-envelope limit and its Base64 encoding while refusing
 oversized management or client requests before they consume unbounded PHP

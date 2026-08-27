@@ -74,6 +74,8 @@ try {
         'subscription did not report current active custody-key usage');
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $key['id'] && keyCustodyListKeys($pdo, $management['tenant_id'])[0]['envelope_count'] === 0,
         'management key list omitted created key or its envelope count');
+    custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['wrapping_mode'] === 'asymmetric_artifact_envelope',
+        'new custody key was not identified as asymmetric artifact-envelope wrapping');
     $policy = keyCustodyUpdateKeyPolicy($pdo, $management['tenant_id'], $key['id'], 120, 'primary policy');
     custodyExpect($policy['name'] === 'primary policy' && $policy['authorization_ttl'] === 120, 'custody key policy was not updated');
     try { keyCustodyUpdateKeyPolicy($pdo, $management['tenant_id'], $key['id'], 1); throw new RuntimeException('invalid custody key policy was accepted'); }
@@ -128,6 +130,15 @@ try {
         'custody cache recommendation did not preserve the zero-cache default');
     try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:missing', $master); throw new RuntimeException('unknown artifact envelope was authorized'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'unknown artifact envelope was authorized', $error->getMessage()); }
+    $legacyId = 'key_' . bin2hex(random_bytes(16)); $legacyKey = random_bytes(32); $legacyNonce = random_bytes(12);
+    $legacyWrapped = openssl_encrypt($legacyKey, 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $legacyNonce, $legacyTag, $legacyId, 16);
+    $pdo->prepare('INSERT INTO custody_keys (id, tenant_id, name, wrapped_key, wrap_nonce, wrap_tag, wrapping_public_key, authorization_ttl, state, created_at, rotated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)')
+        ->execute([$legacyId, $management['tenant_id'], 'pre-public-wrapping', $legacyWrapped, $legacyNonce, $legacyTag, 300, 'rotating', time()]);
+    $pdo->prepare('INSERT INTO key_envelopes (id, key_id, artifact_id, envelope, created_at) VALUES (?, ?, ?, ?, ?)')
+        ->execute(['env_' . bin2hex(random_bytes(16)), $legacyId, 'legacy:artifact', random_bytes(80), time()]);
+    custodyExpect(hash_equals($legacyKey, keyCustodyUnwrapKey($pdo, $client['tenant_id'], $legacyId, 'legacy:artifact', $master))
+        && in_array('legacy_symmetric', array_column(keyCustodyListKeys($pdo, $management['tenant_id']), 'wrapping_mode'), true),
+        'service upgrade did not preserve recoverability or disclose legacy symmetric custody records');
     $replacement = keyCustodyRotateKey($pdo, $management['tenant_id'], $key['id'], $master);
     custodyExpect($replacement['id'] !== $key['id'] && keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $replacement['id'], 'custody key rotation did not create a replacement');
     custodyExpect(hash_equals($artifactDataKey, keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)),

@@ -247,7 +247,15 @@ function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artif
     $stmt = $pdo->prepare("SELECT wrapped_key, wrap_nonce, wrap_tag, wrapping_public_key FROM custody_keys WHERE id = ? AND tenant_id = ? AND state IN ('active', 'rotating')"); $stmt->execute([$id, $tenant]); $row = $stmt->fetch();
     if (!is_array($row)) throw new InvalidArgumentException('custody key is unavailable');
     $private = openssl_decrypt($row['wrapped_key'], 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $row['wrap_nonce'], $row['wrap_tag'], $id);
-    if (!is_string($private) || !is_string($row['wrapping_public_key'] ?? null) || !function_exists('sodium_crypto_box_seal_open')) throw new RuntimeException('custody key wrapping material is unavailable');
+    if (!is_string($private) || strlen($private) !== 32) throw new RuntimeException('custody key wrapping material is unavailable');
+    /* Pre-public-wrapping records retain the old wrapped custody key so a
+     * service upgrade never strands an existing artifact. They cannot accept
+     * new envelopes and are disclosed to management as legacy until rotated. */
+    if ($row['wrapping_public_key'] === null) {
+        keyCustodyAudit($pdo, $tenant, 'key_unwrap_authorized_legacy', $id, 'artifact=' . $artifactId);
+        return $private;
+    }
+    if (!is_string($row['wrapping_public_key']) || !function_exists('sodium_crypto_box_seal_open')) throw new RuntimeException('custody key wrapping material is unavailable');
     $plain = sodium_crypto_box_seal_open($sealed, sodium_crypto_box_keypair_from_secretkey_and_publickey($private, $row['wrapping_public_key']));
     if (!is_string($plain) || strlen($plain) !== 32) throw new RuntimeException('artifact data key could not be unwrapped');
     keyCustodyAudit($pdo, $tenant, 'key_unwrap_authorized', $id, 'artifact=' . $artifactId);
@@ -395,15 +403,16 @@ function keyCustodyApplySubscription(PDO $pdo, string $tenant, string $plan, str
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
 }
 
-/** @return list<array{id:string,name:string,authorization_ttl:int,state:string,created_at:int,envelope_count:int}> */
+/** @return list<array{id:string,name:string,authorization_ttl:int,state:string,created_at:int,envelope_count:int,wrapping_mode:string}> */
 function keyCustodyListKeys(PDO $pdo, string $tenant): array
 {
-    $stmt = $pdo->prepare('SELECT keys.id, keys.name, keys.authorization_ttl, keys.state, keys.created_at,
+    $stmt = $pdo->prepare('SELECT keys.id, keys.name, keys.authorization_ttl, keys.state, keys.created_at, keys.wrapping_public_key,
         (SELECT COUNT(*) FROM key_envelopes envelopes WHERE envelopes.key_id = keys.id) AS envelope_count
         FROM custody_keys keys WHERE keys.tenant_id = ? ORDER BY keys.created_at DESC');
     $stmt->execute([$tenant]);
     return array_map(fn(array $row): array => ['id' => $row['id'], 'name' => $row['name'], 'authorization_ttl' => (int)$row['authorization_ttl'],
-        'state' => $row['state'], 'created_at' => (int)$row['created_at'], 'envelope_count' => (int)$row['envelope_count']], $stmt->fetchAll());
+        'state' => $row['state'], 'created_at' => (int)$row['created_at'], 'envelope_count' => (int)$row['envelope_count'],
+        'wrapping_mode' => $row['wrapping_public_key'] === null ? 'legacy_symmetric' : 'asymmetric_artifact_envelope'], $stmt->fetchAll());
 }
 
 /** @return array{plan:string,state:string,key_quota:int,key_used:int,can_create_keys:bool,envelope_quota:int,envelope_used:int,renews_at:?int} */
