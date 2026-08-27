@@ -185,6 +185,19 @@ Run a first copy manually, then schedule it separately from normal collection:
 php cron.php --seal
 ```
 
+Immediately record a non-destructive recovery drill before treating the policy
+as ready:
+
+```bash
+php cron.php --recovery-drill
+```
+
+The drill fully decrypts and validates the newest verified copy for every
+selected, present store, then removes its temporary plaintext. It never
+overwrites a live database. It is the low-risk first proof that the local key
+and artifact format can be opened; use the CLI restore instructions below for
+an actual replacement recovery exercise.
+
 Each new sealed artifact is fully decrypted into a short-lived private temporary
 file before HostScope records it as verified. A sealing run also briefly keeps a
 SQLite snapshot and its ciphertext, so plan for about twice the selected source

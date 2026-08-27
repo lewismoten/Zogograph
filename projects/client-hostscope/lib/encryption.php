@@ -314,9 +314,10 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
         $status['warnings'][] = 'The encrypted-copy destination may not have enough free space for the next sealing run.';
     }
     try {
-        $stmt = $pdo->query("SELECT store, MAX(created_at) AS created_at, MAX(last_verified_at) AS last_verified_at, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verified' GROUP BY store");
+        $stmt = $pdo->query("SELECT store, MAX(created_at) AS created_at, MAX(last_verified_at) AS last_verified_at,
+            MAX(last_recovery_drill_at) AS last_recovery_drill_at, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verified' GROUP BY store");
         foreach ($stmt->fetchAll() as $row) $status['artifacts'][] = ['store' => $row['store'], 'created_at' => (int)$row['created_at'],
-            'last_verified_at' => (int)$row['last_verified_at'], 'copies' => (int)$row['copies']];
+            'last_verified_at' => (int)$row['last_verified_at'], 'last_recovery_drill_at' => (int)$row['last_recovery_drill_at'], 'copies' => (int)$row['copies']];
         $superseded = $pdo->query("SELECT store, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'superseded' GROUP BY store");
         foreach ($superseded->fetchAll() as $row) $status['superseded_artifacts'][] = ['store' => $row['store'], 'copies' => (int)$row['copies']];
         $retired = $pdo->query("SELECT store, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'retired' GROUP BY store");
@@ -334,6 +335,7 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     }
     $covered = array_column($status['artifacts'], 'store');
     $latest = array_column($status['artifacts'], 'created_at', 'store');
+    $drilled = array_column($status['artifacts'], 'last_recovery_drill_at', 'store');
     try {
         $failed = $pdo->query("SELECT store, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verification_failed' GROUP BY store")->fetchAll();
         foreach ($failed as $artifact) $status['warnings'][] = 'One or more retained encrypted copies for ' . $artifact['store'] . ' failed their last verification.';
@@ -343,6 +345,9 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
         $maximumAge = encryptionScheduleMaximumAge((string)($settings['backup_schedule'] ?? 'manual'));
         if ($maximumAge !== null && (int)$latest[$store] < time() - $maximumAge) {
             $status['warnings'][] = "The newest verified encrypted copy for {$store} is older than the configured schedule allows.";
+        }
+        if ((int)($drilled[$store] ?? 0) <= 0) {
+            $status['warnings'][] = "No successful non-destructive recovery drill has been recorded yet for {$store}.";
         }
     }
     $status['ready'] = $expected !== [] && encryptionAvailable() && count(array_filter($status['warnings'], fn(string $warning): bool => !str_contains($warning, 'is not present yet, so it is waiting'))) === 0;
@@ -442,6 +447,34 @@ function encryptionVerifyConfiguredCopies(array $config, PDO $pdo, string $webRo
         }
     }
     return ['verified' => $verified, 'failed' => $failed, 'warnings' => array_values(array_unique($warnings))];
+}
+
+/** Fully checks current selected-store recovery evidence without changing live
+ * data. This is intentionally separate from routine verification so an
+ * operator can record the first recovery proof after initial setup. */
+function encryptionRunRecoveryDrill(array $config, PDO $pdo, string $webRoot): array
+{
+    $settings = (array)($config['encryption'] ?? []);
+    if (($settings['mode'] ?? '') !== 'sealed_copies_local') {
+        return ['tested' => 0, 'warnings' => ['recovery drills require local sealed copies']];
+    }
+    $checked = encryptionVerifyConfiguredCopies($config, $pdo, $webRoot);
+    if ($checked['failed'] > 0) return ['tested' => 0, 'warnings' => $checked['warnings']];
+    $paths = encryptionStorePaths($config, $webRoot);
+    $expected = [];
+    foreach (encryptionSelectedStores($settings) as $store) {
+        if (in_array($store, ['host', 'ai'], true) && !is_file($paths[$store])) continue;
+        $expected[] = $store;
+    }
+    $rows = $pdo->query("SELECT artifact_id, store FROM encryption_artifacts WHERE state = 'verified' ORDER BY store, created_at DESC, artifact_id DESC")->fetchAll();
+    $latest = [];
+    foreach ($rows as $row) if (!isset($latest[$row['store']])) $latest[$row['store']] = (string)$row['artifact_id'];
+    $missing = array_values(array_filter($expected, fn(string $store): bool => !isset($latest[$store])));
+    if ($missing !== []) return ['tested' => 0, 'warnings' => ['no verified encrypted copy exists for ' . implode(', ', $missing)]];
+    $mark = $pdo->prepare("UPDATE encryption_artifacts SET last_recovery_drill_at = ? WHERE artifact_id = ? AND state = 'verified'");
+    $now = time();
+    foreach ($expected as $store) $mark->execute([$now, $latest[$store]]);
+    return ['tested' => count($expected), 'warnings' => []];
 }
 
 /** Removes only old verified local artifacts after a successful sealing run.

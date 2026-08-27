@@ -76,13 +76,15 @@ try {
     $partial->exec('CREATE INDEX alert_mutes_rule_expiry ON alert_mutes (rule, expires_at DESC)');
     $partial->exec('CREATE INDEX actions_actor_at ON actions (actor, at)');
     migrate($partial);
-    migrationTestExpect((int)$partial->query('SELECT MAX(version) FROM schema_version')->fetchColumn() === 54,
+    migrationTestExpect((int)$partial->query('SELECT MAX(version) FROM schema_version')->fetchColumn() === 55,
         'interrupted migration did not recover to the current schema version');
     migrationTestExpect((int)$partial->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'encryption_artifacts'")->fetchColumn() === 1
         && (int)$partial->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'encryption_replicas'")->fetchColumn() === 1,
         'encrypted artifact ledger migration did not complete');
     migrationTestExpect(in_array('last_verified_at', $partial->query("SELECT name FROM pragma_table_info('encryption_artifacts')")->fetchAll(PDO::FETCH_COLUMN), true),
         'encrypted artifact verification timestamp migration did not complete');
+    migrationTestExpect(in_array('last_recovery_drill_at', $partial->query("SELECT name FROM pragma_table_info('encryption_artifacts')")->fetchAll(PDO::FETCH_COLUMN), true),
+        'encrypted artifact recovery-drill timestamp migration did not complete');
     migrationTestExpect((int)$partial->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'runtime_packages'")->fetchColumn() === 1
         && (int)$partial->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'runtime_package_grants'")->fetchColumn() === 1,
         'package runtime registry migration did not complete');

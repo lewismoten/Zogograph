@@ -126,13 +126,20 @@ try {
         encryptionOpenFile((string)$copies[0]['local_path'], $root . '/restored-config.php', $key);
         encryptionExpect(str_contains((string)file_get_contents($root . '/restored-config.php'), "'private' => true"),
             'sealed configuration copy differs from source');
-        $live->exec('CREATE TABLE encryption_artifacts (artifact_id TEXT PRIMARY KEY, store TEXT, created_at INTEGER, last_verified_at INTEGER, local_path TEXT, ciphertext_bytes INTEGER, ciphertext_sha256 TEXT, state TEXT)');
+        $live->exec('CREATE TABLE encryption_artifacts (artifact_id TEXT PRIMARY KEY, store TEXT, created_at INTEGER, last_verified_at INTEGER, last_recovery_drill_at INTEGER, local_path TEXT, ciphertext_bytes INTEGER, ciphertext_sha256 TEXT, state TEXT)');
         encryptionRecordArtifacts($live, $copies);
         encryptionExpect((int)$live->query('SELECT COUNT(*) FROM encryption_artifacts')->fetchColumn() === 2,
             'sealed artifacts were not recorded for replication');
         $reverified = encryptionVerifyConfiguredCopies($config, $live, $web);
         encryptionExpect($reverified['verified'] === 2 && $reverified['failed'] === 0,
             'retained encrypted artifacts were not re-verified');
+        $beforeDrill = encryptionStatus($live, $config, $web);
+        encryptionExpect(!$beforeDrill['ready'] && str_contains(implode(' ', $beforeDrill['warnings']), 'No successful non-destructive recovery drill'),
+            'sealed-copy status did not require an initial recovery drill');
+        $drill = encryptionRunRecoveryDrill($config, $live, $web);
+        encryptionExpect($drill['tested'] === 2 && $drill['warnings'] === []
+            && (int)$live->query('SELECT COUNT(*) FROM encryption_artifacts WHERE last_recovery_drill_at IS NOT NULL')->fetchColumn() === 2,
+            'recovery drill did not record current selected-store recovery evidence');
         $status = encryptionStatus($live, $config, $web);
         encryptionExpect($status['ready'] && count($status['artifacts']) === 2, 'sealed-copy status did not report verified coverage');
         encryptionExpect(is_array($status['storage_estimate']) && $status['storage_estimate']['required_bytes'] > $status['storage_estimate']['source_bytes'],

@@ -189,6 +189,12 @@ function migrationStatementApplied(PDO $pdo, string $sql): bool
 function migrations(): array
 {
     return [
+        55 => [
+            /* A recovery drill is deliberately separate from routine artifact
+             * verification: it is the operator's recorded proof that current
+             * selected-store recovery evidence can be opened safely. */
+            'ALTER TABLE encryption_artifacts ADD COLUMN last_recovery_drill_at INTEGER',
+        ],
         54 => [
             /* The manifest is signed but not part of its own file list. Keep
              * an install-time digest so a later on-disk manifest change is

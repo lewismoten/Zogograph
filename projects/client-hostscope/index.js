@@ -11744,6 +11744,8 @@ function renderEncryptionStatus(data) {
     overview.push(["Space for next seal", `${humanBytes(data.storage_estimate.required_bytes)} estimated · ${free}`]);
   }
   if (data.waiting_stores?.length) overview.push(["Waiting until present", data.waiting_stores.join(", ")]);
+  const drilled = (data.artifacts || []).filter(row => Number(row.last_recovery_drill_at || 0) > 0).length;
+  if (data.mode === "sealed_copies_local") overview.push(["Recovery drill", data.artifacts?.length ? `${drilled}/${data.artifacts.length} stores recorded` : "Run after the first seal"]);
   const superseded = (data.superseded_artifacts || []).reduce((total, row) => total + Number(row.copies || 0), 0);
   if (superseded) overview.push(["Superseded recovery copies", String(superseded)]);
   const retired = (data.retired_artifacts || []).reduce((total, row) => total + Number(row.copies || 0), 0);
@@ -11754,7 +11756,7 @@ function renderEncryptionStatus(data) {
   } else if (data.mode === "operator_managed_volume") {
     parts.push(note("HostScope records your host/VM protection policy but cannot verify it. Confirm that every selected database, SQLite WAL/SHM companion, configuration file, log, export, and backup destination is covered. This is not evidence of a verified encrypted copy."));
   } else if (data.mode === "sealed_copies_local") {
-    parts.push(note("Verified encrypted copies protect backup artifacts, not the running SQLite database. Run `php cron.php --seal` from the server after setup, then schedule it. Recovery requires the private key outside the web root and an explicit CLI restore."));
+    parts.push(note("Verified encrypted copies protect backup artifacts, not the running SQLite database. Run `php cron.php --seal` and then `php cron.php --recovery-drill` from the server after setup. The drill decrypts and validates current copies without touching live data; schedule seals separately. Recovery requires the private key outside the web root and an explicit CLI restore."));
     parts.push(note("Optional remote key custody and ciphertext replica storage are not selectable yet. Their future signed providers will use only enrolled-client credentials kept as encrypted package secrets. Never enter a custody or relay management token, billing credential, plaintext database, or recovery key into this client."));
     if (superseded) parts.push(note("Superseded copies remain encrypted with an earlier local key after rotation. Keep that key until you have completed a replacement-key recovery drill; they are not deleted automatically."));
   } else {
@@ -11776,6 +11778,7 @@ function renderEncryptionStatus(data) {
     { label: "Verified copies", render: row => String(row.copies) },
     { label: "Newest proof", render: row => whenSpan(row.created_at) },
     { label: "Last re-check", render: row => row.last_verified_at ? whenSpan(row.last_verified_at) : "not rechecked" },
+    { label: "Recovery drill", render: row => row.last_recovery_drill_at ? whenSpan(row.last_recovery_drill_at) : "required" },
   ]);
 }
 
