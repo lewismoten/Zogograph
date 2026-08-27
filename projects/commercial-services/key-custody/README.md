@@ -158,6 +158,35 @@ keys, envelopes, tokens, or private signing material—so a commercial website
 can explain key, enrollment, and subscription changes without becoming a key
 recovery channel.
 
+### Low-friction management CLI
+
+For a small self-operated deployment, use the included CLI instead of putting
+a management token in a browser URL, shell history, or client configuration.
+Put the one-time management token in an absolute `0600` file outside the web
+root, then use a normal HTTPS endpoint:
+
+```bash
+php scripts/manage-remote.php \
+  --base-url https://custody.example/v1 \
+  --token-file /secure/hostscope-key-custody/management.token \
+  keys
+
+php scripts/manage-remote.php \
+  --base-url https://custody.example/v1 \
+  --token-file /secure/hostscope-key-custody/management.token \
+  create-key primary 300
+```
+
+It supports key policy and staged rotation, envelope inventory/deletion,
+subscription requests, and configured billing portal/checkout links. The
+command verifies the TLS certificate and hostname, follows no redirects, and
+never prints the input token. `--tls-spki-pin sha256//...` is available for an
+advanced pinned-identity deployment; leave it unset for normal CA validation
+and update it through a tested migration before rotating the certificate key.
+Run `php scripts/manage-remote.php` with no arguments for the full command
+list. This management token remains separate from every enrolled-client,
+billing-control, and recovery-key credential.
+
 An account-management client may delete one named envelope with
 `DELETE /v1/keys/{keyId}/envelopes/{artifactId}`. This does not delete the
 custody key or any other artifact envelope. It is irreversible from the
