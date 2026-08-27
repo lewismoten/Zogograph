@@ -11740,6 +11740,7 @@ function renderEncryptionStatus(data) {
     parts.push(note("HostScope records your host/VM protection policy but cannot verify it. Confirm that every selected database, SQLite WAL/SHM companion, configuration file, log, export, and backup destination is covered. This is not evidence of a verified encrypted copy."));
   } else if (data.mode === "sealed_copies_local") {
     parts.push(note("Verified encrypted copies protect backup artifacts, not the running SQLite database. Run `php cron.php --seal` from the server after setup, then schedule it. Recovery requires the private key outside the web root and an explicit CLI restore."));
+    parts.push(note("Optional remote key custody is not selectable yet. Its future signed provider will use only an enrolled-client credential kept as an encrypted package secret; never enter a custody management token or billing credential into this client."));
   } else {
     parts.push(note("The selected protection mode is not available in this HostScope release. Keep the current data and recovery key safe while choosing a supported package or local mode."));
   }
