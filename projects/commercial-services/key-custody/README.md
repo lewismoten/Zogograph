@@ -132,6 +132,17 @@ timestamp/nonce replay protection with signed client requests are included.
 mTLS enrollment and payment-provider integration remain the next service
 increments.
 
+Create a consistent metadata backup with no extra database service:
+
+```bash
+php scripts/backup-metadata.php /secure/hostscope-key-custody/backups/metadata-20260827.db
+```
+
+The command refuses an existing, symbolic-link, or web-root destination and
+prints a SHA-256 value for the resulting private SQLite file. It deliberately
+does **not** copy `master_key_file`; maintain a separately protected offline
+master-key recovery copy and test restoring both paths together.
+
 ### Optional commercial billing control plane
 
 Customer management tokens can request a plan change and open the configured

@@ -527,6 +527,29 @@ function keyCustodyReadMasterKey(array $config, string $webRoot): string
     return $key;
 }
 
+/** Creates one consistent SQLite metadata backup without copying the distinct
+ * custody master key. The destination must remain outside the web root. */
+function keyCustodyBackupMetadata(PDO $pdo, string $destination, string $webRoot): array
+{
+    if (!str_starts_with($destination, '/') || is_link($destination) || file_exists($destination)) {
+        throw new InvalidArgumentException('custody metadata backup path must be a new absolute non-link file');
+    }
+    $directory = dirname($destination);
+    if (is_link($directory) || (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory))) {
+        throw new RuntimeException('custody metadata backup directory is unavailable or unsafe');
+    }
+    $real = realpath($directory); $root = realpath($webRoot);
+    if ($real === false || is_link($directory) || (is_string($root) && ($real === $root || str_starts_with($real, rtrim($root, '/') . '/')))) {
+        throw new RuntimeException('custody metadata backup directory must be private and outside the web root');
+    }
+    $path = $real . '/' . basename($destination);
+    $pdo->exec('VACUUM INTO ' . $pdo->quote($path));
+    if (!is_file($path) || is_link($path)) throw new RuntimeException('could not create custody metadata backup');
+    @chmod($path, 0600); $hash = hash_file('sha256', $path);
+    if (!is_string($hash)) throw new RuntimeException('could not hash custody metadata backup');
+    return ['path' => $path, 'bytes' => (int)filesize($path), 'sha256' => $hash];
+}
+
 /** Reads a distinct billing-control token from a private 0600 file. */
 function keyCustodyReadBillingServiceToken(array $config, string $webRoot): string
 {

@@ -40,6 +40,13 @@ try {
     keyCustodyOpen(['database' => $root . '/service.db']);
     custodyExpect((int)$pdo->query('SELECT COUNT(*) FROM client_nonces')->fetchColumn() === 0, 'expired client replay nonce was not pruned during service open');
     $management = keyCustodyAuthenticate($pdo, $tenant['management_token'], 'management');
+    $metadataBackup = keyCustodyBackupMetadata($pdo, $root . '/metadata-backup.db', $root . '/web');
+    $backupPdo = new PDO('sqlite:' . $metadataBackup['path']);
+    custodyExpect($metadataBackup['bytes'] > 0 && preg_match('/^[a-f0-9]{64}$/', $metadataBackup['sha256']) === 1
+        && $backupPdo->query('SELECT COUNT(*) FROM tenants')->fetchColumn() === 1 && (fileperms($metadataBackup['path']) & 0077) === 0,
+        'custody metadata backup was not a private consistent SQLite copy');
+    try { keyCustodyBackupMetadata($pdo, $root . '/web/metadata-backup.db', $root . '/web'); throw new RuntimeException('web-root custody metadata backup was accepted'); }
+    catch (RuntimeException $error) { custodyExpect($error->getMessage() !== 'web-root custody metadata backup was accepted', $error->getMessage()); }
     $client = keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client');
     $initialEntitlement = keyCustodyClientSubscription($pdo, $client['tenant_id']);
     custodyExpect($initialEntitlement['state'] === 'active' && $initialEntitlement['envelope_used'] === 0 && $initialEntitlement['can_store_envelopes'],
