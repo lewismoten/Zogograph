@@ -25,7 +25,11 @@ require_once __DIR__ . '/../lib/setupstore.php';
 require_once __DIR__ . '/../lib/db.php';
 require_once __DIR__ . '/../lib/encryption.php';
 require_once __DIR__ . '/../lib/storekeep.php';
-$config = loadConfiguredSettings($configFile);
+$bootstrap = require $configFile;
+if (!is_array($bootstrap)) { fwrite(STDERR, "The bootstrap configuration is invalid.\n"); exit(1); }
+/* Restoring setup.db must not first decrypt the damaged setup.db. The small
+ * bootstrap intentionally retains its database path and external key locator. */
+$config = $store === 'setup' ? $bootstrap : loadConfiguredSettings($configFile);
 $base = dirname((string)($config['database'] ?? ''));
 $targets = [
     'setup' => setupStorePath($config),

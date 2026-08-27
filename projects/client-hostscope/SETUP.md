@@ -350,6 +350,11 @@ php scripts/restore-config.php --sealed /secure/config.sealed \
   --key /secure/hostscope/primary.key --confirm
 ```
 
+The `--store setup` recovery path uses only the minimal bootstrap first, so it
+can replace a damaged encrypted `setup.db` without attempting to open that
+database beforehand. The bootstrap's external key locator is not secret; the
+key itself is still required to decrypt the sealed recovery artifact.
+
 If host or assistant databases use custom paths stored in `setup.db`, restore
 the sealed `setup` database first. That lets the recovery command resolve the
 same configured target paths rather than guessing from a damaged settings

@@ -65,6 +65,9 @@ try {
     encryptionExpect($accountRestore !== false && $storeRestore !== false && str_contains($accountRestore, 'is_link($sourceArgument)')
         && str_contains($accountRestore, 'is_link($target)') && str_contains($storeRestore, 'is_link($sourceArgument)')
         && str_contains($storeRestore, 'is_link($target)'), 'database restore commands do not reject symlinked recovery paths');
+    encryptionExpect($storeRestore !== false
+        && str_contains($storeRestore, "\$config = \$store === 'setup' ? \$bootstrap : loadConfiguredSettings(\$configFile)"),
+        'setup-store recovery still opens the damaged setup database before selecting its target');
     encryptionExpect($setupGuide !== false && str_contains($setupGuide, '--recovery-drill --quiet')
         && str_contains($setupGuide, 'Quarterly non-destructive recovery drill'),
         'setup guide does not provide a recurring recovery-drill schedule');
