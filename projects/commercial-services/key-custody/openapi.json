@@ -42,12 +42,16 @@
     },
     "/billing/portal": {
       "post": {"summary": "Create a hosted billing-management session", "responses": {"201": {"description": "Opaque billing-session URL/reference"}}}
+    },
+    "/internal/subscriptions/{tenantId}": {
+      "patch": {"summary": "Apply a commercial billing entitlement", "description": "Internal control-plane endpoint. Its separate billing token can change subscription state only; it cannot manage or unwrap keys.", "security": [{"billingService": []}], "parameters": [{"name": "tenantId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^ten_[a-f0-9]{24}$"}}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SubscriptionApply"}}}}, "responses": {"200": {"description": "Entitlement applied and pending requests resolved"}, "403": {"description": "Billing control token is invalid"}, "503": {"description": "Billing control integration is disabled"}}}
     }
   },
   "components": {
     "securitySchemes": {
       "accountSession": {"type": "http", "scheme": "bearer", "description": "Account management token; never valid for unwrap requests."},
-      "enrolledClient": {"type": "http", "scheme": "bearer", "description": "Enrolled-client bearer credential plus required Ed25519 request-signature headers. mTLS can be added by the deployment proxy."}
+      "enrolledClient": {"type": "http", "scheme": "bearer", "description": "Enrolled-client bearer credential plus required Ed25519 request-signature headers. mTLS can be added by the deployment proxy."},
+      "billingService": {"type": "http", "scheme": "bearer", "description": "Private commercial billing-control token. It can apply entitlements only and is never accepted by custody key endpoints."}
     },
     "parameters": {
       "KeyId": {"name": "keyId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{12,120}$"}},
@@ -59,6 +63,7 @@
       "KeyCreate": {"type": "object", "additionalProperties": false, "required": ["name", "authorization_ttl_seconds"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 120}, "authorization_ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 900}}},
       "KeyAction": {"type": "object", "additionalProperties": false, "required": ["action"], "properties": {"action": {"enum": ["disable", "rotate", "retire"]}}},
       "EnvelopeStore": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "envelope_base64"], "properties": {"artifact_id": {"type": "string", "minLength": 1, "maxLength": 200}, "envelope_base64": {"type": "string", "minLength": 1, "maxLength": 1398104}}},
+      "SubscriptionApply": {"type": "object", "additionalProperties": false, "required": ["plan", "state", "key_quota"], "properties": {"plan": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,62}$"}, "state": {"enum": ["active", "past_due", "cancelled"]}, "key_quota": {"type": "integer", "minimum": 0, "maximum": 10000}, "renews_at": {"type": ["integer", "null"]}}},
       "UnwrapRequest": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "nonce"], "properties": {"artifact_id": {"type": "string", "minLength": 1, "maxLength": 200}, "nonce": {"type": "string", "minLength": 1, "maxLength": 200}, "requested_ttl_seconds": {"type": "integer", "minimum": 0, "maximum": 900, "default": 0}}}
     }
   }

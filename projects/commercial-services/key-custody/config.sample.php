@@ -10,4 +10,7 @@ return [
     'require_https' => true,
     // Optional HTTPS account portal/checkout base managed by the commercial site.
     'billing_portal_url' => '',
+    // Optional private 0600 token file for the commercial billing control plane.
+    // It authorizes subscription entitlement updates only; it cannot unwrap keys.
+    'billing_service_token_file' => '',
 ];

@@ -68,6 +68,32 @@ timestamp/nonce replay protection with signed client requests are included.
 mTLS enrollment and payment-provider integration remain the next service
 increments.
 
+### Optional commercial billing control plane
+
+Customer management tokens can request a plan change and open the configured
+billing portal. A payment provider or commercial-site backend applies the
+result through a different, opt-in endpoint; it must never use a customer
+token or enrolled-client credential. Create a separate private token file:
+
+```bash
+php scripts/billing-token.php /secure/hostscope-key-custody/billing.token
+```
+
+Set that absolute path as `billing_service_token_file` in `config.php`, then
+have only the commercial billing backend call:
+
+```text
+PATCH /v1/internal/subscriptions/{tenantId}
+Authorization: Bearer <contents of billing.token>
+{"plan":"starter","state":"active","key_quota":2,"renews_at":1767225600}
+```
+
+This endpoint changes only plan, state, quota, renewal metadata, and pending
+request state. Its token is rejected by all key, envelope, audit, and unwrap
+operations. Leave the token path empty when using the SQLite reference service
+without a commercial billing backend; the endpoint then returns `503` rather
+than exposing a partially configured integration.
+
 Account-management clients can read their own recent `/v1/audit` events. The
 service returns only bounded tenant-local operational metadata—never plaintext
 keys, envelopes, tokens, or private signing material—so a commercial website

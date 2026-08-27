@@ -255,6 +255,20 @@ function keyCustodySetSubscription(PDO $pdo, string $tenant, string $plan, strin
     keyCustodyAudit($pdo, $tenant, 'subscription_change', $tenant, $plan . '; ' . $state . '; quota=' . $quota);
 }
 
+/** Applies an entitlement from the separately authenticated commercial billing
+ * control plane. It has no authority to read or unwrap custody keys. */
+function keyCustodyApplySubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt): void
+{
+    $pdo->beginTransaction();
+    try {
+        keyCustodySetSubscription($pdo, $tenant, $plan, $state, $quota, $renewsAt);
+        $pdo->prepare("UPDATE subscription_requests SET state = 'applied', resolved_at = ? WHERE tenant_id = ? AND state = 'pending'")
+            ->execute([time(), $tenant]);
+        keyCustodyAudit($pdo, $tenant, 'subscription_apply', $tenant, 'commercial billing control plane');
+        $pdo->commit();
+    } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
+}
+
 /** @return list<array{id:string,name:string,authorization_ttl:int,state:string,created_at:int}> */
 function keyCustodyListKeys(PDO $pdo, string $tenant): array
 {
@@ -336,4 +350,27 @@ function keyCustodyReadMasterKey(array $config, string $webRoot): string
     $key = base64_decode(trim((string)file_get_contents($path)), true);
     if (!is_string($key) || strlen($key) !== 32) throw new RuntimeException('custody master key must contain Base64 256-bit material');
     return $key;
+}
+
+/** Reads a distinct billing-control token from a private 0600 file. */
+function keyCustodyReadBillingServiceToken(array $config, string $webRoot): string
+{
+    $path = (string)($config['billing_service_token_file'] ?? '');
+    if ($path === '') throw new RuntimeException('commercial billing integration is not configured');
+    if (!str_starts_with($path, '/') || is_link($path) || !is_file($path) || (fileperms($path) & 0077) !== 0
+        || str_starts_with(realpath($path) ?: '', rtrim(realpath($webRoot) ?: $webRoot, '/') . '/')) {
+        throw new RuntimeException('commercial billing token file is unavailable or unsafe');
+    }
+    $token = trim((string)file_get_contents($path));
+    if (strlen($token) < 32 || strlen($token) > 512 || preg_match('/\s/', $token)) {
+        throw new RuntimeException('commercial billing token is invalid');
+    }
+    return $token;
+}
+
+function keyCustodyAuthenticateBillingService(array $config, string $bearer, string $webRoot): void
+{
+    if ($bearer === '' || !hash_equals(keyCustodyReadBillingServiceToken($config, $webRoot), $bearer)) {
+        throw new InvalidArgumentException('commercial billing authorization is invalid');
+    }
 }

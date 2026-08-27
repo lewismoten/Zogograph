@@ -7,6 +7,8 @@ custodyExpect(is_array($contract) && (($contract['components']['schemas']['Unwra
     'published custody API contract does not use zero key caching by default');
 custodyExpect(($contract['components']['schemas']['EnvelopeStore']['required'] ?? []) === ['artifact_id', 'envelope_base64'],
     'published custody API contract omits required envelope fields');
+custodyExpect(isset($contract['paths']['/internal/subscriptions/{tenantId}']) && isset($contract['components']['securitySchemes']['billingService']),
+    'published custody API contract omits the isolated billing control plane');
 $root = sys_get_temp_dir() . '/hostscope-custody-' . bin2hex(random_bytes(4)); mkdir($root, 0700, true);
 try {
     $pdo = keyCustodyOpen(['database' => $root . '/service.db']);
@@ -45,6 +47,20 @@ try {
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'a second pending subscription request was accepted', $error->getMessage()); }
     keyCustodyWithdrawSubscriptionRequest($pdo, $management['tenant_id'], $change['id']);
     custodyExpect(keyCustodySubscriptionRequests($pdo, $management['tenant_id'])[0]['state'] === 'withdrawn', 'subscription request was not withdrawn');
+    $billingTokenPath = $root . '/billing.token'; $billingToken = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+    file_put_contents($billingTokenPath, $billingToken . "\n"); chmod($billingTokenPath, 0600);
+    custodyExpect(keyCustodyReadBillingServiceToken(['billing_service_token_file' => $billingTokenPath], $root . '/web') === $billingToken,
+        'private billing-control token was not read');
+    keyCustodyAuthenticateBillingService(['billing_service_token_file' => $billingTokenPath], $billingToken, $root . '/web');
+    try { keyCustodyAuthenticateBillingService(['billing_service_token_file' => $billingTokenPath], 'wrong-token', $root . '/web'); throw new RuntimeException('wrong billing-control token was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'wrong billing-control token was accepted', $error->getMessage()); }
+    $pending = keyCustodyRequestSubscriptionChange($pdo, $management['tenant_id'], 'change_plan', 'starter');
+    keyCustodyApplySubscription($pdo, $management['tenant_id'], 'starter', 'active', 3, 1767225600);
+    $applied = keyCustodySubscription($pdo, $management['tenant_id']);
+    custodyExpect($applied['plan'] === 'starter' && $applied['key_quota'] === 3 && $applied['renews_at'] === 1767225600,
+        'billing control plane did not apply subscription entitlement');
+    custodyExpect(keyCustodySubscriptionRequests($pdo, $management['tenant_id'])[0]['id'] === $pending['id']
+        && keyCustodySubscriptionRequests($pdo, $management['tenant_id'])[0]['state'] === 'applied', 'billing control plane did not resolve pending request');
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'past_due', 2, null);
     try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:blocked', random_bytes(80)); throw new RuntimeException('past-due subscription stored an envelope'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'past-due subscription stored an envelope', $error->getMessage()); }

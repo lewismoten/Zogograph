@@ -92,6 +92,14 @@ try {
         if ($portal === '' || !filter_var($portal, FILTER_VALIDATE_URL) || !str_starts_with($portal, 'https://')) custodyReply(503, ['error' => 'billing portal is not configured']);
         custodyReply(201, ['billing_session_url' => $portal]);
     }
+    if (preg_match('#^/v1/internal/subscriptions/(ten_[a-f0-9]{24})$#', $path, $match) && $method === 'PATCH') {
+        if (empty($config['billing_service_token_file'])) custodyReply(503, ['error' => 'commercial billing integration is not configured']);
+        keyCustodyAuthenticateBillingService($config, $bearer, __DIR__); $body = custodyBody($rawBody);
+        $renewsAt = array_key_exists('renews_at', $body) && $body['renews_at'] !== null ? (int)$body['renews_at'] : null;
+        keyCustodyApplySubscription($pdo, $match[1], (string)($body['plan'] ?? ''), (string)($body['state'] ?? ''), (int)($body['key_quota'] ?? -1), $renewsAt);
+        custodyReply(200, ['tenant_id' => $match[1], 'subscription' => keyCustodySubscription($pdo, $match[1]),
+            'warning' => 'This billing-control endpoint changes entitlement only. It cannot unwrap, list, or export custody key material.']);
+    }
     custodyReply(404, ['error' => 'unknown custody API operation']);
 } catch (InvalidArgumentException $error) { custodyReply(403, ['error' => $error->getMessage()]); }
 catch (Throwable $error) { error_log('key custody service failure: ' . $error->getMessage()); custodyReply(500, ['error' => 'service failure']); }
