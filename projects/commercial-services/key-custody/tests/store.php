@@ -9,6 +9,9 @@ custodyExpect(($contract['components']['schemas']['EnvelopeStore']['required'] ?
     'published custody API contract omits required envelope fields');
 custodyExpect(($contract['components']['parameters']['KeyId']['schema']['pattern'] ?? null) === '^key_[a-f0-9]{32}$',
     'published custody API contract does not match the accepted key identifier format');
+custodyExpect(($contract['paths']['/subscription']['patch']['requestBody']['content']['application/json']['schema']['$ref'] ?? null) === '#/components/schemas/SubscriptionRequest'
+    && ($contract['components']['schemas']['SubscriptionRequest']['properties']['action']['enum'] ?? null) === ['change_plan', 'cancel'],
+    'published custody API contract omits the subscription-change request body');
 custodyExpect(isset($contract['paths']['/internal/subscriptions/{tenantId}']) && isset($contract['components']['securitySchemes']['billingService']),
     'published custody API contract omits the isolated billing control plane');
 foreach (['/keys', '/subscription', '/billing/checkout', '/billing/portal'] as $path) {
