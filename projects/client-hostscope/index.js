@@ -740,11 +740,16 @@ function renderCpuGauges(sample) {
   const dials = [];
 
   if (sample?.cpu_percent != null) {
+    const monitoringCpu = sample.monitoring_cpu_percent == null
+      ? null : Number(sample.monitoring_cpu_percent);
     dials.push({
       label: "Host CPU",
       value: Number(sample.cpu_percent),
       warn: 70, crit: 90,
-      sub: `of every core on the machine${cores ? ` (${cores})` : ""}`,
+      overlay: monitoringCpu,
+      overlayLabel: monitoringCpu == null ? null
+        : `dark arc: collector tree ${monitoringCpu.toFixed(1)}%`,
+      sub: `total, of every core on the machine${cores ? ` (${cores})` : ""}`,
     });
   }
 
@@ -760,13 +765,16 @@ function renderCpuGauges(sample) {
   }
 
   if (cores > 0 && load1 != null) {
+    const monitorRunnable = sample.monitoring_runnable == null
+      ? null : Number(sample.monitoring_runnable);
     dials.push({
       label: "Load per core",
       value: (load1 / cores) * 100,
       // One job per core is a busy machine, not a broken one; past that work is
       // queueing, and half again is where it starts to be felt.
       warn: 100, crit: 150, max: 200,
-      sub: `${load1.toFixed(2)} over ${count(cores, "core")}`,
+      sub: `${load1.toFixed(2)} over ${count(cores, "core")}`
+        + (monitorRunnable == null ? "" : ` · collector tree has ${monitorRunnable} runnable now`),
     });
   }
 
@@ -1428,6 +1436,13 @@ function buildGauge(dial) {
   sub.textContent = dial.sub;
   box.appendChild(sub);
 
+  if (dial.overlay != null && Number.isFinite(dial.overlay)) {
+    const detail = document.createElement("div");
+    detail.className = "gauge-sub muted";
+    detail.textContent = dial.overlayLabel || `Monitoring: ${dial.overlay}`;
+    box.appendChild(detail);
+  }
+
   // Drawn after the node is in the document, or clientWidth is zero and the
   // remembered redraw is the only thing that ever paints it.
   requestAnimationFrame(() => drawGauge(canvas, dial, band));
@@ -1589,6 +1604,20 @@ function drawGauge(canvas, dial, band) {
       ctx.beginPath();
       ctx.arc(cx, cy, radius, start, start + sweep * share);
       ctx.stroke();
+    }
+  }
+
+  // A narrow darker arc is part of the total, not a second total. It exposes
+  // monitoring cost without claiming that an unsafe subtraction is workload.
+  if (dial.overlay != null && Number.isFinite(dial.overlay)) {
+    const share = Math.max(0, Math.min(1, dial.overlay / max));
+    if (share > 0) {
+      ctx.strokeStyle = "#243a58";
+      ctx.lineWidth = Math.max(3, thickness * 0.42);
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, start, start + sweep * share);
+      ctx.stroke();
+      ctx.lineWidth = thickness;
     }
   }
 
@@ -19920,8 +19949,13 @@ function renderHostGauges(sample, swapUsed, swap) {
       label: "Memory committed",
       value: (committed / total) * 100,
       warn: 80, crit: 92,
+      overlay: sample.monitoring_pss_bytes == null ? null
+        : (Number(sample.monitoring_pss_bytes) / total) * 100,
+      overlayLabel: sample.monitoring_pss_bytes == null ? null
+        : `dark arc: collector tree ${humanBytes(sample.monitoring_pss_bytes)} PSS`,
       sub: `${humanBytes(committed)} of ${humanBytes(total)} \u00b7 `
-        + `${humanBytes(available)} still available`,
+        + `${humanBytes(available)} still available`
+        + (sample.monitoring_processes == null ? "" : ` \u00b7 ${sample.monitoring_processes} monitoring process${Number(sample.monitoring_processes) === 1 ? "" : "es"}`),
     });
   }
 

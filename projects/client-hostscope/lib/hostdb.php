@@ -199,6 +199,19 @@ function hostMigrate(PDO $pdo, bool $fresh = false): void
 function hostMigrations(): array
 {
     return [
+        /*
+         * The monitor's footprint is a first-class measurement rather than an
+         * adjustment made in the browser.  RSS is exact for the selected
+         * process tree; PSS is collected separately by hostTakeReading because
+         * the normal top-process PSS budget deliberately skips small programs.
+         */
+        25 => [
+            'ALTER TABLE host_samples ADD COLUMN monitoring_processes INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN monitoring_runnable INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN monitoring_cpu_percent REAL',
+            'ALTER TABLE host_samples ADD COLUMN monitoring_rss_bytes INTEGER',
+            'ALTER TABLE host_samples ADD COLUMN monitoring_pss_bytes INTEGER',
+        ],
         24 => [
             'CREATE TABLE host_update_runs (
                 id INTEGER PRIMARY KEY,

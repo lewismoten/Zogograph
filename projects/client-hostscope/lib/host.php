@@ -315,6 +315,86 @@ function hostProcesses(
 }
 
 /**
+ * The resource footprint of this installation's collectors and everything
+ * they launched.
+ *
+ * A command name is not enough: `php`, `sh`, `timeout`, and the utility the
+ * collector invokes are all ordinary programs.  Start from the two known
+ * entry-point paths, then walk parent PID links, so a collector's children
+ * remain attributed even after exec has replaced the shell command.  The
+ * current host collector PID is included as a belt-and-braces root: procfs can
+ * truncate a command line but it must not make the collector invisible.
+ *
+ * Load average cannot be split exactly.  Linux stores an exponentially
+ * decayed count of runnable *and uninterruptible* tasks, not per-process
+ * contributions.  `runnable` is therefore reported beside load as the
+ * monitor's instantaneous queue presence, never subtracted from load1.
+ *
+ * @param list<array<string, mixed>> $procs
+ * @return array{processes: int, runnable: int, cpu_percent: ?float, rss_bytes: int, pss_bytes: ?int}
+ */
+function hostMonitoringImpact(array $procs, string $installRoot, string $procRoot = '/proc'): array
+{
+    $byPid = [];
+    $children = [];
+    $roots = [];
+    $entries = [rtrim($installRoot, '/') . '/cron.php', rtrim($installRoot, '/') . '/host-cron.php'];
+
+    foreach ($procs as $proc) {
+        $pid = (int)($proc['pid'] ?? 0);
+        if ($pid <= 0) continue;
+        $byPid[$pid] = $proc;
+        $parent = (int)($proc['ppid'] ?? 0);
+        if ($parent > 0) $children[$parent][] = $pid;
+        $command = (string)($proc['command'] ?? '');
+        foreach ($entries as $entry) {
+            if ($command !== '' && str_contains($command, $entry)) {
+                $roots[$pid] = true;
+                break;
+            }
+        }
+    }
+    if (isset($byPid[getmypid()])) $roots[getmypid()] = true;
+
+    $seen = [];
+    $queue = array_keys($roots);
+    while ($queue !== []) {
+        $pid = array_pop($queue);
+        if (isset($seen[$pid]) || !isset($byPid[$pid])) continue;
+        $seen[$pid] = true;
+        foreach ($children[$pid] ?? [] as $child) $queue[] = $child;
+    }
+
+    $runnable = $rss = $pss = 0;
+    $cpu = 0.0;
+    $hasCpu = $hasPss = false;
+    foreach (array_keys($seen) as $pid) {
+        $proc = $byPid[$pid];
+        $rss += max(0, (int)($proc['rss_bytes'] ?? 0));
+        if (in_array((string)($proc['state'] ?? ''), ['R', 'D'], true)) $runnable++;
+        if (($proc['cpu_percent'] ?? null) !== null) {
+            $cpu += max(0.0, (float)$proc['cpu_percent']);
+            $hasCpu = true;
+        }
+        // Get PSS for this small, explicitly selected tree even if it fell
+        // outside the normal "largest processes" sampling budget.
+        $part = hostPss($procRoot, $pid);
+        if ($part !== null) {
+            $pss += $part;
+            $hasPss = true;
+        }
+    }
+
+    return [
+        'processes' => count($seen),
+        'runnable' => $runnable,
+        'cpu_percent' => $hasCpu ? round($cpu, 2) : null,
+        'rss_bytes' => $rss,
+        'pss_bytes' => $hasPss ? $pss : null,
+    ];
+}
+
+/**
  * What one process has actually read from and written to a disk.
  *
  * read_bytes/write_bytes rather than rchar/wchar: those count every byte handed
@@ -1221,6 +1301,7 @@ function hostTakeReading(
         foreach ($processes['procs'] as $i => $proc) {
             $processes['procs'][$i]['cpu_percent'] = $cpuRates[(int)$proc['pid']] ?? null;
         }
+        $monitoring = hostMonitoringImpact($processes['procs'], dirname(__DIR__), $procRoot);
 
         $sample = [
             'taken_at' => $takenAt,
@@ -1261,6 +1342,11 @@ function hostTakeReading(
             'cpu_total_ticks' => $cpu['total'] ?? null,
             'cpu_idle_ticks' => $cpu['idle'] ?? null,
             'cpu_percent' => $cpuPercent,
+            'monitoring_processes' => $monitoring['processes'],
+            'monitoring_runnable' => $monitoring['runnable'],
+            'monitoring_cpu_percent' => $monitoring['cpu_percent'],
+            'monitoring_rss_bytes' => $monitoring['rss_bytes'],
+            'monitoring_pss_bytes' => $monitoring['pss_bytes'],
             /*
              * The columns the single busy percentage above cannot stand in for.
              *

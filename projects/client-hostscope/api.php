@@ -3791,6 +3791,7 @@ function cpuView(array $config, bool $signedIn, PDO $account): array
      * from columns that have been there for years.
      */
     $ready = columnExists($pdo, 'host_samples', 'cpu_user_ticks');
+    $monitoringReady = columnExists($pdo, 'host_samples', 'monitoring_cpu_percent');
     $notReady = 'The host collector has not recorded the processor breakdown yet. It is '
         . 'written by host-cron.php running as root, which adds these columns the first '
         . 'time it runs after an upgrade — so this fills in on its next collection.';
@@ -3805,7 +3806,11 @@ function cpuView(array $config, bool $signedIn, PDO $account): array
     $rows = [];
     if ($ready) {
         $series = $pdo->prepare(
-            'SELECT taken_at, cpu_percent, cpu_user_ticks, cpu_nice_ticks, cpu_system_ticks,
+            'SELECT taken_at, cpu_percent, '
+            . ($monitoringReady
+                ? 'monitoring_cpu_percent, monitoring_processes, monitoring_runnable, '
+                : 'NULL AS monitoring_cpu_percent, NULL AS monitoring_processes, NULL AS monitoring_runnable, ')
+            . 'cpu_user_ticks, cpu_nice_ticks, cpu_system_ticks,
                     cpu_idle_ticks, cpu_iowait_ticks, cpu_irq_ticks, cpu_softirq_ticks,
                     cpu_steal_ticks, ctxt_switches, interrupts, forks, procs_running,
                     procs_blocked, cpu_pressure_some, load1, cpu_cores
@@ -4030,10 +4035,15 @@ function hostView(array $config, bool $signedIn, PDO $account): array
     }
 
     [$from, $to] = window();
+    $monitoringReady = columnExists($pdo, 'host_samples', 'monitoring_rss_bytes');
     $series = $pdo->prepare(
         'SELECT taken_at, mem_total, mem_available, used_bytes, cache_bytes, unaccounted,
-                slab, shmem, swap_total, swap_free, pss_sum_bytes, proc_count
-         FROM host_samples WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
+                slab, shmem, swap_total, swap_free, pss_sum_bytes, proc_count, '
+        . ($monitoringReady
+            ? 'monitoring_processes, monitoring_runnable, monitoring_cpu_percent, monitoring_rss_bytes, monitoring_pss_bytes '
+            : 'NULL AS monitoring_processes, NULL AS monitoring_runnable, NULL AS monitoring_cpu_percent, '
+                . 'NULL AS monitoring_rss_bytes, NULL AS monitoring_pss_bytes ')
+        . 'FROM host_samples WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
     );
     $series->execute([$from, $to]);
     $rows = $series->fetchAll();
