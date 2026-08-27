@@ -520,8 +520,8 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     return $status;
 }
 
-/** Does not expose a source path, but calls out unsafe aliases for every
- * selected store and disclosure risks for credential-bearing bootstrap stores. */
+/** Does not expose source paths, but calls out aliases and broad local access
+ * for selected stores and SQLite companion files. */
 function encryptionSensitiveSourceWarnings(array $paths, array $stores): array
 {
     $warnings = [];
@@ -530,13 +530,29 @@ function encryptionSensitiveSourceWarnings(array $paths, array $stores): array
         if ($path === '') continue;
         if (is_link($path)) { $warnings[] = "The selected {$store} source is a symbolic link; use an owner-controlled regular file before treating protection as ready."; continue; }
         if (!file_exists($path)) continue;
-        if (!in_array($store, ['config', 'setup'], true)) continue;
-        $permissions = fileperms($path);
-        if ($permissions !== false && ($permissions & 0077) !== 0) {
-            $warnings[] = "The selected {$store} source is readable by group or other users; restrict it to the HostScope service account before treating protection as ready.";
+        $parts = [$path];
+        if ($store !== 'config') $parts = array_merge($parts, [$path . '-wal', $path . '-shm']);
+        foreach ($parts as $index => $part) {
+            $label = $index === 0 ? "{$store} source" : "{$store} SQLite companion";
+            if (is_link($part)) { $warnings[] = "The selected {$label} is a symbolic link; use an owner-controlled regular file before treating protection as ready."; continue; }
+            if (!is_file($part)) continue;
+            $permissions = fileperms($part);
+            if ($permissions === false || encryptionStorePermissionsPrivate($store, $permissions)) continue;
+            $warnings[] = $store === 'host'
+                ? "The selected {$label} permits access beyond the documented dashboard group-read handoff; restrict it before treating protection as ready."
+                : (in_array($store, ['config', 'setup'], true)
+                    ? "The selected {$label} is readable by group or other users; restrict it to the HostScope service account before treating protection as ready."
+                    : "The selected {$label} is readable or writable by group or other users; restrict it to the HostScope service account before treating protection as ready.");
         }
     }
     return $warnings;
+}
+
+/** Host collection files may be group-readable for the dashboard, never writable or world-accessible. */
+function encryptionStorePermissionsPrivate(string $store, int $permissions): bool
+{
+    if ($store === 'host') return ($permissions & 0007) === 0 && in_array($permissions & 0070, [0000, 0040], true);
+    return ($permissions & 0077) === 0;
 }
 
 /** Conservative next-seal capacity estimate. SQLite snapshots and ciphertext

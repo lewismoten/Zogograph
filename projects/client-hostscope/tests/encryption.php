@@ -217,6 +217,7 @@ try {
         $live = new PDO('sqlite:' . $root . '/live.db', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
         $live->exec('CREATE TABLE evidence (value TEXT NOT NULL)');
         $live->exec("INSERT INTO evidence VALUES ('committed WAL value')");
+        foreach ([$root . '/live.db', $root . '/live.db-wal', $root . '/live.db-shm'] as $privateFile) if (is_file($privateFile)) chmod($privateFile, 0600);
         $snapshot = $root . '/live.sealed';
         encryptionSealSqliteSnapshot($live, $snapshot, $key, 'stats:sqlite-snapshot');
         encryptionOpenFile($snapshot, $root . '/live-opened.db', $key);
@@ -276,6 +277,10 @@ try {
         encryptionExpect(str_contains(implode(' ', encryptionStatus($live, $config, $web)['warnings']), 'config source is readable by group or other users'),
             'protection status did not report a broadly readable selected configuration source');
         chmod($web . '/lib/config.php', 0600);
+        chmod($root . '/live.db', 0644);
+        encryptionExpect(str_contains(implode(' ', encryptionStatus($live, $config, $web)['warnings']), 'account source is readable or writable by group or other users'),
+            'protection status did not report a broadly accessible selected account database');
+        chmod($root . '/live.db', 0600);
         $policyConfig = $config; $policyConfig['encryption'] += ['backup_schedule' => 'daily', 'retention_days' => 30,
             'retention_recovery_tiers' => ['daily' => 7, 'weekly' => 4, 'monthly' => 12], 'recovery_drill_max_age_days' => 90];
         $policyStatus = encryptionStatus($live, $policyConfig, $web);
