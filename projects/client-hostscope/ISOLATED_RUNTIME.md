@@ -102,4 +102,6 @@ remote-custody claims.
 
 [`PROVIDER_RPC_PLAN.md`](PROVIDER_RPC_PLAN.md) records the signed operation
 set, data boundary, deployment decision, and safe rollout order for the next
-implementation step.
+implementation step. The container template keeps standard input open for a
+single bounded JSON request; feed only the core-generated request through that
+channel and do not pass values through command arguments or environment.
