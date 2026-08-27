@@ -57,6 +57,15 @@ return [
         // ],
     ],
 
+    /* Executable packages are separate from the data-only marketplace. The
+     * runtime verifies an Ed25519-signed file manifest, installs immutable
+     * files here, and records explicit capability grants before a future
+     * package entry point can run. Keep publisher keys in setup settings. */
+    'package_runtime' => [
+        'directory' => __DIR__ . '/../data/packages',
+        'trusted_keys' => [], // key-id => ['publisher' => '', 'public_key' => 'Base64 Ed25519 key']
+    ],
+
     // Sign-in. Without this nobody can unmask paths or delete anything, which
     // is a safe default for a fresh install.
     'password_hash' => '',

@@ -189,6 +189,30 @@ function migrationStatementApplied(PDO $pdo, string $sql): bool
 function migrations(): array
 {
     return [
+        51 => [
+            /* Registry for signed executable packages. A row is not permission
+             * to execute code: it is immutable installation evidence plus the
+             * administrator's separately recorded capability grants. */
+            'CREATE TABLE runtime_packages (
+                package_id TEXT PRIMARY KEY,
+                version TEXT NOT NULL,
+                publisher TEXT NOT NULL,
+                manifest_json TEXT NOT NULL,
+                install_path TEXT NOT NULL,
+                installed_at INTEGER NOT NULL,
+                enabled_at INTEGER,
+                changed_at INTEGER NOT NULL,
+                changed_by TEXT NOT NULL
+            )',
+            'CREATE TABLE runtime_package_grants (
+                package_id TEXT NOT NULL REFERENCES runtime_packages(package_id) ON DELETE CASCADE,
+                capability TEXT NOT NULL,
+                granted_at INTEGER NOT NULL,
+                granted_by TEXT NOT NULL,
+                PRIMARY KEY (package_id, capability)
+            )',
+            'CREATE INDEX runtime_packages_enabled ON runtime_packages (enabled_at, changed_at DESC)',
+        ],
         50 => [
             /* The local source of truth for encrypted-copy and future fleet
              * replica evidence. It records ciphertext facts only, never keys
