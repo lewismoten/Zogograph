@@ -11746,6 +11746,8 @@ function renderEncryptionStatus(data) {
   if (data.waiting_stores?.length) overview.push(["Waiting until present", data.waiting_stores.join(", ")]);
   const superseded = (data.superseded_artifacts || []).reduce((total, row) => total + Number(row.copies || 0), 0);
   if (superseded) overview.push(["Superseded recovery copies", String(superseded)]);
+  const retired = (data.retired_artifacts || []).reduce((total, row) => total + Number(row.copies || 0), 0);
+  if (retired) overview.push(["Retired recovery copies", String(retired)]);
   const parts = [factGrid(overview)];
   if (data.mode === "none") {
     parts.push(note("Protection is off. Live SQLite databases and ordinary copies remain unencrypted unless your host protects their storage separately. Start with the setup wizard's Encryption section; HostScope will not generate, upload, or store a private key from this page."));

@@ -184,6 +184,9 @@ try {
         $retired = encryptionRetireSupersededArtifacts($rotationConfig, $live, $web, $keyPath);
         encryptionExpect($retired >= 1 && (int)$live->query("SELECT COUNT(*) FROM encryption_artifacts WHERE state = 'retired'")->fetchColumn() >= 1,
             'superseded sealed copies were not retired after current-key recovery verification');
+        $retiredStatus = encryptionStatus($live, $rotationConfig, $web);
+        encryptionExpect(count($retiredStatus['retired_artifacts']) >= 1,
+            'protection status did not retain retired-copy audit evidence');
     }
 
     $tampered = $root . '/tampered.sealed';
