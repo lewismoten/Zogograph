@@ -303,9 +303,13 @@ function packageRuntimeLiftRevocation(PDO $pdo, string $id): void
 function packageRuntimePrivateDatabase(PDO $registry, array $config, string $id): PDO
 {
     packageRuntimeInstalled($registry, $id);
-    $grant = $registry->prepare('SELECT enabled_at FROM runtime_packages WHERE package_id = ?');
-    $grant->execute([$id]);
-    if ($grant->fetchColumn() === null) throw new InvalidArgumentException('package is not enabled');
+    $grant = $registry->prepare('SELECT enabled_at, manifest_json FROM runtime_packages WHERE package_id = ?');
+    $grant->execute([$id]); $package = $grant->fetch();
+    if (!is_array($package) || $package['enabled_at'] === null) throw new InvalidArgumentException('package is not enabled');
+    $manifest = json_decode((string)$package['manifest_json'], true);
+    if (!is_array($manifest)) throw new RuntimeException('installed package is unavailable');
+    $compatibility = packageRuntimeCompatibility($manifest);
+    if ($compatibility['status'] !== 'ready') throw new InvalidArgumentException('package platform is unavailable: ' . $compatibility['detail']);
     $grant = $registry->prepare('SELECT COUNT(*) FROM runtime_package_grants WHERE package_id = ? AND capability = ?');
     $grant->execute([$id, 'package_private_database']);
     if ((int)$grant->fetchColumn() !== 1) throw new InvalidArgumentException('package lacks private database permission');
