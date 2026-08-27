@@ -40,10 +40,11 @@ and has passed its specific release gate:
 - MySQL/MariaDB storage and Redis cache/queue integrations. Neither is an
   encryption feature, and Redis is not a default durable metric store.
 
-Package code is not allowed to execute until the isolated runtime and its
-reviewed permission boundary exist. Installing a package today may expose its
-metadata and settings schema, but cannot imply that its proposed protection is
-active.
+Package code is not allowed to execute from the dashboard until the isolated
+runtime and its reviewed permission boundary exist. Installing a package today
+may expose its metadata and settings schema, but cannot imply that its proposed
+protection is active. The sandboxed no-secret worker and the staged RPC
+operations are specified in [PROVIDER_RPC_PLAN.md](PROVIDER_RPC_PLAN.md).
 
 The Package runtime page nevertheless performs a non-executing readiness
 check. It reports missing PHP extensions, an unavailable SQLCipher PDO driver,
@@ -92,4 +93,5 @@ recovery-drill result, and next review date in administration settings.
 
 For detailed rationale and release gates, see
 [ENCRYPTION_REVIEW.md](ENCRYPTION_REVIEW.md) and
-[ENCRYPTION_AND_FLEET_PLAN.md](ENCRYPTION_AND_FLEET_PLAN.md).
+[ENCRYPTION_AND_FLEET_PLAN.md](ENCRYPTION_AND_FLEET_PLAN.md), plus the
+[PROVIDER_RPC_PLAN.md](PROVIDER_RPC_PLAN.md) invocation contract.
