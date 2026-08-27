@@ -64,7 +64,7 @@ function encryptionKeyPath(string $path, string $webRoot, bool $mustExist): stri
     if ($mustExist && (!is_file($path) || !is_readable($path))) {
         throw new RuntimeException('the local key file is unavailable');
     }
-    $real = $mustExist ? realpath($path) : $path;
+    $real = $mustExist ? realpath($path) : encryptionCanonicalPotentialPath($path);
     if (!is_string($real)) {
         throw new RuntimeException('could not resolve the local key path');
     }
@@ -83,6 +83,7 @@ function encryptionKeyPath(string $path, string $webRoot, bool $mustExist): stri
     }
     return $real;
 }
+
 
 /** Resolves a custom encrypted-artifact directory. The built-in data/sealed
  * destination remains the portable default; an explicit override must be a

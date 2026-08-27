@@ -96,6 +96,13 @@ try {
     $key = encryptionReadLocalKey($keyPath, $web);
     encryptionExpect(strlen($key) === 32, 'local key did not contain 256 bits');
     encryptionExpect((fileperms($keyPath) & 0077) === 0, 'local key permissions are too broad');
+    if (function_exists('symlink') && @symlink($web, $root . '/linked-web')) {
+        $linkedKey = $root . '/linked-web/exposed.key';
+        try { encryptionCreateLocalKey($linkedKey, $web); throw new RuntimeException('local key creation followed a symlinked parent into the web root'); }
+        catch (RuntimeException $error) { encryptionExpect($error->getMessage() !== 'local key creation followed a symlinked parent into the web root', $error->getMessage()); }
+        encryptionExpect(!file_exists($web . '/exposed.key'), 'rejected symlinked local key path still wrote key material in the web root');
+        @unlink($root . '/linked-web');
+    }
     $defaultDatabase = $root . '/default/stats.db'; mkdir(dirname($defaultDatabase), 0700, true);
     $defaultSealed = dirname($defaultDatabase) . '/sealed';
     symlink($web, $defaultSealed);
