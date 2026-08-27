@@ -265,7 +265,7 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     $settings = (array)($config['encryption'] ?? []);
     $mode = (string)($settings['mode'] ?? 'none');
     $stores = encryptionSelectedStores($settings);
-    $status = ['mode' => $mode, 'stores' => $stores, 'waiting_stores' => [], 'ready' => false, 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null];
+    $status = ['mode' => $mode, 'stores' => $stores, 'waiting_stores' => [], 'superseded_artifacts' => [], 'ready' => false, 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null];
     if ($mode === 'none') {
         $status['warnings'][] = 'Encryption is off. Live SQLite files and copies remain unencrypted unless host storage protection is configured separately.';
         return $status;
@@ -292,6 +292,8 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
         $stmt = $pdo->query("SELECT store, MAX(created_at) AS created_at, MAX(last_verified_at) AS last_verified_at, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verified' GROUP BY store");
         foreach ($stmt->fetchAll() as $row) $status['artifacts'][] = ['store' => $row['store'], 'created_at' => (int)$row['created_at'],
             'last_verified_at' => (int)$row['last_verified_at'], 'copies' => (int)$row['copies']];
+        $superseded = $pdo->query("SELECT store, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'superseded' GROUP BY store");
+        foreach ($superseded->fetchAll() as $row) $status['superseded_artifacts'][] = ['store' => $row['store'], 'copies' => (int)$row['copies']];
     } catch (Throwable) { $status['warnings'][] = 'No encrypted artifact ledger is available yet.'; }
     $paths = encryptionStorePaths($config, $webRoot);
     $expected = [];

@@ -178,6 +178,9 @@ try {
             && (int)$live->query("SELECT COUNT(*) FROM encryption_artifacts WHERE state = 'verified'")->fetchColumn() >= 1,
             'configured sealed-copy rotation did not retain old and new recovery evidence separately');
         encryptionOpenFile((string)$rotatedConfigured[0]['local_path'], $root . '/rotated-configured.db', $replacement);
+        $rotationStatus = encryptionStatus($live, $rotationConfig, $web);
+        encryptionExpect(count($rotationStatus['superseded_artifacts']) >= 1,
+            'protection status did not disclose retained superseded recovery evidence');
     }
 
     $tampered = $root . '/tampered.sealed';

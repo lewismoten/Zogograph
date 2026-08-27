@@ -11744,6 +11744,8 @@ function renderEncryptionStatus(data) {
     overview.push(["Space for next seal", `${humanBytes(data.storage_estimate.required_bytes)} estimated · ${free}`]);
   }
   if (data.waiting_stores?.length) overview.push(["Waiting until present", data.waiting_stores.join(", ")]);
+  const superseded = (data.superseded_artifacts || []).reduce((total, row) => total + Number(row.copies || 0), 0);
+  if (superseded) overview.push(["Superseded recovery copies", String(superseded)]);
   const parts = [factGrid(overview)];
   if (data.mode === "none") {
     parts.push(note("Protection is off. Live SQLite databases and ordinary copies remain unencrypted unless your host protects their storage separately. Start with the setup wizard's Encryption section; HostScope will not generate, upload, or store a private key from this page."));
@@ -11752,6 +11754,7 @@ function renderEncryptionStatus(data) {
   } else if (data.mode === "sealed_copies_local") {
     parts.push(note("Verified encrypted copies protect backup artifacts, not the running SQLite database. Run `php cron.php --seal` from the server after setup, then schedule it. Recovery requires the private key outside the web root and an explicit CLI restore."));
     parts.push(note("Optional remote key custody and ciphertext replica storage are not selectable yet. Their future signed providers will use only enrolled-client credentials kept as encrypted package secrets. Never enter a custody or relay management token, billing credential, plaintext database, or recovery key into this client."));
+    if (superseded) parts.push(note("Superseded copies remain encrypted with an earlier local key after rotation. Keep that key until you have completed a replacement-key recovery drill; they are not deleted automatically."));
   } else {
     parts.push(note("The selected protection mode is not available in this HostScope release. Keep the current data and recovery key safe while choosing a supported package or local mode."));
   }
