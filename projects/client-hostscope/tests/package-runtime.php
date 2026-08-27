@@ -181,7 +181,12 @@ try {
     $reference = packageRuntimeSecretStore($pdo, $config, 'test-runtime', 'remote-client-credential', 'administrator');
     runtimeExpect(str_starts_with($reference, 'secret_ref:test-runtime:'), 'package secret reference is not package-scoped');
     runtimeExpect(packageRuntimeSecretValue($pdo, $config, 'test-runtime', $reference) === 'remote-client-credential', 'encrypted package secret could not be recovered');
+    $listedSecrets = packageRuntimeSecrets($pdo, $config, 'test-runtime');
+    runtimeExpect(count($listedSecrets) === 1 && $listedSecrets[0]['reference'] === $reference && !$listedSecrets[0]['referenced'],
+        'package secret inventory exposed incorrect metadata before settings used it');
     packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['retention_days' => 30, 'custody_secret' => $reference], 'administrator');
+    $listedSecrets = packageRuntimeSecrets($pdo, $config, 'test-runtime');
+    runtimeExpect(count($listedSecrets) === 1 && $listedSecrets[0]['referenced'], 'package secret inventory did not report an active reference');
     runtimeExpect(packageRuntimeSettings($pdo, $config, 'test-runtime')['retention_days'] === 30,
         'package SQLite-backed settings were not retained');
     runtimeExpect(!isset(packageRuntimeProbeEvidence($config)['test-runtime']),

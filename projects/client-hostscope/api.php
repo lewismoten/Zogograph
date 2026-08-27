@@ -313,6 +313,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'package-runtime-unrevoke' => doPackageRuntimeLiftRevocation($pdo, $post),
         'package-runtime-settings' => packageRuntimeSettingsView($config, $pdo, $signedIn),
         'package-runtime-settings-save' => doPackageRuntimeSettingsSave($config, $pdo, $post),
+        'package-runtime-secrets' => packageRuntimeSecretsView($config, $pdo, $signedIn),
         'package-runtime-secret-create' => doPackageRuntimeSecretCreate($config, $pdo, $post),
         'package-runtime-secret-delete' => doPackageRuntimeSecretDelete($config, $pdo, $post),
         'encryption-status' => encryptionStatusView($config, $pdo, $signedIn),
@@ -361,6 +362,7 @@ function requireActionAccess(array $config, string $action): void
         'package-runtime-unrevoke' => 'sys-packages',
         'package-runtime-settings' => 'sys-packages',
         'package-runtime-settings-save' => 'sys-packages',
+        'package-runtime-secrets' => 'sys-packages',
         'package-runtime-secret-create' => 'sys-packages',
         'package-runtime-secret-delete' => 'sys-packages',
         'encryption-status' => 'sys-encryption',
@@ -5693,6 +5695,15 @@ function doPackageRuntimeSettingsSave(array $config, PDO $pdo, bool $post): arra
     catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, 'package_runtime_settings_save', $id, 'ok', 0, 0, 'package settings updated');
     return ['ok' => true, 'id' => $id, 'settings' => packageRuntimeSettings($pdo, $config, $id)];
+}
+
+/** Secret metadata is administrator-only; values remain unreadable after creation. */
+function packageRuntimeSecretsView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn || !accessAllows($config, 'write')) throw new ActionRefused('administrator access is required for package secrets');
+    $id = trim((string)($_GET['id'] ?? ''));
+    try { return ['id' => $id, 'secrets' => packageRuntimeSecrets($pdo, $config, $id)]; }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
 }
 
 function doPackageRuntimeSecretCreate(array $config, PDO $pdo, bool $post): array

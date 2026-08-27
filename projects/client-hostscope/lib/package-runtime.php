@@ -657,6 +657,20 @@ function packageRuntimeSecretExists(array $config, string $id, string $reference
     return (int)$stmt->fetchColumn() === 1;
 }
 
+/** @return list<array{reference:string,created_at:int,updated_at:int,referenced:bool}> */
+function packageRuntimeSecrets(PDO $registry, array $config, string $id): array
+{
+    packageRuntimeInstalled($registry, $id);
+    $store = setupStoreOpen($config, false);
+    if ($store === null || (int)$store->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'package_runtime_secrets'")->fetchColumn() !== 1) return [];
+    $referenced = packageRuntimeSettingsSecretReferences(packageRuntimeSettings($registry, $config, $id), $id);
+    $stmt = $store->prepare('SELECT reference, created_at, updated_at FROM package_runtime_secrets WHERE package_id = ? ORDER BY updated_at DESC'); $stmt->execute([$id]);
+    $out = [];
+    foreach ($stmt->fetchAll() as $row) $out[] = ['reference' => (string)$row['reference'], 'created_at' => (int)$row['created_at'],
+        'updated_at' => (int)$row['updated_at'], 'referenced' => in_array((string)$row['reference'], $referenced, true)];
+    return $out;
+}
+
 function packageRuntimeSecretDelete(PDO $registry, array $config, string $id, string $reference): void
 {
     packageRuntimeInstalled($registry, $id); packageRuntimeValidateSecretReference($id, $reference);

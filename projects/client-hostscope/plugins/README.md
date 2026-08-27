@@ -34,6 +34,10 @@ Core refuses to save a reference until its encrypted secret record exists, and
 refuses to delete a secret that active package settings still reference. Remove
 or replace the reference first; this prevents a later provider invocation from
 failing because a credential was silently orphaned.
+The Package runtime page can list only each opaque reference, its timestamps,
+and whether settings use it; it cannot reveal a stored value. It offers deletion
+only for an unused reference, so credential rotation is create → save replacement
+→ delete old reference.
 
 The package-runtime dashboard rehashes installed immutable files and compares
 the installed manifest with its install-time fingerprint before it reports a
