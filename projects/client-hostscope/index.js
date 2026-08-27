@@ -11666,7 +11666,7 @@ function renderPackageRuntime(data) {
     { label: "Platform", render: row => row.compatibility?.status === "ready" ? "Ready" : row.compatibility?.detail || "Not checked" },
     { label: "Requested capabilities", render: row => row.capabilities.join(", ") },
     { label: "Granted", render: row => row.grants.length ? row.grants.join(", ") : "None" },
-    { label: "Last isolated probe", render: row => row.probe_evidence ? `${row.probe_evidence.operation}: ${row.probe_evidence.state} — ${row.probe_evidence.reason}` : "Not run" },
+    { label: "Last isolated probe", render: row => row.probe_evidence ? `${humanTime(row.probe_evidence.probed_at)} · ${row.probe_evidence.operation}: ${row.probe_evidence.state} — ${row.probe_evidence.reason}` : "Not run" },
     { label: "Status", render: row => row.state },
     { label: "", className: "row-actions", render: row => packageRuntimeActions(row, data.can_change) },
   ], null, row => row.enabled ? "row-ok" : "", row => row.id);
