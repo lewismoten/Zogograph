@@ -744,13 +744,54 @@ function packageRuntimeProbeInvoker(array $config, string $id, string $manifestH
     return ['command' => $command, 'isolation_profile' => $profile];
 }
 
+/** A credential check needs a different, reviewed egress-restricted sandbox
+ * launcher. The configured origin must match the saved provider endpoint. */
+function packageRuntimeCustodyCredentialInvoker(array $config, string $id, string $manifestHash, string $serviceBaseUrl): array
+{
+    $entry = (array)(((array)($config['package_runtime'] ?? []))['custody_credential_check_invokers'][$id] ?? []);
+    $command = array_values((array)($entry['command'] ?? [])); $profile = trim((string)($entry['isolation_profile'] ?? ''));
+    $hash = strtolower(trim((string)($entry['package_manifest_sha256'] ?? ''))); $origin = strtolower(rtrim((string)($entry['network_egress_origin'] ?? ''), '/'));
+    $parts = parse_url($serviceBaseUrl); $expected = is_array($parts) ? strtolower((string)($parts['scheme'] ?? '') . '://' . (string)($parts['host'] ?? '') . (isset($parts['port']) ? ':' . $parts['port'] : '')) : '';
+    if ($id !== 'hostscope-key-custody' || count($command) < 1 || count($command) > 24 || !preg_match('/^[a-z0-9][a-z0-9._:-]{2,120}$/i', $profile)
+        || !preg_match('/^[a-f0-9]{64}$/', $hash) || !hash_equals($manifestHash, $hash) || $expected === '' || !hash_equals($expected, $origin)) {
+        throw new RuntimeException('no reviewed endpoint-restricted custody credential-check launcher is configured for this exact package and service origin');
+    }
+    foreach ($command as $index => $argument) {
+        if (!is_string($argument) || $argument === '' || strlen($argument) > 1024 || str_contains($argument, "\0")
+            || ($index === 0 && (!str_starts_with($argument, '/') || !is_file($argument) || !is_executable($argument)))) {
+            throw new RuntimeException('custody credential-check launcher command is invalid');
+        }
+    }
+    return ['command' => $command, 'isolation_profile' => $profile];
+}
+
+/** The sole credential-bearing package operation. It only checks the signed
+ * enrolled-client entitlement endpoint and cannot accept caller-supplied data. */
+function packageRuntimeInvokeCustodyEnrollmentCheck(PDO $registry, array $config): array
+{
+    $id = 'hostscope-key-custody';
+    $settings = packageRuntimeSettings($registry, $config, $id);
+    $readiness = packageRuntimeProviderReadiness($registry, $config, $id);
+    if (($readiness['state'] ?? '') !== 'awaiting-isolated-runtime') throw new InvalidArgumentException($readiness['reason'] ?? 'custody enrollment is not ready');
+    $grant = $registry->prepare('SELECT capability FROM runtime_package_grants WHERE package_id = ? AND capability IN (?, ?)');
+    $grant->execute([$id, 'key_provider', 'network_client']);
+    $granted = array_values(array_unique(array_column($grant->fetchAll(), 'capability'))); sort($granted, SORT_STRING);
+    if ($granted !== ['key_provider', 'network_client']) {
+        throw new InvalidArgumentException('explicitly approve the custody enrollment-check permissions before sending credentials');
+    }
+    $input = ['service_base_url' => (string)$settings['service_base_url'], 'tls_spki_pin' => $settings['tls_spki_pin'] ?? null,
+        'client_credential' => packageRuntimeSecretValue($registry, $config, $id, (string)$settings['client_credential_secret']),
+        'client_signing_key' => packageRuntimeSecretValue($registry, $config, $id, (string)$settings['client_signing_secret'])];
+    return packageRuntimeInvokeProbe($registry, $config, $id, 'custody_enrollment_check', $input, true);
+}
+
 /**
  * Launches only a signed no-secret readiness probe through an operator-owned
  * sandbox command. It deliberately does not grant isolated_package_runtime or
  * enable a provider: an attestation record is not proof of live-operation safety.
  * @return array{id:string,state:string,reason:string,version?:string}
  */
-function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, string $operation = 'capability', array $input = []): array
+function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, string $operation = 'capability', array $input = [], bool $credentialOperation = false): array
 {
     if (!function_exists('proc_open')) throw new RuntimeException('this PHP deployment cannot launch an isolated probe');
     $row = $registry->prepare('SELECT manifest_json, manifest_sha256, install_path, enabled_at FROM runtime_packages WHERE package_id = ?');
@@ -762,7 +803,8 @@ function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, str
     $revoked = $registry->prepare('SELECT 1 FROM runtime_package_revocations WHERE package_id = ?'); $revoked->execute([$id]);
     if ($revoked->fetchColumn()) throw new RuntimeException('package is revoked');
     $signedOperations = (array)($manifest['runtime']['operations'] ?? []);
-    if (!in_array($operation, ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe'], true) || !in_array($operation, $signedOperations, true)) {
+    $allowed = $credentialOperation ? ['custody_enrollment_check'] : ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe'];
+    if (!in_array($operation, $allowed, true) || !in_array($operation, $signedOperations, true)) {
         throw new InvalidArgumentException('package operation is not a signed no-secret probe');
     }
     if ($operation === 'custody_endpoint_probe') {
@@ -770,8 +812,13 @@ function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, str
             || (($input['tls_spki_pin'] ?? null) !== null && !is_string($input['tls_spki_pin']))) {
             throw new InvalidArgumentException('custody endpoint probe input is invalid');
         }
+    } elseif ($operation === 'custody_enrollment_check') {
+        if (!$credentialOperation || array_diff(array_keys($input), ['service_base_url', 'tls_spki_pin', 'client_credential', 'client_signing_key']) !== []
+            || !is_string($input['service_base_url'] ?? null) || (($input['tls_spki_pin'] ?? null) !== null && !is_string($input['tls_spki_pin']))
+            || !is_string($input['client_credential'] ?? null) || !is_string($input['client_signing_key'] ?? null)) throw new InvalidArgumentException('custody credential-check input is invalid');
     } elseif ($input !== []) throw new InvalidArgumentException('this probe does not accept input');
-    $invoker = packageRuntimeProbeInvoker($config, $id, (string)$package['manifest_sha256']);
+    $invoker = $credentialOperation ? packageRuntimeCustodyCredentialInvoker($config, $id, (string)$package['manifest_sha256'], (string)$input['service_base_url'])
+        : packageRuntimeProbeInvoker($config, $id, (string)$package['manifest_sha256']);
     $invocationId = bin2hex(random_bytes(16));
     $requestData = ['api' => PACKAGE_RUNTIME_API_VERSION, 'invocation_id' => $invocationId, 'operation' => $operation, 'package_id' => $id];
     if ($input !== []) $requestData['input'] = $input;
@@ -820,7 +867,7 @@ function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, str
 /** Stores bounded diagnostic evidence separately from package settings/secrets. */
 function packageRuntimeRecordProbe(array $config, string $id, string $operation, array $result): void
 {
-    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id) || !in_array($operation, ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe'], true)
+    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id) || !in_array($operation, ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe', 'custody_enrollment_check'], true)
         || !is_string($result['state'] ?? null) || !is_string($result['reason'] ?? null)
         || strlen($result['state']) > 120 || strlen($result['reason']) > 1000) {
         throw new InvalidArgumentException('package probe evidence is invalid');

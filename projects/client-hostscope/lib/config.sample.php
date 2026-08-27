@@ -88,6 +88,24 @@ return [
          *   ],
          * ],
          */
+        /* Credential checks are a separate, high-trust launcher policy. It
+         * must be a one-shot sandbox that permits egress only to the declared
+         * HTTPS origin; never reuse the no-network probe launcher. Core checks
+         * that the origin matches saved custody settings and pins the package
+         * manifest, but the container/OS profile must enforce the egress rule.
+         * This performs only signed GET /v1/client/subscription and receives
+         * the enrolled bearer/signing key once via standard input. It is off
+         * by default and never enables package/database/key operations.
+         *
+         * 'custody_credential_check_invokers' => [
+         *   'hostscope-key-custody' => [
+         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/hostscope/custody-credential-check.yml', 'run', '--rm', '-T', 'package-worker'],
+         *     'isolation_profile' => 'container-one-shot-egress-restricted-v1',
+         *     'network_egress_origin' => 'https://custody.example',
+         *     'package_manifest_sha256' => 'the installed manifest.json SHA-256',
+         *   ],
+         * ],
+         */
     ],
 
     // Sign-in. Without this nobody can unmask paths or delete anything, which

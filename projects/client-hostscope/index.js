@@ -11720,6 +11720,15 @@ function packageRuntimeActions(row, canChange) {
     });
     wrap.appendChild(approve);
   }
+  if (row.id === "hostscope-key-custody" && ["key_provider", "network_client"].every(capability => row.grants.includes(capability))) {
+    const enrollment = document.createElement("button"); enrollment.className = "link"; enrollment.textContent = "Check enrolled credential";
+    enrollment.addEventListener("click", async () => {
+      if (!(await confirmDialog("Send the two encrypted enrollment credentials once to the deployment-configured, endpoint-restricted sandbox?\n\nIt will only read custody subscription readiness. It cannot create an envelope, unwrap a key, or access a HostScope database.", "Check enrolled custody credential"))) return;
+      try { const result = await post("package-runtime-custody-enrollment-check", {}); showListDialog("Custody enrollment check", [factGrid([["State", result.result.state], ["Result", result.result.reason], ["Safety boundary", result.warning]])]); await refreshPackageRuntime(); }
+      catch (error) { notice(String(error.message || error)); }
+    });
+    wrap.appendChild(enrollment);
+  }
   const toggle = document.createElement("button"); toggle.className = row.enabled ? "link danger" : "link";
   const platformReady = row.compatibility?.status === "ready";
   toggle.textContent = row.enabled ? "Disable" : (platformReady ? "Grant & enable" : "Platform unavailable");

@@ -309,6 +309,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'package-runtime' => packageRuntimeView($config, $pdo, $signedIn),
         'package-runtime-probe' => doPackageRuntimeProbe($config, $pdo, $post),
         'package-runtime-custody-diagnostic-approve' => doPackageRuntimeCustodyDiagnosticApprove($pdo, $post),
+        'package-runtime-custody-enrollment-check' => doPackageRuntimeCustodyEnrollmentCheck($config, $pdo, $post),
         'package-runtime-enable' => doPackageRuntimeEnable($pdo, $post),
         'package-runtime-revoke' => doPackageRuntimeRevoke($pdo, $post),
         'package-runtime-unrevoke' => doPackageRuntimeLiftRevocation($pdo, $post),
@@ -359,6 +360,7 @@ function requireActionAccess(array $config, string $action): void
         'package-runtime' => 'sys-packages',
         'package-runtime-probe' => 'sys-packages',
         'package-runtime-custody-diagnostic-approve' => 'sys-packages',
+        'package-runtime-custody-enrollment-check' => 'sys-packages',
         'package-runtime-enable' => 'sys-packages',
         'package-runtime-revoke' => 'sys-packages',
         'package-runtime-unrevoke' => 'sys-packages',
@@ -5655,6 +5657,16 @@ function doPackageRuntimeCustodyDiagnosticApprove(PDO $pdo, bool $post): array
     catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, 'package_runtime_custody_diagnostic_approve', $id, 'ok', 0, 0, 'key_provider, network_client only; package remains inactive');
     return ['ok' => true, 'packages' => packageRuntimePackages($pdo)];
+}
+
+function doPackageRuntimeCustodyEnrollmentCheck(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    try { $result = packageRuntimeInvokeCustodyEnrollmentCheck($pdo, $config); packageRuntimeRecordProbe($config, 'hostscope-key-custody', 'custody_enrollment_check', $result); }
+    catch (InvalidArgumentException|RuntimeException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'package_runtime_custody_enrollment_check', 'hostscope-key-custody', 'ok', 0, 0, 'credential accepted; no envelope, unwrap, or key operation requested');
+    return ['ok' => true, 'result' => $result,
+        'warning' => 'The enrolled-client credential was delivered only to the configured one-shot credential-check sandbox. This checked subscription readiness only; it did not create an envelope, unwrap a key, or access a HostScope database.'];
 }
 
 function doPackageRuntimeEnable(PDO $pdo, bool $post): array

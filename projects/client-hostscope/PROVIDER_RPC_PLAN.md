@@ -13,8 +13,10 @@ at runtime; the manifest and core both have to recognize it.
 | `seal_envelope` | `key_provider` | fresh per-artifact data key and provider public information | local KEK, management/billing credential, other package data |
 | `store_ciphertext` | `ciphertext_replica` + `network_client` | already-sealed artifact bytes/digest and scoped client credential | plaintext store, artifact data key, recovery key |
 | `sqlcipher_preflight` | `live_database_encryption` + `storage_backend` | a disposable, core-created test database path in the package mount | selected live database, setup database, production key |
+| `custody_enrollment_check` | `key_provider` + `network_client` | enrolled-client bearer/signing key, configured endpoint, and optional public TLS pin | management/billing credential, artifact ID, any database path, envelope, or data key |
 
-`capability` and the SQLCipher-only `sqlcipher_preflight` are now implemented
+`capability`, the SQLCipher-only `sqlcipher_preflight`, and the custody
+credential-only `custody_enrollment_check` are now implemented
 in the sandbox worker. The preflight uses a random temporary file/key and
 returns only `unavailable` or `preflight-ready`; it does not receive a selected
 store or production key. Add each remaining operation only after its request
@@ -71,3 +73,23 @@ into arbitrary command execution.
 Each operation stays optional. The supported low-cost default remains local
 SQLite with owner-only files and verified sealed copies; no remote service or
 container runtime is required for that baseline.
+
+### Credential-check deployment gate
+
+The implemented enrollment check is intentionally not a generic provider
+runner. It requires all of the following before core sends the enrolled pair:
+
+1. a fresh credential-free endpoint identity probe and two encrypted package
+   secret references;
+2. explicit administrator approval of only `key_provider` and `network_client`;
+3. a separate deployment-owned `custody_credential_check_invokers` command
+   pinned to the installed manifest hash; and
+4. a declared egress origin exactly matching the saved HTTPS custody origin.
+
+The sandbox profile must enforce one-shot execution, read-only package files,
+no core mounts, no environment/argument secret delivery, and egress restricted
+to that origin. Core checks the configuration assertion but cannot make a
+general Docker network satisfy it by itself. The operation calls only signed
+`GET /v1/client/subscription`, records bounded readiness evidence, and never
+requests an envelope or key. Do not reuse the no-network probe compose template
+for it; provide a separately reviewed network-restricted deployment definition.
