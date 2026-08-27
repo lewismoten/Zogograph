@@ -11891,7 +11891,11 @@ function renderEncryptionStatus(data) {
       remote.disabled = !data.remote_envelope_candidates?.length;
       remote.title = remote.disabled ? "Create a verified encrypted copy before adding an optional remote envelope." : "Requires separately configured custody enrollment and envelope-store sandboxes.";
       remote.addEventListener("click", () => showCustodyEnvelopeDialog(data.remote_envelope_candidates || []));
-      actions.append(seal, drill, remote); parts.push(actions);
+      const remoteDrill = document.createElement("button"); remoteDrill.type = "button"; remoteDrill.textContent = "Run remote custody recovery drill";
+      remoteDrill.disabled = !data.remote_envelope_candidates?.length;
+      remoteDrill.title = remoteDrill.disabled ? "A verified local artifact is required before a remote recovery drill." : "Requires a stored remote envelope and separately configured custody unwrap sandbox.";
+      remoteDrill.addEventListener("click", () => showCustodyRecoveryDrillDialog(data.remote_envelope_candidates || []));
+      actions.append(seal, drill, remote, remoteDrill); parts.push(actions);
     }
   } else {
     parts.push(note("The selected protection mode is not available in this HostScope release. Keep the current data and recovery key safe while choosing a supported package or local mode."));
@@ -11932,6 +11936,24 @@ function showCustodyEnvelopeDialog(candidates) {
     showListDialog("Remote custody envelope stored", [factGrid([["Artifact", result.artifact_id], ["State", result.result.state], ["Result", result.result.reason], ["Safety boundary", result.warning]])]);
     await refreshEncryptionStatus();
   }, "Store optional envelope");
+}
+
+function showCustodyRecoveryDrillDialog(candidates) {
+  const select = document.createElement("select"); select.className = "wide-field";
+  for (const artifact of candidates) {
+    const option = document.createElement("option"); option.value = artifact.artifact_id;
+    option.textContent = `${artifact.store} · ${humanTime(artifact.created_at)} · ${artifact.artifact_id}`;
+    select.appendChild(option);
+  }
+  showFormDialog("Remote custody recovery drill", [
+    fieldRow("Artifact with stored remote envelope", select, "The selected artifact must already have a stored custody envelope. HostScope will recheck its ciphertext before requesting a temporary key release."),
+    note("The custody key is returned only through the isolated worker’s private process pipe, used in memory to authenticate a temporary recovered file, then discarded. The temporary file is removed. Neither key nor plaintext appears in this browser."),
+  ], async () => {
+    if (!(await confirmDialog("Run a non-destructive remote custody recovery drill for this artifact?\n\nThis asks custody to release one temporary data key solely to authenticate the existing sealed copy. The key and temporary plaintext are discarded.", "Run remote recovery drill"))) return;
+    const result = await post("package-runtime-custody-recovery-drill", { artifact_id: select.value, confirm: "run-remote-recovery-drill" });
+    showListDialog("Remote custody recovery verified", [factGrid([["Artifact", result.artifact_id], ["State", result.result.state], ["Result", result.result.reason], ["Safety boundary", result.warning]])]);
+    await refreshEncryptionStatus();
+  }, "Run recovery drill");
 }
 
 function renderMarketplace(data) {
