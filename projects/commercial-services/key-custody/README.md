@@ -119,12 +119,14 @@ The service caps a requested recommendation at the key's configured
 authorization TTL; this is a cache ceiling, not a claim that previously
 returned material expires or is remotely revocable.
 
-If an enrolled client is replaced or its credentials might have been exposed,
-an account-management client can `POST /v1/client-credentials/rotate`. The
-response contains a new client bearer token and Base64 Ed25519 private key once
-and immediately revokes all previous enrolled-client credentials for that
-tenant. Update the client package's two `secret_ref:` values together before
-retiring the old deployment.
+Use one enrolled-client credential per customer deployment. Account management
+can `GET` or `POST /v1/client-credentials` to list metadata or create a new
+one-time bearer/signing-key pair, and can revoke only one old deployment with
+`DELETE /v1/client-credentials/{credentialId}`. If credentials might be
+widely exposed, `POST /v1/client-credentials/rotate` creates one replacement
+pair and immediately revokes **all** existing enrolled-client credentials for
+that tenant. Update a client package's two `secret_ref:` values together before
+retiring that deployment.
 
 If a customer management token is exposed, use it once to call
 `POST /v1/management-credentials/rotate`. The response contains a replacement

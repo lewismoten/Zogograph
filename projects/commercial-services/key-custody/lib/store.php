@@ -63,20 +63,49 @@ function keyCustodyCreateToken(PDO $pdo, string $tenant, string $scope, ?string 
     return $id . '.' . $secret;
 }
 
-/** @return array{token:string,signing_private_key:string} */
+/** @return array{id:string,token:string,signing_private_key:string} */
 function keyCustodyCreateClientCredential(PDO $pdo, string $tenant): array
 {
     if (!function_exists('sodium_crypto_sign_keypair')) throw new RuntimeException('libsodium is required for enrolled-client credentials');
     $pair = sodium_crypto_sign_keypair();
+    $token = keyCustodyCreateToken($pdo, $tenant, 'client', sodium_crypto_sign_publickey($pair));
+    [$id] = explode('.', $token, 2);
     return [
-        'token' => keyCustodyCreateToken($pdo, $tenant, 'client', sodium_crypto_sign_publickey($pair)),
+        'id' => $id, 'token' => $token,
         // This is emitted once for enrollment; only the public half is retained.
         'signing_private_key' => base64_encode(sodium_crypto_sign_secretkey($pair)),
     ];
 }
 
+/** @return array{id:string,token:string,signing_private_key:string} */
+function keyCustodyCreateAdditionalClientCredential(PDO $pdo, string $tenant): array
+{
+    $tenantCheck = $pdo->prepare('SELECT active FROM tenants WHERE id = ?'); $tenantCheck->execute([$tenant]);
+    if ($tenantCheck->fetchColumn() !== 1) throw new InvalidArgumentException('tenant is unavailable');
+    $credential = keyCustodyCreateClientCredential($pdo, $tenant);
+    keyCustodyAudit($pdo, $tenant, 'client_credential_create', $credential['id'], 'additional enrolled-client credential');
+    return $credential;
+}
+
+/** @return list<array{id:string,state:string,created_at:int}> */
+function keyCustodyListClientCredentials(PDO $pdo, string $tenant): array
+{
+    $stmt = $pdo->prepare("SELECT id, created_at, revoked_at FROM access_tokens WHERE tenant_id = ? AND scope = 'client' ORDER BY created_at DESC");
+    $stmt->execute([$tenant]);
+    return array_map(fn(array $row): array => ['id' => $row['id'], 'state' => $row['revoked_at'] === null ? 'active' : 'revoked', 'created_at' => (int)$row['created_at']], $stmt->fetchAll());
+}
+
+function keyCustodyRevokeClientCredential(PDO $pdo, string $tenant, string $id): void
+{
+    if (!preg_match('/^tok_[a-f0-9]{20}$/', $id)) throw new InvalidArgumentException('enrolled-client credential id is invalid');
+    $stmt = $pdo->prepare("UPDATE access_tokens SET revoked_at = ? WHERE id = ? AND tenant_id = ? AND scope = 'client' AND revoked_at IS NULL");
+    $stmt->execute([time(), $id, $tenant]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('active enrolled-client credential is unavailable');
+    keyCustodyAudit($pdo, $tenant, 'client_credential_revoke', $id, 'management request');
+}
+
 /** Revokes prior enrolled-client credentials and emits a replacement once.
- * @return array{token:string,signing_private_key:string} */
+ * @return array{id:string,token:string,signing_private_key:string} */
 function keyCustodyRotateClientCredential(PDO $pdo, string $tenant): array
 {
     $tenantCheck = $pdo->prepare('SELECT active FROM tenants WHERE id = ?'); $tenantCheck->execute([$tenant]);

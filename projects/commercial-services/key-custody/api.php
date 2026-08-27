@@ -76,6 +76,18 @@ try {
         custodyReply(201, ['client_token' => $credential['token'], 'client_signing_private_key' => $credential['signing_private_key'],
             'warning' => 'Store both values now. The service cannot show them again; the previous enrolled-client credential has been revoked.']);
     }
+    if ($path === '/v1/client-credentials' && $method === 'GET') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['credentials' => keyCustodyListClientCredentials($pdo, $auth['tenant_id'])]);
+    }
+    if ($path === '/v1/client-credentials' && $method === 'POST') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $credential = keyCustodyCreateAdditionalClientCredential($pdo, $auth['tenant_id']);
+        custodyReply(201, ['client_credential_id' => $credential['id'], 'client_token' => $credential['token'], 'client_signing_private_key' => $credential['signing_private_key'],
+            'warning' => 'Store both values now for exactly one deployment. The service cannot show them again.']);
+    }
+    if (preg_match('#^/v1/client-credentials/(tok_[a-f0-9]{20})$#', $path, $match) && $method === 'DELETE') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); keyCustodyRevokeClientCredential($pdo, $auth['tenant_id'], $match[1]);
+        custodyReply(200, ['client_credential_id' => $match[1], 'state' => 'revoked']);
+    }
     if ($path === '/v1/management-credentials/rotate' && $method === 'POST') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management');
         $token = keyCustodyRotateManagementCredential($pdo, $auth['tenant_id']);

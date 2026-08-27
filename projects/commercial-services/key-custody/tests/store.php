@@ -19,6 +19,13 @@ try {
     custodyExpect((int)$pdo->query('SELECT COUNT(*) FROM client_nonces')->fetchColumn() === 0, 'expired client replay nonce was not pruned during service open');
     $management = keyCustodyAuthenticate($pdo, $tenant['management_token'], 'management');
     $client = keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client');
+    $additionalClient = keyCustodyCreateAdditionalClientCredential($pdo, $client['tenant_id']);
+    custodyExpect(keyCustodyAuthenticate($pdo, $additionalClient['token'], 'client')['tenant_id'] === $client['tenant_id'], 'additional enrolled-client credential did not authenticate');
+    custodyExpect(count(keyCustodyListClientCredentials($pdo, $client['tenant_id'])) === 2, 'enrolled-client metadata did not list both deployments');
+    keyCustodyRevokeClientCredential($pdo, $client['tenant_id'], $additionalClient['id']);
+    try { keyCustodyAuthenticate($pdo, $additionalClient['token'], 'client'); throw new RuntimeException('revoked individual enrolled-client credential remained active'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'revoked individual enrolled-client credential remained active', $error->getMessage()); }
+    custodyExpect(keyCustodyAuthenticate($pdo, $tenant['client_token'], 'client')['tenant_id'] === $client['tenant_id'], 'individual credential revocation affected another deployment');
     $private = base64_decode($tenant['client_signing_private_key'], true);
     custodyExpect(is_string($private), 'tenant client signing credential is invalid');
     $signedRequest = function (string $nonce, string $body) use ($pdo, $tenant, $private): array {

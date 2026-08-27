@@ -27,6 +27,13 @@
     "/client-credentials/rotate": {
       "post": {"summary": "Replace all enrolled-client credentials", "security": [{"accountSession": []}], "responses": {"201": {"description": "One-time replacement bearer token and Ed25519 private signing key; all prior enrolled-client credentials are revoked."}}}
     },
+    "/client-credentials": {
+      "get": {"summary": "List enrolled-client credential metadata", "security": [{"accountSession": []}], "responses": {"200": {"description": "Credential identifiers, states, and creation times only; no tokens or private keys."}}},
+      "post": {"summary": "Create one enrolled-client credential for one deployment", "security": [{"accountSession": []}], "responses": {"201": {"description": "One-time credential id, bearer token, and Ed25519 private signing key."}}}
+    },
+    "/client-credentials/{credentialId}": {
+      "delete": {"summary": "Revoke one enrolled-client credential", "security": [{"accountSession": []}], "parameters": [{"name": "credentialId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^tok_[a-f0-9]{20}$"}}], "responses": {"200": {"description": "Credential revoked; other enrolled clients remain unchanged."}}}
+    },
     "/management-credentials/rotate": {
       "post": {"summary": "Replace all customer management credentials", "security": [{"accountSession": []}], "responses": {"201": {"description": "One-time replacement management bearer token; all prior management credentials are revoked."}}}
     },
