@@ -240,10 +240,13 @@ dependency of local encryption.
    database-backed settings UI/API, private SQLite storage, CLI workflow,
    status API, encrypted secret references, signed declarative private
    migrations, integrity rechecks, and revocation are implemented. A
-   deployment-attested sandbox can run only the signed, bounded no-secret
-   diagnostics (SQLCipher disposable preflight and custody endpoint identity
-   check); secret-bearing code loading and the runtime permission boundary
-   remain before packages may activate a provider operation.
+   deployment-attested sandbox can run signed, bounded no-secret diagnostics
+   (SQLCipher disposable preflight and custody endpoint identity check) plus a
+   separately attested, endpoint-restricted custody enrollment-readiness check.
+   The latter requires fresh endpoint evidence, encrypted secret references,
+   and explicit `key_provider`/`network_client` approval; it only reads signed
+   subscription readiness. Secret-bearing envelope/unwrap operations and their
+   recovery permission boundary remain before packages may activate a provider.
 2. Move the current sealed-copy implementation behind a built-in disabled
    `sealed-copies` package; add setup inventory, recovery proof, restore,
    retention, status, and alerting.
@@ -282,8 +285,10 @@ hash-verified ciphertext and has no custody or unwrap API, but no client
 package can use it yet. The commercial key-custody
 reference service is separately testable and requires signed enrollment plus
 an active service entitlement for new envelopes. The client can run a
-credential-free, isolated endpoint identity probe, but it is not connected to
-secret-bearing envelope/unwrap operations or needed for local recovery. Its
+credential-free, isolated endpoint identity probe and, when an administrator
+has configured the separate restricted launcher, a credential-bearing
+subscription-readiness check. Neither is connected to secret-bearing
+envelope/unwrap operations or needed for local recovery. Its
 customer-management API can
 create/list/update policy, stage rotation, retire, and delete envelopes; its
 enrolled-client API is separately signed and can only store envelopes or unwrap
