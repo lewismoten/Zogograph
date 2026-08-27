@@ -19,11 +19,12 @@ syntax, never a token containing whitespace or header-like content, and refuses
 control characters, overlong identifiers, or oversized envelopes before making
 a request.
 
-It sends artifact and envelope identifiers, authenticated request metadata, and
-wrapped-key material only. It must not upload metrics, SQLite databases,
-configuration files, plaintext keys, or billing credentials. Billing is managed
-through the commercial account API/browser flow, separately from enrolled
-client credentials.
+It first reads only the custody key's X25519 public wrapping key, generates a
+fresh artifact data key locally, and sends that key only as a sealed envelope
+with its artifact identifier and authenticated request metadata. It must not
+upload metrics, SQLite databases, configuration files, plaintext keys, or
+billing credentials. Billing is managed through the commercial account
+API/browser flow, separately from enrolled-client credentials.
 
 The adapter can read a signed, minimal envelope-readiness projection: current
 envelope usage, quota, and whether another envelope may be stored. This lets a
@@ -35,5 +36,5 @@ embedded user credentials, query, or fragment), explicitly verifies the server
 certificate and hostname, follows no redirects, and uses a five-minute service
 timestamp window plus a one-time request nonce. It signs the HTTP method, request path, timestamp, nonce, and
 the exact request-body hash with Ed25519, so a stolen bearer alone cannot alter
-or create an enrolled-client request. It retains no key cache: any unwrapped
-key is returned only to the immediate caller for in-memory use.
+or create an enrolled-client request. It retains no key cache: an unwrapped
+artifact data key is returned only to the immediate caller for in-memory use.
