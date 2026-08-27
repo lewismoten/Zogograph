@@ -171,6 +171,8 @@ try {
         $failedStatus = encryptionStatus($live, $retentionConfig, $web);
         encryptionExpect(str_contains(implode(' ', $failedStatus['warnings']), 'failed their last verification'),
             'failed encrypted artifact was not visible in protection status');
+        try { encryptionRotateConfiguredArtifacts($config, $live, $web, $replacementKeyPath, fn(array $updated): null => null); throw new RuntimeException('rotation skipped selected store without verified coverage'); }
+        catch (RuntimeException $error) { encryptionExpect($error->getMessage() !== 'rotation skipped selected store without verified coverage', $error->getMessage()); }
         $rotationConfig = $config; $rotationConfig['encryption']['stores'] = ['account']; $rotationSaved = false;
         $rotatedConfigured = encryptionRotateConfiguredArtifacts($rotationConfig, $live, $web, $replacementKeyPath,
             function (array $updated) use (&$rotationSaved): void { $rotationSaved = isset($updated['encryption']['local_key_file']); });
