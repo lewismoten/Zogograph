@@ -13,7 +13,14 @@ function custodyManageUsage(): never
 
 function custodyManageToken(string $path): string
 {
-    if (!str_starts_with($path, '/') || is_link($path) || !is_file($path) || (fileperms($path) & 0077) !== 0) {
+    if (!str_starts_with($path, '/')) throw new InvalidArgumentException('management token file must be an absolute, non-link private file (0600)');
+    $directory = dirname($path);
+    if (is_link($directory) || !is_dir($directory)) {
+        throw new InvalidArgumentException('management token directory must be an absolute, non-link private directory');
+    }
+    $real = realpath($directory);
+    $path = is_string($real) ? $real . '/' . basename($path) : '';
+    if ($path === '' || is_link($path) || !is_file($path) || (fileperms($path) & 0077) !== 0) {
         throw new InvalidArgumentException('management token file must be an absolute, non-link private file (0600)');
     }
     $token = trim((string)file_get_contents($path));
