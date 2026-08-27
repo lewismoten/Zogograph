@@ -25,5 +25,13 @@
     "requires_extensions": ["pdo", "pdo_sqlite"],
     "requires_runtime_capability": "encrypted_sqlite_driver"
   },
+  "integrity": {
+    "algorithm": "sha256",
+    "files": {
+      "README.md": "dbc016ec88c7c819e0497bc8335532321dfe79809bd359015444b550766750f7",
+      "settings.schema.json": "57f9b194e2a9673e2546d435074d6930942be67b43066603ad34d40331547f84",
+      "src/SqlcipherStorageProvider.php": "19d45906418e0be7b569438f96193a94009f7580b2e2b4a3beac7a24dbf17124"
+    }
+  },
   "state": "design-preview"
 }

@@ -36,6 +36,13 @@ browser.
 8. [ ] Publisher workflow, commercial terms, moderation, payments, and hosted
    marketplace service only after legal and business-owner decisions.
 
+Executable-package releases use a signed file-integrity manifest: SHA-256 for
+every immutable release file and an Ed25519 signature over the complete
+manifest. This detects added, removed, altered, and symlinked files. The future
+runtime must refuse a package whose integrity or trusted publisher signature
+does not verify; a separate integrity-alert package can surface failures as
+alerts without granting it authority to repair or load the package.
+
 ## Completion evidence
 
 Each delivery item requires a server-side authorization test, malformed
