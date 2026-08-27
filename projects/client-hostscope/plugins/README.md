@@ -39,3 +39,15 @@ Older installed packages that predate the manifest-fingerprint migration are
 also fail-closed; reinstall their reviewed signed release to establish new
 evidence. Never treat a manifest comment or a browser status alone as evidence
 that altered package code is safe.
+
+## Bundled design-preview providers
+
+- `sqlcipher-encrypted-sqlite` — live encrypted SQLite only on a verified
+  SQLCipher/PDO platform; never falls back to plaintext SQLite.
+- `hostscope-key-custody` — optional remote wrapped-key custody using an
+  enrolled client credential, separate from management and billing tokens.
+- `hostscope-replica-relay` — optional signed transfer of already-sealed
+  ciphertext to a separate relay; it never sends a plaintext store or key.
+
+These packages are intentionally unavailable until the isolated runtime can
+enforce their capabilities, settings/secret boundaries, and audit trail.
