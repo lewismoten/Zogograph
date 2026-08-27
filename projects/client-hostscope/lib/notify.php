@@ -208,6 +208,13 @@ function alertCatalogue(): array
             'why' => 'A sealed copy that is missing, stale, or failed verification is not
                 reliable recovery evidence when it is needed.',
         ],
+        'setup_configuration_encryption' => [
+            'label' => 'Setup configuration encryption needs attention',
+            'severity' => 'warning',
+            'cooldown' => 6 * SPAN_HOUR,
+            'view' => 'sys-encryption',
+            'why' => 'A configured local key should protect the stored account, provider, and package policy settings too.',
+        ],
         'package_integrity' => [
             'label' => 'Installed package integrity needs attention',
             'severity' => 'error',

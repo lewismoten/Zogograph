@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__ . '/setupstore.php';
 
 /*
  * Noticing, and saying so.
@@ -235,6 +236,7 @@ function evaluateAlerts(array $config, PDO $pdo): array
          */
         ...dateAlerts($config, $pdo),
         ...updateAlerts($config),
+        ...setupConfigurationEncryptionAlerts($config),
         ...encryptionRecoveryAlerts($config, $pdo),
         ...packageRuntimeIntegrityAlerts($pdo),
     ]);
@@ -301,6 +303,18 @@ function evaluateAlerts(array $config, PDO $pdo): array
     }
 
     return $raised;
+}
+
+/** A configured local key should also protect the sensitive setup record. */
+function setupConfigurationEncryptionAlerts(array $config): array
+{
+    $encryption = (array)($config['encryption'] ?? []);
+    $key = trim((string)($encryption['local_key_file'] ?? ''));
+    if ($key === '') return [];
+    $status = setupStoreConfigurationProtectionForSettings($config, dirname(__DIR__));
+    if ($status['state'] === 'ok') return [];
+    return [['rule' => 'setup_configuration_encryption', 'severity' => $status['state'] === 'error' ? 'error' : 'warning',
+        'subject' => 'Setup configuration encryption needs attention', 'detail' => $status['detail']]];
 }
 
 /** Emits one evidence-based alert for a configured portable encryption policy.

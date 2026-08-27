@@ -11,6 +11,13 @@ try {
     $pdo->exec('CREATE TABLE encryption_artifacts (store TEXT, created_at INTEGER, last_recovery_drill_at INTEGER, state TEXT)');
     $config = ['encryption' => ['mode' => 'sealed_copies_local', 'local_key_file' => $key, 'stores' => ['account'], 'backup_schedule' => 'daily']];
     encryptionAlertExpect(isset(alertCatalogue()['encryption_recovery']), 'encryption recovery rule is not configurable in the alert catalogue');
+    $config['database'] = $root . '/stats.db';
+    $setup = setupStoreOpen($config, true); $setup->prepare('INSERT INTO setup_values (name, value, updated_at) VALUES (?, ?, ?)')->execute(['config', '{}', time()]);
+    $setupAlert = setupConfigurationEncryptionAlerts($config);
+    encryptionAlertExpect(count($setupAlert) === 1 && $setupAlert[0]['severity'] === 'warning', 'plaintext setup configuration did not raise an at-rest warning after a local key was configured');
+    $setup->prepare('DELETE FROM setup_values WHERE name = ?')->execute(['config']);
+    $setup->prepare('INSERT INTO setup_values (name, value, updated_at) VALUES (?, ?, ?)')->execute(['config_encrypted', setupStoreSealConfig('{}', $key, dirname(__DIR__)), time()]);
+    encryptionAlertExpect(setupConfigurationEncryptionAlerts($config) === [], 'verified encrypted setup configuration still raised an alert');
     $missing = encryptionRecoveryAlerts($config, $pdo);
     encryptionAlertExpect(count($missing) === 1 && $missing[0]['severity'] === 'warning' && str_contains($missing[0]['detail'], 'No verified encrypted copy'),
         'missing encrypted-copy evidence did not raise a warning');
