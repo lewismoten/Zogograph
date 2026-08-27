@@ -44,6 +44,11 @@ enabled, HostScope uses the local key file or self-managed fleet options.
 SQLite service store and returns only service liveness/version metadata; it
 does not reveal tenants, plans, keys, envelopes, credentials, or artifacts.
 
+The API returns `no-store`, anti-framing, no-referrer, no-sniff, and restrictive
+browser-permission headers. When PHP sees HTTPS it also returns HSTS; keep HSTS
+at the TLS reverse proxy too, and do not enable it for a hostname that is not
+ready to serve HTTPS on every covered subdomain.
+
 For the provisional VPS path, use
 [`deploy/nginx.conf.example`](deploy/nginx.conf.example) inside the HTTPS
 server block. It is important to forward `Authorization` and set `HTTPS=on`

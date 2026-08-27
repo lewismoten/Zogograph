@@ -6,12 +6,16 @@ require_once __DIR__ . '/lib/request.php';
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header('Referrer-Policy: no-referrer');
+header('Permissions-Policy: geolocation=(), microphone=(), camera=()');
 const CUSTODY_MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 $configFile = __DIR__ . '/config.php';
 if (!is_file($configFile)) { http_response_code(503); echo json_encode(['error' => 'key custody service is not configured']); exit; }
 $config = require $configFile;
 if (!is_array($config)) { http_response_code(500); echo json_encode(['error' => 'invalid service configuration']); exit; }
 $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (int)($_SERVER['SERVER_PORT'] ?? 0) === 443;
+if ($https) header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
 if (!empty($config['require_https']) && !$https) { http_response_code(400); echo json_encode(['error' => 'HTTPS is required']); exit; }
 $path = '/' . trim((string)($_SERVER['PATH_INFO'] ?? $_GET['path'] ?? ''), '/');
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
