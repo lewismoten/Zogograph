@@ -57,6 +57,13 @@ local KEK, database path, artifact bytes, plaintext, management credential, or
 envelope body. The core UI does not expose this operation until its ledger and
 recovery-drill gate are complete.
 
+`custody_unwrap_artifact` has a third independent `custody_unwrap_invokers`
+launcher. It must be treated as key-release authority, not as an envelope-write
+permission. Its only permitted result is a one-time DEK on the private process
+pipe for core to authenticate a named sealed artifact and delete the temporary
+plaintext result. Neither the launcher nor core may log, cache, display, or
+persist the DEK.
+
 [`deploy/package-worker.compose.example.yml`](deploy/package-worker.compose.example.yml)
 is an optional Docker-compatible one-shot sandbox starting point. It disables
 networking, drops Linux capabilities, uses a read-only root and read-only
