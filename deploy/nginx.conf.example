@@ -11,8 +11,8 @@ location = /.well-known/openid-configuration {
 
 # Never let a static-file fallback hand over private stores, source, or CLI jobs.
 location ~* \.(?:db|db-journal|db-wal|db-shm|sqlite|sqlite3)$ { deny all; }
-location ~ ^/(?:data|lib)(?:/|$) { deny all; }
-location ~ ^/(?:cron|host-cron)\.php$ { deny all; }
+location ~ ^/(?:data|lib|scripts)(?:/|$) { deny all; }
+location ~ ^/(?:cron|host-cron|no-mac)\.php$ { deny all; }
 
 # Keep setup reachable only while an operator explicitly needs it. Remove this
 # location or return 404 after installation if setup.php is not retained.

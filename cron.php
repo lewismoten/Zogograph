@@ -91,7 +91,7 @@ $say = function (string $line) use ($quiet): void {
 
 if (in_array('--help', $jobs, true) || in_array('-h', $jobs, true)) {
     echo <<<TEXT
-    Disk Usage Monitor collector
+    HostScope collector
 
       php cron.php --vitals     take one cheap reading (disk, memory, cpu)
       php cron.php --scan       walk the tree and record what is where

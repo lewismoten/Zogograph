@@ -35,6 +35,19 @@
   font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 15px;
 }
+:root[data-text-size="small"] { font-size: 13px; }
+:root[data-text-size="large"] { font-size: 18px; }
+
+/* System motion preferences remain the default. This explicit setting is for
+   people who need a consistent reduced-motion view across browsers/devices. */
+:root[data-motion="reduce"] *,
+:root[data-motion="reduce"] *::before,
+:root[data-motion="reduce"] *::after {
+  animation-duration: .001ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-duration: .001ms !important;
+}
 
 /*
  * hidden means hidden, whatever else a rule says.
@@ -2053,6 +2066,50 @@ svg.dial.is-dead { animation: none; }
   min-height: min(58vh, 34rem);
   font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   tab-size: 2;
+}
+.terminal-editor-wrap {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.terminal-editor-wrap .terminal-editor-lines {
+  min-width: 3.25rem;
+  min-height: 0;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: hidden;
+  user-select: none;
+  color: var(--dim);
+  text-align: right;
+  font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  border-right: 1px solid var(--line-soft);
+}
+.terminal-editor-wrap textarea.terminal-editor {
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  outline-offset: -2px;
+}
+.terminal-editor-wrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.terminal-editor-diff {
+  max-height: min(58vh, 34rem);
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .editor-browser { border-top: 1px solid var(--line-soft); }
 .editor-browser-row { display: flex; gap: 12px; align-items: baseline; justify-content: space-between;

@@ -27,6 +27,8 @@ return [
     // checked only after the password and is never returned through the API.
     'auth' => [
         'totp_secret' => '',
+        // Advances when an administrator ends every signed-in browser session.
+        'session_epoch' => 0,
     ],
 
     /*
@@ -34,7 +36,8 @@ return [
      * Administrators login. Named users are optional and carry their own
      * password hash and group membership. A named user may also carry its own
      * private Base32 `totp_secret`. Public is always active; the other built-in
-     * groups are Staff and Administrators, both configurable here.
+     * roles are Viewer, Operator, and Administrator. The older Staff and
+     * Administrators aliases remain available for existing installations.
      */
     'access' => [
         'groups' => [],
@@ -635,6 +638,10 @@ return [
         'max_seconds' => 3600,
         'max_cents' => 50,
         'max_turns' => 40,
+        // Shared caps across every conversation and automated alert investigation.
+        // Zero leaves that period uncapped; prices must be configured to measure spend.
+        'daily_cents' => 0,
+        'monthly_cents' => 0,
 
         /*
          * Which tools the assistant may use, and which need permission first.

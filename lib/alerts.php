@@ -78,6 +78,70 @@ function setAlertsAcknowledged(PDO $pdo, array $ids, bool $acknowledged): int
     return $stmt->rowCount();
 }
 
+/** An expiring operator mute. Error and Critical alerts are never eligible. */
+function alertActiveMute(PDO $pdo, string $rule, string $severity, ?int $now = null): ?array
+{
+    if (in_array($severity, ['error', 'critical'], true)) return null;
+    $stmt = $pdo->prepare('SELECT id, rule, expires_at, reason, created_by
+        FROM alert_mutes WHERE rule = ? AND expires_at > ? ORDER BY id DESC LIMIT 1');
+    $stmt->execute([$rule, $now ?? time()]);
+    return $stmt->fetch() ?: null;
+}
+
+/**
+ * Records operator suppression on each event before delivery is selected.
+ *
+ * @param list<array> $raised
+ * @return list<array>
+ */
+function applyAlertMutes(PDO $pdo, array $raised): array
+{
+    $update = $pdo->prepare("UPDATE alerts SET notification_disposition = 'suppressed',
+        notification_reason = ?, notification_muted_until = ? WHERE id = ?");
+    foreach ($raised as $i => $alert) {
+        $mute = alertActiveMute($pdo, (string)$alert['rule'], (string)$alert['severity']);
+        if ($mute === null) continue;
+        $reason = 'Muted until ' . gmdate('c', (int)$mute['expires_at']) . ': ' . (string)$mute['reason'];
+        $update->execute([$reason, (int)$mute['expires_at'], (int)$alert['id']]);
+        $raised[$i]['notification_disposition'] = 'suppressed';
+        $raised[$i]['notification_reason'] = $reason;
+        $raised[$i]['notification_muted_until'] = (int)$mute['expires_at'];
+    }
+    return $raised;
+}
+
+/** @return list<array{id:int,rule:string,created_at:int,expires_at:int,reason:string,created_by:?string}> */
+function alertMutes(PDO $pdo, ?int $now = null): array
+{
+    $stmt = $pdo->prepare('SELECT id, rule, created_at, expires_at, reason, created_by
+        FROM alert_mutes WHERE expires_at > ? ORDER BY expires_at, rule');
+    $stmt->execute([$now ?? time()]);
+    return $stmt->fetchAll();
+}
+
+/** Creates a bounded mute only for a configured rule name. */
+function alertMute(PDO $pdo, string $rule, int $seconds, string $reason, string $who): int
+{
+    if (!isset(alertCatalogue()[$rule])) throw new ActionRefused('that alert rule is not available');
+    $reason = trim(preg_replace('/\s+/', ' ', $reason) ?? '');
+    if ($reason === '') throw new ActionRefused('say why this alert is being muted');
+    $seconds = max(900, min(7 * 86400, $seconds));
+    $pdo->prepare('INSERT INTO alert_mutes (rule, created_at, expires_at, reason, created_by)
+        VALUES (?, ?, ?, ?, ?)')->execute([$rule, time(), time() + $seconds, mb_substr($reason, 0, 240), $who]);
+    return (int)$pdo->lastInsertId();
+}
+
+/** Expires a mute rather than deleting its operator evidence. */
+function alertUnmute(PDO $pdo, int $id): ?array
+{
+    $stmt = $pdo->prepare('SELECT rule, reason FROM alert_mutes WHERE id = ?');
+    $stmt->execute([$id]);
+    $mute = $stmt->fetch();
+    if ($mute === false) return null;
+    $pdo->prepare('UPDATE alert_mutes SET expires_at = ? WHERE id = ?')->execute([time(), $id]);
+    return $mute;
+}
+
 function evaluateAlerts(array $config, PDO $pdo): array
 {
     $rules = $config['alerts'] ?? [];
@@ -175,9 +239,12 @@ function evaluateAlerts(array $config, PDO $pdo): array
          */
         $raised = aiTriageAlerts($config, $pdo, $raised);
 
+        $raised = applyAlertMutes($pdo, $raised);
+
         $worthSending = array_values(array_filter(
             $raised,
             fn(array $alert): bool => empty($alert['silenced'])
+                && (($alert['notification_disposition'] ?? 'immediate') !== 'suppressed')
         ));
 
         if ($worthSending !== []) {
@@ -1150,20 +1217,22 @@ function retryAlertEmails(PDO $pdo, int $limit = 3, ?callable $send = null): arr
     $result = ['attempted' => 0, 'sent' => 0, 'failed' => 0];
     foreach ($stmt->fetchAll() as $row) {
         $result['attempted']++;
-        $accepted = false;
+        $acceptedAny = false;
+        $refused = [];
         foreach (preg_split('/\s*;\s*/', (string)$row['recipients']) ?: [] as $recipient) {
             if ($recipient === '') continue;
             $accepted = $send !== null
                 ? (bool)$send($recipient, (string)$row['subject'], (string)$row['body'], (string)($row['headers'] ?? ''))
                 : @mail($recipient, (string)$row['subject'], (string)$row['body'], (string)($row['headers'] ?? ''));
-            if (!$accepted) break;
+            if ($accepted) $acceptedAny = true;
+            else $refused[] = $recipient;
         }
         $attempts = (int)$row['attempts'] + 1;
-        $error = $accepted ? null : 'mail() refused retry ' . $attempts;
-        $update->execute([$accepted ? 1 : 0, $error, $attempts,
-            $accepted ? null : alertEmailRetryAt($attempts), (int)$row['id']]);
-        $alerts->execute([$accepted ? time() : null, $error, (int)$row['id']]);
-        $result[$accepted ? 'sent' : 'failed']++;
+        $error = $refused === [] ? null : 'mail() refused retry ' . $attempts . ': ' . implode(', ', $refused);
+        $update->execute([$acceptedAny ? 1 : 0, $error, $attempts,
+            $acceptedAny ? null : alertEmailRetryAt($attempts), (int)$row['id']]);
+        $alerts->execute([$acceptedAny ? time() : null, $error, (int)$row['id']]);
+        $result[$acceptedAny ? 'sent' : 'failed']++;
     }
     return $result;
 }
@@ -1627,7 +1696,7 @@ function sendTestEmail(array $config, PDO $pdo): array
 
     $host = php_uname('n');
     $body = array_merge(
-        ['Disk Usage Monitor on ' . $host, '', 'This is a test. Nothing has tripped.', ''],
+        ['HostScope on ' . $host, '', 'This is a test. Nothing has tripped.', ''],
         statusReport($pdo),
         ['', 'Alerts are ' . (($rules['enabled'] ?? false) ? 'enabled' : 'DISABLED in the config') . '.']
     );
@@ -1638,7 +1707,7 @@ function sendTestEmail(array $config, PDO $pdo): array
         $headers[] = 'From: ' . $from;
     }
 
-    $sent = @mail($to, "[test] $host disk monitor", implode("\n", $body), implode("\r\n", $headers));
+    $sent = @mail($to, "[test] $host HostScope", implode("\n", $body), implode("\r\n", $headers));
 
     return [
         'sent' => (bool)$sent,

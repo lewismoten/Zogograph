@@ -711,6 +711,9 @@ function aiStep(
     }
 
     $limits = aiWithinLimits($session);
+    if ($limits['ok']) {
+        $limits = aiWithinSharedBudget($ai, aiSettings($config));
+    }
     if (!$limits['ok']) {
         /*
          * Which limit, kept with the reason.

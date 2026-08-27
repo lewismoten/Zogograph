@@ -19,4 +19,14 @@ totpExpect(signInTotpSecret(['auth' => ['totp_secret' => 'legacy']], null) === '
 totpExpect(signInTotpSecret(['auth' => ['totp_secret' => 'legacy']], ['totp_secret' => 'named']) === 'named',
     'named-user TOTP secret was not selected');
 
+$pdo = new PDO('sqlite::memory:');
+$pdo->exec('CREATE TABLE totp_recovery_codes (id INTEGER PRIMARY KEY, account TEXT NOT NULL, code_hash TEXT NOT NULL, created_at INTEGER NOT NULL)');
+$codes = totpRecoveryCodes($pdo, 'administrator', 100);
+totpExpect(count($codes) === 8 && count(array_unique($codes)) === 8, 'recovery codes were not distinct');
+totpExpect(totpRecoveryConsume($pdo, 'administrator', $codes[0]), 'a fresh recovery code was refused');
+totpExpect(!totpRecoveryConsume($pdo, 'administrator', $codes[0]), 'a recovery code was accepted twice');
+totpExpect(!totpRecoveryConsume($pdo, 'administrator', 'BAD-CODE'), 'an invalid recovery code was accepted');
+totpExpect(count(totpRecoveryCodes($pdo, 'administrator', 101)) === 8
+    && !totpRecoveryConsume($pdo, 'administrator', $codes[1]), 'replacing recovery codes did not revoke earlier codes');
+
 echo "TOTP checks passed\n";

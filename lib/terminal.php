@@ -55,6 +55,23 @@ const TERMINAL_EDITOR_MAX_BYTES = 1024 * 1024;
 /** Most direct children shown by the browser at once. */
 const TERMINAL_EDITOR_BROWSE_LIMIT = 200;
 
+/** Credential material belongs in a shell or secret manager, never a browser tab. */
+function terminalEditorSensitiveFileReason(string $path): ?string
+{
+    $name = strtolower(basename($path));
+    if (preg_match('/^\.env(?:\..+)?$/', $name) === 1) {
+        return 'environment files can contain credentials and are not opened in the web editor';
+    }
+    if (preg_match('/\.(?:key|pem|p12|pfx|sqlite|sqlite3|db)$/', $name) === 1
+        || str_starts_with($name, 'id_')) {
+        return 'private keys and database files are not opened in the web editor';
+    }
+    if (in_array($name, ['.htpasswd', 'config.php', 'wp-config.php', 'authorized_keys', 'shadow'], true)) {
+        return 'that credential-bearing configuration file is not opened in the web editor';
+    }
+    return null;
+}
+
 /** A real, readable directory below the watched root, for the browser picker. */
 function terminalEditorBrowseDirectory(string $root, string $asked): string
 {
@@ -150,12 +167,22 @@ function terminalEditorPath(array $config, PDO $pdo, string $asked, bool $forWri
     if ($forWrite && !is_file($path) && !is_writable(dirname($path))) {
         throw new ActionRefused('its parent directory is not writable by this account');
     }
+    if (($reason = terminalEditorSensitiveFileReason($path)) !== null) {
+        throw new ActionRefused($reason);
+    }
     return $path;
 }
 
 function terminalEditorFingerprint(string $text): string
 {
     return hash('sha256', $text);
+}
+
+/** A browser response must be valid UTF-8; name the accepted text encoding. */
+function terminalEditorEncoding(string $text): string
+{
+    if ($text === '' || preg_match('/^[\x01-\x7f\r\n\t]*$/D', $text) === 1) return 'ASCII';
+    return preg_match('//u', $text) === 1 ? 'UTF-8' : 'legacy 8-bit';
 }
 
 /** @return 'lf'|'crlf'|'cr' */
@@ -212,7 +239,7 @@ function terminalEditorBackups(array $config, string $path): array
     return $rows;
 }
 
-/** @return array{path:string,text:string,exists:bool,bytes:int,writable:bool,fingerprint:string,line_ending:string,backups:list<array>} */
+/** @return array{path:string,text:string,exists:bool,bytes:int,writable:bool,fingerprint:string,line_ending:string,encoding:string,modified:int,mode:string,backups:list<array>} */
 function terminalEditorRead(array $config, PDO $pdo, string $asked): array
 {
     $path = terminalEditorPath($config, $pdo, $asked);
@@ -224,9 +251,16 @@ function terminalEditorRead(array $config, PDO $pdo, string $asked): array
     if ($text === false || str_contains($text, "\0")) {
         throw new ActionRefused('the web editor only opens readable text files');
     }
+    $encoding = terminalEditorEncoding($text);
+    if ($encoding === 'legacy 8-bit') {
+        throw new ActionRefused('the web editor only opens ASCII or UTF-8 text files');
+    }
     return ['path' => $path, 'text' => $text, 'exists' => true, 'bytes' => $bytes,
         'writable' => is_writable($path), 'fingerprint' => terminalEditorFingerprint($text),
-        'line_ending' => terminalEditorLineEnding($text), 'backups' => terminalEditorBackups($config, $path)];
+        'line_ending' => terminalEditorLineEnding($text), 'encoding' => $encoding,
+        'modified' => (int)(@filemtime($path) ?: 0),
+        'mode' => substr(sprintf('%04o', (int)(@fileperms($path) ?: 0)), -4),
+        'backups' => terminalEditorBackups($config, $path)];
 }
 
 /** Restores one private editor copy, preserving a current-file recovery copy first. */

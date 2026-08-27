@@ -42,13 +42,14 @@ header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 
 $out = fopen('php://output', 'wb');
-fputcsv($out, ['at_utc', 'action', 'target', 'outcome', 'bytes_freed', 'files_removed', 'detail', 'remote_address']);
-$rows = $pdo->query('SELECT at, action, target, outcome, bytes_freed, files_removed, detail, remote_addr FROM actions ORDER BY at ASC');
+fputcsv($out, ['at_utc', 'action', 'target', 'outcome', 'bytes_freed', 'files_removed', 'detail', 'actor', 'remote_address']);
+$rows = $pdo->query('SELECT at, action, target, outcome, bytes_freed, files_removed, detail, actor, remote_addr FROM actions ORDER BY at ASC');
 while ($row = $rows->fetch(PDO::FETCH_ASSOC)) {
     fputcsv($out, [
         gmdate('c', (int)$row['at']),
         auditExportCell($row['action']), auditExportCell($row['target']), auditExportCell($row['outcome']),
         (int)$row['bytes_freed'], (int)$row['files_removed'], auditExportCell($row['detail']),
+        auditExportCell($row['actor']),
         auditExportCell($row['remote_addr']),
     ]);
 }

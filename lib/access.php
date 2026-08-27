@@ -10,7 +10,7 @@ declare(strict_types=1);
 
 function accessDefaults(): array
 {
-    return [
+    $groups = [
         'Public' => [
             'pages' => ['overview', 'charts', 'alerts', 'uptime', 'calendar'],
             'charts' => ['*'],
@@ -49,6 +49,22 @@ function accessDefaults(): array
             'write' => true,
         ],
     ];
+
+    /*
+     * Explicit product roles, plus the original names as compatibility aliases.
+     * Viewer sees operational evidence but cannot use live, AI, note, or IP
+     * surfaces; Operator has the long-standing Staff capabilities without
+     * configuration-write authority; Administrator owns the full installation.
+     */
+    $groups['Viewer'] = $groups['Staff'];
+    $groups['Viewer']['tools'] = [];
+    $groups['Viewer']['notes'] = false;
+    $groups['Viewer']['live'] = false;
+    $groups['Viewer']['ai'] = false;
+    $groups['Viewer']['ips'] = false;
+    $groups['Operator'] = $groups['Staff'];
+    $groups['Administrator'] = $groups['Administrators'];
+    return $groups;
 }
 
 /** The named policies after local configuration has overridden the defaults. */

@@ -156,6 +156,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'terminal-editor' => terminalEditorView($config, $pdo, $signedIn),
         'terminal-editor-save' => doTerminalEditorSave($config, $pdo, $post),
         'terminal-editor-restore' => doTerminalEditorRestore($config, $pdo, $post),
+        'totp-recovery-codes' => doTotpRecoveryCodes($config, $pdo, $post),
         'terminal-read' => terminalReadView($config, $pdo, $signedIn),
         'terminal-stop' => doTerminalStop($config, $pdo, $post),
         'terminal-unlock' => doTerminalUnlock($config, $pdo, $post),
@@ -257,6 +258,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'session' => sessionState($config),
         'signin' => doSignIn($config, $post, $pdo),
         'signout' => doSignOut($pdo, $post),
+        'revoke-sessions' => doRevokeSessions($config, $pdo, $post),
         'delete-file' => doDeleteFile($config, $pdo, $post),
         'delete-dir' => doDeleteDir($config, $pdo, $post),
         'empty' => doEmpty($config, $pdo, $post),
@@ -273,6 +275,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'diagnosis-unignore' => doDiagnosisUnignore($config, $pdo, $post),
         'clear-audit' => doClearAudit($pdo, $post),
         'alert-action' => doAlertAction($config, $pdo, $post),
+        'alert-mute' => doAlertMute($pdo, $post),
+        'alert-unmute' => doAlertUnmute($pdo, $post),
         'daemon-watch' => doDaemonWatch($config, $pdo, $post),
         'request-host-walk' => doRequestHostWalk($config, $pdo, $post),
         'request-capture' => doRequestCapture($config, $pdo, $post),
@@ -1043,7 +1047,7 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
     $stmt = $pdo->prepare(
         'SELECT a.id, a.raised_at, a.rule, a.severity, a.subject, a.detail,
                 a.emailed_at, a.email_error, a.email_id, a.path_id, a.incident_id,
-                a.acknowledged_at,
+                a.acknowledged_at, a.notification_disposition, a.notification_reason, a.notification_muted_until,
                 a.ai_summary, a.ai_verdict, a.ai_reason, a.ai_advice, a.ai_at, a.silenced,
                 p.path, p.kind
          FROM alerts a LEFT JOIN paths p ON p.id = a.path_id
@@ -1057,6 +1061,7 @@ function alertList(array $config, PDO $pdo, bool $signedIn): array
             fn(array $row): array => presentAlert($config, $row, $signedIn),
             $stmt->fetchAll()
         ),
+        'mutes' => $signedIn && accessAllows($config, 'write') ? alertMutes($pdo) : [],
     ];
 }
 
@@ -3056,11 +3061,14 @@ function actionLog(array $config, PDO $pdo, bool $signedIn): array
      * this becomes a real name and the column stops needing the caveat.
      */
     $who = [];
+    $actors = [];
     foreach ($rows as $row) {
         $address = (string)($row['remote_addr'] ?? '');
         if ($address !== '') {
             $who[$address] = true;
         }
+        $actor = (string)($row['actor'] ?? '');
+        if ($actor !== '') $actors[$actor] = true;
     }
 
     $days = (int)(retentionRules($config)['action_days'] ?? 0);
@@ -3068,8 +3076,8 @@ function actionLog(array $config, PDO $pdo, bool $signedIn): array
     return [
         'rows' => $rows,
         'kinds' => array_values(array_unique(array_column($rows, 'action'))),
-        'who' => array_keys($who),
-        'identity' => 'address',
+        'who' => array_keys($actors !== [] ? $actors : $who),
+        'identity' => $actors !== [] ? 'actor' : 'address',
         // So the page can answer "does this ever get cleared" without anybody
         // having to read the config to find out.
         'kept_days' => $days,
@@ -5489,6 +5497,29 @@ function doAlertAction(array $config, PDO $pdo, bool $post): array
     throw new ActionRefused('unknown alert action');
 }
 
+/** Temporarily holds delivery for one rule while preserving every event. */
+function doAlertMute(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $rule = trim((string)($_POST['rule'] ?? ''));
+    $seconds = clampInt($_POST['seconds'] ?? 3600, 900, 7 * 86400);
+    $reason = (string)($_POST['reason'] ?? '');
+    $id = alertMute($pdo, $rule, $seconds, $reason, currentAccountName());
+    logAction($pdo, 'alert_mute', $rule, 'ok', 0, 0, 'for ' . $seconds . ' seconds: ' . mb_substr(trim($reason), 0, 240));
+    return ['ok' => true, 'id' => $id, 'mutes' => alertMutes($pdo)];
+}
+
+/** Ends one temporary mute while retaining its record for the audit trail. */
+function doAlertUnmute(PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $id = clampInt($_POST['id'] ?? 0, 1, PHP_INT_MAX);
+    $mute = alertUnmute($pdo, $id);
+    if ($mute === null) throw new ActionRefused('that alert mute does not exist');
+    logAction($pdo, 'alert_unmute', (string)$mute['rule'], 'ok', 0, 0, (string)$mute['reason']);
+    return ['ok' => true, 'mutes' => alertMutes($pdo)];
+}
+
 function doClearProblems(array $config, PDO $pdo, bool $post): array
 {
     requireWrite($post);
@@ -5653,6 +5684,7 @@ function sessionState(array $config): array
         'csrf' => isSignedIn() ? csrfToken() : null,
         'configured' => ($config['password_hash'] ?? '') !== '',
         'access' => accessView($config),
+        'can_revoke_sessions' => isSignedIn() && accessAllows($config, 'write'),
     ];
 }
 
@@ -5672,7 +5704,8 @@ function doSignIn(array $config, bool $post, PDO $pdo): array
         http_response_code(401);
         return ['error' => 'Incorrect password.'];
     }
-    if (!signIn($config, (string)($_POST['password'] ?? ''), $username, (string)($_POST['totp'] ?? ''))) {
+    $mfaMethod = null;
+    if (!signIn($config, (string)($_POST['password'] ?? ''), $username, (string)($_POST['totp'] ?? ''), $pdo, $mfaMethod)) {
         /*
          * A failed attempt is recorded; the password is not.
          *
@@ -5689,8 +5722,26 @@ function doSignIn(array $config, bool $post, PDO $pdo): array
         return ['error' => 'Incorrect password.'];
     }
 
-    logAction($pdo, 'sign_in', null, 'ok', 0, 0, $username === '' ? null : $username);
+    logAction($pdo, 'sign_in', null, 'ok', 0, 0, trim(($username === '' ? '' : $username)
+        . ($mfaMethod === null ? '' : '; ' . $mfaMethod)) ?: null);
     return ['signed_in' => true, 'csrf' => csrfToken(), 'access' => accessView($config)];
+}
+
+/** Replaces this signed-in account's recovery codes after a fresh TOTP proof. */
+function doTotpRecoveryCodes(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $account = (string)($_SESSION['username'] ?? '');
+    $named = !empty($_SESSION['auth_named'])
+        ? (($config['access']['users'][$account] ?? null)) : null;
+    $secret = signInTotpSecret($config, is_array($named) ? $named : null);
+    if ($secret === '') throw new ActionRefused('enable an authenticator before creating recovery codes');
+    if (!totpValid($secret, (string)($_POST['totp'] ?? ''))) {
+        throw new ActionRefused('the current verification code was not accepted');
+    }
+    $codes = totpRecoveryCodes($pdo, $account);
+    logAction($pdo, 'totp_recovery_codes', $account, 'ok', 0, 0, 'replaced eight one-time codes');
+    return ['ok' => true, 'codes' => $codes];
 }
 
 function doSignOut(PDO $pdo, bool $post): array
@@ -5702,6 +5753,23 @@ function doSignOut(PDO $pdo, bool $post): array
     logAction($pdo, 'sign_out', null, 'ok', 0, 0, null);
     signOut();
     return ['signed_in' => false];
+}
+
+/** Ends every authenticated browser session, including the one requesting it. */
+function doRevokeSessions(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    global $configFile;
+    $config['auth'] = (array)($config['auth'] ?? []);
+    $config['auth']['session_epoch'] = authSessionEpoch($config) + 1;
+    try {
+        saveConfiguredSettings($config, $configFile, __DIR__ . '/lib');
+    } catch (Throwable) {
+        throw new ActionRefused('could not end existing sessions; configuration was not changed');
+    }
+    logAction($pdo, 'session_revoke', 'all signed-in sessions', 'ok', 0, 0, 'authentication generation advanced');
+    signOut();
+    return ['signed_in' => false, 'revoked' => true];
 }
 
 /** Everything destructive shares these checks. */
@@ -5856,6 +5924,7 @@ function doPeerSave(array $config, PDO $pdo, bool $post): array
     if ($newTransport) {
         $out['transport_secret'] = $transport;
         $out['transport_endpoint'] = peerTransportEndpoint($peer);
+        $out['transport_enrollment'] = peerTransportEnrollment($name, $out['transport_endpoint'], $transport);
     }
     return $out;
 }
@@ -5891,8 +5960,10 @@ function doPeerTransportRotate(array $config, PDO $pdo, bool $post): array
     $current['peers'][$name] = $peer;
     writeConfigFile($current);
     logAction($pdo, 'peer_transport_rotate', $name, 'ok', 0, 0, 'old remote credential revoked');
-    return ['ok' => true, 'transport_secret' => $credential,
-        'transport_endpoint' => peerTransportEndpoint($peer)] + peersView($current, $pdo, true);
+    $endpoint = peerTransportEndpoint($peer);
+    return ['ok' => true, 'transport_secret' => $credential, 'transport_endpoint' => $endpoint,
+        'transport_enrollment' => peerTransportEnrollment($name, $endpoint, $credential)]
+        + peersView($current, $pdo, true);
 }
 
 function doPeerTest(array $config, PDO $pdo, bool $post): array
@@ -8328,6 +8399,9 @@ function aiSettingsView(array $config, PDO $pdo, bool $signedIn): array
         'max_seconds' => $settings['max_seconds'],
         'max_cents' => $settings['max_cents'],
         'max_turns' => $settings['max_turns'],
+        'daily_cents' => $settings['daily_cents'],
+        'monthly_cents' => $settings['monthly_cents'],
+        'shared_budget' => $ai === null ? null : aiSharedBudget($ai, $settings),
         'context_tokens' => $settings['context_tokens'],
         'compact_at' => $settings['compact_at'],
         'compact_automatically' => $settings['compact_automatically'],
@@ -9011,6 +9085,14 @@ function doAiSettingsSave(array $config, PDO $pdo, bool $post): array
         throw new ActionRefused('that is not an amount');
     }
     $current['ai']['max_cents'] = round((float)$cents, 2);
+
+    foreach (['daily_cents', 'monthly_cents'] as $field) {
+        $value = $_POST[$field] ?? 0;
+        if (!is_numeric($value) || (float)$value < 0 || (float)$value > 1000000) {
+            throw new ActionRefused('that is not an amount');
+        }
+        $current['ai'][$field] = round((float)$value, 2);
+    }
 
     /*
      * Tool settings stored only where they differ from the default.

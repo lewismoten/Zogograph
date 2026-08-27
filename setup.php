@@ -53,6 +53,7 @@ if (!is_file($samplePath)) {
 
 require_once $root . '/lib/configure.php';
 require_once $root . '/lib/setupstore.php';
+require_once $root . '/lib/setup-preflight.php';
 // For hostCronLine/hostCronCommand, shown after a successful write.
 require_once $root . '/lib/hostdb.php';
 
@@ -165,46 +166,6 @@ function startSetupSession(): void
     // session, nor the other way round.
     session_name('diskmonsetup');
     session_start();
-}
-
-/**
- * Installation facts that decide what HostScope can safely promise.
- *
- * This is intentionally a report, not a gate for optional features: a shared
- * host without proc_open can still run the PHP-and-SQLite dashboard, and the
- * installer must say that rather than fail an otherwise useful installation.
- * @return list<array{label: string, state: string, detail: string}>
- */
-function setupPreflight(string $root, string $targetPath): array
-{
-    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
-        || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
-    $data = $root . '/data';
-    $phpOk = version_compare(PHP_VERSION, '8.1.0', '>=');
-    $sqlite = extension_loaded('pdo_sqlite') && in_array('sqlite', PDO::getAvailableDrivers(), true);
-    $commands = array_filter(['exec', 'shell_exec', 'proc_open'], 'function_exists');
-
-    return [
-        ['label' => 'PHP', 'state' => $phpOk ? 'ok' : 'error',
-            'detail' => 'PHP ' . PHP_VERSION . ($phpOk ? ' is supported.' : ' is too old; HostScope needs PHP 8.1 or newer.')],
-        ['label' => 'SQLite', 'state' => $sqlite ? 'ok' : 'error',
-            'detail' => $sqlite ? 'PDO SQLite is available.' : 'PDO SQLite is required for collected data and settings.'],
-        ['label' => 'Data directory', 'state' => is_dir($data) && is_writable($data) ? 'ok' : 'error',
-            'detail' => is_dir($data) && is_writable($data) ? 'data/ is writable.' : 'data/ must exist and be writable by PHP.'],
-        ['label' => 'Configuration', 'state' => configuredSettingsWritable($targetPath) ? 'ok' : 'error',
-            'detail' => configuredSettingsWritable($targetPath) ? 'The configuration store can be written.' : 'PHP cannot write the configuration store.'],
-        ['label' => 'HTTPS', 'state' => $https ? 'ok' : 'warning',
-            'detail' => $https ? 'This setup page is using HTTPS.' : 'Serve setup and the dashboard over HTTPS before entering credentials.'],
-        ['label' => 'Timezone', 'state' => date_default_timezone_get() !== '' ? 'ok' : 'warning',
-            'detail' => 'PHP currently uses ' . date_default_timezone_get() . '. You can choose the dashboard timezone below.'],
-        ['label' => 'Command capability', 'state' => $commands === [] ? 'warning' : 'ok',
-            'detail' => $commands === [] ? 'Command execution is unavailable; PHP-only collection still works.'
-                : 'Available: ' . implode(', ', $commands) . '. Features remain individually capability-gated.'],
-        ['label' => 'Cron', 'state' => PHP_SAPI === 'cli' || $commands !== [] ? 'ok' : 'warning',
-            'detail' => PHP_SAPI === 'cli' ? 'CLI PHP is available for cron.'
-                : ($commands === [] ? 'Configure cron through your host panel; this web request cannot inspect it.'
-                    : 'Schedule cron through your host panel or account crontab.')],
-    ];
 }
 
 /** A message left behind by a redirect, shown once. */

@@ -30,4 +30,19 @@ retryExpect((int)$alert['emailed_at'] > 0 && $alert['email_error'] === null,
     'accepted retry did not repair alert delivery evidence');
 retryExpect(alertEmailRetryAt(99, 10) === 3610, 'retry backoff exceeded one hour');
 
+$pdo->exec("INSERT INTO alert_emails VALUES (2, 'Alert', 'Body', 'one@example.test; two@example.test', '', 0, 'refused', '2', 0, 1)");
+$pdo->exec("INSERT INTO alerts VALUES (2, 2, NULL, 'refused')");
+$calls = [];
+$partial = retryAlertEmails($pdo, 3, function (string $recipient) use (&$calls): bool {
+    $calls[] = $recipient;
+    return $recipient === 'one@example.test';
+});
+$row = $pdo->query('SELECT sent, attempts, next_attempt_at, error FROM alert_emails WHERE id = 2')->fetch();
+retryExpect($partial === ['attempted' => 1, 'sent' => 1, 'failed' => 0]
+    && $calls === ['one@example.test', 'two@example.test'] && (int)$row['sent'] === 1
+    && $row['next_attempt_at'] === null && str_contains((string)$row['error'], 'two@example.test'),
+    'a partially accepted batch was queued again or lost its refusal evidence');
+retryExpect(retryAlertEmails($pdo, 3, fn(): bool => false) === ['attempted' => 0, 'sent' => 0, 'failed' => 0],
+    'a partially accepted batch was retried and could duplicate its accepted recipient');
+
 echo "alert email retry checks passed\n";

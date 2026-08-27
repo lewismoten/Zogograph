@@ -17,6 +17,7 @@ foreach ([
     '<FilesMatch "\\.(db|db-journal|db-wal|db-shm|sqlite|sqlite3)$">',
     '<Files "cron.php">',
     '<Files "host-cron.php">',
+    '<Files "no-mac.php">',
 ] as $required) {
     if (!str_contains($policy, $required)) {
         throw new RuntimeException('missing required Apache protection: ' . $required);
@@ -29,8 +30,8 @@ if ($nginx === false) {
 }
 foreach ([
     'location ~* \\.(?:db|db-journal|db-wal|db-shm|sqlite|sqlite3)$ { deny all; }',
-    'location ~ ^/(?:data|lib)(?:/|$) { deny all; }',
-    'location ~ ^/(?:cron|host-cron)\\.php$ { deny all; }',
+    'location ~ ^/(?:data|lib|scripts)(?:/|$) { deny all; }',
+    'location ~ ^/(?:cron|host-cron|no-mac)\\.php$ { deny all; }',
     "frame-ancestors 'none'",
     'X-Content-Type-Options "nosniff"',
     'X-Frame-Options "DENY"',
@@ -39,6 +40,52 @@ foreach ([
 ] as $required) {
     if (!str_contains($nginx, $required)) {
         throw new RuntimeException('missing Nginx protection: ' . $required);
+    }
+}
+
+$scriptsPolicy = file_get_contents(__DIR__ . '/../scripts/.htaccess');
+if ($scriptsPolicy === false || !str_contains($scriptsPolicy, 'Require all denied')) {
+    throw new RuntimeException('CLI script directory is not denied by Apache');
+}
+
+$macCleanup = file_get_contents(__DIR__ . '/../no-mac.php');
+if ($macCleanup === false) {
+    throw new RuntimeException('could not read Mac metadata cleanup helper');
+}
+
+$passwordReset = file_get_contents(__DIR__ . '/../scripts/reset-password.php');
+if ($passwordReset === false) {
+    throw new RuntimeException('could not read password recovery command');
+}
+
+foreach ([
+    ['aiasset.php', "accessAllows(\$config, 'ai')"],
+    ['preview.php', "accessAllows(\$config, 'pages', 'net-fetch')"],
+    ['thumb.php', "accessAllows(\$config, 'pages', 'storage-files')"],
+] as [$file, $required]) {
+    $source = file_get_contents(__DIR__ . '/../' . $file);
+    if ($source === false || !str_contains($source, $required)) {
+        throw new RuntimeException("missing media authorization safeguard: {$file}");
+    }
+}
+foreach ([
+    "PHP_SAPI !== 'cli'",
+    "saveConfiguredSettings(\$config, \$configFile",
+    'authResetPassword(loadConfiguredSettings($configFile)',
+    "'Password reset refused: '",
+] as $required) {
+    if (!str_contains($passwordReset, $required)) {
+        throw new RuntimeException('missing password recovery safeguard: ' . $required);
+    }
+}
+foreach ([
+    "PHP_SAPI !== 'cli'",
+    "if (\$argc !== 2)",
+    'realpath($argv[1])',
+    'Refusing to clean the filesystem root.',
+] as $required) {
+    if (!str_contains($macCleanup, $required)) {
+        throw new RuntimeException('missing cleanup helper safeguard: ' . $required);
     }
 }
 
@@ -54,6 +101,7 @@ foreach ([
     "logAction(\$pdo, 'diagnostic_export'",
     "'format' => 'hostscope-diagnostic-v1'",
     "'no credentials, paths, or hostnames'",
+    "'edition' => hostEntitlement(\$config)",
 ] as $required) {
     if (!str_contains($diagnosticExport, $required)) {
         throw new RuntimeException('missing diagnostic export safeguard: ' . $required);
@@ -71,6 +119,8 @@ foreach ([
     "csrfValid(\$_POST['csrf'] ?? null)",
     "logAction(\$pdo, 'audit_export'",
     "preg_match('/^[=+\\-@]/', \$text)",
+    "['at_utc', 'action', 'target', 'outcome', 'bytes_freed', 'files_removed', 'detail', 'actor', 'remote_address']",
+    'detail, actor, remote_addr FROM actions ORDER BY at ASC',
     'ORDER BY at ASC',
 ] as $required) {
     if (!str_contains($auditExport, $required)) {
@@ -126,6 +176,63 @@ foreach ([
 ] as $required) {
     if (!str_contains($api, $required)) {
         throw new RuntimeException('missing peer credential rotation safeguard: ' . $required);
+    }
+}
+
+$peerData = file_get_contents(__DIR__ . '/../peer-data.php');
+if ($peerData === false) {
+    throw new RuntimeException('could not read peer status endpoint');
+}
+foreach ([
+    "(\$_SERVER['REQUEST_METHOD'] ?? '') !== 'GET'",
+    "header('Allow: GET')",
+    "header('X-Content-Type-Options: nosniff')",
+    'openIdVerifyOwnToken($config, $bearer)',
+] as $required) {
+    if (!str_contains($peerData, $required)) {
+        throw new RuntimeException('missing peer status safeguard: ' . $required);
+    }
+}
+
+$peerPush = file_get_contents(__DIR__ . '/../peer-push.php');
+if ($peerPush === false) {
+    throw new RuntimeException('could not read peer delivery endpoint');
+}
+foreach ([
+    "(\$_SERVER['REQUEST_METHOD'] ?? '') !== 'POST'",
+    "header('Allow: POST')",
+    'PEER_TRANSPORT_MAX_BYTES',
+    "http_response_code(413)",
+    'peerTransportAccept($pdo, $config',
+] as $required) {
+    if (!str_contains($peerPush, $required)) {
+        throw new RuntimeException('missing peer delivery safeguard: ' . $required);
+    }
+}
+
+$auth = file_get_contents(__DIR__ . '/../lib/auth.php');
+$api = file_get_contents(__DIR__ . '/../api.php');
+if ($auth === false || $api === false) {
+    throw new RuntimeException('could not read session revocation implementation');
+}
+foreach ([
+    'function authSessionCurrent',
+    "\$_SESSION['auth_epoch'] = authSessionEpoch(\$config)",
+    'if (isSignedIn() && !authSessionCurrent($config))',
+] as $required) {
+    if (!str_contains($auth, $required)) {
+        throw new RuntimeException('missing session revocation safeguard: ' . $required);
+    }
+}
+foreach ([
+    "'revoke-sessions' => doRevokeSessions",
+    'function doRevokeSessions',
+    'requireWrite($post)',
+    "'session_revoke'",
+    'saveConfiguredSettings($config, $configFile',
+] as $required) {
+    if (!str_contains($api, $required)) {
+        throw new RuntimeException('missing session revocation route safeguard: ' . $required);
     }
 }
 

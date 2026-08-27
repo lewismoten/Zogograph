@@ -957,7 +957,7 @@ function renderConfig(array $config, string $libDir): string
         'declare(strict_types=1);',
         '',
         '/*',
-        " * Disk Usage Monitor configuration, written by setup.php on $when.",
+        " * HostScope configuration, written by setup.php on $when.",
         ' *',
         ' * Every option is described in lib/config.sample.php. This file holds the',
         ' * password hash and the mask secret, so it is gitignored and lib/.htaccess',

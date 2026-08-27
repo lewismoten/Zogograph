@@ -28,7 +28,7 @@ $root = __DIR__;
 /** Each file the app needs, and whether PHP can actually parse it. */
 $required = [
     'api.php', 'cron.php', 'index.html', 'index.css', 'index.js',
-    'lib/boot.php', 'lib/db.php', 'lib/collect.php', 'lib/alerts.php',
+    'lib/boot.php', 'lib/db.php', 'lib/collect.php', 'lib/alerts.php', 'lib/authrecovery.php',
     'lib/anomalies.php', 'lib/incident.php', 'lib/daemons.php',
     'lib/growth.php', 'lib/retention.php',
     'lib/logwatch.php', 'lib/treemap.php',
@@ -47,7 +47,7 @@ $required = [
     'lib/aitools.php', 'lib/airun.php', 'lib/aisession.php', 'lib/aicharts.php',
     'lib/scans.php', 'lib/aivoice.php', 'lib/aiimages.php',
     'lib/aimemory.php', 'lib/aicompact.php', 'lib/terminal.php', 'lib/aialerts.php',
-    'lib/whatis.php',
+    'lib/whatis.php', 'scripts/reset-password.php', 'scripts/restore-account.php',
 ];
 
 $files = [];
@@ -289,7 +289,7 @@ function esc(string $text): string
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Disk Usage Monitor — health</title>
+<title>HostScope — health</title>
 <style>
 :root { color-scheme: dark; }
 body {
@@ -310,7 +310,7 @@ code { background: #000; padding: 1px 5px; border-radius: 4px; }
 </head>
 <body>
 
-<h1>Disk Usage Monitor — health</h1>
+<h1>HostScope — health</h1>
 
 <p class="verdict <?= $missing === 0 && $broken === 0 ? 'ok' : '' ?>"><?= esc($verdict) ?></p>
 

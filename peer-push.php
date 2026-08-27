@@ -21,6 +21,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     echo json_encode(['error' => 'POST required']);
     exit;
 }
+$declaredLength = filter_var($_SERVER['CONTENT_LENGTH'] ?? null, FILTER_VALIDATE_INT,
+    ['options' => ['min_range' => 0]]);
+if ($declaredLength !== false && $declaredLength > PEER_TRANSPORT_MAX_BYTES) {
+    http_response_code(413);
+    echo json_encode(['error' => 'payload too large']);
+    exit;
+}
 try {
     $body = (string)file_get_contents('php://input');
     $pdo = db($config);

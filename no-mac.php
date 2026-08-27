@@ -1,8 +1,23 @@
 <?php
-
 declare(strict_types=1);
 
-$root = $argv[1] ?? __DIR__;
+/* A destructive maintenance helper: never permit a web request to run it. */
+if (PHP_SAPI !== 'cli') {
+    http_response_code(403);
+    exit("no-mac.php runs from the command line only.\n");
+}
+
+if (($argv[1] ?? '') === '--help' || ($argv[1] ?? '') === '-h') {
+    echo "Usage: php no-mac.php DIRECTORY\n";
+    exit(0);
+}
+
+if ($argc !== 2) {
+    fwrite(STDERR, "Usage: php no-mac.php DIRECTORY\n");
+    exit(2);
+}
+
+$root = realpath($argv[1]);
 
 function deleteDirectory(string $path): void
 {
@@ -62,8 +77,12 @@ function cleanMacFiles(string $directory): void
     }
 }
 
-if (!is_dir($root)) {
-    fwrite(STDERR, "Directory does not exist: {$root}\n");
+if ($root === false || !is_dir($root)) {
+    fwrite(STDERR, "Directory does not exist or cannot be resolved.\n");
+    exit(1);
+}
+if ($root === DIRECTORY_SEPARATOR) {
+    fwrite(STDERR, "Refusing to clean the filesystem root.\n");
     exit(1);
 }
 

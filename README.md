@@ -1,4 +1,4 @@
-# Disk Usage Monitor
+# HostScope
 
 A PHP collector and a static dashboard that watch a home directory and tell you
 before it fills up.
@@ -23,6 +23,14 @@ monitor you have to remember to look at is a monitor that tells you afterwards.
   signalling.
 - `data/` — the SQLite databases: `stats.db` from the account collector and
   `host.db` from the root one. Created automatically, never served.
+
+## Release artifacts
+
+`SBOM.cdx.json` is the committed CycloneDX inventory for this dependency-free
+source release, and `THIRD_PARTY_NOTICES.md` records the corresponding
+dependency and attribution status. `SECURITY.md` explains private vulnerability
+reporting. See `LICENSE-STATUS.md` for the required legal review before a
+commercial distribution license is claimed.
 
 ## What it records
 
@@ -79,6 +87,11 @@ creates a consistent private snapshot in `data/migration-backups/`. It uses
 SQLite's own backup operation, so the copy includes committed WAL data and does
 not need the `sqlite3` executable. Keep this directory outside the web root or
 protected by the existing `data/.htaccess` rule.
+
+Migration retries are idempotent for previously created columns, tables, and
+indexes. If an older deployment or manual recovery interrupted after creating
+one of those objects but before recording its version, a later startup resumes
+the migration instead of failing on an “already exists” error.
 
 If an upgrade must be rolled back, stop the web and cron processes first, keep
 a copy of the current database, then replace the affected database file with
@@ -1325,6 +1338,11 @@ The Alerts page keeps the evidence even after an alert is marked read. A read
 mark can be reversed if it was accidental; deleting is separate, always asks
 for confirmation, and is the only action that removes the alert history.
 
+Administrators can temporarily mute a known rule with a required reason and an
+automatic expiry. Muted Information and Warning events stay in the dashboard
+with their recorded delivery disposition and unread badge count, but do not
+raise the overview banner; Error and Critical events always bypass a mute.
+
 A directory is not blamed for its child's growth: one runaway log would
 otherwise alert for itself, for its directory, and for the home directory.
 
@@ -1527,7 +1545,7 @@ One SQLite file, normalised on `paths`:
 | `scan_totals` | trash / logs / temp bytes and file counts per scan |
 | `path_sizes` | one path's size and file count at one scan |
 | `alerts` | what was raised, and whether the email went |
-| `actions` | every delete attempted, and what happened |
+| `actions` | audited actions, outcomes, actor, and source address; the CSV export retains both identity fields |
 
 Problems go to `data/error.log` rather than a table, so that a database that
 cannot be opened is still able to report why.
@@ -1772,18 +1790,60 @@ Optional TOTP MFA uses a private Base32 `auth.totp_secret` for the legacy
 administrator or a per-user `access.users.<name>.totp_secret`. Enter the
 current six-digit authenticator code at sign-in. MFA failures intentionally
 receive the same generic response and throttle accounting as bad passwords.
+After signing in, an Administrator can use **Recovery codes** in the header to
+replace and display eight one-time codes. Generation requires a fresh current
+authenticator code; only hashes are retained, and a code is deleted when it is
+used. Store them offline before closing the dialog.
+
+AI Settings can also set shared daily and monthly spending ceilings. They cover
+every conversation and automatic alert investigation, use UTC day/calendar-month
+boundaries, and stop the next provider call once measured spend reaches the
+ceiling. A zero cap leaves that period unlimited; costs remain unknown until
+you configure provider prices.
+
+Named local users can use the built-in **Viewer**, **Operator**, or
+**Administrator** groups. Viewer is read-only operational evidence without
+live, note, AI, or IP surfaces; Operator has the previous Staff workflow without
+configuration-write authority; Administrator has full access. Existing `Staff`
+and `Administrators` names remain compatible.
+
+If every local password is lost, a person with shell and filesystem access to
+the installation can recover it without depending on email or the database:
+
+```sh
+php scripts/reset-password.php
+php scripts/reset-password.php --user operator
+```
+
+The command asks twice for a password, updates only the requested local account,
+and invalidates every signed-in browser session. Use `--stdin` only with a
+private, non-shell-history source when a terminal cannot hide input.
+
+**Display** in the header provides local browser-only text-size and motion
+preferences. The default motion setting follows the operating system; choosing
+reduced motion disables HostScope's decorative transitions and animation.
 
 - `lib/config.php` holds the password hash and the mask secret. It is
   gitignored, and `lib/.htaccess` denies the whole directory.
 - `data/.htaccess` denies the database. Serving it would hand over every path,
   every size and the password hash in one request.
+- Provider failures are retained for diagnosis only after credential-shaped
+  headers, fields, and text have been redacted.
+- Direct image and fetched-page endpoints repeat the same AI or page permission
+  check as the interface that created them; a signed-in session alone is not
+  enough to fetch protected media by a guessed identifier or retained token.
 - Sessions are `HttpOnly`, `SameSite=Strict`, `Secure` over HTTPS, and time out
   after `session_lifetime`.
+- An administrator can use **End all sessions** in the header to invalidate
+  every signed-in browser session immediately, including their own.
 - Eight wrong-password attempts from one client address within fifteen minutes
   receive the same generic refusal and are then rate-limited until the window
   clears. Limited attempts are audited separately so they do not prolong it.
 - `.htaccess` redirects to HTTPS and sets a content security policy. A login
   sends a password; never over plain HTTP.
+- `no-mac.php` is a CLI-only cleanup helper. It requires one explicit directory
+  argument and refuses the filesystem root; it is denied by both example web
+  server policies.
 - The policy is `default-src 'self'` with no `style-src`, which means **a single
   `style=""` attribute in `index.html` is blocked outright** — the rule does not
   apply, the console fills with violations, and the only symptom is something
@@ -1817,13 +1877,23 @@ php tests/security-policies.php
 php tests/migration-snapshots.php
 php tests/sqlite-contention.php
 php tests/http-protections.php
+php tests/release-artifacts.php
+php tests/audit-actor.php
 php tests/peer-transport.php
 php tests/auth-throttle.php
 php tests/telegram-alert-text.php
 php tests/alert-email-retry.php
 php tests/alert-acknowledgement.php
+php tests/alert-mutes.php
 php tests/terminal-editor-safety.php
 php tests/totp.php
+php tests/openid.php
+php tests/setup-preflight.php
+php tests/session-revocation.php
+php tests/auth-recovery.php
+php tests/ai-error-redaction.php
+php tests/access-roles.php
+php tests/ai-shared-budget.php
 ```
 
 They do not make network requests. They verify the constraints that must stay
@@ -1843,8 +1913,9 @@ records the export, marks spreadsheet-formula-looking cells as text, and is not
 appropriate for untrusted storage because it can contain paths and addresses.
 
 **System → The monitor itself → Download diagnostic** creates a smaller support
-snapshot with runtime versions, extension availability, database integrity and
-size, collector timestamps, and feature counts. It requires signed-in System
+snapshot with runtime versions, extension availability, database integrity,
+configured edition and remote-host capacity, size, collector timestamps, and
+feature counts. It requires signed-in System
 access plus the current form token, records the download, and intentionally
 omits credentials, configuration values, paths, hostnames, and collected data.
 
@@ -1857,6 +1928,16 @@ copy cannot be made, the save is refused rather than overwriting newer content.
 The editor lists up to ten private copies for that exact file; restoring one
 requires confirmation and first captures the currently live version as another
 recovery copy.
+The browser editor keeps native text editing behavior while showing a
+non-copyable, synchronized line-number gutter. It preserves the existing
+line-ending, recovery-copy, concurrent-change, and read-only safeguards.
+It identifies ASCII or UTF-8 text, line-ending convention, permissions, and
+modification time before editing. **Review changes** (or `Ctrl/Cmd+Shift+D`)
+shows a bounded line-by-line preview before the protected save.
+Credential-bearing environment, private-key, database, and known secret
+configuration files are refused server-side even when they are inside the
+watched directory; use a shell or the host’s secret-management workflow for
+those files.
 Its local Find Next, Replace, and Replace All controls never send file text
 until the normal protected save is chosen; `Ctrl/Cmd+F` focuses Find and
 `Ctrl/Cmd+H` focuses Replace.
@@ -1897,12 +1978,12 @@ knows which scheduled jobs and PHP workers remain active.
 
 ### Remote vital delivery
 
-Saving a trusted server creates a separate one-time transport credential. OIDC
-is optional for this delivery-only setup: leave every OIDC field blank, enter
-the controller's `https://…/peer-push.php` endpoint, then copy the credential
-and trusted-server short name to the remote installation's `remote_delivery`
-configuration within 24 hours. Its first valid signed delivery activates the
-credential; an unused credential expires and needs rotation. Configuring every
+Saving a trusted server creates a separate one-time transport enrollment
+fragment. OIDC is optional for this delivery-only setup: leave every OIDC field
+blank, enter the controller's `https://…/peer-push.php` endpoint, then copy the
+complete fragment to the remote installation's `remote_delivery` configuration
+within 24 hours. Its first valid signed delivery activates the credential; an
+unused credential expires and needs rotation. Configuring every
 OIDC field additionally enables the separate interactive read connection. On
 its normal vital run, the remote sends the newest reading with a
 pinned HTTPS connection, HMAC signature, bounded body, timestamp, and nonce.
@@ -1924,6 +2005,14 @@ of silently claiming delivery.
 are scheduled for delivery (60–86,400 seconds; the default is 60). Queued
 retries remain independent so an outage can recover without waiting for the
 next new-reading interval.
+
+### OpenID provider for trusted peers
+
+HostScope can optionally act as an OpenID Connect provider for explicitly
+registered trusted-peer clients. It supports authorization code with S256 PKCE,
+strict registered callback matching, short-lived RS256 ID tokens, and auditable
+authorization/token grants. This is a peer identity feature; it is not an
+external-provider replacement for local HostScope sign-in.
 
 Retention settings include accepted remote vital payloads (400 days by default)
 and remote replay receipts (two days). Replay receipts always retain at least
@@ -1947,7 +2036,8 @@ stated, and the dashboard link is retained inside Telegram's message limit.
 If PHP's `mail()` refuses every recipient in an alert batch, HostScope retains
 the exact message and retries it from later alert runs with one-minute to
 one-hour backoff. A batch accepted for any recipient is never retried, avoiding
-duplicate messages after the local mail queue takes ownership.
+duplicate messages after the local mail queue takes ownership; any recipients
+that PHP refused are retained as partial-delivery evidence.
 
 Trusted-server records also retain optional description, tags, group,
 environment, timezone, and maintenance context. These fields organize fleet

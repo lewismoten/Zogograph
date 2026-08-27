@@ -172,6 +172,8 @@ function aiSettings(array $config): array
         'max_seconds' => max(0, (int)($set['max_seconds'] ?? 3600)),
         'max_cents' => max(0, (float)($set['max_cents'] ?? 50)),
         'max_turns' => max(0, (int)($set['max_turns'] ?? 40)),
+        'daily_cents' => max(0, (float)($set['daily_cents'] ?? 0)),
+        'monthly_cents' => max(0, (float)($set['monthly_cents'] ?? 0)),
 
         /*
          * How hard a reasoning model should think, where it has the option.
@@ -233,6 +235,45 @@ function aiSettings(array $config): array
 
         'tools' => $set['tools'] ?? [],
     ];
+}
+
+/** Shared spend ceilings: UTC day and calendar month, across every AI session. */
+function aiSharedBudget(PDO $ai, array $settings, ?int $now = null): array
+{
+    $now ??= time();
+    $windows = [
+        'daily' => gmmktime(0, 0, 0, (int)gmdate('n', $now), (int)gmdate('j', $now), (int)gmdate('Y', $now)),
+        'monthly' => gmmktime(0, 0, 0, (int)gmdate('n', $now), 1, (int)gmdate('Y', $now)),
+    ];
+    $limits = [
+        'daily' => (int)round((float)($settings['daily_cents'] ?? 0) * 1000),
+        'monthly' => (int)round((float)($settings['monthly_cents'] ?? 0) * 1000),
+    ];
+    $spent = $ai->prepare('SELECT COALESCE(SUM(millicents), 0) FROM ai_calls WHERE at >= ?');
+    $out = [];
+    foreach ($windows as $name => $from) {
+        $spent->execute([$from]);
+        $used = (int)$spent->fetchColumn();
+        $limit = $limits[$name];
+        $out[$name] = ['used_millicents' => $used, 'limit_millicents' => $limit,
+            'remaining_millicents' => $limit === 0 ? null : max(0, $limit - $used),
+            'ok' => $limit === 0 || $used < $limit];
+    }
+    return $out;
+}
+
+/** @return array{ok: bool, which: ?string, why: string} */
+function aiWithinSharedBudget(PDO $ai, array $settings): array
+{
+    foreach (aiSharedBudget($ai, $settings) as $name => $budget) {
+        if (!$budget['ok']) {
+            return ['ok' => false, 'which' => $name . '_spend', 'why' => sprintf(
+                'The shared %s AI budget has spent about %s, which is the limit set in Settings.',
+                $name, aiMoney((int)$budget['used_millicents'])
+            )];
+        }
+    }
+    return ['ok' => true, 'which' => null, 'why' => ''];
 }
 
 /**
@@ -471,7 +512,7 @@ function aiAsk(
     if ($raw === false) {
         return [
             'ok' => false,
-            'error' => $problem !== '' ? $problem : 'the request failed',
+            'error' => $problem !== '' ? aiRedactErrorText($problem) : 'the request failed',
             'status' => $status,
             'ms' => $ms,
             'request' => $body,
@@ -488,7 +529,7 @@ function aiAsk(
             'status' => $status,
             'ms' => $ms,
             'request' => $body,
-            'response' => ['raw' => mb_substr((string)$raw, 0, 2000)],
+            'response' => ['raw' => mb_substr(aiRedactErrorText((string)$raw), 0, 2000)],
         ];
     }
 
@@ -499,7 +540,7 @@ function aiAsk(
             'status' => $status,
             'ms' => $ms,
             'request' => $body,
-            'response' => $decoded,
+            'response' => aiRedactErrorPayload($decoded),
         ];
     }
 
@@ -532,11 +573,44 @@ function aiErrorText(array $decoded, int $status): string
             $at = $at[$key];
         }
         if (is_string($at) && $at !== '') {
-            return sprintf('%s (HTTP %d)', $at, $status);
+            return sprintf('%s (HTTP %d)', aiRedactErrorText($at), $status);
         }
     }
 
     return sprintf('the model refused the request (HTTP %d)', $status);
+}
+
+/** Redacts credential-shaped text before a provider failure becomes evidence. */
+function aiRedactErrorText(string $text): string
+{
+    $patterns = [
+        '/(authorization\s*:\s*bearer\s+)\S+/i' => '$1[hidden]',
+        '/((?:api[-_]?key|access[-_]?key|token|secret|password)\s*[=:]\s*["\']?)\S+/i' => '$1[hidden]',
+        '/\b(?:sk|rk|AIza)[-_A-Za-z0-9]{16,}\b/' => '[hidden]',
+    ];
+    foreach ($patterns as $pattern => $replacement) {
+        $text = (string)preg_replace($pattern, $replacement, $text);
+    }
+    return mb_substr(trim($text), 0, 800);
+}
+
+/** Removes explicit credential fields from a structured provider error payload. */
+function aiRedactErrorPayload(array $payload): array
+{
+    $clean = [];
+    foreach ($payload as $key => $value) {
+        $name = strtolower((string)$key);
+        if (preg_match('/(?:api[-_]?key|access[-_]?key|token|secret|password|authorization)/', $name)) {
+            $clean[$key] = '[hidden]';
+        } elseif (is_array($value)) {
+            $clean[$key] = aiRedactErrorPayload($value);
+        } elseif (is_string($value)) {
+            $clean[$key] = aiRedactErrorText($value);
+        } else {
+            $clean[$key] = $value;
+        }
+    }
+    return $clean;
 }
 
 /** @return array{0: string, 1: list<string>, 2: array} */

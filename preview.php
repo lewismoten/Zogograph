@@ -44,13 +44,14 @@ define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
+require_once __DIR__ . '/lib/access.php';
 
 startSession($config);
 
-if (!isSignedIn()) {
+if (!isSignedIn() || !accessAllows($config, 'pages', 'net-fetch')) {
     http_response_code(403);
     header('Content-Type: text/plain; charset=utf-8');
-    exit('Sign in to preview a page.');
+    exit('Your group cannot preview fetched pages.');
 }
 
 $pdo = db($config);

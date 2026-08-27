@@ -18,6 +18,24 @@ editorExpect(terminalEditorWithLineEndings("one\r\ntwo\r", 'lf') === "one\ntwo\n
 editorExpect(terminalEditorFingerprint('same') === terminalEditorFingerprint('same')
     && terminalEditorFingerprint('same') !== terminalEditorFingerprint('changed'),
     'editor fingerprint did not distinguish content');
+editorExpect(terminalEditorEncoding('plain text') === 'ASCII'
+    && terminalEditorEncoding("caf\xc3\xa9") === 'UTF-8'
+    && terminalEditorEncoding("\xff") === 'legacy 8-bit',
+    'editor encoding detection did not distinguish browser-safe text');
+editorExpect(terminalEditorSensitiveFileReason('/site/.env') !== null
+    && terminalEditorSensitiveFileReason('/site/private.pem') !== null
+    && terminalEditorSensitiveFileReason('/site/config.php') !== null
+    && terminalEditorSensitiveFileReason('/site/config.example.php') === null,
+    'editor sensitive-file restriction did not preserve the safe boundary');
+
+$editorUi = file_get_contents(__DIR__ . '/../index.js');
+editorExpect(is_string($editorUi)
+    && str_contains($editorUi, 'terminal-editor-lines')
+    && str_contains($editorUi, 'aria-hidden')
+    && str_contains($editorUi, 'text.addEventListener("scroll"')
+    && str_contains($editorUi, 'terminalEditorDiff')
+    && str_contains($editorUi, 'Review changes'),
+    'browser editor is missing its accessible gutter or protected change preview');
 
 try {
     terminalEditorWithLineEndings('x', 'unknown');

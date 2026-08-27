@@ -1,4 +1,4 @@
-# Disk Usage Monitor
+# HostScope
 #
 # The dashboard is deliberately readable without logging in: anyone who can
 # reach it sees sizes and trends, but every path is masked until they sign in.
@@ -35,6 +35,12 @@ DirectoryIndex index.html
 # own as well, but a root-privileged entry point reachable from a browser is not
 # something to leave to one layer.
 <Files "host-cron.php">
+  Require all denied
+</Files>
+
+# This helper removes files. It validates CLI use itself too, but keeping it
+# out of the web server avoids even reaching PHP on a misconfigured host.
+<Files "no-mac.php">
   Require all denied
 </Files>
 
@@ -103,6 +109,6 @@ DirectoryIndex index.html
 # are unmasked and whether the delete actions are offered.
 #
 # AuthType Basic
-# AuthName "Disk Usage Monitor"
+# AuthName "HostScope"
 # AuthUserFile /home/USER/.stats-htpasswd
 # Require valid-user

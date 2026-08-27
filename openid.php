@@ -3,8 +3,10 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/lib/boot.php';
 installErrorBoundary('json');
+require_once __DIR__ . '/lib/setupstore.php';
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
+require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/openid.php';
 
 $file = __DIR__ . '/lib/config.php';
@@ -14,7 +16,7 @@ if (!is_file($file)) {
     echo json_encode(['error' => 'not configured']);
     exit;
 }
-$config = require $file;
+$config = loadConfiguredSettings($file);
 date_default_timezone_set($config['timezone'] ?? 'UTC');
 $action = (string)($_GET['action'] ?? 'discovery');
 $post = $_SERVER['REQUEST_METHOD'] === 'POST';
@@ -55,8 +57,10 @@ if ($action === 'authorize') {
     }
     $identity = ['username' => (string)($_SESSION['username'] ?? 'administrator'),
         'groups' => array_values(array_filter((array)($_SESSION['groups'] ?? ['Administrators']), 'is_string'))];
-    $code = openIdCreateCode(db($config), $clientId, $redirect, $challenge, $identity['username'],
+    $pdo = db($config);
+    $code = openIdCreateCode($pdo, $clientId, $redirect, $challenge, $identity['username'],
         $identity['groups'], isset($_GET['nonce']) ? (string)$_GET['nonce'] : null);
+    logAction($pdo, 'openid_authorize', $clientId, 'ok', 0, 0, 'authorization code issued');
     header('Cache-Control: no-store');
     header('Location: ' . $redirect . (str_contains($redirect, '?') ? '&' : '?')
         . http_build_query(['code' => $code, 'state' => $state], '', '&', PHP_QUERY_RFC3986), true, 302);
@@ -73,11 +77,13 @@ if ($action === 'token') {
         $json(['error' => 'invalid_client'], 401);
     }
     $verifier = (string)($_POST['code_verifier'] ?? '');
-    $code = openIdConsumeCode(db($config), (string)($_POST['code'] ?? ''), $verifier);
+    $pdo = db($config);
+    $code = openIdConsumeCode($pdo, (string)($_POST['code'] ?? ''), $verifier);
     if ($code === null || !hash_equals($clientId, (string)$code['client_id'])
         || !hash_equals((string)($_POST['redirect_uri'] ?? ''), (string)$code['redirect_uri'])) {
         $json(['error' => 'invalid_grant'], 400);
     }
+    logAction($pdo, 'openid_token', $clientId, 'ok', 0, 0, 'authorization code exchanged');
     $json(['token_type' => 'Bearer', 'expires_in' => 600, 'id_token' => openIdIdToken($config, $code)]);
 }
 $json(['error' => 'not_found'], 404);

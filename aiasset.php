@@ -35,6 +35,7 @@ define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
+require_once __DIR__ . '/lib/access.php';
 require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/spans.php';
 require_once __DIR__ . '/lib/storekeep.php';
@@ -42,9 +43,9 @@ require_once __DIR__ . '/lib/aidb.php';
 
 startSession($config);
 
-if (!isSignedIn()) {
+if (!isSignedIn() || !accessAllows($config, 'ai')) {
     http_response_code(403);
-    exit('Sign in to see this.');
+    exit('Your group cannot see assistant assets.');
 }
 
 $id = (int)($_GET['id'] ?? 0);

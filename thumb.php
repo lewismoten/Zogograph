@@ -40,6 +40,7 @@ define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
+require_once __DIR__ . '/lib/access.php';
 require_once __DIR__ . '/lib/actions.php';
 require_once __DIR__ . '/lib/inspect.php';
 
@@ -50,8 +51,8 @@ header('Content-Security-Policy: default-src \'none\'; sandbox');
 header('Cache-Control: private, max-age=60');
 
 try {
-    if (!isSignedIn()) {
-        throw new ActionRefused('sign in to see images');
+    if (!isSignedIn() || !accessAllows($config, 'pages', 'storage-files')) {
+        throw new ActionRefused('your group cannot see inspected images');
     }
 
     $path = resolveInspectable($config, (string)($_GET['path'] ?? ''));

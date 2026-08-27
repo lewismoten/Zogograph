@@ -83,6 +83,24 @@ function peerTransportEndpoint(array $peer): ?string
         ? substr($redirect, 0, -strlen('/peer-connect.php')) . '/peer-push.php' : null;
 }
 
+/** The exact remote config fragment, assembled once so pairing is copy-safe. */
+function peerTransportEnrollment(string $name, ?string $endpoint, string $credential): string
+{
+    $name = strtolower(trim($name));
+    if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,40}$/', $name)) {
+        throw new ActionRefused('the pairing peer name is invalid');
+    }
+    $endpoint = $endpoint === null ? '' : peerUrl($endpoint);
+    if ($endpoint === '' || !preg_match('/^[a-f0-9]{64}$/', $credential)) {
+        throw new ActionRefused('the pairing data is incomplete');
+    }
+    return "'remote_delivery' => [\n"
+        . "    'endpoint' => " . var_export($endpoint, true) . ",\n"
+        . "    'peer' => " . var_export($name, true) . ",\n"
+        . "    'credential' => " . var_export($credential, true) . ",\n"
+        . "],";
+}
+
 /** The controller is included separately; this is the remote-host allowance. */
 function peerCapacity(array $config): array
 {

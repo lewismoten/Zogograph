@@ -1,9 +1,10 @@
 <?php
 declare(strict_types=1);
 
-/* Initial OpenID Connect provider metadata.  This is deliberately discovery
- * only: advertising a login that cannot validate consent, authorization codes,
- * PKCE, and signed ID tokens would be less safe than advertising nothing. */
+/* OpenID Connect provider primitives for explicitly registered trusted peers.
+ * The provider never advertises itself until its issuer and signing key are
+ * valid, and the endpoint enforces authorization code, PKCE, and signed ID
+ * tokens rather than presenting a discovery document for an imaginary login. */
 
 function openIdIssuer(array $config): ?string
 {

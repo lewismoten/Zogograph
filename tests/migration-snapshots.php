@@ -38,9 +38,56 @@ try {
     $copy = null;
     $pdo = null;
 
+    /* A real pre-feature alert table: the current migration must add its
+     * delivery evidence and mute ledger without requiring a fresh install. */
+    $upgrade = $directory . '/upgrade.db';
+    $legacy = new PDO('sqlite:' . $upgrade, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $legacy->exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
+    $legacy->exec('INSERT INTO schema_version VALUES (44)');
+    $legacy->exec('CREATE TABLE alerts (id INTEGER PRIMARY KEY, raised_at INTEGER NOT NULL, rule TEXT NOT NULL,
+        severity TEXT NOT NULL, subject TEXT NOT NULL, detail TEXT NOT NULL)');
+    $legacy->exec('CREATE TABLE actions (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, action TEXT NOT NULL,
+        target TEXT, outcome TEXT NOT NULL, bytes_freed INTEGER NOT NULL DEFAULT 0,
+        files_removed INTEGER NOT NULL DEFAULT 0, detail TEXT, remote_addr TEXT)');
+    migrate($legacy);
+    $columns = $legacy->query('SELECT name FROM pragma_table_info(\'alerts\')')->fetchAll(PDO::FETCH_COLUMN);
+    migrationTestExpect(in_array('notification_disposition', $columns, true)
+        && in_array('notification_reason', $columns, true)
+        && in_array('notification_muted_until', $columns, true),
+        'alert lifecycle migration did not upgrade the existing alerts table');
+    migrationTestExpect((int)$legacy->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'alert_mutes'")->fetchColumn() === 1,
+        'alert lifecycle migration did not create the mute ledger');
+    $legacy = null;
+
+    /* An interrupted older deployment may have created a table or index before
+     * losing its schema-version write. Retrying must repair rather than wedge. */
+    $interrupted = $directory . '/interrupted.db';
+    $partial = new PDO('sqlite:' . $interrupted, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $partial->exec('CREATE TABLE schema_version (version INTEGER NOT NULL)');
+    $partial->exec('INSERT INTO schema_version VALUES (44)');
+    $partial->exec('CREATE TABLE alerts (id INTEGER PRIMARY KEY, raised_at INTEGER NOT NULL, rule TEXT NOT NULL,
+        severity TEXT NOT NULL, subject TEXT NOT NULL, detail TEXT NOT NULL,
+        notification_disposition TEXT NOT NULL DEFAULT \'immediate\', notification_reason TEXT, notification_muted_until INTEGER)');
+    $partial->exec('CREATE TABLE actions (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, action TEXT NOT NULL,
+        target TEXT, outcome TEXT NOT NULL, bytes_freed INTEGER NOT NULL DEFAULT 0,
+        files_removed INTEGER NOT NULL DEFAULT 0, detail TEXT, remote_addr TEXT, actor TEXT)');
+    $partial->exec('CREATE TABLE alert_mutes (id INTEGER PRIMARY KEY, rule TEXT NOT NULL, created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL, reason TEXT NOT NULL, created_by TEXT)');
+    $partial->exec('CREATE INDEX alert_mutes_rule_expiry ON alert_mutes (rule, expires_at DESC)');
+    $partial->exec('CREATE INDEX actions_actor_at ON actions (actor, at)');
+    migrate($partial);
+    migrationTestExpect((int)$partial->query('SELECT MAX(version) FROM schema_version')->fetchColumn() === 47,
+        'interrupted migration did not recover to the current schema version');
+    $partial = null;
+
     unlink($snapshot);
-    rmdir($directory . '/migration-backups');
     unlink($database);
+    foreach (glob($directory . '/migration-backups/*') ?: [] as $file) {
+        @unlink($file);
+    }
+    @rmdir($directory . '/migration-backups');
+    unlink($upgrade);
+    unlink($interrupted);
     rmdir($directory);
     echo "migration snapshot checks passed\n";
 } catch (Throwable $e) {
@@ -49,6 +96,8 @@ try {
     }
     @rmdir($directory . '/migration-backups');
     @unlink($database);
+    @unlink($directory . '/upgrade.db');
+    @unlink($directory . '/interrupted.db');
     @rmdir($directory);
     throw $e;
 }

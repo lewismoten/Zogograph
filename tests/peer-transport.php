@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../lib/peertransport.php';
+require_once __DIR__ . '/../lib/peers.php';
 
 function transportExpect(bool $condition, string $message): void
 {
@@ -19,6 +20,10 @@ $pdo->exec('CREATE TABLE remote_peer_vitals (peer TEXT, host TEXT, taken_at INTE
 $pdo->exec('CREATE TABLE remote_delivery_queue (id INTEGER PRIMARY KEY, endpoint TEXT, peer TEXT, taken_at INTEGER, created_at INTEGER, body TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL DEFAULT 0, last_error TEXT, UNIQUE (peer, taken_at))');
 $pdo->exec('CREATE TABLE remote_delivery_state (endpoint TEXT, peer TEXT, last_scheduled_at INTEGER, PRIMARY KEY (endpoint, peer))');
 $secret = bin2hex(random_bytes(32));
+$enrollment = peerTransportEnrollment('remote-a', 'https://controller.example/peer-push.php', $secret);
+transportExpect(str_contains($enrollment, "'peer' => 'remote-a'")
+    && str_contains($enrollment, "'credential' => '$secret'"),
+    'remote pairing fragment did not contain the exact one-time enrollment data');
 $config = ['peers' => ['remote-a' => ['transport_secret' => $secret]]];
 $now = time();
 $body = json_encode(['version' => 1, 'host' => 'remote-a.example', 'taken_at' => $now, 'vitals' => ['cpu_percent' => 12.5]]);

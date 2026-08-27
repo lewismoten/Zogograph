@@ -18,6 +18,7 @@ require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/access.php';
 require_once __DIR__ . '/lib/actions.php';
+require_once __DIR__ . '/lib/entitlement.php';
 
 startSession($config);
 if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST' || !isSignedIn()
@@ -71,6 +72,9 @@ $snapshot = [
         'host_collector_enabled' => !empty($config['host']['enabled']),
         'remote_peer_count' => count((array)($config['peers'] ?? [])),
         'assistant_enabled' => !empty($config['ai']['enabled']),
+    ],
+    'edition' => hostEntitlement($config) + [
+        'remote_hosts_configured' => count((array)($config['peers'] ?? [])),
     ],
 ];
 logAction($pdo, 'diagnostic_export', 'sanitized support snapshot', 'ok', 0, 0, 'no credentials, paths, or hostnames');

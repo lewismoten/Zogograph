@@ -26,7 +26,7 @@ the product is complete.
   than replacement.
 - [x] Verified pre-migration SQLite snapshots and documented restore/recovery
   procedure for primary, host, and assistant databases.
-- [ ] Reproducible install and degraded-capability tests.
+- [x] Reproducible install and degraded-capability tests.
 - [x] Reproducible migration-recovery snapshot test for the common SQLite
   snapshot primitive used by account, host, and assistant databases.
 - [x] Reproducible SQLite writer-contention test, including recovery after the
@@ -218,9 +218,39 @@ so editing no longer requires knowing an editor command and shell path. It
 reports links without following them and repeats canonical-path/access checks
 when a selected regular file is opened.
 
+The browser editor now renders a synchronized, non-copyable line-number gutter
+while retaining native textarea behavior and the existing save and recovery
+protections.
+
+Before editing, the browser now identifies supported ASCII/UTF-8 text and shows
+its modification time, permissions, and line-ending convention. A bounded,
+local change preview makes additions and removals reviewable before the existing
+atomic save; legacy 8-bit data remains safely refused rather than risking an
+invalid browser JSON response.
+
+The editor now also refuses environment files, private keys, local databases,
+and known secret-bearing configuration files on the server, even if they sit
+inside the watched root. This keeps credentials out of browser responses and
+recovery copies instead of presenting an insufficient client-side warning.
+
 Files reported as unwritable now open in a review-only editor dialog. Local
 finding still works, while save, restore, and replace controls are absent rather
 than promising an operation the server will refuse.
+
+Alert rules can now be temporarily muted from the Alerts page with a required
+reason and bounded expiry. The original event keeps an explicit suppressed
+delivery disposition; Error and Critical alerts bypass a mute, and ending a
+mute expires rather than deletes its operator record. The overview banner now
+honors the same disposition while the unread badge continues to count evidence.
+
+Release artifacts now include a dependency-free CycloneDX SBOM and third-party
+inventory, with a machine-checkable test. Commercial source-visible license
+text remains deliberately blocked on legal-owner approval; `LICENSE-STATUS.md`
+records the exact decision required rather than falsely claiming a license.
+
+New audit records now retain a structured authenticated actor alongside their
+source address; collector-created records identify the collector. Historical
+records remain visibly unattributed rather than being retroactively guessed.
 
 Local authentication now optionally verifies a standards-based six-digit TOTP
 second factor after password verification. Legacy and named-user secrets remain
@@ -229,11 +259,92 @@ coverage includes the RFC 6238 reference vector. Enrollment/recovery codes and
 full authentication-recovery workflow remain before the authentication item is
 complete.
 
+Optional TOTP now has an administrator-controlled recovery-code workflow:
+generation requires a current authenticator code, atomically replaces prior
+codes, displays the new codes once, and retains only password hashes. Each code
+is consumed atomically during login and that use is recorded without retaining
+the secret itself.
+
+Administrators can now invalidate every signed-in browser session through a
+configuration-backed session generation, including on shared hosts that do not
+offer controllable session-file storage. The action is write-authorized,
+CSRF-protected, audited, and signs out its caller too; new logins receive the
+current generation while older or legacy sessions are rejected on their next
+request.
+
+Emergency password recovery is now available as a CLI-only, filesystem-owner
+workflow for the legacy administrator or an existing named local user. It never
+needs SMTP or the account database, stores only a new password hash, and advances
+the same session generation so compromised browser sessions cannot survive it.
+The whole `scripts/` directory is denied by the Apache and Nginx deployment
+policies as a second, independent guard for recovery and restore commands.
+
+The optional Mac metadata cleanup helper now requires a single explicit CLI
+directory, resolves that target before work, refuses the filesystem root, and
+is denied by both Apache and Nginx example policies. It cannot be triggered by
+an HTTP request or silently default to the application directory.
+
 Remote vital transport now requires an explicit controller protocol-version
 acknowledgement in addition to the signed payload version. A rolling upgrade
 therefore becomes a visible queued compatibility failure rather than a false
 successful delivery.
 
+Creating or rotating a remote transport credential now displays a complete,
+copy-safe remote `remote_delivery` configuration fragment rather than asking an
+operator to transcribe an endpoint, peer name, and secret separately. It is
+still a short-lived one-time enrollment artifact and never appears in later
+peer reads.
+
+The supported OpenID provider path now loads configuration through the same
+store as the rest of the application and audibly records authorization-code
+issuance and token exchange. A repeatable OpenSSL-backed check covers discovery,
+strict S256 PKCE, one-time code consumption, RS256 token verification, audience,
+and nonce. This is evidence for peer identity only, not a claim that external
+OIDC sign-in is implemented.
+
+The header now offers local browser-only display preferences for readable text
+size and reduced motion. The system preference remains the default; an explicit
+reduced-motion choice suppresses decorative transitions and animation across
+the interface without changing server configuration or other users' views.
+
 Nginx/PHP-FPM deployment now has a reviewed example policy mirroring the
 Apache database/source/collector denials and browser headers, with the FPM
 socket and HTTPS redirect intentionally left for the host operator to set.
+
+Installer preflight facts now live in a small reusable PHP-only module rather
+than inside the setup page dispatcher. Reproducible tests exercise an old PHP
+version, absent SQLite, plain HTTP, shared-host cron guidance, disabled command
+execution, and the minimum supported runtime, preserving the distinction
+between a blocking prerequisite and an optional executable capability.
+
+Migration retries now recognize a column, table, or index already created by
+an interrupted older deployment before its version row was committed. A fixture
+starting at schema 44 with the partial alert and audit objects verifies that the
+next startup reaches schema 46 rather than wedging on an “already exists” error.
+
+Provider failures now redact credential-shaped headers, fields, and text before
+they become a browser result, audit detail, or persisted failed-response record.
+The redaction check exercises bearer credentials, named key fields, nested error
+objects, and ordinary safe diagnostic text.
+
+The access defaults now expose compatible Viewer, Operator, and Administrator
+role names alongside legacy Staff and Administrators groups. Viewer remains
+read-only, Operator keeps the existing operational workflow without write
+authority, and Administrator remains full access; direct policy tests cover
+each boundary and the compatibility aliases.
+
+Direct AI assets, fetched-page previews, and filesystem thumbnail endpoints now
+repeat their AI or page authorization server-side. A signed-in identity without
+the originating surface permission cannot retrieve retained media by identifier
+or URL token.
+
+The sanitized diagnostic snapshot now carries only the configured edition name,
+remote-host allowance, and configured-host count alongside existing capability
+states. This gives support evidence for the free-edition boundary without
+exporting a license secret or general configuration.
+
+AI now has installation-wide daily and UTC-calendar-month spend ceilings in
+addition to each conversation's time, turn, and cost limits. Every model step,
+including automatic alert investigation, checks shared recorded spend before it
+leaves the machine; the settings page shows capped-period usage and the tests
+cover day/month boundaries and uncapped operation.

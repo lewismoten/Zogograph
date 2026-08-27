@@ -451,9 +451,13 @@ function logAction(
     int $files = 0,
     ?string $detail = null
 ): void {
+    $actor = trim((string)($_SESSION['username'] ?? ''));
+    if ($actor === '' && PHP_SAPI === 'cli') {
+        $actor = 'collector';
+    }
     $pdo->prepare(
-        'INSERT INTO actions (at, action, target, outcome, bytes_freed, files_removed, detail, remote_addr)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO actions (at, action, target, outcome, bytes_freed, files_removed, detail, remote_addr, actor)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )->execute([
         time(),
         $action,
@@ -463,5 +467,6 @@ function logAction(
         $files,
         $detail,
         $_SERVER['REMOTE_ADDR'] ?? null,
+        $actor !== '' ? mb_substr($actor, 0, 120) : null,
     ]);
 }

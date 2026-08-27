@@ -5752,7 +5752,28 @@ function renderAiSettings(data) {
     + "one that has gone in a circle, so this is the limit most likely to catch a "
     + "problem rather than a long investigation."));
 
-  pages.limits.push(section("Limits on one conversation", limits));
+  for (const [id, label, value, note_] of [
+    ["aiDailyCents", "Shared daily spend (cents)", data.daily_cents, "Across every conversation and automated alert investigation. Zero means no daily cap."],
+    ["aiSharedMonthlyCents", "Shared monthly spend (cents)", data.monthly_cents, "UTC calendar month, across every conversation and automated alert investigation. Zero means no monthly cap."],
+  ]) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.id = id;
+    input.min = "0";
+    input.step = "1";
+    input.className = "days";
+    input.value = String(value || 0);
+    limits.appendChild(fieldRow(label, input, note_));
+  }
+  const shared = data.shared_budget || {};
+  const sharedUsage = ["daily", "monthly"].flatMap(period => {
+    const budget = shared[period];
+    if (!budget || !Number(budget.limit_millicents)) return [];
+    return [`${period}: ${(Number(budget.used_millicents) / 1000).toFixed(2)} of ${(Number(budget.limit_millicents) / 1000).toFixed(2)} cents`];
+  });
+  if (sharedUsage.length) limits.appendChild(note(`Shared AI usage — ${sharedUsage.join("; ")}.`));
+
+  pages.limits.push(section("Conversation and shared limits", limits));
 
   /* ---- how much it can hold ---- */
 
@@ -6935,6 +6956,8 @@ async function saveAiSettings(extra = {}) {
       max_seconds: $("aiMaxSeconds").value,
       max_cents: $("aiMaxCents").value,
       max_turns: $("aiMaxTurns").value,
+      daily_cents: $("aiDailyCents").value,
+      monthly_cents: $("aiSharedMonthlyCents").value,
       reasoning_effort: $("aiEffort").value,
       name: $("aiName").value.trim(),
       emoji: $("aiEmoji").value.trim(),
@@ -11614,9 +11637,8 @@ function renderPeers(data) {
               const result = await post("peer-transport-rotate", { name: row.name });
               renderPeers(result);
               showListDialog(`Pair ${row.label}`, [
-                note("The previous credential is revoked. Copy this replacement to the remote HostScope within 24 hours; it activates on first delivery and is not shown again."),
-                paste(result.transport_secret),
-                ...(result.transport_endpoint ? [note("Remote delivery endpoint:"), paste(result.transport_endpoint)] : []),
+                note("The previous credential is revoked. Copy this complete replacement into the remote HostScope configuration within 24 hours; it activates on first delivery and is not shown again."),
+                paste(result.transport_enrollment),
               ]);
               notice("Remote-delivery credential rotated.", true);
             } catch (error) { notice(String(error.message || error)); }
@@ -11678,17 +11700,13 @@ function showPeerDialog(row = null) {
     renderPeers(result);
     if (result.transport_secret) {
       showListDialog(`Pair ${label.value || name.value}`, [
-        note("Copy this one-time transport credential to the remote HostScope configuration within 24 hours. It activates on first delivery and is not shown again."),
-        paste(result.transport_secret),
-        ...(result.transport_endpoint ? [
-          note("Remote delivery endpoint:"),
-          paste(result.transport_endpoint),
-        ] : [note("Set the remote delivery endpoint to this controller’s HTTPS peer-push.php URL.")]),
+        note("Copy this complete one-time pairing fragment into the remote HostScope configuration within 24 hours. It activates on first delivery and is not shown again."),
+        paste(result.transport_enrollment),
       ]);
     }
     notice(result.rows.find(item => item.name === name.value)?.has_oidc
       ? "Trusted server saved. Test OIDC discovery before using the read connection."
-      : "Remote delivery peer saved. Copy its one-time delivery key to the remote HostScope.", true);
+      : "Remote delivery peer saved. Copy its one-time pairing fragment to the remote HostScope.", true);
   });
 }
 
@@ -13952,6 +13970,31 @@ function terminalEditorCommand(command) {
   return path && !/[|;&\n]/.test(path) ? path : null;
 }
 
+/** A bounded review is more useful than silently replacing a whole file. */
+function terminalEditorDiff(before, after) {
+  const oldLines = before.split(/\r\n|\r|\n/);
+  const newLines = after.split(/\r\n|\r|\n/);
+  let start = 0;
+  while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) start++;
+  if (start === oldLines.length && start === newLines.length) return null;
+  let oldEnd = oldLines.length;
+  let newEnd = newLines.length;
+  while (oldEnd > start && newEnd > start && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+    oldEnd--; newEnd--;
+  }
+  const limit = 80;
+  const removed = oldLines.slice(start, oldEnd);
+  const added = newLines.slice(start, newEnd);
+  const clipped = removed.length > limit || added.length > limit;
+  const shown = [
+    `@@ original line ${start + 1} · edited line ${start + 1} @@`,
+    ...removed.slice(0, limit).map(line => `− ${line}`),
+    ...added.slice(0, limit).map(line => `+ ${line}`),
+  ];
+  if (clipped) shown.push(`… preview limited to ${limit} removed and ${limit} added lines; save still writes the complete edit.`);
+  return shown.join("\n");
+}
+
 async function openTerminalEditor(path) {
   const data = await api("terminal-editor", { path });
   const editable = Boolean(data.writable && state.access?.write);
@@ -13962,7 +14005,21 @@ async function openTerminalEditor(path) {
   text.rows = 22;
   text.spellcheck = false;
   text.readOnly = !editable;
+  text.setAttribute("aria-label", `Contents of ${data.path}`);
   text.value = data.text;
+  const editor = document.createElement("div");
+  editor.className = "terminal-editor-wrap";
+  const lines = document.createElement("pre");
+  lines.className = "terminal-editor-lines";
+  lines.setAttribute("aria-hidden", "true");
+  const drawLines = () => {
+    const count = Math.max(1, text.value.split(/\r\n|\r|\n/).length);
+    lines.textContent = Array.from({ length: count }, (_, index) => String(index + 1)).join("\n");
+  };
+  drawLines();
+  text.addEventListener("input", drawLines);
+  text.addEventListener("scroll", () => { lines.scrollTop = text.scrollTop; });
+  editor.append(lines, text);
   const find = document.createElement("input");
   find.type = "search";
   find.placeholder = "Find";
@@ -14043,7 +14100,14 @@ async function openTerminalEditor(path) {
   note_.textContent = editable
     ? `${humanBytes(data.bytes)} · text files up to 1 MB · saves preserve line endings, make a private recovery copy, and refuse to overwrite newer changes.`
     : `${humanBytes(data.bytes)} · read-only: this account cannot save this file.`;
-  const parts = [location, note_, searchTools];
+  const endings = { lf: "LF", crlf: "CRLF", cr: "CR" }[data.line_ending] || "unknown";
+  const metadata = factGrid([
+    ["Encoding", data.encoding || "UTF-8"],
+    ["Line endings", endings],
+    ["Modified", data.modified ? humanTime(data.modified) : "unknown"],
+    ["Permissions", data.mode || "unknown"],
+  ]);
+  const parts = [location, metadata, note_, searchTools];
   if (editable && data.backups?.length) {
     const backup = document.createElement("select");
     for (const copy of data.backups) {
@@ -14068,7 +14132,33 @@ async function openTerminalEditor(path) {
     });
     parts.push(fieldRow("Recovery copy", backup, "Private pre-save copy. Restoring creates a new copy of the current version."), restore);
   }
-  parts.push(text);
+  if (editable) {
+    const review = document.createElement("button");
+    review.type = "button";
+    review.className = "link";
+    review.textContent = "Review changes";
+    review.title = "Show a bounded line-by-line preview before saving (Ctrl/Cmd+Shift+D)";
+    const preview = () => {
+      const diff = terminalEditorDiff(data.text, text.value);
+      if (!diff) {
+        showListDialog("Review changes", [note("No changes since this file was opened.")]);
+        return;
+      }
+      const output = document.createElement("pre");
+      output.className = "terminal-editor-diff";
+      output.textContent = diff;
+      showListDialog(`Review changes · ${data.path.split("/").pop()}`, [output],
+        "Removed lines start with − and added lines start with +. This is a review only; saving still uses the protected atomic write.");
+    };
+    review.addEventListener("click", preview);
+    text.addEventListener("keydown", event => {
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "d") {
+        event.preventDefault(); preview();
+      }
+    });
+    parts.push(review);
+  }
+  parts.push(editor);
   if (!editable) {
     showListDialog(`View ${data.path.split("/").pop()}`, parts,
       "This file is shown for review only. Find works locally; no text is sent back to the server.");
@@ -14574,6 +14664,56 @@ function showFormDialog(title, parts, save, submitLabel = "Save it") {
 
   $("noteDialog").showModal();
 }
+
+/* Local-only accessibility choices must work even on a read-only dashboard. */
+const DISPLAY_PREFERENCES_KEY = "hostscope-display-preferences";
+
+function displayPreferences() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DISPLAY_PREFERENCES_KEY) || "{}");
+    return {
+      textSize: ["small", "default", "large"].includes(stored.textSize) ? stored.textSize : "default",
+      motion: ["system", "reduce"].includes(stored.motion) ? stored.motion : "system",
+    };
+  } catch (_) {
+    return { textSize: "default", motion: "system" };
+  }
+}
+
+function applyDisplayPreferences(preferences, remember = true) {
+  const root = document.documentElement;
+  if (preferences.textSize === "default") delete root.dataset.textSize;
+  else root.dataset.textSize = preferences.textSize;
+  if (preferences.motion === "system") delete root.dataset.motion;
+  else root.dataset.motion = preferences.motion;
+  if (!remember) return;
+  try { localStorage.setItem(DISPLAY_PREFERENCES_KEY, JSON.stringify(preferences)); } catch (_) { }
+}
+
+function openDisplayPreferences() {
+  const current = displayPreferences();
+  const textSize = document.createElement("select");
+  for (const [value, label] of [["small", "Smaller"], ["default", "Default"], ["large", "Larger"]]) {
+    const option = document.createElement("option");
+    option.value = value; option.textContent = label; option.selected = value === current.textSize;
+    textSize.appendChild(option);
+  }
+  const motion = document.createElement("select");
+  for (const [value, label] of [["system", "Use system setting"], ["reduce", "Reduce motion"]]) {
+    const option = document.createElement("option");
+    option.value = value; option.textContent = label; option.selected = value === current.motion;
+    motion.appendChild(option);
+  }
+  showFormDialog("Display preferences", [
+    fieldRow("Text size", textSize, "Applies to this browser only."),
+    fieldRow("Motion", motion, "Reduce motion disables decorative animation and transitions in this browser."),
+  ], async () => {
+    applyDisplayPreferences({ textSize: textSize.value, motion: motion.value });
+    redrawCharts(document);
+  }, "Apply display choices");
+}
+
+applyDisplayPreferences(displayPreferences(), false);
 
 /** A themed, asynchronous confirmation in place of the browser's bare prompt. */
 function confirmDialog(message, submitLabel = "Continue") {
@@ -20791,6 +20931,11 @@ function renderAlertBanner(unread) {
   const banner = $("alertBanner");
   if (!banner) return;
 
+  /* A temporary mute only changes delivery, never the evidence or badge. The
+   * overview banner is itself an interruption, though, so it follows the same
+   * disposition as email and Telegram rather than defeating the mute locally. */
+  unread = unread.filter(row => row.notification_disposition !== "suppressed");
+
   /*
    * The dashboard only.
    *
@@ -20887,6 +21032,7 @@ async function refreshAlerts() {
 
   alertState.rows = data.rows;
   alertState.uptime = uptime;
+  alertState.mutes = data.mutes || [];
 
   // Selections that no longer exist - deleted, or filtered away - must not
   // keep the buttons lit for rows nobody can see.
@@ -20928,11 +21074,11 @@ async function refreshAlerts() {
   }
 
   renderTable("alerts", rows, columns, null, row => {
-    if (row.silenced) return "row-silenced";
+    if (row.silenced || row.notification_disposition === "suppressed") return "row-silenced";
     return row.acknowledged_at ? "read" : "unread";
   });
 
-  for (const id of ["alertAckAll", "alertAckSome", "alertUnackSome", "alertDeleteSome"]) {
+  for (const id of ["alertAckAll", "alertAckSome", "alertUnackSome", "alertMutes", "alertDeleteSome"]) {
     $(id).hidden = !state.signedIn || !state.access?.write;
   }
   syncAlertTools();
@@ -21020,6 +21166,15 @@ function alertEmailed(row, interactive = state.signedIn) {
   }
 
   const wrap = document.createDocumentFragment();
+  if (row.notification_disposition === "suppressed") {
+    const muted = document.createElement("button");
+    muted.className = "link small";
+    muted.textContent = "muted";
+    muted.title = "Delivery was held by a temporary operator mute. Click for details.";
+    muted.addEventListener("click", () => showAlertMuteReason(row));
+    wrap.appendChild(muted);
+    return wrap;
+  }
   wrap.appendChild(document.createTextNode("no"));
 
   if (row.silenced && row.ai_reason) {
@@ -21038,6 +21193,14 @@ function alertEmailed(row, interactive = state.signedIn) {
   }
 
   return wrap;
+}
+
+function showAlertMuteReason(row) {
+  showListDialog("Notification held", [factGrid([
+    ["Delivery", "Held by a temporary operator mute"],
+    ["Until", row.notification_muted_until ? whenLabel(row.notification_muted_until) : "unknown"],
+    ["Reason", row.notification_reason || "No reason recorded"],
+  ])], "The event and its evidence were recorded normally. Error and Critical alerts bypass temporary mutes.");
 }
 
 /**
@@ -21212,6 +21375,14 @@ function alertRowActions(row) {
     cell.appendChild(unack);
   }
 
+  if (!['error', 'critical'].includes(row.severity)) {
+    const mute = document.createElement("button");
+    mute.className = "link";
+    mute.textContent = "Mute rule";
+    mute.addEventListener("click", () => openAlertMute(row));
+    cell.appendChild(mute);
+  }
+
   const remove = document.createElement("button");
   remove.className = "link danger";
   remove.textContent = "Delete";
@@ -21223,6 +21394,58 @@ function alertRowActions(row) {
   cell.appendChild(remove);
 
   return cell;
+}
+
+function openAlertMute(row) {
+  const duration = document.createElement("select");
+  for (const [seconds, label] of [[900, "15 minutes"], [3600, "1 hour"], [14400, "4 hours"], [86400, "1 day"], [604800, "7 days"]]) {
+    const option = document.createElement("option");
+    option.value = String(seconds); option.textContent = label; option.selected = seconds === 3600;
+    duration.appendChild(option);
+  }
+  const reason = document.createElement("input");
+  reason.type = "text"; reason.className = "wide"; reason.maxLength = 240; reason.required = true;
+  reason.placeholder = "planned maintenance";
+  showFormDialog("Temporarily mute this rule", [
+    note(`Mute “${row.rule}”? Matching Information and Warning alerts stay recorded but are not sent. Error and Critical always bypass this mute.`),
+    fieldRow("For", duration, "Expires automatically."),
+    fieldRow("Reason", reason, "Stored on held events and in the audit trail."),
+  ], async () => {
+    await post("alert-mute", { rule: row.rule, seconds: duration.value, reason: reason.value });
+    await refreshAlerts(); await refreshBadges();
+    notice(`Muted ${row.rule} until ${whenLabel(Math.floor(Date.now() / 1000) + Number(duration.value))}.`, true);
+  }, "Mute rule");
+}
+
+function showAlertMutes() {
+  const mutes = alertState.mutes || [];
+  if (!mutes.length) {
+    showListDialog("Active alert mutes", [note("No alert rules are temporarily muted.")],
+      "A mute requires a reason and expires automatically. Error and Critical alerts always bypass it.");
+    return;
+  }
+  const holder = document.createElement("div");
+  holder.id = "alertMuteList";
+  showListDialog("Active alert mutes", [holder],
+    "Muted Information and Warning events remain visible with their delivery reason. Error and Critical alerts always bypass a mute.");
+  renderTable("alertMuteList", mutes, [
+    { label: "Rule", render: row => row.rule },
+    { label: "Until", render: row => whenSpan(row.expires_at) },
+    { label: "Reason", className: "name", render: row => row.reason },
+    { label: "", render: row => {
+      const end = document.createElement("button");
+      end.className = "link danger"; end.textContent = "End mute";
+      end.addEventListener("click", async () => {
+        if (!(await confirmDialog(`End the mute for ${row.rule}?`, "End mute"))) return;
+        try {
+          await post("alert-unmute", { id: row.id });
+          await refreshAlerts(); await refreshBadges();
+          $("noteDialog").close(); notice(`The mute for ${row.rule} ended.`, true);
+        } catch (error) { notice(String(error.message || error)); }
+      });
+      return end;
+    }},
+  ], null, null, row => String(row.id));
 }
 
 /*
@@ -21804,8 +22027,8 @@ async function refreshActionLog() {
     value => ACTION_WORDS[value] || value);
   fillFilter($("actionWho"), data.who, actionState.who);
 
-  // Said out loud rather than left for the reader to work out from a column
-  // heading, because "From 203.0.113.9" looks like an answer to "who".
+  // Older rows lack the structured actor added after initial releases. Keep
+  // the address fallback honest instead of presenting it as a person.
   $("actionWhoNote").textContent = data.identity === "address"
     ? "There is one password, so there is one identity. The address a change "
       + "came from is the only thing that tells two uses of it apart \u2014 it is a "
@@ -21814,7 +22037,7 @@ async function refreshActionLog() {
 
   const rows = data.rows.filter(row =>
     (!actionState.kind || row.action === actionState.kind) &&
-    (!actionState.who || row.remote_addr === actionState.who) &&
+    (!actionState.who || (data.identity === "actor" ? row.actor : row.remote_addr) === actionState.who) &&
     (!actionState.result || row.outcome === actionState.result));
 
   renderActionSummary(rows);
@@ -21825,8 +22048,7 @@ async function refreshActionLog() {
     { label: "Target", className: "name", render: row => row.target ?? "" },
     { label: "Outcome", render: row => row.outcome + (row.detail ? ` \u2014 ${row.detail}` : "") },
     { label: "Freed", className: "size", render: row => humanBytes(row.bytes_freed) },
-    // Not "who": one shared password means the address is the only thing that
-    // tells two uses of it apart, and it is a place rather than a person.
+    { label: "Actor", render: row => row.actor || "\u2014" },
     { label: "From", render: row => row.remote_addr || "\u2014" },
   ], null, row => (row.outcome === "ok" ? "" : "row-bad"));
 }
@@ -21892,6 +22114,8 @@ function escapeHtml(text) {
 
 function applySignedInChrome() {
   $("signInOut").textContent = state.signedIn ? "Sign out" : "Sign in";
+  $("totpRecoveryCodes").hidden = !state.signedIn || !state.access?.write;
+  $("revokeSessions").hidden = !state.signedIn || !state.access?.write;
   applyAccessChrome();
   renderViewGuide(state.view);
   renderEmptyButtons();
@@ -31605,7 +31829,7 @@ function syncLiveAvailability() {
   button.disabled = !allowed;
   button.hidden = !mayUseLive;
   button.title = !mayUseLive
-    ? "Live readings are available to Staff and Administrators."
+    ? "Live readings are available to Operators and Administrators."
     : allowed
     ? "Take a fresh reading every ten seconds."
     : "Live updates are only available on the last 10 minutes — at any longer range "
@@ -32500,6 +32724,40 @@ $("signInOut").addEventListener("click", async () => {
   $("password").focus();
 });
 
+$("revokeSessions").addEventListener("click", async () => {
+  if (!state.signedIn || !state.access?.write) return;
+  if (!(await confirmDialog(
+    "End every signed-in session? This immediately signs out every browser, including this one. Use it if a device is lost or access may be compromised.",
+    "End all sessions"
+  ))) return;
+  await post("revoke-sessions");
+  state.signedIn = false;
+  state.csrf = null;
+  applySignedInChrome();
+  notice("Every signed-in session has been ended.", true);
+  refreshShared().catch(() => {});
+});
+
+$("displayPreferences").addEventListener("click", openDisplayPreferences);
+
+$("totpRecoveryCodes").addEventListener("click", async () => {
+  if (!state.signedIn || !state.access?.write) return;
+  const code = await askTextDialog("Create recovery codes", "Current verification code", "",
+    "This replaces every previous recovery code. Store the new one-time codes offline; HostScope will show them only once.");
+  if (code === null) return;
+  try {
+    const result = await post("totp-recovery-codes", { totp: code });
+    const list = document.createElement("pre");
+    list.className = "terminal-editor-diff";
+    list.textContent = result.codes.join("\n");
+    showListDialog("Save these recovery codes", [list],
+      "Each code works once in place of the authenticator code. This is the only time HostScope can display them; store them offline and do not put them in a password manager shared with your sign-in password.");
+    notice("Eight new one-time recovery codes are ready to save.", true);
+  } catch (error) {
+    notice(String(error.message || error));
+  }
+});
+
 $("signInCancel").addEventListener("click", () => $("signInDialog").close());
 
 $("signInForm").addEventListener("submit", async event => {
@@ -32918,6 +33176,7 @@ $("alertAckSome").addEventListener("click",
   () => alertAction("ack", [...alertState.selected]));
 $("alertUnackSome").addEventListener("click",
   () => alertAction("unack", [...alertState.selected]));
+$("alertMutes").addEventListener("click", showAlertMutes);
 
 $("alertDeleteSome").addEventListener("click", async () => {
   const ids = [...alertState.selected];

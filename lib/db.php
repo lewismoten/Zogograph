@@ -97,8 +97,7 @@ function migrate(PDO $pdo, bool $fresh = false): void
                  * permanently, on every request, with no way out but a hand
                  * edit. Skipping the ones already done makes a retry work.
                  */
-                if (preg_match('/^ALTER TABLE (\w+) ADD COLUMN (\w+)/i', trim($sql), $m)
-                    && columnExists($pdo, $m[1], $m[2])) {
+                if (migrationStatementApplied($pdo, $sql)) {
                     continue;
                 }
                 $pdo->exec($sql);
@@ -162,9 +161,70 @@ function columnExists(PDO $pdo, string $table, string $column): bool
     return (int)$stmt->fetchColumn() > 0;
 }
 
+/**
+ * Makes a re-run safe after an older deployment or a manually recovered
+ * interrupted migration has already created one schema object. SQLite's DDL is
+ * transactional in current builds, but treating these three operations alike
+ * also protects upgrades made with older or externally interrupted runtimes.
+ */
+function migrationStatementApplied(PDO $pdo, string $sql): bool
+{
+    $sql = trim($sql);
+    if (preg_match('/^ALTER TABLE (\w+) ADD COLUMN (\w+)/i', $sql, $match)) {
+        return columnExists($pdo, $match[1], $match[2]);
+    }
+    if (preg_match('/^CREATE TABLE (?:IF NOT EXISTS )?(\w+)/i', $sql, $match)) {
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?");
+        $stmt->execute([$match[1]]);
+        return (int)$stmt->fetchColumn() === 1;
+    }
+    if (preg_match('/^CREATE INDEX (?:IF NOT EXISTS )?(\w+)/i', $sql, $match)) {
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?");
+        $stmt->execute([$match[1]]);
+        return (int)$stmt->fetchColumn() === 1;
+    }
+    return false;
+}
+
 function migrations(): array
 {
     return [
+        47 => [
+            /* One-time MFA recovery codes are password-hashed, so neither a
+             * database export nor an accidental query result can log someone
+             * in. Consumption deletes the row instead of retaining a used
+             * secret indefinitely. */
+            "CREATE TABLE totp_recovery_codes (
+                id         INTEGER PRIMARY KEY,
+                account    TEXT NOT NULL,
+                code_hash  TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+            'CREATE INDEX totp_recovery_codes_account ON totp_recovery_codes (account, id)',
+        ],
+        46 => [
+            // Actor is structured evidence for new records; historical rows
+            // remain honestly unattributed rather than being guessed later.
+            'ALTER TABLE actions ADD COLUMN actor TEXT',
+            'CREATE INDEX actions_actor_at ON actions (actor, at)',
+        ],
+        45 => [
+            /* Notification treatment is evidence on the alert, not a reason to
+             * omit the alert itself. A later expiry must not erase why an event
+             * was held back at the time. */
+            "ALTER TABLE alerts ADD COLUMN notification_disposition TEXT NOT NULL DEFAULT 'immediate'",
+            'ALTER TABLE alerts ADD COLUMN notification_reason TEXT',
+            'ALTER TABLE alerts ADD COLUMN notification_muted_until INTEGER',
+            "CREATE TABLE alert_mutes (
+                id         INTEGER PRIMARY KEY,
+                rule       TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                reason     TEXT NOT NULL,
+                created_by TEXT
+            )",
+            'CREATE INDEX alert_mutes_rule_expiry ON alert_mutes (rule, expires_at DESC)',
+        ],
         44 => [
             // A fully refused alert email can be retried without duplicating a
             // message that mail() already accepted for at least one recipient.
