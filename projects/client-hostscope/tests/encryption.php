@@ -30,6 +30,7 @@ try {
     $dashboard = file_get_contents(__DIR__ . '/../index.js');
     $page = file_get_contents(__DIR__ . '/../index.html');
     $rotation = file_get_contents(__DIR__ . '/../scripts/rotate-sealed-copies.php');
+    $configRestore = file_get_contents(__DIR__ . '/../scripts/restore-config.php');
     $setupGuide = file_get_contents(__DIR__ . '/../SETUP.md');
     encryptionExpect($api !== false && str_contains($api, "'encryption-status' => 'sys-encryption'"),
         'encryption status is not protected by its dashboard page access rule');
@@ -43,6 +44,9 @@ try {
     encryptionExpect($rotation !== false && str_contains($rotation, 'encryptionRotateConfiguredArtifacts')
         && str_contains($rotation, 'saveConfiguredSettings') && str_contains($rotation, '--confirm'),
         'configured sealed-copy rotation does not preserve recovery evidence before switching keys');
+    encryptionExpect($configRestore !== false && str_contains($configRestore, 'encryptionVerifyRecoveredStore')
+        && str_contains($configRestore, '--confirm') && str_contains($configRestore, 'config-before-restore'),
+        'sealed bootstrap configuration has no guarded recovery command');
     encryptionExpect($setupGuide !== false && str_contains($setupGuide, '--recovery-drill --quiet')
         && str_contains($setupGuide, 'Quarterly non-destructive recovery drill'),
         'setup guide does not provide a recurring recovery-drill schedule');
@@ -112,6 +116,9 @@ try {
     file_put_contents($root . '/not-a-store', 'not sqlite');
     try { encryptionVerifyRecoveredStore($root . '/not-a-store', 'account'); throw new RuntimeException('invalid recovered SQLite was accepted'); }
     catch (Throwable $error) { encryptionExpect($error->getMessage() !== 'invalid recovered SQLite was accepted', $error->getMessage()); }
+    file_put_contents($root . '/invalid-config.php', "<?php return [;\n");
+    try { encryptionVerifyRecoveredStore($root . '/invalid-config.php', 'config'); throw new RuntimeException('invalid recovered configuration syntax was accepted'); }
+    catch (Throwable $error) { encryptionExpect($error->getMessage() !== 'invalid recovered configuration syntax was accepted', $error->getMessage()); }
     $replacementKeyPath = $keys . '/replacement.key';
     encryptionCreateLocalKey($replacementKeyPath, $web);
     $replacement = encryptionReadLocalKey($replacementKeyPath, $web);

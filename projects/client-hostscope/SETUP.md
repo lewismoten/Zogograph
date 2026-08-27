@@ -305,10 +305,16 @@ php scripts/restore-store.php --store ai --sealed /secure/ai.sealed \
 ```
 
 Restoring `setup` changes the saved website/package policy, credentials, and
-encryption settings. Keep a separate copy of the current bootstrap
-`lib/config.php`; restoring that PHP bootstrap itself remains a deliberate
-manual recovery action after reviewing its decrypted contents, not something a
-CLI command silently replaces.
+encryption settings. To restore the separately sealed bootstrap `lib/config.php`,
+use the explicit CLI command below. It decrypts and parses PHP without executing
+it, saves the prior bootstrap privately under `data/recovery/`, then atomically
+replaces `lib/config.php`; `--confirm` is required because the next HostScope
+request will use the recovered settings.
+
+```bash
+php scripts/restore-config.php --sealed /secure/config.sealed \
+  --key /secure/hostscope/primary.key --confirm
+```
 
 If host or assistant databases use custom paths stored in `setup.db`, restore
 the sealed `setup` database first. That lets the recovery command resolve the

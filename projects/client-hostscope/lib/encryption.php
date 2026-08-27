@@ -256,8 +256,10 @@ function encryptionVerifySealedStoreArtifact(string $source, string $kek, int $e
 function encryptionVerifyRecoveredStore(string $path, string $store): void
 {
     if ($store === 'config') {
-        $prefix = file_get_contents($path, false, null, 0, 32);
-        if (!is_string($prefix) || !str_starts_with(ltrim($prefix), '<?php')) throw new RuntimeException('recovered configuration artifact is not PHP bootstrap text');
+        $text = file_get_contents($path);
+        if (!is_string($text) || !str_starts_with(ltrim($text), '<?php')) throw new RuntimeException('recovered configuration artifact is not PHP bootstrap text');
+        try { token_get_all($text, TOKEN_PARSE); }
+        catch (ParseError $error) { throw new RuntimeException('recovered configuration artifact has invalid PHP syntax', 0, $error); }
         return;
     }
     if (!in_array($store, ['setup', 'account', 'host', 'ai'], true)) throw new InvalidArgumentException('recovered store identity is invalid');
