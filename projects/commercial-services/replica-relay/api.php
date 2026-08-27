@@ -14,6 +14,7 @@ $body = '';
 function relayReply(int $status, array $body): never { http_response_code($status); header('Content-Type: application/json'); echo json_encode($body, JSON_UNESCAPED_SLASHES); exit; }
 try {
     $pdo = replicaRelayOpen($config, __DIR__);
+    if ($path === '/v1/health' && $method === 'GET') relayReply(200, ['status' => 'ok', 'service' => 'replica-relay', 'api_version' => 'v1']);
     if ($path === '/v1/artifacts' && $method === 'GET') { $auth = replicaRelayAuthenticate($pdo, $bearer, 'management'); relayReply(200, ['artifacts' => replicaRelayListArtifacts($pdo, $auth['tenant_id'])]); }
     if ($path === '/v1/client/entitlement' && $method === 'GET') {
         $auth = replicaRelayAuthenticateClientRequest($pdo, $bearer, $method, $path, $timestamp, $nonce, $signature, $body);

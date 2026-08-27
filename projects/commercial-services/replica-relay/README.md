@@ -41,6 +41,10 @@ one deployment and signs every upload/download request. The management token
 lists metadata and deletes an artifact; it cannot download ciphertext. Neither
 credential is a key-custody credential and neither grants any unwrap access.
 
+`GET /v1/health` is the unauthenticated deployment probe. It opens the private
+SQLite service store and returns only service liveness/version metadata; it
+does not reveal tenants, ciphertext metadata, credentials, or capacity data.
+
 `PUT /v1/artifacts/{artifactId}` accepts raw ciphertext, requires an exact
 SHA-256 in `X-HostScope-Ciphertext-SHA256`, verifies it before recording
 metadata, streams it to a private temporary file under the configured size

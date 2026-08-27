@@ -3,6 +3,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../lib/store.php';
 function custodyExpect(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
 $contract = json_decode((string)file_get_contents(__DIR__ . '/../openapi.json'), true);
+custodyExpect(($contract['paths']['/health']['get']['security'] ?? null) === [], 'published custody health endpoint is not safely unauthenticated');
 custodyExpect(is_array($contract) && (($contract['components']['schemas']['UnwrapRequest']['properties']['requested_ttl_seconds']['default'] ?? null) === 0),
     'published custody API contract does not use zero key caching by default');
 custodyExpect(($contract['components']['schemas']['EnvelopeStore']['required'] ?? []) === ['artifact_id', 'envelope_base64'],
@@ -23,6 +24,7 @@ custodyExpect(($contract['paths']['/keys/{keyId}/wrapping-key']['get']['security
 $api = file_get_contents(__DIR__ . '/../api.php');
 custodyExpect($api !== false && str_contains($api, 'CUSTODY_MAX_REQUEST_BYTES') && str_contains($api, 'request body is too large'),
     'custody API does not bound request-body intake before parsing');
+custodyExpect(str_contains((string)$api, "'/v1/health'"), 'custody API does not provide the documented health endpoint');
 $root = sys_get_temp_dir() . '/hostscope-custody-' . bin2hex(random_bytes(4)); mkdir($root, 0700, true);
 try {
     $pdo = keyCustodyOpen(['database' => $root . '/service.db']);

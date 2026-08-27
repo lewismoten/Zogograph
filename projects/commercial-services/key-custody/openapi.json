@@ -7,6 +7,7 @@
   },
   "servers": [{"url": "{serviceBase}/v1", "variables": {"serviceBase": {"default": "https://configured.example/services/key-custody"}}}],
   "paths": {
+    "/health": {"get": {"summary": "Read service liveness without tenant or credential data", "security": [], "responses": {"200": {"description": "Private SQLite service store opened successfully"}, "503": {"description": "Service configuration is unavailable"}}}},
     "/keys": {
       "get": {"summary": "List tenant key records", "security": [{"accountSession": []}], "responses": {"200": {"description": "Key metadata only"}}},
       "post": {"summary": "Create a tenant custody key record", "security": [{"accountSession": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KeyCreate"}}}}, "responses": {"201": {"description": "Created"}}}
