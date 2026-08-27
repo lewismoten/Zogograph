@@ -148,8 +148,12 @@ live database or its WAL journal. This is suitable for encrypted local archives
 and the later fleet-replica workflow.
 
 Create a 256-bit local key outside the document root, then keep an offline
-recovery copy. Do not store it in `data/`, `lib/`, the web root, or alongside a
-database export.
+recovery copy. The setup page has **Create a local encryption key** for this
+quick-start path: it creates a new file only, never replaces one, requires the
+current setup password for an existing installation, and never displays key
+material in the browser. Do not store the key in `data/`, `lib/`, the web root,
+or alongside a database export. Use the CLI form when the web-service account
+cannot write the intended private directory.
 
 ```bash
 php scripts/encryption-key.php create /secure/hostscope/primary.key

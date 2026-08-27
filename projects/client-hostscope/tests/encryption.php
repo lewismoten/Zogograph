@@ -34,6 +34,7 @@ try {
     $accountRestore = file_get_contents(__DIR__ . '/../scripts/restore-account.php');
     $storeRestore = file_get_contents(__DIR__ . '/../scripts/restore-store.php');
     $setupGuide = file_get_contents(__DIR__ . '/../SETUP.md');
+    $setupPage = file_get_contents(__DIR__ . '/../setup.php');
     encryptionExpect($api !== false && str_contains($api, "'encryption-status' => 'sys-encryption'"),
         'encryption status is not protected by its dashboard page access rule');
     encryptionExpect($dashboard !== false && str_contains($dashboard, 'function renderEncryptionStatus')
@@ -61,6 +62,11 @@ try {
     encryptionExpect($setupGuide !== false && str_contains($setupGuide, '--recovery-drill --quiet')
         && str_contains($setupGuide, 'Quarterly non-destructive recovery drill'),
         'setup guide does not provide a recurring recovery-drill schedule');
+    encryptionExpect($setupPage !== false && str_contains($setupPage, 'create-local-key')
+        && str_contains($setupPage, 'setup_key_create_token')
+        && str_contains($setupPage, 'encryptionCreateLocalKey')
+        && str_contains($setupPage, 'Its contents were not shown or saved in the browser'),
+        'setup does not provide a guarded local encryption-key quick start');
 
     $sample = require __DIR__ . '/../lib/config.sample.php';
     $fields = array_column(configFields($sample), null, 'key');

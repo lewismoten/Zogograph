@@ -177,6 +177,23 @@ function takeSetupError(): ?string
     return is_string($message) ? $message : null;
 }
 
+/** A one-time success notice, deliberately without a key path or key material. */
+function takeSetupNotice(): ?string
+{
+    $message = $_SESSION['setup_notice'] ?? null;
+    unset($_SESSION['setup_notice']);
+    return is_string($message) ? $message : null;
+}
+
+/** CSRF token limited to the key-creation action; the key is never returned. */
+function setupKeyCreateToken(): string
+{
+    if (!is_string($_SESSION['setup_key_create_token'] ?? null)) {
+        $_SESSION['setup_key_create_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['setup_key_create_token'];
+}
+
 /* ------------------------------------------------------------------- web -- */
 
 function runWeb(
@@ -237,6 +254,25 @@ function runWeb(
             ? 'This install has no password set, so nothing can authorise replacing its config.'
             : 'That is not the current password.';
         header('Location: ' . strtok((string)$_SERVER['REQUEST_URI'], '?'), true, 303);
+        return;
+    }
+
+    if ($posted && ($_POST['intent'] ?? '') === 'create-local-key') {
+        $canCreate = $existing === null || $unlocked
+            || mayOverwrite($existing, (string)($_POST['current_password'] ?? ''));
+        if (!hash_equals(setupKeyCreateToken(), (string)($_POST['setup_key_create_token'] ?? ''))) {
+            $_SESSION['setup_error'] = 'The key-creation form expired. Reload setup and try again.';
+        } elseif (!$canCreate) {
+            $_SESSION['setup_error'] = 'Enter the current setup password before creating a new local key file.';
+        } else {
+            try {
+                encryptionCreateLocalKey(trim((string)($_POST['key_path'] ?? '')), $root);
+                $_SESSION['setup_notice'] = 'A new private local key file was created. Its contents were not shown or saved in the browser. Record an offline recovery copy before enabling encrypted copies.';
+            } catch (Throwable $error) {
+                $_SESSION['setup_error'] = 'Could not create the local key file: ' . $error->getMessage();
+            }
+        }
+        header('Location: ' . strtok((string)$_SERVER['REQUEST_URI'], '?') . '?section=basics', true, 303);
         return;
     }
 
@@ -356,10 +392,11 @@ function runWeb(
     }
 
     $refusal ??= takeSetupError();
+    $notice = takeSetupNotice();
 
     echo webPage(
         $fields, $values, $errors, $rendered, $written, $writeError,
-        $configured, $authorised, $posted, $existing, $refusal, $unlocked,
+        $configured, $authorised, $posted, $existing, $refusal, $notice, $unlocked,
         $root . '/lib/config.sample.php', $activeSection, setupPreflight($root, $targetPath)
     );
 }
@@ -415,6 +452,7 @@ function webPage(
     bool $posted,
     ?array $existing,
     ?string $refusal,
+    ?string $notice,
     bool $unlocked,
     string $samplePath,
     string $activeSection,
@@ -530,6 +568,9 @@ function webPage(
     if ($refusal !== null) {
         $out[] = '<div class="banner crit">' . h($refusal) . '</div>';
     }
+    if ($notice !== null) {
+        $out[] = '<div class="banner ok">' . h($notice) . '</div>';
+    }
     if ($writeError !== null) {
         $out[] = '<div class="banner crit">' . h($writeError) . '</div>';
     }
@@ -583,6 +624,20 @@ function webPage(
     if ($activeSection === 'basics') {
         $out[] = '<p class="help">The minimum needed to make this installation safe and useful. '
             . 'Save this first; the rest of the sections can then be adjusted independently.</p>';
+        $out[] = '</form><details><summary>Create a local encryption key for verified encrypted copies</summary>'
+            . '<p class="help">This quick-start action creates a new Base64 256-bit key at an absolute, '
+            . 'private path outside this web directory. It refuses to replace an existing file, does not '
+            . 'show the key in the browser, and creates it readable only by the HostScope service account. '
+            . 'Keep a separately protected offline recovery copy before enabling encrypted copies.</p>'
+            . '<form method="post"><input type="hidden" name="intent" value="create-local-key">'
+            . '<input type="hidden" name="setup_key_create_token" value="' . h(setupKeyCreateToken()) . '">'
+            . '<label>New private key-file path<input type="text" name="key_path" '
+            . 'placeholder="/secure/hostscope/primary.key" autocomplete="off"></label>'
+            . ($configured && !$unlocked
+                ? '<label>Current setup password<input type="password" name="current_password" autocomplete="current-password"></label>'
+                : '')
+            . '<button type="submit">Create private key file</button></form></details><form method="post">'
+            . '<input type="hidden" name="section" value="' . h($activeSection) . '">';
     } else {
         $help = sampleHelp($samplePath)['sections'][$activeSection] ?? '';
         if ($help !== '') $out[] = '<p class="help">' . h(firstParagraph($help)) . '</p>';
