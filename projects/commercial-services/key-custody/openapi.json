@@ -12,7 +12,7 @@
       "post": {"summary": "Create a tenant custody key record", "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KeyCreate"}}}}, "responses": {"201": {"description": "Created"}}}
     },
     "/keys/{keyId}": {
-      "patch": {"summary": "Disable or rotate a key", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KeyAction"}}}}, "responses": {"200": {"description": "Updated"}}}
+      "patch": {"summary": "Disable, rotate, or retire a key", "parameters": [{"$ref": "#/components/parameters/KeyId"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/KeyAction"}}}}, "responses": {"200": {"description": "Updated"}}}
     },
     "/keys/{keyId}/envelopes": {
       "post": {"summary": "Store a wrapped DEK envelope", "security": [{"enrolledClient": []}], "parameters": [{"$ref": "#/components/parameters/KeyId"}, {"$ref": "#/components/parameters/ClientTimestamp"}, {"$ref": "#/components/parameters/ClientNonce"}, {"$ref": "#/components/parameters/ClientSignature"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/EnvelopeStore"}}}}, "responses": {"201": {"description": "Envelope recorded"}}},
