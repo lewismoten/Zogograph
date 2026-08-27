@@ -448,7 +448,7 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     $settings = (array)($config['encryption'] ?? []);
     $mode = (string)($settings['mode'] ?? 'none');
     $stores = encryptionSelectedStores($settings);
-    $status = ['mode' => $mode, 'stores' => $stores, 'policy' => encryptionPolicySummary($settings), 'waiting_stores' => [], 'superseded_artifacts' => [], 'retired_artifacts' => [], 'ready' => false, 'evidence' => 'none', 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null,
+    $status = ['mode' => $mode, 'stores' => $stores, 'policy' => encryptionPolicySummary($settings), 'waiting_stores' => [], 'superseded_artifacts' => [], 'retired_artifacts' => [], 'remote_envelopes' => [], 'ready' => false, 'evidence' => 'none', 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null,
         'sqlcipher' => encryptionSqlcipherCapability()];
     if ($mode === 'none') {
         $status['warnings'][] = 'Encryption is off. Live SQLite files and copies remain unencrypted unless host storage protection is configured separately.';
@@ -484,6 +484,8 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
         foreach ($superseded->fetchAll() as $row) $status['superseded_artifacts'][] = ['store' => $row['store'], 'copies' => (int)$row['copies']];
         $retired = $pdo->query("SELECT store, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'retired' GROUP BY store");
         foreach ($retired->fetchAll() as $row) $status['retired_artifacts'][] = ['store' => $row['store'], 'copies' => (int)$row['copies']];
+        $remote = $pdo->query('SELECT provider_package, state, COUNT(*) AS copies FROM encryption_remote_envelopes GROUP BY provider_package, state ORDER BY provider_package, state');
+        foreach ($remote->fetchAll() as $row) $status['remote_envelopes'][] = ['provider_package' => (string)$row['provider_package'], 'state' => (string)$row['state'], 'copies' => (int)$row['copies']];
     } catch (Throwable) { $status['warnings'][] = 'No encrypted artifact ledger is available yet.'; }
     $paths = encryptionStorePaths($config, $webRoot);
     foreach (encryptionSensitiveSourceWarnings($paths, $stores) as $warning) $status['warnings'][] = $warning;
@@ -502,6 +504,8 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     try {
         $failed = $pdo->query("SELECT store, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verification_failed' GROUP BY store")->fetchAll();
         foreach ($failed as $artifact) $status['warnings'][] = 'One or more retained encrypted copies for ' . $artifact['store'] . ' failed their last verification.';
+        $failedRemote = $pdo->query("SELECT COUNT(*) FROM encryption_remote_envelopes WHERE state = 'failed'")->fetchColumn();
+        if ((int)$failedRemote > 0) $status['warnings'][] = 'One or more optional remote custody envelope attempts failed; local recovery copies remain the primary evidence.';
     } catch (Throwable) { /* Older/partial ledgers already carry a general warning above. */ }
     foreach ($expected as $store) {
         if (!in_array($store, $covered, true)) { $status['warnings'][] = "No verified encrypted copy exists yet for {$store}."; continue; }

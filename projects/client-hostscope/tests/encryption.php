@@ -278,6 +278,8 @@ try {
         encryptionRecordRemoteEnvelopeStored($live, $remoteArtifact, 'hostscope-key-custody', 'key_' . str_repeat('a', 32), $remoteCiphertext, $envelopeHash);
         encryptionExpect((string)$live->query("SELECT state FROM encryption_remote_envelopes WHERE artifact_id = '" . $remoteArtifact . "'")->fetchColumn() === 'stored',
             'matching remote custody receipt did not become stored evidence');
+        encryptionExpect((encryptionStatus($live, $config, $web)['remote_envelopes'][0]['state'] ?? null) === 'stored',
+            'protection status did not disclose bounded remote-envelope evidence');
         try { encryptionRecordRemoteEnvelopeStored($live, $remoteArtifact, 'hostscope-key-custody', 'key_' . str_repeat('a', 32), str_repeat('0', 64), $envelopeHash); throw new RuntimeException('mismatched remote custody receipt was accepted'); }
         catch (InvalidArgumentException $error) { encryptionExpect($error->getMessage() !== 'mismatched remote custody receipt was accepted', $error->getMessage()); }
         $reverified = encryptionVerifyConfiguredCopies($config, $live, $web);

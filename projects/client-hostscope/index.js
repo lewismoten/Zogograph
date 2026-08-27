@@ -11847,6 +11847,8 @@ function renderEncryptionStatus(data) {
   if (superseded) overview.push(["Superseded recovery copies", String(superseded)]);
   const retired = (data.retired_artifacts || []).reduce((total, row) => total + Number(row.copies || 0), 0);
   if (retired) overview.push(["Retired recovery copies", String(retired)]);
+  const remoteEnvelopes = (data.remote_envelopes || []).map(row => `${row.provider_package}: ${row.copies} ${row.state}`).join(" · ");
+  if (remoteEnvelopes) overview.push(["Optional remote envelopes", remoteEnvelopes]);
   const parts = [factGrid(overview)];
   if (data.setup_configuration?.state !== "ok") parts.push(note(`Setup configuration: ${data.setup_configuration?.detail || "status unavailable"}`));
   if (data.sqlcipher) parts.push(note(`Live SQLCipher option: ${data.sqlcipher.detail}`));
