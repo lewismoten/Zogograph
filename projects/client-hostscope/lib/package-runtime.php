@@ -142,7 +142,7 @@ function packageRuntimeCompatibility(array $manifest): array
         if (!extension_loaded($extension)) return ['status' => 'unavailable', 'detail' => 'requires PHP extension ' . $extension];
     }
     foreach ($requirements['requires_runtime_capability'] as $capability) {
-        if ($capability === 'isolated_package_runtime') return ['status' => 'unavailable', 'detail' => 'the isolated package runtime is not installed'];
+        if ($capability === 'isolated_package_runtime') return ['status' => 'unavailable', 'detail' => 'a deployment-attested isolated provider runtime is not installed; the capability worker alone does not activate packages'];
         if ($capability === 'encrypted_sqlite_driver') {
             if (!packageRuntimeHasSqlcipherDriver()) return ['status' => 'unavailable', 'detail' => 'a SQLCipher-capable PDO SQLite driver was not detected'];
             continue;
