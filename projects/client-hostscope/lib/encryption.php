@@ -446,6 +446,8 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     if (!encryptionAvailable()) $status['warnings'][] = 'OpenSSL AES-256-GCM support is unavailable.';
     try { encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot); }
     catch (Throwable $error) { $status['warnings'][] = 'The private local key is not ready: ' . $error->getMessage(); }
+    try { encryptionValidateArtifactDirectory((string)($settings['artifact_directory'] ?? ''), $webRoot); }
+    catch (Throwable $error) { $status['warnings'][] = 'The custom encrypted-copy directory is unsafe: ' . $error->getMessage(); }
     if ($stores === []) $status['warnings'][] = 'No databases or configuration artifact have been selected.';
     $estimate = encryptionSealingStorageEstimate($config, $webRoot, $stores);
     $status['storage_estimate'] = $estimate;
@@ -580,8 +582,8 @@ function encryptionVerifyConfiguredCopies(array $config, PDO $pdo, string $webRo
     $settings = (array)($config['encryption'] ?? []);
     if (($settings['mode'] ?? '') !== 'sealed_copies_local') return ['verified' => 0, 'failed' => 0, 'warnings' => []];
     $key = encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot);
-    try { $directory = encryptionArtifactDirectory($config, dirname(__DIR__)); }
-    catch (RuntimeException $error) { return ['removed' => 0, 'warnings' => [$error->getMessage()]]; }
+    try { $directory = encryptionArtifactDirectory($config, $webRoot); }
+    catch (RuntimeException $error) { return ['verified' => 0, 'failed' => 0, 'warnings' => [$error->getMessage()]]; }
     $root = realpath($directory);
     if ($root === false || !is_dir($root) || is_link($directory)) throw new RuntimeException('encrypted artifact directory is unavailable or unsafe');
     $rows = $pdo->query("SELECT artifact_id, store, local_path, ciphertext_sha256 FROM encryption_artifacts WHERE state = 'verified' ORDER BY created_at ASC")->fetchAll();
@@ -645,8 +647,8 @@ function encryptionPruneConfiguredCopies(array $config, PDO $pdo): array
 {
     $settings = (array)($config['encryption'] ?? []);
     if (($settings['mode'] ?? '') !== 'sealed_copies_local') return ['removed' => 0, 'warnings' => []];
-    $directory = (string)($settings['artifact_directory'] ?? '');
-    if ($directory === '') $directory = dirname((string)$config['database']) . '/sealed';
+    try { $directory = encryptionArtifactDirectory($config, dirname(__DIR__)); }
+    catch (RuntimeException $error) { return ['removed' => 0, 'warnings' => [$error->getMessage()]]; }
     $root = realpath($directory);
     if ($root === false || !is_dir($root) || is_link($directory)) return ['removed' => 0, 'warnings' => ['encrypted artifact directory is unavailable or unsafe']];
     $latest = [];

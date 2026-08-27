@@ -228,6 +228,9 @@ try {
         $live->prepare("UPDATE encryption_artifacts SET created_at = ? WHERE store = 'account'")->execute([time()]);
         $volume = encryptionStatus($live, ['encryption' => ['mode' => 'operator_managed_volume', 'stores' => ['account']]], $web);
         encryptionExpect($volume['ready'] && $volume['warnings'] !== [], 'volume-protection status did not explain its verification limit');
+        $unsafeDirectory = $config; $unsafeDirectory['encryption']['artifact_directory'] = $web . '/public-sealed';
+        encryptionExpect(str_contains(implode(' ', encryptionStatus($live, $unsafeDirectory, $web)['warnings']), 'custom encrypted-copy directory is unsafe'),
+            'protection status did not report an unsafe custom encrypted-copy directory');
         $oldPath = $root . '/sealed/account.old.sealed';
         copy((string)$copies[1]['local_path'], $oldPath);
         $oldHash = hash_file('sha256', $oldPath);
