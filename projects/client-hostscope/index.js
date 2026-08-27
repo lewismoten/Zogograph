@@ -869,6 +869,8 @@ async function refreshCpu() {
   renderCpuFindings(data.findings ?? []);
   drawLineChart($("cpuBusyChart"), data.series ?? [], [
     { key: "busy", label: "Busy" },
+    { key: "monitoring_cpu_percent", label: "Monitoring tree" },
+    { key: "workload_cpu_percent", label: "Workload (excl. monitor)" },
     { key: "user", label: "Userland" },
     { key: "system", label: "Kernel" },
     { key: "iowait", label: "Waiting for storage" },

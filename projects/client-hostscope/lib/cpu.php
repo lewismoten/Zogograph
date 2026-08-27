@@ -147,6 +147,15 @@ function cpuStateSeries(array $rows): array
                 // the dashboard calls "CPU" - restated here so a reader can see
                 // it is the sum of the parts above and not a separate reading.
                 $point['busy'] = round(100 - $point['idle'], 2);
+                /*
+                 * The collector tree was measured across this same sampling
+                 * interval.  Keep both readings: total CPU is the alerting
+                 * truth, while workload is the useful investigative view.
+                 */
+                $point['monitoring_cpu_percent'] = ($row['monitoring_cpu_percent'] ?? null) === null
+                    ? null : (float)$row['monitoring_cpu_percent'];
+                $point['workload_cpu_percent'] = $point['monitoring_cpu_percent'] === null
+                    ? null : round(max(0.0, $point['busy'] - $point['monitoring_cpu_percent']), 2);
 
                 $rate = function (string $key) use ($row, $previous, $seconds): ?float {
                     if (($row[$key] ?? null) === null || ($previous[$key] ?? null) === null) {
@@ -164,6 +173,11 @@ function cpuStateSeries(array $rows): array
                     ? null : (int)$row['procs_running'];
                 $point['procs_blocked'] = $row['procs_blocked'] === null
                     ? null : (int)$row['procs_blocked'];
+                $point['monitoring_runnable'] = ($row['monitoring_runnable'] ?? null) === null
+                    ? null : (int)$row['monitoring_runnable'];
+                $point['workload_runnable'] = $point['monitoring_runnable'] === null
+                    || $point['procs_running'] === null
+                    ? null : max(0, $point['procs_running'] - $point['monitoring_runnable']);
                 $point['cpu_pressure_some'] = $row['cpu_pressure_some'] === null
                     ? null : (float)$row['cpu_pressure_some'];
                 $point['load1'] = $row['load1'] === null ? null : (float)$row['load1'];

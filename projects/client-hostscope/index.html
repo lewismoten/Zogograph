@@ -1868,9 +1868,11 @@
 
     <h3 class="sub-head">Busy, and what it was busy with</h3>
     <p class="muted small sub-note">
-      The line the rest of the dashboard calls "CPU", split into the states that
-      make it up. Percentages are of every core added together, so 100% is the
-      whole machine occupied rather than one core of it.
+      The total busy line is split into the states that make it up. The monitor
+      tree and the remaining workload are also shown: together they explain the
+      total, while alerts continue to use total host CPU. Percentages are of
+      every core added together, so 100% is the whole machine occupied rather
+      than one core of it.
     </p>
     <canvas id="cpuBusyChart"></canvas>
   </div>
