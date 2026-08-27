@@ -8,6 +8,12 @@ if (is_link($path) || file_exists($path)) { fwrite(STDERR, "Refusing to replace 
 $directory = dirname($path);
 if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) { fwrite(STDERR, "Could not create the billing-token directory.\n"); exit(1); }
 $token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
-if (!is_writable($directory) || file_put_contents($path, $token . "\n", LOCK_EX) === false) { fwrite(STDERR, "Could not write the billing token.\n"); exit(1); }
-chmod($path, 0600);
+if (is_link($directory) || !is_writable($directory)) { fwrite(STDERR, "Could not write the billing token.\n"); exit(1); }
+$previous = umask(0077); $handle = @fopen($path, 'x'); umask($previous);
+if ($handle === false) { fwrite(STDERR, "Could not write the billing token.\n"); exit(1); }
+try {
+    if (fwrite($handle, $token . "\n") === false || !fflush($handle)) throw new RuntimeException();
+    chmod($path, 0600);
+} catch (Throwable) { fclose($handle); @unlink($path); fwrite(STDERR, "Could not write the billing token.\n"); exit(1); }
+fclose($handle);
 fwrite(STDOUT, "Created billing-control token at {$path} (0600). Give it only to the commercial billing service.\n");
