@@ -294,9 +294,26 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
         foreach ($stmt->fetchAll() as $row) $status['artifacts'][] = ['store' => $row['store'], 'created_at' => (int)$row['created_at'], 'copies' => (int)$row['copies']];
     } catch (Throwable) { $status['warnings'][] = 'No encrypted artifact ledger is available yet.'; }
     $covered = array_column($status['artifacts'], 'store');
-    foreach ($stores as $store) if (!in_array($store, $covered, true)) $status['warnings'][] = "No verified encrypted copy exists yet for {$store}.";
+    $latest = array_column($status['artifacts'], 'created_at', 'store');
+    foreach ($stores as $store) {
+        if (!in_array($store, $covered, true)) { $status['warnings'][] = "No verified encrypted copy exists yet for {$store}."; continue; }
+        $maximumAge = encryptionScheduleMaximumAge((string)($settings['backup_schedule'] ?? 'manual'));
+        if ($maximumAge !== null && (int)$latest[$store] < time() - $maximumAge) {
+            $status['warnings'][] = "The newest verified encrypted copy for {$store} is older than the configured schedule allows.";
+        }
+    }
     $status['ready'] = $stores !== [] && encryptionAvailable() && count($status['warnings']) === 0;
     return $status;
+}
+
+/** Allows one missed scheduled run before reporting recovery coverage as stale. */
+function encryptionScheduleMaximumAge(string $schedule): ?int
+{
+    return match ($schedule) {
+        'daily' => 2 * 86400,
+        'weekly' => 9 * 86400,
+        default => null,
+    };
 }
 
 /** @return list<string> */

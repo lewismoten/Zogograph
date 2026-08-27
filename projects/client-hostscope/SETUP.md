@@ -183,6 +183,12 @@ first run needs temporary free disk space approximately equal to the selected
 source database/configuration file. A failed proof leaves the original live
 data untouched and does not create a verified ledger record.
 
+The dashboard's **System → Protection** view tracks this evidence. Daily
+policies warn after two days without a new verified copy; weekly policies warn
+after nine days. Manual policies never infer a missed run. A warning means the
+most recent verified ciphertext may still be usable, but it no longer meets the
+recovery point objective you selected.
+
 ```cron
 # Daily encrypted copies. This does nothing unless encryption.mode is selected.
 19 3 * * * /absolute/path/to/php /absolute/path/to/hostscope/cron.php --seal --quiet

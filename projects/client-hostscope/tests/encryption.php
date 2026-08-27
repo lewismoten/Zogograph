@@ -106,6 +106,12 @@ try {
             'sealed artifacts were not recorded for replication');
         $status = encryptionStatus($live, $config, $web);
         encryptionExpect($status['ready'] && count($status['artifacts']) === 2, 'sealed-copy status did not report verified coverage');
+        $stale = $config; $stale['encryption']['backup_schedule'] = 'daily';
+        $live->prepare("UPDATE encryption_artifacts SET created_at = ? WHERE store = 'account'")->execute([time() - 3 * 86400]);
+        $staleStatus = encryptionStatus($live, $stale, $web);
+        encryptionExpect(!$staleStatus['ready'] && str_contains(implode(' ', $staleStatus['warnings']), 'older than the configured schedule'),
+            'stale encrypted copy was reported as current recovery evidence');
+        $live->prepare("UPDATE encryption_artifacts SET created_at = ? WHERE store = 'account'")->execute([time()]);
         $volume = encryptionStatus($live, ['encryption' => ['mode' => 'operator_managed_volume', 'stores' => ['account']]], $web);
         encryptionExpect($volume['ready'] && $volume['warnings'] !== [], 'volume-protection status did not explain its verification limit');
         $oldPath = $root . '/sealed/account.old.sealed';
