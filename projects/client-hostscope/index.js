@@ -11892,9 +11892,9 @@ function renderEncryptionStatus(data) {
       remote.title = remote.disabled ? "Create a verified encrypted copy before adding an optional remote envelope." : "Requires separately configured custody enrollment and envelope-store sandboxes.";
       remote.addEventListener("click", () => showCustodyEnvelopeDialog(data.remote_envelope_candidates || []));
       const remoteDrill = document.createElement("button"); remoteDrill.type = "button"; remoteDrill.textContent = "Run remote custody recovery drill";
-      remoteDrill.disabled = !data.remote_envelope_candidates?.length;
+      remoteDrill.disabled = !data.remote_recovery_candidates?.length;
       remoteDrill.title = remoteDrill.disabled ? "A verified local artifact is required before a remote recovery drill." : "Requires a stored remote envelope and separately configured custody unwrap sandbox.";
-      remoteDrill.addEventListener("click", () => showCustodyRecoveryDrillDialog(data.remote_envelope_candidates || []));
+      remoteDrill.addEventListener("click", () => showCustodyRecoveryDrillDialog(data.remote_recovery_candidates || []));
       actions.append(seal, drill, remote, remoteDrill); parts.push(actions);
     }
   } else {
