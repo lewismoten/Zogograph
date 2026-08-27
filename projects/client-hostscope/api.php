@@ -3770,6 +3770,21 @@ function cpuView(array $config, bool $signedIn, PDO $account): array
         ];
     }
 
+    $withMonitoringWorkload = static function (array $row): array {
+        if (($row['mem_total'] ?? null) !== null && ($row['mem_available'] ?? null) !== null) {
+            $row['committed_bytes'] = max(0, (int)$row['mem_total'] - (int)$row['mem_available']);
+            $row['workload_committed_bytes'] = ($row['monitoring_pss_bytes'] ?? null) === null
+                ? null
+                : max(0, $row['committed_bytes'] - (int)$row['monitoring_pss_bytes']);
+        }
+        if (($row['procs_running'] ?? null) !== null && ($row['monitoring_runnable'] ?? null) !== null) {
+            $row['workload_runnable'] = max(0,
+                (int)$row['procs_running'] - (int)$row['monitoring_runnable']);
+        }
+        return $row;
+    };
+    $sample = $withMonitoringWorkload($sample);
+
     $id = (int)$sample['id'];
     [$from, $to] = window();
 
@@ -4012,6 +4027,21 @@ function hostView(array $config, bool $signedIn, PDO $account): array
         ];
     }
 
+    $withMonitoringWorkload = static function (array $row): array {
+        if (($row['mem_total'] ?? null) !== null && ($row['mem_available'] ?? null) !== null) {
+            $row['committed_bytes'] = max(0, (int)$row['mem_total'] - (int)$row['mem_available']);
+            $row['workload_committed_bytes'] = ($row['monitoring_pss_bytes'] ?? null) === null
+                ? null
+                : max(0, $row['committed_bytes'] - (int)$row['monitoring_pss_bytes']);
+        }
+        if (($row['procs_running'] ?? null) !== null && ($row['monitoring_runnable'] ?? null) !== null) {
+            $row['workload_runnable'] = max(0,
+                (int)$row['procs_running'] - (int)$row['monitoring_runnable']);
+        }
+        return $row;
+    };
+    $sample = $withMonitoringWorkload($sample);
+
     $id = (int)$sample['id'];
     $of = function (string $sql) use ($pdo, $id): array {
         $stmt = $pdo->prepare($sql);
@@ -4046,7 +4076,7 @@ function hostView(array $config, bool $signedIn, PDO $account): array
         . 'FROM host_samples WHERE taken_at BETWEEN ? AND ? ORDER BY taken_at'
     );
     $series->execute([$from, $to]);
-    $rows = $series->fetchAll();
+    $rows = array_map($withMonitoringWorkload, $series->fetchAll());
 
     return [
         'available' => true,
