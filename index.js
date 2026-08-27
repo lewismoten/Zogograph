@@ -8564,7 +8564,7 @@ const chatState = {
   who: { name: "Assistant", emoji: "✦", portrait: null },
 };
 
-const voiceState = { speak: false, listen: false, recognition: null, spoken: new Set() };
+const voiceState = { speak: false, listen: false, listenMode: "never", recognition: null, spoken: new Set() };
 
 function speakAssistantReply(session) {
   if (!voiceState.speak || !window.speechSynthesis) return;
@@ -8601,6 +8601,18 @@ function toggleRecognition() {
   voiceState.listen = true;
   recognition.start();
   $("chatListen").textContent = "Listening…";
+}
+
+function applyVoicePreferences(preferences) {
+  voiceState.speak = preferences.speaking === "replies";
+  voiceState.listenMode = preferences.listening;
+  if (preferences.listening === "never" && voiceState.listen) toggleRecognition();
+  $("chatSpeak").textContent = voiceState.speak ? "Speaking" : "Speak";
+  $("chatListen").hidden = preferences.listening === "never";
+  $("chatListen").textContent = preferences.listening === "push" ? "Hold to talk" : "Listen";
+  if (preferences.listening === "always" && !voiceState.listen) {
+    try { toggleRecognition(); } catch (_) { /* Browser reports availability when the control is used. */ }
+  }
 }
 
 /** How often to ask, by what the session is doing. */
@@ -14786,9 +14798,11 @@ function displayPreferences() {
       motion: ["system", "reduce"].includes(stored.motion) ? stored.motion : "system",
       editorFont: ["system", "compact", "classic"].includes(stored.editorFont) ? stored.editorFont : "system",
       colorVision: ["system", "distinguish"].includes(stored.colorVision) ? stored.colorVision : "system",
+      speaking: ["never", "replies"].includes(stored.speaking) ? stored.speaking : "never",
+      listening: ["never", "push", "always"].includes(stored.listening) ? stored.listening : "never",
     };
   } catch (_) {
-    return { textSize: "default", motion: "system", editorFont: "system", colorVision: "system" };
+    return { textSize: "default", motion: "system", editorFont: "system", colorVision: "system", speaking: "never", listening: "never" };
   }
 }
 
@@ -14802,6 +14816,7 @@ function applyDisplayPreferences(preferences, remember = true) {
   else root.dataset.editorFont = preferences.editorFont;
   if (preferences.colorVision === "system") delete root.dataset.colorVision;
   else root.dataset.colorVision = preferences.colorVision;
+  applyVoicePreferences(preferences);
   if (!remember) return;
   try { localStorage.setItem(DISPLAY_PREFERENCES_KEY, JSON.stringify(preferences)); } catch (_) { }
 }
@@ -14832,13 +14847,20 @@ function openDisplayPreferences() {
     option.value = value; option.textContent = label; option.selected = value === current.colorVision;
     colorVision.appendChild(option);
   }
+  const speaking = document.createElement("select");
+  for (const [value, label] of [["never", "Never"], ["replies", "Read assistant replies"]]) { const option = new Option(label, value, false, value === current.speaking); speaking.append(option); }
+  const listening = document.createElement("select");
+  for (const [value, label] of [["never", "Never"], ["push", "Push to talk"], ["always", "Always on"]]) { const option = new Option(label, value, false, value === current.listening); listening.append(option); }
   showFormDialog("Display preferences", [
     fieldRow("Text size", textSize, "Applies to this browser only."),
     fieldRow("Motion", motion, "Reduce motion disables decorative animation and transitions in this browser."),
     fieldRow("Editor typeface", editorFont, "Changes only local code, diff, and syntax readers. No file content leaves this browser."),
     fieldRow("Colour vision", colorVision, "High distinction uses a blue, orange, and violet status palette. Status words and symbols remain visible in every mode."),
+    section("Voice", document.createElement("div")),
+    fieldRow("Speaking", speaking, "Browser speech synthesis; replies are read aloud only when enabled."),
+    fieldRow("Listening", listening, "Push to talk requires holding the Listen button. Always on keeps recognition active until stopped."),
   ], async () => {
-    applyDisplayPreferences({ textSize: textSize.value, motion: motion.value, editorFont: editorFont.value, colorVision: colorVision.value });
+    applyDisplayPreferences({ textSize: textSize.value, motion: motion.value, editorFont: editorFont.value, colorVision: colorVision.value, speaking: speaking.value, listening: listening.value });
     redrawCharts(document);
   }, "Apply display choices");
 }
@@ -32437,8 +32459,19 @@ $("chatSpeak").addEventListener("click", () => {
   if (!voiceState.speak) window.speechSynthesis?.cancel();
 });
 $("chatListen").addEventListener("click", () => {
+  if (voiceState.listenMode === "push") return;
   try { toggleRecognition(); } catch (error) { notice(String(error.message || error)); }
 });
+$("chatListen").addEventListener("pointerdown", event => {
+  if (voiceState.listenMode !== "push" || voiceState.listen) return;
+  event.preventDefault();
+  try { toggleRecognition(); } catch (error) { notice(String(error.message || error)); }
+});
+for (const eventName of ["pointerup", "pointercancel", "pointerleave"]) {
+  $("chatListen").addEventListener(eventName, () => {
+    if (voiceState.listenMode === "push" && voiceState.listen) toggleRecognition();
+  });
+}
 
 $("chatStop").addEventListener("click", async () => {
   if (!chatState.session?.exists) return;
