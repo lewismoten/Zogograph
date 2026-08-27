@@ -5,6 +5,7 @@ require_once __DIR__ . '/lib/store.php';
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
+const CUSTODY_MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 $configFile = __DIR__ . '/config.php';
 if (!is_file($configFile)) { http_response_code(503); echo json_encode(['error' => 'key custody service is not configured']); exit; }
 $config = require $configFile;
@@ -17,7 +18,14 @@ $bearer = preg_match('/^Bearer\s+(.+)$/i', (string)($_SERVER['HTTP_AUTHORIZATION
 $clientTimestamp = (string)($_SERVER['HTTP_X_HOSTSCOPE_TIMESTAMP'] ?? '');
 $clientNonce = (string)($_SERVER['HTTP_X_HOSTSCOPE_NONCE'] ?? '');
 $clientSignature = (string)($_SERVER['HTTP_X_HOSTSCOPE_SIGNATURE'] ?? '');
-$rawBody = (string)file_get_contents('php://input');
+$contentLength = $_SERVER['CONTENT_LENGTH'] ?? null;
+if ($contentLength !== null && (!ctype_digit((string)$contentLength) || (int)$contentLength > CUSTODY_MAX_REQUEST_BYTES)) {
+    http_response_code(413); echo json_encode(['error' => 'request body is too large']); exit;
+}
+$rawBody = (string)file_get_contents('php://input', false, null, 0, CUSTODY_MAX_REQUEST_BYTES + 1);
+if (strlen($rawBody) > CUSTODY_MAX_REQUEST_BYTES) {
+    http_response_code(413); echo json_encode(['error' => 'request body is too large']); exit;
+}
 function custodyBody(string $raw): array { $value = json_decode($raw, true); if (!is_array($value)) throw new InvalidArgumentException('JSON object body is required'); return $value; }
 function custodyReply(int $status, array $body): never { http_response_code($status); echo json_encode($body, JSON_UNESCAPED_SLASHES); exit; }
 try {

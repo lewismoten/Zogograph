@@ -9,6 +9,9 @@ custodyExpect(($contract['components']['schemas']['EnvelopeStore']['required'] ?
     'published custody API contract omits required envelope fields');
 custodyExpect(isset($contract['paths']['/internal/subscriptions/{tenantId}']) && isset($contract['components']['securitySchemes']['billingService']),
     'published custody API contract omits the isolated billing control plane');
+$api = file_get_contents(__DIR__ . '/../api.php');
+custodyExpect($api !== false && str_contains($api, 'CUSTODY_MAX_REQUEST_BYTES') && str_contains($api, 'request body is too large'),
+    'custody API does not bound request-body intake before parsing');
 $root = sys_get_temp_dir() . '/hostscope-custody-' . bin2hex(random_bytes(4)); mkdir($root, 0700, true);
 try {
     $pdo = keyCustodyOpen(['database' => $root . '/service.db']);

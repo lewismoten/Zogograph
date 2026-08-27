@@ -16,6 +16,11 @@ non-symlinked private path outside the deployed web root. It creates the
 directory and database with owner-only permissions; a relative or web-served
 database location is refused rather than treated as a convenience default.
 
+Every API JSON request is capped at 2 MiB before parsing. This safely leaves
+room for the 1 MiB wrapped-envelope limit and its Base64 encoding while refusing
+oversized management or client requests before they consume unbounded PHP
+memory.
+
 See `openapi.json` for the API contract. The companion client integration will
 be the optional `hostscope-key-custody` package. Until it is installed and
 enabled, HostScope uses the local key file or self-managed fleet options.
