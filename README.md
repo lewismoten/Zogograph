@@ -1894,6 +1894,7 @@ php tests/terminal-editor-safety.php
 php tests/totp.php
 php tests/openid.php
 php tests/setup-preflight.php
+php tests/encryption.php
 php tests/session-revocation.php
 php tests/auth-recovery.php
 php tests/ai-error-redaction.php

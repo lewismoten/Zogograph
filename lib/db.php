@@ -189,6 +189,32 @@ function migrationStatementApplied(PDO $pdo, string $sql): bool
 function migrations(): array
 {
     return [
+        50 => [
+            /* The local source of truth for encrypted-copy and future fleet
+             * replica evidence. It records ciphertext facts only, never keys
+             * or plaintext database content. */
+            'CREATE TABLE encryption_artifacts (
+                artifact_id      TEXT PRIMARY KEY,
+                store            TEXT NOT NULL,
+                created_at       INTEGER NOT NULL,
+                local_path       TEXT NOT NULL,
+                ciphertext_bytes INTEGER NOT NULL,
+                ciphertext_sha256 TEXT NOT NULL,
+                state            TEXT NOT NULL DEFAULT \'verified\'
+            )',
+            'CREATE INDEX encryption_artifacts_store_created ON encryption_artifacts (store, created_at DESC)',
+            'CREATE TABLE encryption_replicas (
+                artifact_id      TEXT NOT NULL REFERENCES encryption_artifacts(artifact_id) ON DELETE CASCADE,
+                peer             TEXT NOT NULL,
+                state            TEXT NOT NULL,
+                coverage_at      INTEGER,
+                verified_at      INTEGER,
+                remote_reference TEXT,
+                detail           TEXT,
+                PRIMARY KEY (artifact_id, peer)
+            )',
+            'CREATE INDEX encryption_replicas_peer_coverage ON encryption_replicas (peer, coverage_at DESC)',
+        ],
         49 => [
             'CREATE TABLE marketplace_packages (
                 package_id TEXT PRIMARY KEY,

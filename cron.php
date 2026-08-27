@@ -40,6 +40,7 @@ require_once __DIR__ . '/lib/boot.php';
 define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
 require_once __DIR__ . '/lib/db.php';
+require_once __DIR__ . '/lib/encryption.php';
 require_once __DIR__ . '/lib/collect.php';
 require_once __DIR__ . '/lib/alerts.php';
 require_once __DIR__ . '/lib/incident.php';
@@ -100,6 +101,7 @@ if (in_array('--help', $jobs, true) || in_array('-h', $jobs, true)) {
       php cron.php --domains    look up domain expiry for any that are due
       php cron.php --alerts     evaluate the rules, email if anything tripped
       php cron.php --prune      thin readings older than the retention window
+      php cron.php --seal       create opted-in encrypted SQLite copies
       php cron.php              all of the above
       php cron.php --quiet      say nothing unless something goes wrong
 
@@ -131,6 +133,15 @@ try {
             $row['load1'] === null ? 'n/a' : (string)$row['load1'],
             $row['cpu_percent'] === null ? 'n/a' : $row['cpu_percent'] . '%'
         ));
+    }
+
+    // Sealing is deliberately explicit. A normal collector invocation must
+    // never create encrypted copies merely because a key path exists.
+    if (in_array('--seal', $jobs, true)) {
+        $sealed = encryptionSealConfiguredCopies($config, $pdo, __DIR__);
+        if ($sealed !== []) encryptionRecordArtifacts($pdo, $sealed);
+        $say($sealed === [] ? 'Encryption is disabled; no sealed copies made.'
+            : 'Created ' . count($sealed) . ' sealed database cop' . (count($sealed) === 1 ? 'y.' : 'ies.'));
     }
 
     if ($wants('--scan')) {

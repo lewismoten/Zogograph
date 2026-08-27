@@ -52,6 +52,7 @@ if (!is_file($samplePath)) {
 }
 
 require_once $root . '/lib/configure.php';
+require_once $root . '/lib/encryption.php';
 require_once $root . '/lib/setupstore.php';
 require_once $root . '/lib/setup-preflight.php';
 // For hostCronLine/hostCronCommand, shown after a successful write.
@@ -394,6 +395,7 @@ function fieldIsInSection(array $field, string $section): bool
 function writeConfig(string $targetPath, array $config, string $libDir): array
 {
     try {
+        encryptionValidateSettings($config, dirname($libDir));
         saveConfiguredSettings($config, $targetPath, $libDir);
         return [true, null];
     } catch (Throwable $error) {
@@ -686,6 +688,29 @@ function renderField(array $field, array $values, array $errors, bool $configure
         }
         return '<fieldset><legend>' . $label . '</legend>'
             . '<div class="row">' . $boxes . '</div>' . $help . $bad . '</fieldset>';
+    }
+
+    if ($field['type'] === 'choice') {
+        $options = '';
+        foreach ($field['options'] as $value => $text) {
+            $selected = (string)$values[$key] === (string)$value ? ' selected' : '';
+            $options .= '<option value="' . h((string)$value) . '"' . $selected . '>'
+                . h((string)$text) . '</option>';
+        }
+        return '<label>' . $label . '<select name="' . h($key) . '">' . $options . '</select>'
+            . $help . $bad . '</label>';
+    }
+
+    if ($field['type'] === 'choices') {
+        $chosen = (array)$values[$key];
+        $boxes = '';
+        foreach ($field['options'] as $value => $text) {
+            $checked = in_array($value, $chosen, true) ? ' checked' : '';
+            $boxes .= '<label><input type="checkbox" name="' . h($key) . '[]" value="'
+                . h((string)$value) . '"' . $checked . '> ' . h((string)$text) . '</label>';
+        }
+        return '<fieldset><legend>' . $label . '</legend><div class="row">' . $boxes . '</div>'
+            . $help . $bad . '</fieldset>';
     }
 
     if ($field['type'] === 'lines') {

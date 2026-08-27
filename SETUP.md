@@ -136,3 +136,57 @@ administer the machine; HostScope continues to work with account-level data.
 
 For operational behavior, alerts, upgrades, and recovery, see the detailed
 reference in [README.md](README.md).
+
+## Optional: encrypted database copies
+
+HostScope starts with encryption disabled. Its first built-in mode creates
+verified encrypted **copies** of selected SQLite databases; it does not alter
+the live database or its WAL journal. This is suitable for encrypted local
+archives and the later fleet-replica workflow.
+
+Create a 256-bit local key outside the document root, then keep an offline
+recovery copy. Do not store it in `data/`, `lib/`, the web root, or alongside a
+database export.
+
+```bash
+php scripts/encryption-key.php create /secure/hostscope/primary.key
+```
+
+In the setup wizard's **Encryption** section, set `encryption.mode` to
+`sealed_copies_local`, enter that absolute key-file path, and choose the stores
+to include: `setup`, `account`, `host`, and/or `ai`. Missing optional host and
+assistant databases are skipped. The artifact directory defaults to the
+protected `data/sealed/` directory; set a private absolute path if you need the
+copies elsewhere.
+
+Run a first copy manually, then schedule it separately from normal collection:
+
+```bash
+php cron.php --seal
+```
+
+```cron
+# Daily encrypted copies. This does nothing unless encryption.mode is selected.
+19 3 * * * /absolute/path/to/php /absolute/path/to/hostscope/cron.php --seal --quiet
+```
+
+The key is never kept in HostScope configuration or its databases. A lost key
+cannot be recovered from a sealed copy. See
+[ENCRYPTION_AND_FLEET_PLAN.md](ENCRYPTION_AND_FLEET_PLAN.md) for the current
+scope, limitations, rotation design, and planned self-managed fleet custody.
+
+To inspect a copy during recovery, decrypt it to a new private file and remove
+that plaintext file when you finish:
+
+```bash
+php scripts/encryption-key.php decrypt /secure/hostscope/primary.key account.sealed restored-account.db
+```
+
+To replace a key, create the replacement key, write a separate rotated copy,
+verify that it decrypts, and only then retire the old sealed copy and key:
+
+```bash
+php scripts/encryption-key.php create /secure/hostscope/replacement.key
+php scripts/encryption-key.php rotate /secure/hostscope/primary.key /secure/hostscope/replacement.key \
+  account.sealed account-rotated.sealed account-rotation-2026-08-27
+```

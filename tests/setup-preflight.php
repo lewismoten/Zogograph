@@ -17,7 +17,7 @@ file_put_contents($config, "<?php return ['database' => " . var_export($root . '
 
 try {
     $checks = setupPreflight($root, $config, [
-        'php_version' => '8.0.30', 'sqlite' => false, 'commands' => [], 'https' => false, 'cli' => false,
+        'php_version' => '8.0.30', 'sqlite' => false, 'commands' => [], 'https' => false, 'cli' => false, 'encryption' => false,
     ]);
     $byLabel = array_column($checks, null, 'label');
     setupExpect($byLabel['PHP']['state'] === 'error', 'unsupported PHP was not a blocking installer error');
@@ -29,15 +29,17 @@ try {
         && str_contains($byLabel['Cron']['detail'], 'host panel'),
         'shared-host cron guidance was not shown without command execution');
     setupExpect($byLabel['HTTPS']['state'] === 'warning', 'plain HTTP was not called out before credential entry');
+    setupExpect($byLabel['Encrypted copies']['state'] === 'warning', 'missing encryption capability was not reported');
 
     $live = setupPreflight($root, $config, [
-        'php_version' => '8.1.0', 'sqlite' => true, 'commands' => ['proc_open'], 'https' => true, 'cli' => true,
+        'php_version' => '8.1.0', 'sqlite' => true, 'commands' => ['proc_open'], 'https' => true, 'cli' => true, 'encryption' => true,
     ]);
     $liveByLabel = array_column($live, null, 'label');
     setupExpect($liveByLabel['PHP']['state'] === 'ok' && $liveByLabel['SQLite']['state'] === 'ok',
         'minimum supported PHP/SQLite installation was rejected');
     setupExpect($liveByLabel['Command capability']['state'] === 'ok' && $liveByLabel['Cron']['state'] === 'ok',
         'available CLI capabilities were not reported as usable');
+    setupExpect($liveByLabel['Encrypted copies']['state'] === 'ok', 'available encryption capability was not reported');
 } finally {
     @unlink($config);
     @rmdir($root . '/lib');

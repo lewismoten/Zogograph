@@ -19,6 +19,24 @@ return [
 
     'database' => __DIR__ . '/../data/stats.db',
 
+    /*
+     * Optional encrypted copies. `none` is the default: normal SQLite files
+     * remain unchanged until an administrator explicitly chooses a mode.
+     *
+     * `sealed_copies_local` makes verified encrypted SQLite snapshots when
+     * `cron.php --seal` is scheduled. It does not encrypt the live WAL
+     * database. The 256-bit key file must be outside the web root, a regular
+     * non-symlink file, and mode 0600.
+     */
+    'encryption' => [
+        'mode' => 'none', // none or sealed_copies_local
+        'local_key_file' => '',
+        // Null stores artifacts in data/sealed/; set an absolute private path to move them.
+        'artifact_directory' => null,
+        // setup, account, host, ai. Missing optional databases are skipped.
+        'stores' => ['setup', 'account', 'host', 'ai'],
+    ],
+
     /* Local-only marketplace catalog. Packages are data manifests; copying a
      * package here never executes PHP, shell, or browser code. A signed
      * manifest is enabled only when its configured publisher key verifies. */

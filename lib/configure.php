@@ -74,6 +74,31 @@ function configFields(array $sample): array
                 : 'Not a timezone PHP knows. Try America/New_York or UTC.',
         ],
         [
+            'key' => 'encryption_mode',
+            'path' => ['encryption', 'mode'],
+            'type' => 'choice',
+            'label' => 'Encryption mode',
+            'help' => 'Off keeps all current storage unencrypted. Sealed copies make separately encrypted, '
+                . 'verified SQLite snapshots; they do not alter the live database or its journal.',
+            'default' => (string)($sample['encryption']['mode'] ?? 'none'),
+            'options' => [
+                'none' => 'Off — do not encrypt anything',
+                'sealed_copies_local' => 'Encrypted copies with a local private key',
+            ],
+        ],
+        [
+            'key' => 'encryption_stores',
+            'path' => ['encryption', 'stores'],
+            'type' => 'choices',
+            'label' => 'Databases to copy into encrypted artifacts',
+            'help' => 'Only checked stores are copied. Host and assistant stores are skipped until they exist.',
+            'default' => (array)($sample['encryption']['stores'] ?? []),
+            'options' => [
+                'setup' => 'Setup and configuration', 'account' => 'Account metrics and audit history',
+                'host' => 'Host-wide metrics', 'ai' => 'Assistant conversations and memory',
+            ],
+        ],
+        [
             'key' => 'password',
             'path' => ['password_hash'],
             'type' => 'password',
@@ -730,6 +755,18 @@ function parseField(array $field, mixed $raw): array
         $chosen = is_array($raw) ? $raw : [];
         $allowed = $field['options'];
         return [array_values(array_intersect($allowed, array_map('strval', $chosen))), null];
+    }
+
+    if ($type === 'choice') {
+        $value = is_string($raw) ? trim($raw) : '';
+        return array_key_exists($value, $field['options'])
+            ? [$value, null]
+            : [$field['default'], 'Choose one of the listed options.'];
+    }
+
+    if ($type === 'choices') {
+        $chosen = is_array($raw) ? $raw : preg_split('/[\r\n,]+/', (string)$raw);
+        return [array_values(array_intersect(array_keys($field['options']), array_map('strval', $chosen ?: []))), null];
     }
 
     $value = is_string($raw) ? trim($raw) : '';

@@ -16,7 +16,7 @@ function setupCommandCapability(): array
  *
  * `$runtime` is only an injectable observation seam for reproducible checks;
  * normal setup calls it with no override and reads the live PHP runtime.
- * @param array{php_version?: string, sqlite?: bool, commands?: list<string>, https?: bool, cli?: bool}|null $runtime
+ * @param array{php_version?: string, sqlite?: bool, commands?: list<string>, https?: bool, cli?: bool, encryption?: bool}|null $runtime
  * @return list<array{label: string, state: string, detail: string}>
  */
 function setupPreflight(string $root, string $targetPath, ?array $runtime = null): array
@@ -28,6 +28,8 @@ function setupPreflight(string $root, string $targetPath, ?array $runtime = null
     $phpVersion = $runtime['php_version'] ?? PHP_VERSION;
     $sqlite = $runtime['sqlite'] ?? (extension_loaded('pdo_sqlite') && in_array('sqlite', PDO::getAvailableDrivers(), true));
     $commands = $runtime['commands'] ?? setupCommandCapability();
+    $encryption = $runtime['encryption'] ?? (extension_loaded('openssl')
+        && in_array('aes-256-gcm', array_map('strtolower', openssl_get_cipher_methods()), true));
     $data = $root . '/data';
     $phpOk = version_compare($phpVersion, '8.1.0', '>=');
 
@@ -51,5 +53,8 @@ function setupPreflight(string $root, string $targetPath, ?array $runtime = null
             'detail' => $cli ? 'CLI PHP is available for cron.'
                 : ($commands === [] ? 'Configure cron through your host panel; this web request cannot inspect it.'
                     : 'Schedule cron through your host panel or account crontab.')],
+        ['label' => 'Encrypted copies', 'state' => $encryption ? 'ok' : 'warning',
+            'detail' => $encryption ? 'OpenSSL AES-256-GCM is available for optional sealed copies.'
+                : 'Optional sealed copies need PHP OpenSSL with AES-256-GCM; ordinary collection is unaffected.'],
     ];
 }
