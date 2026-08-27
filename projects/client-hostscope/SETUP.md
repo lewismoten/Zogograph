@@ -161,7 +161,10 @@ to include: `config`, `setup`, `account`, `host`, and/or `ai`. Missing optional
 host and assistant databases are skipped. The artifact directory defaults to
 the protected `data/sealed/` directory; set a private absolute path if you need
 the copies elsewhere. Choose manual, daily, or weekly scheduling and a local
-retention period; configure the matching job in your host scheduler.
+retention period; configure the matching job in your host scheduler. During an
+explicit `--seal` run, HostScope prunes only old verified artifacts whose hash
+still matches and never removes the newest verified artifact for a store. Set
+retention to zero to retain every local encrypted copy.
 
 If the host, VM, container volume, or managed database storage is already
 encrypted at rest, select **My host/VM encrypts the selected live stores** and

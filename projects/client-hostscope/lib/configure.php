@@ -164,7 +164,7 @@ function configFields(array $sample): array
             'path' => ['encryption', 'retention_days'],
             'type' => 'int',
             'label' => 'Local encrypted-copy retention target (days)',
-            'help' => 'Zero means keep every copy. This records the retention policy for the upcoming safe-pruning workflow; it does not delete artifacts yet.',
+            'help' => 'Zero means keep every copy. During an explicit sealing run, HostScope prunes only old verified local artifacts whose ciphertext hash still matches, and never the newest verified copy for a store.',
             'default' => (int)($sample['encryption']['retention_days'] ?? 30),
             'validate' => fn(string $v): ?string => ctype_digit($v) && (int)$v <= 36500
                 ? null : 'Enter a whole number from 0 to 36500.',
