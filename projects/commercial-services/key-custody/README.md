@@ -205,8 +205,13 @@ never prints the input token. `--tls-spki-pin sha256//...` is available for an
 advanced pinned-identity deployment; leave it unset for normal CA validation
 and update it through a tested migration before rotating the certificate key.
 Run `php scripts/manage-remote.php` with no arguments for the full command
-list. This management token remains separate from every enrolled-client,
-billing-control, and recovery-key credential.
+list. It includes tenant key policy, envelope review, enrolled-client
+creation/revocation, one-time client/management credential rotation, bounded
+audit history, subscriptions, and billing links. One-time credential commands
+print secrets only in their successful response, so use a private terminal and
+place the values directly in an encrypted secret reference. This management
+token remains separate from every enrolled-client, billing-control, and
+recovery-key credential.
 
 An account-management client may delete one named envelope with
 `DELETE /v1/keys/{keyId}/envelopes/{artifactId}` with JSON

@@ -7,7 +7,7 @@ if (PHP_SAPI !== 'cli') { http_response_code(403); exit("This management command
 function custodyManageUsage(): never
 {
     fwrite(STDERR, "Usage: php scripts/manage-remote.php --base-url https://custody.example/v1 [--token-file /secure/management.token] [--tls-spki-pin sha256//...] COMMAND [ARGUMENTS]\n\n"
-        . "Commands:\n  health\n  keys\n  create-key NAME TTL_SECONDS\n  update-policy KEY_ID TTL_SECONDS [NAME]\n  rotate-key KEY_ID\n  disable-key KEY_ID\n  retire-key KEY_ID\n  envelopes KEY_ID\n  delete-envelope KEY_ID ARTIFACT_ID --confirm-recovery\n  subscription\n  request-plan PLAN\n  request-cancel\n  withdraw-request REQUEST_ID\n  billing-portal\n  checkout\n");
+        . "Commands:\n  health\n  keys\n  create-key NAME TTL_SECONDS\n  update-policy KEY_ID TTL_SECONDS [NAME]\n  rotate-key KEY_ID\n  disable-key KEY_ID\n  retire-key KEY_ID\n  envelopes KEY_ID\n  delete-envelope KEY_ID ARTIFACT_ID --confirm-recovery\n  clients\n  create-client LABEL\n  revoke-client CREDENTIAL_ID\n  rotate-client-credentials\n  rotate-management-credentials\n  audit [LIMIT]\n  subscription\n  request-plan PLAN\n  request-cancel\n  withdraw-request REQUEST_ID\n  billing-portal\n  checkout\n");
     exit(64);
 }
 
@@ -91,6 +91,12 @@ try {
     elseif (in_array($command, ['rotate-key', 'disable-key', 'retire-key'], true) && count($arguments) === 1 && preg_match('/^key_[a-f0-9]{32}$/', $arguments[0])) { $method = 'PATCH'; $path = '/keys/' . $arguments[0]; $body = ['action' => str_replace('-key', '', $command)]; }
     elseif ($command === 'envelopes' && count($arguments) === 1 && preg_match('/^key_[a-f0-9]{32}$/', $arguments[0])) $path = '/keys/' . $arguments[0] . '/envelopes';
     elseif ($command === 'delete-envelope' && count($arguments) === 2 && !empty($options['confirm-recovery']) && preg_match('/^key_[a-f0-9]{32}$/', $arguments[0])) { $method = 'DELETE'; $path = '/keys/' . $arguments[0] . '/envelopes/' . rawurlencode($arguments[1]); $body = ['confirm_recovery' => true]; }
+    elseif ($command === 'clients' && $arguments === []) $path = '/client-credentials';
+    elseif ($command === 'create-client' && count($arguments) === 1) { $method = 'POST'; $path = '/client-credentials'; $body = ['label' => $arguments[0]]; }
+    elseif ($command === 'revoke-client' && count($arguments) === 1 && preg_match('/^tok_[a-f0-9]{20}$/', $arguments[0])) { $method = 'DELETE'; $path = '/client-credentials/' . $arguments[0]; }
+    elseif ($command === 'rotate-client-credentials' && $arguments === []) { $method = 'POST'; $path = '/client-credentials/rotate'; $body = []; }
+    elseif ($command === 'rotate-management-credentials' && $arguments === []) { $method = 'POST'; $path = '/management-credentials/rotate'; $body = []; }
+    elseif ($command === 'audit' && (count($arguments) === 0 || (count($arguments) === 1 && ctype_digit($arguments[0]))) && (!isset($arguments[0]) || (int)$arguments[0] >= 1 && (int)$arguments[0] <= 100)) $path = '/audit' . (isset($arguments[0]) ? '?limit=' . $arguments[0] : '');
     elseif ($command === 'subscription' && $arguments === []) $path = '/subscription';
     elseif ($command === 'request-plan' && count($arguments) === 1) { $method = 'PATCH'; $path = '/subscription'; $body = ['action' => 'change_plan', 'plan' => $arguments[0]]; }
     elseif ($command === 'request-cancel' && $arguments === []) { $method = 'PATCH'; $path = '/subscription'; $body = ['action' => 'cancel']; }

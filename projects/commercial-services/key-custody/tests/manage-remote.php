@@ -27,11 +27,14 @@ try {
         manageExpect($status === 1 && str_contains($error, 'management token directory must be an absolute, non-link private directory'), 'management CLI accepted a symlinked token directory');
         @unlink($root . '/linked-private');
     }
+    [$status, , $error] = manageRun(['--base-url', 'https://custody.example/v1', '--token-file', $root . '/private/management.token', 'revoke-client', 'not-a-credential']);
+    manageExpect($status === 64 && str_contains($error, 'Usage:'), 'management CLI accepted an invalid enrolled-client credential id');
 } finally { @unlink($root . '/private/management.token'); @rmdir($root . '/private'); @rmdir($root); }
 $source = file_get_contents(__DIR__ . '/../scripts/manage-remote.php');
 manageExpect($source !== false && str_contains($source, 'CURLOPT_SSL_VERIFYPEER => true') && str_contains($source, 'CURLOPT_SSL_VERIFYHOST => 2')
     && str_contains($source, 'CURLOPT_PINNEDPUBLICKEY') && str_contains($source, "'Authorization: Bearer ' . \$token")
     && str_contains($source, "\$command === 'health' ? null") && str_contains($source, '--confirm-recovery')
-    && str_contains($source, "['confirm_recovery' => true]"),
+    && str_contains($source, "['confirm_recovery' => true]") && str_contains($source, "'/client-credentials'")
+    && str_contains($source, "'/management-credentials/rotate'") && str_contains($source, "'/audit'"),
     'management CLI does not retain its required secure transport boundary');
 echo "key custody management CLI checks passed\n";
