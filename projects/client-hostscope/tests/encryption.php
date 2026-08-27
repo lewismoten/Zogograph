@@ -96,6 +96,17 @@ try {
         encryptionExpect($status['ready'] && count($status['artifacts']) === 2, 'sealed-copy status did not report verified coverage');
         $volume = encryptionStatus($live, ['encryption' => ['mode' => 'operator_managed_volume', 'stores' => ['account']]], $web);
         encryptionExpect($volume['ready'] && $volume['warnings'] !== [], 'volume-protection status did not explain its verification limit');
+        $oldPath = $root . '/sealed/account.old.sealed';
+        copy((string)$copies[1]['local_path'], $oldPath);
+        $oldHash = hash_file('sha256', $oldPath);
+        $live->prepare("INSERT INTO encryption_artifacts (artifact_id, store, created_at, local_path, ciphertext_bytes, ciphertext_sha256, state)
+            VALUES (?, 'account', ?, ?, ?, ?, 'verified')")
+            ->execute(['account:old', time() - 31 * 86400, $oldPath, filesize($oldPath), $oldHash]);
+        $retentionConfig = $config;
+        $retentionConfig['encryption']['retention_days'] = 30;
+        $pruned = encryptionPruneConfiguredCopies($retentionConfig, $live);
+        encryptionExpect($pruned['removed'] === 1 && !is_file($oldPath), 'expired verified sealed artifact was not pruned');
+        encryptionExpect(is_file((string)$copies[1]['local_path']), 'newest verified sealed artifact was pruned');
     }
 
     $tampered = $root . '/tampered.sealed';

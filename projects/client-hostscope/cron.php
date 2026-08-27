@@ -140,8 +140,11 @@ try {
     if (in_array('--seal', $jobs, true)) {
         $sealed = encryptionSealConfiguredCopies($config, $pdo, __DIR__);
         if ($sealed !== []) encryptionRecordArtifacts($pdo, $sealed);
+        $pruned = encryptionPruneConfiguredCopies($config, $pdo);
         $say($sealed === [] ? 'Encryption is disabled; no sealed copies made.'
             : 'Created ' . count($sealed) . ' sealed database cop' . (count($sealed) === 1 ? 'y.' : 'ies.'));
+        if ($pruned['removed'] > 0) $say('Pruned ' . $pruned['removed'] . ' expired encrypted artifact' . ($pruned['removed'] === 1 ? '.' : 's.'));
+        foreach ($pruned['warnings'] as $warning) $say('Encryption retention warning: ' . $warning);
     }
 
     if ($wants('--scan')) {

@@ -304,6 +304,47 @@ function encryptionRecordArtifacts(PDO $pdo, array $artifacts): void
     }
 }
 
+/** Removes only old verified local artifacts after a successful sealing run.
+ * The newest verified artifact for every store is never eligible for removal. */
+function encryptionPruneConfiguredCopies(array $config, PDO $pdo): array
+{
+    $settings = (array)($config['encryption'] ?? []);
+    $days = (int)($settings['retention_days'] ?? 0);
+    if (($settings['mode'] ?? '') !== 'sealed_copies_local' || $days <= 0) return ['removed' => 0, 'warnings' => []];
+    $directory = (string)($settings['artifact_directory'] ?? '');
+    if ($directory === '') $directory = dirname((string)$config['database']) . '/sealed';
+    $root = realpath($directory);
+    if ($root === false || !is_dir($root) || is_link($directory)) return ['removed' => 0, 'warnings' => ['encrypted artifact directory is unavailable or unsafe']];
+    $cutoff = time() - $days * 86400;
+    $latest = [];
+    foreach ($pdo->query("SELECT store, MAX(created_at) AS created_at FROM encryption_artifacts WHERE state = 'verified' GROUP BY store")->fetchAll() as $row) {
+        $latest[$row['store']] = (int)$row['created_at'];
+    }
+    $candidates = $pdo->prepare("SELECT artifact_id, store, created_at, local_path, ciphertext_sha256 FROM encryption_artifacts
+        WHERE state = 'verified' AND created_at < ? ORDER BY created_at ASC");
+    $candidates->execute([$cutoff]);
+    $mark = $pdo->prepare("UPDATE encryption_artifacts SET state = 'pruned' WHERE artifact_id = ? AND state = 'verified'");
+    $removed = 0; $warnings = [];
+    foreach ($candidates->fetchAll() as $artifact) {
+        if (($latest[$artifact['store']] ?? 0) <= (int)$artifact['created_at']) continue;
+        $configured = (string)$artifact['local_path'];
+        $path = realpath($configured);
+        if ($path === false || is_link($configured) || !is_file($path) || !str_starts_with($path, rtrim($root, '/') . '/') || !str_ends_with($path, '.sealed')) {
+            $warnings[] = 'refused to prune an artifact outside the configured private directory';
+            continue;
+        }
+        $hash = hash_file('sha256', $path);
+        if (!is_string($hash) || !hash_equals((string)$artifact['ciphertext_sha256'], $hash)) {
+            $warnings[] = 'refused to prune an artifact whose ciphertext hash no longer matches';
+            continue;
+        }
+        if (!@unlink($path)) { $warnings[] = 'could not remove an expired encrypted artifact'; continue; }
+        $mark->execute([$artifact['artifact_id']]);
+        $removed++;
+    }
+    return ['removed' => $removed, 'warnings' => array_values(array_unique($warnings))];
+}
+
 /** Decrypts a sealed artifact into a new destination file after authenticating every chunk. */
 function encryptionOpenFile(string $source, string $destination, string $kek): void
 {
