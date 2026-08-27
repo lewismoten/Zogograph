@@ -11759,6 +11759,7 @@ async function showPackageRuntimeSettings(row) {
 function showCustodyPackageSettings(row, saved) {
   const base = document.createElement("input"); base.type = "url"; base.className = "wide-field"; base.placeholder = "https://custody.example/services/key-custody"; base.value = saved.service_base_url || "";
   const tenant = document.createElement("input"); tenant.type = "text"; tenant.className = "wide-field"; tenant.placeholder = "ten_…"; tenant.value = saved.tenant_id || "";
+  const key = document.createElement("input"); key.type = "text"; key.className = "wide-field"; key.placeholder = "key_…"; key.value = saved.custody_key_id || "";
   const pin = document.createElement("input"); pin.type = "text"; pin.className = "wide-field"; pin.placeholder = "sha256//… (optional)"; pin.value = saved.tls_spki_pin || "";
   const cache = document.createElement("input"); cache.type = "number"; cache.min = "0"; cache.max = "900"; cache.step = "1"; cache.className = "wide-field"; cache.value = String(saved.authorization_cache_seconds ?? 0);
   const credential = document.createElement("input"); credential.type = "text"; credential.className = "wide-field"; credential.placeholder = "secret_ref:hostscope-key-custody:…"; credential.value = saved.client_credential_secret || "";
@@ -11766,12 +11767,13 @@ function showCustodyPackageSettings(row, saved) {
   showFormDialog("Remote key custody settings", [
     fieldRow("Custody service URL", base, "Use the service root or its /v1 API root. Run Test custody endpoint before adding enrollment references."),
     fieldRow("Tenant ID", tenant, "The ten_… identifier from enrollment. It is not a credential."),
+    fieldRow("Active custody key ID", key, "Create or choose this key through the customer management API. It identifies only the remote wrapping key; it is not a token or secret."),
     fieldRow("TLS public-key pin", pin, "Optional. Leave blank for the recommended normal CA/hostname validation. A pin needs an endpoint certificate-key rotation plan."),
     fieldRow("Data-key cache", cache, "Recommended: 0 seconds. A nonzero cache can keep a released data key usable until it expires; 900 seconds is the maximum."),
     fieldRow("Client credential reference", credential, "After a successful endpoint test within 24 hours, create an encrypted package secret and paste only its secret_ref: value. Never paste a raw bearer token here."),
     fieldRow("Client signing-key reference", signing, "After that same test, create a second encrypted package secret for the one-time Base64 Ed25519 signing key. Never paste the private key here."),
   ], async () => {
-    const settings = { service_base_url: base.value.trim(), tenant_id: tenant.value.trim(), authorization_cache_seconds: Number(cache.value) };
+    const settings = { service_base_url: base.value.trim(), tenant_id: tenant.value.trim(), custody_key_id: key.value.trim(), authorization_cache_seconds: Number(cache.value) };
     if (pin.value.trim()) settings.tls_spki_pin = pin.value.trim();
     if (credential.value.trim()) settings.client_credential_secret = credential.value.trim();
     if (signing.value.trim()) settings.client_signing_secret = signing.value.trim();
@@ -11859,7 +11861,7 @@ function renderEncryptionStatus(data) {
   } else if (data.mode === "sealed_copies_local") {
     parts.push(note("Verified encrypted copies protect backup artifacts, not the running SQLite database. Run `php cron.php --seal` and then `php cron.php --recovery-drill` from the server after setup. The drill decrypts and validates current copies without touching live data; schedule seals separately. Recovery requires the private key outside the web root and an explicit CLI restore."));
     parts.push(note("Bootstrap configuration recovery is deliberately CLI-only: `scripts/restore-config.php` authenticates and parses the sealed PHP without executing it, atomically replaces `lib/config.php`, and leaves the prior configuration as a sealed rollback artifact. Test the recovered settings before deleting that artifact."));
-    parts.push(note("Optional remote key custody and ciphertext replica storage are not selectable yet. Their future signed providers will use only enrolled-client credentials kept as encrypted package secrets. Never enter a custody or relay management token, billing credential, plaintext database, or recovery key into this client."));
+    parts.push(note("Optional remote key custody adds a separately authorized recovery envelope; it is not live-database encryption and does not upload a database or ciphertext. Before using it, configure the signed custody package, verify its endpoint and enrolled credential, review its dedicated sandbox launcher, and keep local recovery enabled. Ciphertext replica storage remains a separate future capability. Never enter a custody or relay management token, billing credential, plaintext database, or recovery key into this client."));
     if (superseded) parts.push(note("Superseded copies remain encrypted with an earlier local key after rotation. Keep that key until you have completed a replacement-key recovery drill; they are not deleted automatically."));
     if (data.can_change) {
       const actions = document.createElement("div"); actions.className = "row-actions";
@@ -11885,7 +11887,11 @@ function renderEncryptionStatus(data) {
         } catch (error) { notice(String(error.message || error)); }
         finally { drill.disabled = false; }
       });
-      actions.append(seal, drill); parts.push(actions);
+      const remote = document.createElement("button"); remote.type = "button"; remote.textContent = "Add optional remote custody envelope";
+      remote.disabled = !data.remote_envelope_candidates?.length;
+      remote.title = remote.disabled ? "Create a verified encrypted copy before adding an optional remote envelope." : "Requires separately configured custody enrollment and envelope-store sandboxes.";
+      remote.addEventListener("click", () => showCustodyEnvelopeDialog(data.remote_envelope_candidates || []));
+      actions.append(seal, drill, remote); parts.push(actions);
     }
   } else {
     parts.push(note("The selected protection mode is not available in this HostScope release. Keep the current data and recovery key safe while choosing a supported package or local mode."));
@@ -11908,6 +11914,24 @@ function renderEncryptionStatus(data) {
     { label: "Last re-check", render: row => row.last_verified_at ? whenSpan(row.last_verified_at) : "not rechecked" },
     { label: "Recovery drill", render: row => row.last_recovery_drill_at ? whenSpan(row.last_recovery_drill_at) : "required" },
   ]);
+}
+
+function showCustodyEnvelopeDialog(candidates) {
+  const select = document.createElement("select"); select.className = "wide-field";
+  for (const artifact of candidates) {
+    const option = document.createElement("option"); option.value = artifact.artifact_id;
+    option.textContent = `${artifact.store} · ${humanTime(artifact.created_at)} · ${artifact.artifact_id}`;
+    select.appendChild(option);
+  }
+  showFormDialog("Add remote custody recovery envelope", [
+    fieldRow("Verified local artifact", select, "HostScope will recheck this local artifact’s ciphertext hash before doing anything remotely."),
+    note("This sends only the selected artifact’s fresh in-memory data key, the configured custody key identifier, and the enrolled-client credentials to the separately configured one-shot sandbox. The sandbox seals the key for custody and returns only a receipt digest. It never receives a database path, database bytes, plaintext, local recovery key, billing credential, or management token. Local recovery remains required."),
+  ], async () => {
+    if (!(await confirmDialog("Add an optional remote key-recovery envelope for this verified local artifact?\n\nThis is an extra recovery path, not a replacement for your local recovery key or a database upload. The configured custody service will receive a sealed data-key envelope only.", "Store remote recovery envelope"))) return;
+    const result = await post("package-runtime-custody-envelope-store", { artifact_id: select.value, confirm: "store-remote-envelope" });
+    showListDialog("Remote custody envelope stored", [factGrid([["Artifact", result.artifact_id], ["State", result.result.state], ["Result", result.result.reason], ["Safety boundary", result.warning]])]);
+    await refreshEncryptionStatus();
+  }, "Store optional envelope");
 }
 
 function renderMarketplace(data) {

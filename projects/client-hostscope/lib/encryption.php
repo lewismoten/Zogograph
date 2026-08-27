@@ -448,7 +448,7 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     $settings = (array)($config['encryption'] ?? []);
     $mode = (string)($settings['mode'] ?? 'none');
     $stores = encryptionSelectedStores($settings);
-    $status = ['mode' => $mode, 'stores' => $stores, 'policy' => encryptionPolicySummary($settings), 'waiting_stores' => [], 'superseded_artifacts' => [], 'retired_artifacts' => [], 'remote_envelopes' => [], 'ready' => false, 'evidence' => 'none', 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null,
+    $status = ['mode' => $mode, 'stores' => $stores, 'policy' => encryptionPolicySummary($settings), 'waiting_stores' => [], 'superseded_artifacts' => [], 'retired_artifacts' => [], 'remote_envelopes' => [], 'remote_envelope_candidates' => [], 'ready' => false, 'evidence' => 'none', 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null,
         'sqlcipher' => encryptionSqlcipherCapability()];
     if ($mode === 'none') {
         $status['warnings'][] = 'Encryption is off. Live SQLite files and copies remain unencrypted unless host storage protection is configured separately.';
@@ -486,6 +486,8 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
         foreach ($retired->fetchAll() as $row) $status['retired_artifacts'][] = ['store' => $row['store'], 'copies' => (int)$row['copies']];
         $remote = $pdo->query('SELECT provider_package, state, COUNT(*) AS copies FROM encryption_remote_envelopes GROUP BY provider_package, state ORDER BY provider_package, state');
         foreach ($remote->fetchAll() as $row) $status['remote_envelopes'][] = ['provider_package' => (string)$row['provider_package'], 'state' => (string)$row['state'], 'copies' => (int)$row['copies']];
+        $candidates = $pdo->query("SELECT artifact_id, store, created_at FROM encryption_artifacts WHERE state = 'verified' ORDER BY created_at DESC LIMIT 100");
+        foreach ($candidates->fetchAll() as $row) $status['remote_envelope_candidates'][] = ['artifact_id' => (string)$row['artifact_id'], 'store' => (string)$row['store'], 'created_at' => (int)$row['created_at']];
     } catch (Throwable) { $status['warnings'][] = 'No encrypted artifact ledger is available yet.'; }
     $paths = encryptionStorePaths($config, $webRoot);
     foreach (encryptionSensitiveSourceWarnings($paths, $stores) as $warning) $status['warnings'][] = $warning;

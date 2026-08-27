@@ -310,6 +310,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'package-runtime-probe' => doPackageRuntimeProbe($config, $pdo, $post),
         'package-runtime-custody-diagnostic-approve' => doPackageRuntimeCustodyDiagnosticApprove($pdo, $post),
         'package-runtime-custody-enrollment-check' => doPackageRuntimeCustodyEnrollmentCheck($config, $pdo, $post),
+        'package-runtime-custody-envelope-store' => doPackageRuntimeCustodyEnvelopeStore($config, $pdo, $post),
         'package-runtime-enable' => doPackageRuntimeEnable($pdo, $post),
         'package-runtime-revoke' => doPackageRuntimeRevoke($pdo, $post),
         'package-runtime-unrevoke' => doPackageRuntimeLiftRevocation($pdo, $post),
@@ -361,6 +362,7 @@ function requireActionAccess(array $config, string $action): void
         'package-runtime-probe' => 'sys-packages',
         'package-runtime-custody-diagnostic-approve' => 'sys-packages',
         'package-runtime-custody-enrollment-check' => 'sys-packages',
+        'package-runtime-custody-envelope-store' => 'sys-encryption',
         'package-runtime-enable' => 'sys-packages',
         'package-runtime-revoke' => 'sys-packages',
         'package-runtime-unrevoke' => 'sys-packages',
@@ -5667,6 +5669,20 @@ function doPackageRuntimeCustodyEnrollmentCheck(array $config, PDO $pdo, bool $p
     logAction($pdo, 'package_runtime_custody_enrollment_check', 'hostscope-key-custody', 'ok', 0, 0, 'credential accepted; no envelope, unwrap, or key operation requested');
     return ['ok' => true, 'result' => $result,
         'warning' => 'The enrolled-client credential was delivered only to the configured one-shot credential-check sandbox. This checked subscription readiness only; it did not create an envelope, unwrap a key, or access a HostScope database.'];
+}
+
+/** Explicitly adds one optional recovery envelope; it never uploads ciphertext
+ * or changes the local verified recovery copy. */
+function doPackageRuntimeCustodyEnvelopeStore(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    if ((string)($_POST['confirm'] ?? '') !== 'store-remote-envelope') throw new ActionRefused('confirm remote envelope storage before sending an artifact data key to custody');
+    $artifactId = trim((string)($_POST['artifact_id'] ?? ''));
+    try { $result = packageRuntimeStoreCustodyEnvelope($pdo, $config, __DIR__, $artifactId); }
+    catch (InvalidArgumentException|RuntimeException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'package_runtime_custody_envelope_store', $artifactId, 'ok', 0, 0, 'stored optional remote DEK envelope receipt; local recovery copy retained');
+    return ['ok' => true, 'artifact_id' => $artifactId, 'result' => $result,
+        'warning' => 'The custody sandbox received only this artifact’s in-memory data key and enrolled-client credentials. It stored a sealed key envelope; no HostScope database, artifact bytes, plaintext, local recovery key, or billing credential was sent. Local recovery remains required.'];
 }
 
 function doPackageRuntimeEnable(PDO $pdo, bool $post): array

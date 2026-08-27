@@ -38,6 +38,7 @@ try {
     encryptionExpect($api !== false && str_contains($api, "'encryption-status' => 'sys-encryption'")
         && str_contains($api, "'encryption-seal' => doEncryptionSeal")
         && str_contains($api, "'encryption-recovery-drill' => doEncryptionRecoveryDrill")
+        && str_contains($api, "'package-runtime-custody-envelope-store' => doPackageRuntimeCustodyEnvelopeStore")
         && str_contains($api, 'requireWrite($post)') && str_contains($api, "logAction(\$pdo, 'encryption_seal'"),
         'encryption status is not protected by its dashboard page access rule');
     encryptionExpect($api !== false && str_contains($api, "'setup_configuration' => setupStoreConfigurationProtectionForSettings")
@@ -50,7 +51,8 @@ try {
         && str_contains($dashboard, 'Operator-declared host/volume coverage (not verified)')
         && str_contains($dashboard, 'Recovery-drill review')
         && str_contains($dashboard, 'Bootstrap configuration recovery is deliberately CLI-only')
-        && str_contains($dashboard, 'Optional remote key custody and ciphertext replica storage are not selectable yet')
+        && str_contains($dashboard, 'Add optional remote custody envelope')
+        && str_contains($dashboard, 'Local recovery remains required')
         && str_contains($dashboard, 'Create verified encrypted copies')
         && str_contains($dashboard, 'Run non-destructive recovery drill'),
         'dashboard does not explain encrypted-copy limitations');
