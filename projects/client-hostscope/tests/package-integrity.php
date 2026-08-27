@@ -45,6 +45,10 @@ try {
     catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'custody client accepted a malformed TLS pin', $error->getMessage()); }
     try { \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::healthEndpoint('http://example.test'); throw new RuntimeException('custody health probe accepted an insecure endpoint'); }
     catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'custody health probe accepted an insecure endpoint', $error->getMessage()); }
+    $custodyApiUrl = new ReflectionMethod(\HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::class, 'apiUrl');
+    packageExpect($custodyApiUrl->invoke(null, 'https://custody.example/services/key-custody', '/health') === 'https://custody.example/services/key-custody/v1/health'
+        && $custodyApiUrl->invoke(null, 'https://custody.example/services/key-custody/v1', '/health') === 'https://custody.example/services/key-custody/v1/health',
+        'custody service root and API-root URLs did not normalize to one endpoint');
     $custodySource = file_get_contents(__DIR__ . '/../plugins/hostscope-key-custody/src/KeyCustodyHttpClient.php');
     packageExpect($custodySource !== false && str_contains($custodySource, 'int $requestedTtl = 0')
         && str_contains($custodySource, "'requested_ttl_seconds' => \$requestedTtl")
