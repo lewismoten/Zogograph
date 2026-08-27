@@ -25,3 +25,7 @@ separation boundaries, rebrand-safe endpoint rules, and encryption launch
 policy. [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md) is the corresponding
 operator-ready handoff: per-project boundaries, database/configuration
 ownership, customer protection defaults, and launch gates.
+
+[IMPLEMENTATION_DIRECTION.md](IMPLEMENTATION_DIRECTION.md) is the concise
+current-state handoff: recommended customer defaults, optional package choices,
+configuration authority, and decisions that require later owner review.
