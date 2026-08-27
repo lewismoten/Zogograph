@@ -11725,6 +11725,7 @@ function packageRuntimeActions(row, canChange) {
 async function showPackageRuntimeSettings(row) {
   try {
     const data = await api("package-runtime-settings", { id: row.id });
+    if (row.id === "hostscope-key-custody") return showCustodyPackageSettings(row, data.settings);
     const settings = document.createElement("textarea"); settings.className = "wide-field"; settings.rows = 14; settings.spellcheck = false;
     settings.value = JSON.stringify(data.settings, null, 2);
     showFormDialog(`${row.id} settings`, [fieldRow("Settings JSON", settings, "Use only package-scoped secret_ref: values for credentials. Raw tokens and private keys are refused.")], async () => {
@@ -11732,6 +11733,30 @@ async function showPackageRuntimeSettings(row) {
       notice("Package settings saved.", true);
     });
   } catch (error) { notice(String(error.message || error)); }
+}
+
+function showCustodyPackageSettings(row, saved) {
+  const base = document.createElement("input"); base.type = "url"; base.className = "wide-field"; base.placeholder = "https://custody.example/services/key-custody"; base.value = saved.service_base_url || "";
+  const tenant = document.createElement("input"); tenant.type = "text"; tenant.className = "wide-field"; tenant.placeholder = "ten_…"; tenant.value = saved.tenant_id || "";
+  const pin = document.createElement("input"); pin.type = "text"; pin.className = "wide-field"; pin.placeholder = "sha256//… (optional)"; pin.value = saved.tls_spki_pin || "";
+  const cache = document.createElement("input"); cache.type = "number"; cache.min = "0"; cache.max = "900"; cache.step = "1"; cache.className = "wide-field"; cache.value = String(saved.authorization_cache_seconds ?? 0);
+  const credential = document.createElement("input"); credential.type = "text"; credential.className = "wide-field"; credential.placeholder = "secret_ref:hostscope-key-custody:…"; credential.value = saved.client_credential_secret || "";
+  const signing = document.createElement("input"); signing.type = "text"; signing.className = "wide-field"; signing.placeholder = "secret_ref:hostscope-key-custody:…"; signing.value = saved.client_signing_secret || "";
+  showFormDialog("Remote key custody settings", [
+    fieldRow("Custody service URL", base, "Use the service root or its /v1 API root. Run Test custody endpoint before adding enrollment references."),
+    fieldRow("Tenant ID", tenant, "The ten_… identifier from enrollment. It is not a credential."),
+    fieldRow("TLS public-key pin", pin, "Optional. Leave blank for the recommended normal CA/hostname validation. A pin needs an endpoint certificate-key rotation plan."),
+    fieldRow("Data-key cache", cache, "Recommended: 0 seconds. A nonzero cache can keep a released data key usable until it expires; 900 seconds is the maximum."),
+    fieldRow("Client credential reference", credential, "Create an encrypted package secret first, then paste only its secret_ref: value. Never paste a raw bearer token here."),
+    fieldRow("Client signing-key reference", signing, "Create a second encrypted package secret for the one-time Base64 Ed25519 signing key. Never paste the private key here."),
+  ], async () => {
+    const settings = { service_base_url: base.value.trim(), tenant_id: tenant.value.trim(), authorization_cache_seconds: Number(cache.value) };
+    if (pin.value.trim()) settings.tls_spki_pin = pin.value.trim();
+    if (credential.value.trim()) settings.client_credential_secret = credential.value.trim();
+    if (signing.value.trim()) settings.client_signing_secret = signing.value.trim();
+    await post("package-runtime-settings-save", { id: row.id, settings: JSON.stringify(settings) });
+    notice("Remote custody settings saved. A successful endpoint probe does not activate remote custody.", true);
+  }, "Save custody settings");
 }
 
 function showPackageRuntimeSecret(row) {
