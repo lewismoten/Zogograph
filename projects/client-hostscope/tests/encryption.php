@@ -205,6 +205,12 @@ try {
                 try { encryptionSealConfiguredCopies($config, $live, $web); throw new RuntimeException('symlinked selected configuration source was sealed'); }
                 catch (RuntimeException $error) { encryptionExpect($error->getMessage() !== 'symlinked selected configuration source was sealed', $error->getMessage()); }
                 @unlink($configTarget); copy($configReal, $configTarget); chmod($configTarget, 0600);
+                @unlink($configTarget); @symlink($root . '/missing-config.php', $configTarget);
+                encryptionExpect(str_contains(implode(' ', encryptionSensitiveSourceWarnings(encryptionStorePaths($config, $web), ['config'])), 'symbolic link'),
+                    'protection status did not report a dangling selected configuration symlink');
+                try { encryptionSealConfiguredCopies($config, $live, $web); throw new RuntimeException('dangling selected configuration symlink was skipped'); }
+                catch (RuntimeException $error) { encryptionExpect($error->getMessage() !== 'dangling selected configuration symlink was skipped', $error->getMessage()); }
+                @unlink($configTarget); copy($configReal, $configTarget); chmod($configTarget, 0600);
             } else { copy($configReal, $configTarget); chmod($configTarget, 0600); }
             @unlink($configReal);
         }

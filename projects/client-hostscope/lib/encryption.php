@@ -269,8 +269,8 @@ function encryptionSealConfiguredCopies(array $config, PDO $account, string $web
     $paths = encryptionStorePaths($config, $webRoot);
     $out = [];
     foreach ($stores as $store) {
-        if (!is_file($paths[$store])) continue;
         if (is_link($paths[$store])) throw new RuntimeException("selected {$store} source must not be a symbolic link");
+        if (!is_file($paths[$store])) continue;
         $stamp = gmdate('Ymd\\THis\\Z') . '-' . bin2hex(random_bytes(4));
         $artifact = $store . ':' . $stamp;
         $sealed = $directory . '/' . $store . '.' . $stamp . '.sealed';
@@ -518,8 +518,9 @@ function encryptionSensitiveSourceWarnings(array $paths, array $stores): array
     $warnings = [];
     foreach (array_intersect($stores, ['config', 'setup']) as $store) {
         $path = (string)($paths[$store] ?? '');
-        if ($path === '' || !file_exists($path)) continue;
+        if ($path === '') continue;
         if (is_link($path)) { $warnings[] = "The selected {$store} source is a symbolic link; use an owner-controlled regular file before treating protection as ready."; continue; }
+        if (!file_exists($path)) continue;
         $permissions = fileperms($path);
         if ($permissions !== false && ($permissions & 0077) !== 0) {
             $warnings[] = "The selected {$store} source is readable by group or other users; restrict it to the HostScope service account before treating protection as ready.";
