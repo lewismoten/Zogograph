@@ -90,6 +90,11 @@ general secret store.
 - The replica relay proves it stores ciphertext only. The custody service proves
   it cannot receive customer metric databases or payment-card data. These two
   roles never share a database, key directory, or service credential.
+- Custody SQLite metadata has a tested backup/restore procedure, while its
+  private service master key has a separately protected offline recovery copy.
+  Do not place both in the same ordinary backup archive. Replica-relay backups
+  include its metadata and ciphertext artifacts together, but remain
+  ciphertext-only and never receive a custody key.
 - Before offering live SQLite encryption on an image, SQLCipher must pass WAL,
   migration, backup, restore, crash-recovery, and performance tests on that
   exact PHP/PDO build.
