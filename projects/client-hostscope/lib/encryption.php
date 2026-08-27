@@ -857,14 +857,7 @@ function encryptionOpenFile(string $source, string $destination, string $kek): v
         if (encryptionReadExact($in, strlen(ENCRYPTION_MAGIC)) !== ENCRYPTION_MAGIC) {
             throw new RuntimeException('the artifact is not a HostScope sealed copy');
         }
-        $headerBytes = unpack('Nsize', encryptionReadExact($in, 4))['size'];
-        if ($headerBytes < 2 || $headerBytes > 65535) throw new RuntimeException('the artifact header is invalid');
-        $headerText = encryptionReadExact($in, $headerBytes);
-        $header = json_decode($headerText, true);
-        if (!is_array($header) || ($header['version'] ?? null) !== 1 || ($header['cipher'] ?? null) !== 'aes-256-gcm'
-            || ($header['chunk_bytes'] ?? null) !== ENCRYPTION_CHUNK_BYTES || !is_string($header['artifact_id'] ?? null)) {
-            throw new RuntimeException('the artifact header is unsupported');
-        }
+        [$header, $headerText] = encryptionReadArtifactHeader($in);
         $prefix = base64_decode((string)($header['nonce_prefix'] ?? ''), true);
         $wrapped = base64_decode((string)($header['wrapped_key'] ?? ''), true);
         $wrapNonce = base64_decode((string)($header['wrap_nonce'] ?? ''), true);
@@ -900,6 +893,20 @@ function encryptionOpenFile(string $source, string $destination, string $kek): v
     fclose($in);
     fclose($out);
     @chmod($destination, 0600);
+}
+
+/** Reads the bounded authenticated artifact header. Version 1 remains the
+ * only accepted format until the additive remote-envelope format is released. */
+function encryptionReadArtifactHeader($stream): array
+{
+    $headerBytes = unpack('Nsize', encryptionReadExact($stream, 4))['size'];
+    if ($headerBytes < 2 || $headerBytes > 65535) throw new RuntimeException('the artifact header is invalid');
+    $headerText = encryptionReadExact($stream, $headerBytes); $header = json_decode($headerText, true);
+    if (!is_array($header) || ($header['version'] ?? null) !== 1 || ($header['cipher'] ?? null) !== 'aes-256-gcm'
+        || ($header['chunk_bytes'] ?? null) !== ENCRYPTION_CHUNK_BYTES || !is_string($header['artifact_id'] ?? null)) {
+        throw new RuntimeException('the artifact header is unsupported');
+    }
+    return [$header, $headerText];
 }
 
 /**
