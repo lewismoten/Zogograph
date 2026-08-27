@@ -5611,9 +5611,12 @@ function packageRuntimeView(array $config, PDO $pdo, bool $signedIn): array
     foreach (packageRuntimeTrustedKeys((array)($config['package_runtime']['trusted_keys'] ?? [])) as $id => $key) {
         $publishers[] = ['key_id' => $id, 'publisher' => $key['publisher']];
     }
-    $packages = packageRuntimePackages($pdo);
+    $packages = packageRuntimePackages($pdo); $evidence = packageRuntimeProbeEvidence($config);
     $invokers = (array)((array)($config['package_runtime'] ?? [])['probe_invokers'] ?? []);
-    foreach ($packages as &$package) $package['probe_configured'] = isset($invokers[$package['id']]);
+    foreach ($packages as &$package) {
+        $package['probe_configured'] = isset($invokers[$package['id']]);
+        $package['probe_evidence'] = $evidence[$package['id']] ?? null;
+    }
     unset($package);
     return ['packages' => $packages, 'trusted_publishers' => $publishers,
         'can_change' => accessAllows($config, 'write')];
@@ -5632,6 +5635,7 @@ function doPackageRuntimeProbe(array $config, PDO $pdo, bool $post): array
                 'tls_spki_pin' => $settings['tls_spki_pin'] ?? null];
         }
         $result = packageRuntimeInvokeProbe($pdo, $config, $id, $operation, $input);
+        packageRuntimeRecordProbe($config, $id, $operation, $result);
     }
     catch (InvalidArgumentException|RuntimeException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, 'package_runtime_probe', $id, 'ok', 0, 0, $operation . '; state=' . $result['state']);

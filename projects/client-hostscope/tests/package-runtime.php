@@ -111,6 +111,9 @@ try {
         $probe = packageRuntimeInvokeProbe($pdo, $config, 'test-runtime');
         runtimeExpect(($probe['id'] ?? null) === 'test-runtime' && ($probe['state'] ?? null) === 'available',
             'attested no-secret package capability probe did not return its signed package result');
+        packageRuntimeRecordProbe($config, 'test-runtime', 'capability', $probe);
+        runtimeExpect((packageRuntimeProbeEvidence($config)['test-runtime']['state'] ?? null) === 'available',
+            'bounded package probe evidence was not retained for the administrator');
         $badInvoker = $config; $badInvoker['package_runtime']['probe_invokers']['test-runtime']['package_manifest_sha256'] = str_repeat('0', 64);
         try { packageRuntimeInvokeProbe($pdo, $badInvoker, 'test-runtime'); throw new RuntimeException('probe launcher accepted another package release'); }
         catch (RuntimeException $error) { runtimeExpect($error->getMessage() !== 'probe launcher accepted another package release', $error->getMessage()); }

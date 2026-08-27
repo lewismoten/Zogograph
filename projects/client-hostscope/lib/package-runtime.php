@@ -708,3 +708,35 @@ function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, str
         if (is_resource($process)) { @proc_terminate($process); @proc_close($process); }
     }
 }
+
+/** Stores bounded diagnostic evidence separately from package settings/secrets. */
+function packageRuntimeRecordProbe(array $config, string $id, string $operation, array $result): void
+{
+    if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id) || !in_array($operation, ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe'], true)
+        || !is_string($result['state'] ?? null) || !is_string($result['reason'] ?? null)
+        || strlen($result['state']) > 120 || strlen($result['reason']) > 1000) {
+        throw new InvalidArgumentException('package probe evidence is invalid');
+    }
+    $store = setupStoreOpen($config, true);
+    if ($store === null) throw new RuntimeException('could not open package probe evidence store');
+    $store->exec('CREATE TABLE IF NOT EXISTS package_runtime_probe_evidence (
+        package_id TEXT NOT NULL, operation TEXT NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL, probed_at INTEGER NOT NULL,
+        PRIMARY KEY (package_id, operation)
+    )');
+    $store->prepare('INSERT INTO package_runtime_probe_evidence (package_id, operation, state, reason, probed_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(package_id, operation) DO UPDATE SET state = excluded.state, reason = excluded.reason, probed_at = excluded.probed_at')
+        ->execute([$id, $operation, $result['state'], $result['reason'], time()]);
+}
+
+/** @return array<string,array{operation:string,state:string,reason:string,probed_at:int}> */
+function packageRuntimeProbeEvidence(array $config): array
+{
+    $store = setupStoreOpen($config, false);
+    if ($store === null || (int)$store->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'package_runtime_probe_evidence'")->fetchColumn() !== 1) return [];
+    $rows = $store->query('SELECT package_id, operation, state, reason, probed_at FROM package_runtime_probe_evidence ORDER BY probed_at DESC')->fetchAll();
+    $out = [];
+    foreach ($rows as $row) if (!isset($out[$row['package_id']])) $out[$row['package_id']] = [
+        'operation' => (string)$row['operation'], 'state' => (string)$row['state'], 'reason' => (string)$row['reason'], 'probed_at' => (int)$row['probed_at'],
+    ];
+    return $out;
+}
