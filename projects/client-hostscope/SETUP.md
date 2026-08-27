@@ -304,21 +304,21 @@ cannot be recovered from a sealed copy. See
 [ENCRYPTION_AND_FLEET_PLAN.md](ENCRYPTION_AND_FLEET_PLAN.md) for the current
 scope, limitations, rotation design, and planned self-managed fleet custody.
 
-Optional remote custody and ciphertext-replica storage are deliberately not
-activatable in this release. The separate key-custody service already provides
-tenant key, envelope, enrolled-client credential, audit, and subscription APIs;
-the separate replica relay accepts only signed, hash-verified ciphertext. The
-customer client can run an isolated, credential-free custody endpoint identity
-probe after saving its public service URL and tenant identifier. On a deployment
-with a separately reviewed, endpoint-restricted credential-check sandbox, an
-administrator may then approve and run one enrolled-client subscription
-readiness check. It delivers the two encrypted package references once to that
-sandbox, cannot create an envelope or unwrap a key, and does not receive a
-database path. Neither check activates remote custody. Do not put a management
-token, billing credential, recovery key, or plaintext database in this
-installation to try to enable it. Envelope and unwrap operations remain gated
-behind their own future recovery and isolation release evidence; management and
-billing credentials stay outside the client entirely.
+Optional remote custody is off by default. The separate key-custody service
+provides tenant key, envelope, enrolled-client credential, audit, and
+subscription APIs; the separate replica relay accepts only signed,
+hash-verified ciphertext. After a credential-free endpoint identity probe and
+an enrolled-client readiness check, an administrator may explicitly add a
+sealed remote DEK envelope to a verified local artifact, then run a
+non-destructive remote recovery drill. Storage and recovery each require their
+own reviewed, endpoint-restricted sandbox launcher. The browser explains the
+precise data boundary before either action: no database path, artifact bytes,
+plaintext, local recovery key, management token, or billing credential is sent.
+The remote service receives only a sealed DEK envelope; its released recovery
+key is used only in memory to authenticate a temporary file which is removed.
+Local recovery remains required. Ciphertext replication remains a separate
+future client capability. Management and billing credentials always stay
+outside the client entirely.
 
 To inspect a copy during recovery, decrypt it to a new private file and remove
 that plaintext file when you finish:
