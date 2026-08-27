@@ -311,6 +311,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'package-runtime-custody-diagnostic-approve' => doPackageRuntimeCustodyDiagnosticApprove($pdo, $post),
         'package-runtime-custody-enrollment-check' => doPackageRuntimeCustodyEnrollmentCheck($config, $pdo, $post),
         'package-runtime-custody-envelope-store' => doPackageRuntimeCustodyEnvelopeStore($config, $pdo, $post),
+        'package-runtime-custody-recovery-drill' => doPackageRuntimeCustodyRecoveryDrill($config, $pdo, $post),
         'package-runtime-enable' => doPackageRuntimeEnable($pdo, $post),
         'package-runtime-revoke' => doPackageRuntimeRevoke($pdo, $post),
         'package-runtime-unrevoke' => doPackageRuntimeLiftRevocation($pdo, $post),
@@ -363,6 +364,7 @@ function requireActionAccess(array $config, string $action): void
         'package-runtime-custody-diagnostic-approve' => 'sys-packages',
         'package-runtime-custody-enrollment-check' => 'sys-packages',
         'package-runtime-custody-envelope-store' => 'sys-encryption',
+        'package-runtime-custody-recovery-drill' => 'sys-encryption',
         'package-runtime-enable' => 'sys-packages',
         'package-runtime-revoke' => 'sys-packages',
         'package-runtime-unrevoke' => 'sys-packages',
@@ -5683,6 +5685,18 @@ function doPackageRuntimeCustodyEnvelopeStore(array $config, PDO $pdo, bool $pos
     logAction($pdo, 'package_runtime_custody_envelope_store', $artifactId, 'ok', 0, 0, 'stored optional remote DEK envelope receipt; local recovery copy retained');
     return ['ok' => true, 'artifact_id' => $artifactId, 'result' => $result,
         'warning' => 'The custody sandbox received only this artifact’s in-memory data key and enrolled-client credentials. It stored a sealed key envelope; no HostScope database, artifact bytes, plaintext, local recovery key, or billing credential was sent. Local recovery remains required.'];
+}
+
+function doPackageRuntimeCustodyRecoveryDrill(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    if ((string)($_POST['confirm'] ?? '') !== 'run-remote-recovery-drill') throw new ActionRefused('confirm the remote recovery drill before requesting a temporary custody key release');
+    $artifactId = trim((string)($_POST['artifact_id'] ?? ''));
+    try { $result = packageRuntimeVerifyCustodyEnvelope($pdo, $config, __DIR__, $artifactId); }
+    catch (InvalidArgumentException|RuntimeException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'package_runtime_custody_recovery_drill', $artifactId, 'ok', 0, 0, 'remote key release authenticated a sealed artifact; key and temporary plaintext discarded');
+    return ['ok' => true, 'artifact_id' => $artifactId, 'result' => $result,
+        'warning' => 'The released key was used only in memory to authenticate this sealed artifact. The temporary recovered file was removed, and neither the key nor plaintext was returned to the browser.'];
 }
 
 function doPackageRuntimeEnable(PDO $pdo, bool $post): array
