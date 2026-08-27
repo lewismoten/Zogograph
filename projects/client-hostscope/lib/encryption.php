@@ -189,6 +189,7 @@ function encryptionSealConfiguredCopies(array $config, PDO $account, string $web
 {
     $settings = (array)($config['encryption'] ?? []);
     if (($settings['mode'] ?? 'none') === 'none') return [];
+    if (($settings['mode'] ?? '') === 'operator_managed_volume') return [];
     if (($settings['mode'] ?? '') !== 'sealed_copies_local') {
         throw new RuntimeException('the selected encryption mode is unavailable in this HostScope release');
     }
@@ -199,25 +200,30 @@ function encryptionSealConfiguredCopies(array $config, PDO $account, string $web
         throw new RuntimeException('could not create the sealed-artifact directory');
     }
     @chmod($directory, 0700);
-    $stores = array_values(array_unique(array_filter(array_map('strval', (array)($settings['stores'] ?? [])),
-        fn(string $store): bool => in_array($store, ['setup', 'account', 'host', 'ai'], true))));
+    $stores = encryptionSelectedStores($settings);
     if ($stores === []) throw new RuntimeException('select at least one database for sealed copies');
 
     $base = dirname((string)$config['database']);
     $paths = [
+        'config' => $webRoot . '/lib/config.php',
         'setup' => $base . '/setup.db', 'account' => (string)$config['database'],
         'host' => (string)($config['host']['database'] ?? '') ?: $base . '/host.db',
         'ai' => (string)($config['ai']['database'] ?? '') ?: $base . '/ai.db',
     ];
     $out = [];
     foreach ($stores as $store) {
-        if ($store !== 'account' && !is_file($paths[$store])) continue;
-        $pdo = $store === 'account' ? $account : new PDO('sqlite:' . $paths[$store], null, null, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
+        if (!is_file($paths[$store])) continue;
         $stamp = gmdate('Ymd\\THis\\Z') . '-' . bin2hex(random_bytes(4));
         $artifact = $store . ':' . $stamp;
         $sealed = $directory . '/' . $store . '.' . $stamp . '.sealed';
+        if ($store === 'config') {
+            $out[] = ['store' => $store, 'local_path' => $sealed]
+                + encryptionSealFile($paths[$store], $sealed, $key, $artifact);
+            continue;
+        }
+        $pdo = $store === 'account' ? $account : new PDO('sqlite:' . $paths[$store], null, null, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
         $out[] = ['store' => $store, 'local_path' => $sealed]
             + encryptionSealSqliteSnapshot($pdo, $sealed, $key, $artifact);
     }
@@ -230,12 +236,23 @@ function encryptionValidateSettings(array $config, string $webRoot): void
     $settings = (array)($config['encryption'] ?? []);
     $mode = (string)($settings['mode'] ?? 'none');
     if ($mode === 'none') return;
+    $stores = encryptionSelectedStores($settings);
+    if ($stores === []) throw new InvalidArgumentException('select at least one database or configuration artifact to protect');
+    if ($mode === 'operator_managed_volume') return;
     if ($mode !== 'sealed_copies_local') {
         throw new InvalidArgumentException('the selected encryption mode is unavailable in this HostScope release');
     }
+    if (($settings['key_custody'] ?? 'local_private_file') !== 'local_private_file') {
+        throw new InvalidArgumentException('the selected key-custody method is unavailable in this HostScope release');
+    }
     encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot);
-    $stores = array_intersect(['setup', 'account', 'host', 'ai'], array_map('strval', (array)($settings['stores'] ?? [])));
-    if ($stores === []) throw new InvalidArgumentException('select at least one database for encrypted copies');
+}
+
+/** @return list<string> */
+function encryptionSelectedStores(array $settings): array
+{
+    return array_values(array_unique(array_filter(array_map('strval', (array)($settings['stores'] ?? [])),
+        fn(string $store): bool => in_array($store, ['config', 'setup', 'account', 'host', 'ai'], true))));
 }
 
 /** Persists ciphertext-only evidence for local copies and later fleet replicas. */

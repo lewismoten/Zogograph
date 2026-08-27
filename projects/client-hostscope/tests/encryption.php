@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../lib/encryption.php';
+require_once __DIR__ . '/../lib/configure.php';
 
 function encryptionExpect(bool $condition, string $message): void
 {
@@ -17,6 +18,7 @@ $root = sys_get_temp_dir() . '/hostscope-encryption-' . bin2hex(random_bytes(4))
 $web = $root . '/web';
 $keys = $root . '/keys';
 mkdir($web, 0700, true);
+mkdir($web . '/lib', 0700, true);
 mkdir($keys, 0700, true);
 $keyPath = $keys . '/primary.key';
 $source = $root . '/source.db';
@@ -24,12 +26,24 @@ $sealed = $root . '/source.sealed';
 $opened = $root . '/opened.db';
 
 try {
+    $sample = require __DIR__ . '/../lib/config.sample.php';
+    $fields = array_column(configFields($sample), null, 'key');
+    encryptionExpect(isset($fields['encryption_mode']['options']['operator_managed_volume']),
+        'operator-managed volume option is missing from setup');
+    encryptionExpect(fieldApplies($fields['encryption_key_file'], ['encryption_mode' => 'sealed_copies_local'])
+        && !fieldApplies($fields['encryption_key_file'], ['encryption_mode' => 'none']),
+        'local key field does not follow the selected encryption mode');
+    encryptionExpect(fieldApplies($fields['encryption_stores'], ['encryption_mode' => 'operator_managed_volume']),
+        'store choice is missing for operator-managed volume protection');
+
     encryptionCreateLocalKey($keyPath, $web);
     $key = encryptionReadLocalKey($keyPath, $web);
     encryptionExpect(strlen($key) === 32, 'local key did not contain 256 bits');
     encryptionExpect((fileperms($keyPath) & 0077) === 0, 'local key permissions are too broad');
     encryptionValidateSettings(['encryption' => ['mode' => 'sealed_copies_local',
         'local_key_file' => $keyPath, 'stores' => ['account']]], $web);
+    encryptionValidateSettings(['encryption' => ['mode' => 'operator_managed_volume',
+        'stores' => ['setup']]], $web);
     try {
         encryptionValidateSettings(['encryption' => ['mode' => 'sealed_copies_local',
             'local_key_file' => '', 'stores' => []]], $web);
@@ -53,6 +67,7 @@ try {
         'rotated sealed copy differs from source');
 
     if (in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+        file_put_contents($web . '/lib/config.php', "<?php return ['private' => true];\n");
         $live = new PDO('sqlite:' . $root . '/live.db', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
         $live->exec('CREATE TABLE evidence (value TEXT NOT NULL)');
         $live->exec("INSERT INTO evidence VALUES ('committed WAL value')");
@@ -65,15 +80,18 @@ try {
 
         $config = ['database' => $root . '/live.db', 'encryption' => [
             'mode' => 'sealed_copies_local', 'local_key_file' => $keyPath,
-            'artifact_directory' => $root . '/sealed', 'stores' => ['account'],
+            'artifact_directory' => $root . '/sealed', 'stores' => ['config', 'account'],
         ]];
         $copies = encryptionSealConfiguredCopies($config, $live, $web);
-        encryptionExpect(count($copies) === 1 && $copies[0]['store'] === 'account',
-            'configured sealed copy was not made');
+        encryptionExpect(count($copies) === 2 && $copies[0]['store'] === 'config'
+            && $copies[1]['store'] === 'account', 'configured sealed copies were not made');
+        encryptionOpenFile((string)$copies[0]['local_path'], $root . '/restored-config.php', $key);
+        encryptionExpect(str_contains((string)file_get_contents($root . '/restored-config.php'), "'private' => true"),
+            'sealed configuration copy differs from source');
         $live->exec('CREATE TABLE encryption_artifacts (artifact_id TEXT PRIMARY KEY, store TEXT, created_at INTEGER, local_path TEXT, ciphertext_bytes INTEGER, ciphertext_sha256 TEXT, state TEXT)');
         encryptionRecordArtifacts($live, $copies);
-        encryptionExpect((int)$live->query('SELECT COUNT(*) FROM encryption_artifacts')->fetchColumn() === 1,
-            'sealed artifact was not recorded for replication');
+        encryptionExpect((int)$live->query('SELECT COUNT(*) FROM encryption_artifacts')->fetchColumn() === 2,
+            'sealed artifacts were not recorded for replication');
     }
 
     $tampered = $root . '/tampered.sealed';
@@ -98,7 +116,10 @@ try {
     echo "encryption checks passed\n";
 } finally {
     foreach (glob($root . '/*') ?: [] as $path) {
-        if (is_dir($path)) foreach (glob($path . '/*') ?: [] as $child) @unlink($child);
+        if (is_dir($path)) foreach (glob($path . '/*') ?: [] as $child) {
+            if (is_dir($child)) foreach (glob($child . '/*') ?: [] as $grandchild) @unlink($grandchild);
+            @is_dir($child) ? @rmdir($child) : @unlink($child);
+        }
         @is_dir($path) ? @rmdir($path) : @unlink($path);
     }
     @rmdir($root);

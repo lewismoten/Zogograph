@@ -139,10 +139,13 @@ reference in [README.md](README.md).
 
 ## Optional: encrypted database copies
 
-HostScope starts with encryption disabled. Its first built-in mode creates
-verified encrypted **copies** of selected SQLite databases; it does not alter
-the live database or its WAL journal. This is suitable for encrypted local
-archives and the later fleet-replica workflow.
+HostScope starts with encryption disabled. In the setup wizard, each
+administrator chooses the protection mode, the configuration/database stores to
+protect, the key custody method, and a copy schedule and retention preference.
+The first built-in mode creates verified encrypted **copies** of selected
+SQLite databases and the bootstrap configuration file; it does not alter the
+live database or its WAL journal. This is suitable for encrypted local archives
+and the later fleet-replica workflow.
 
 Create a 256-bit local key outside the document root, then keep an offline
 recovery copy. Do not store it in `data/`, `lib/`, the web root, or alongside a
@@ -152,12 +155,18 @@ database export.
 php scripts/encryption-key.php create /secure/hostscope/primary.key
 ```
 
-In the setup wizard's **Encryption** section, set `encryption.mode` to
-`sealed_copies_local`, enter that absolute key-file path, and choose the stores
-to include: `setup`, `account`, `host`, and/or `ai`. Missing optional host and
-assistant databases are skipped. The artifact directory defaults to the
-protected `data/sealed/` directory; set a private absolute path if you need the
-copies elsewhere.
+In the setup wizard's **Encryption** section, select **Encrypted copies with a
+local private key**, enter that absolute key-file path, and choose the stores
+to include: `config`, `setup`, `account`, `host`, and/or `ai`. Missing optional
+host and assistant databases are skipped. The artifact directory defaults to
+the protected `data/sealed/` directory; set a private absolute path if you need
+the copies elsewhere. Choose manual, daily, or weekly scheduling and a local
+retention period; configure the matching job in your host scheduler.
+
+If the host, VM, container volume, or managed database storage is already
+encrypted at rest, select **My host/VM encrypts the selected live stores** and
+choose the protected stores. This records the operator's policy but does not
+attempt to verify host-level encryption or create HostScope copies.
 
 Run a first copy manually, then schedule it separately from normal collection:
 

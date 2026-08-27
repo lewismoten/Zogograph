@@ -79,24 +79,83 @@ function configFields(array $sample): array
             'type' => 'choice',
             'label' => 'Encryption mode',
             'help' => 'Off keeps all current storage unencrypted. Sealed copies make separately encrypted, '
-                . 'verified SQLite snapshots; they do not alter the live database or its journal.',
+                . 'verified snapshots; they do not alter the live database or its journal. Host-managed '
+                . 'volume protection is configured and operated outside HostScope.',
             'default' => (string)($sample['encryption']['mode'] ?? 'none'),
             'options' => [
                 'none' => 'Off — do not encrypt anything',
                 'sealed_copies_local' => 'Encrypted copies with a local private key',
+                'operator_managed_volume' => 'My host/VM encrypts the selected live stores',
             ],
+        ],
+        [
+            'key' => 'encryption_key_custody',
+            'path' => ['encryption', 'key_custody'],
+            'type' => 'choice',
+            'label' => 'Key custody',
+            'help' => 'The built-in sealed-copy mode currently uses one private local key file. Fleet, '
+                . 'manual-unlock, and marketplace key providers will be selectable only when their secure '
+                . 'protocols are installed and tested.',
+            'default' => (string)($sample['encryption']['key_custody'] ?? 'local_private_file'),
+            'options' => ['local_private_file' => 'Private local key file outside the web directory'],
+            'when' => ['encryption_mode' => 'sealed_copies_local'],
+        ],
+        [
+            'key' => 'encryption_key_file',
+            'path' => ['encryption', 'local_key_file'],
+            'type' => 'text',
+            'label' => 'Private key-file path',
+            'help' => 'Create it first with scripts/encryption-key.php. It must be an absolute, non-symlink '
+                . 'file outside this web directory and readable only by the HostScope service account.',
+            'default' => (string)($sample['encryption']['local_key_file'] ?? ''),
+            'validate' => fn(string $v): ?string => $v !== '' && str_starts_with($v, '/')
+                ? null : 'Enter an absolute private key-file path.',
+            'when' => ['encryption_mode' => 'sealed_copies_local'],
+        ],
+        [
+            'key' => 'encryption_artifact_directory',
+            'path' => ['encryption', 'artifact_directory'],
+            'type' => 'nullable',
+            'label' => 'Encrypted-copy directory',
+            'help' => 'Leave blank for data/sealed. Use an absolute private path to keep encrypted copies elsewhere.',
+            'default' => $sample['encryption']['artifact_directory'] ?? null,
+            'when' => ['encryption_mode' => 'sealed_copies_local'],
         ],
         [
             'key' => 'encryption_stores',
             'path' => ['encryption', 'stores'],
             'type' => 'choices',
             'label' => 'Databases to copy into encrypted artifacts',
-            'help' => 'Only checked stores are copied. Host and assistant stores are skipped until they exist.',
+            'help' => 'Only checked stores are protected by the selected mode. Host and assistant stores are skipped until they exist.',
             'default' => (array)($sample['encryption']['stores'] ?? []),
             'options' => [
-                'setup' => 'Setup and configuration', 'account' => 'Account metrics and audit history',
+                'config' => 'Bootstrap configuration file', 'setup' => 'Setup and configuration database',
+                'account' => 'Account metrics and audit history',
                 'host' => 'Host-wide metrics', 'ai' => 'Assistant conversations and memory',
             ],
+            'when' => ['encryption_mode' => ['sealed_copies_local', 'operator_managed_volume']],
+        ],
+        [
+            'key' => 'encryption_backup_schedule',
+            'path' => ['encryption', 'backup_schedule'],
+            'type' => 'choice',
+            'label' => 'Encrypted-copy schedule',
+            'help' => 'HostScope records this preference; configure the matching cron or host-scheduler job. '
+                . 'Manual creates copies only when cron.php --seal is run.',
+            'default' => (string)($sample['encryption']['backup_schedule'] ?? 'daily'),
+            'options' => ['manual' => 'Manual only', 'daily' => 'Daily', 'weekly' => 'Weekly'],
+            'when' => ['encryption_mode' => 'sealed_copies_local'],
+        ],
+        [
+            'key' => 'encryption_retention_days',
+            'path' => ['encryption', 'retention_days'],
+            'type' => 'int',
+            'label' => 'Local encrypted-copy retention target (days)',
+            'help' => 'Zero means keep every copy. This records the retention policy for the upcoming safe-pruning workflow; it does not delete artifacts yet.',
+            'default' => (int)($sample['encryption']['retention_days'] ?? 30),
+            'validate' => fn(string $v): ?string => ctype_digit($v) && (int)$v <= 36500
+                ? null : 'Enter a whole number from 0 to 36500.',
+            'when' => ['encryption_mode' => 'sealed_copies_local'],
         ],
         [
             'key' => 'password',
@@ -705,7 +764,12 @@ function currentAccountName(): string
 /** Whether a field applies, given the answers so far. */
 function fieldApplies(array $field, array $values): bool
 {
-    return !isset($field['when']) || !empty($values[$field['when']]);
+    if (!isset($field['when'])) return true;
+    if (is_string($field['when'])) return !empty($values[$field['when']]);
+    foreach ((array)$field['when'] as $key => $allowed) {
+        if (!in_array($values[$key] ?? null, (array)$allowed, true)) return false;
+    }
+    return true;
 }
 
 /**

@@ -26,15 +26,24 @@ return [
      * `sealed_copies_local` makes verified encrypted SQLite snapshots when
      * `cron.php --seal` is scheduled. It does not encrypt the live WAL
      * database. The 256-bit key file must be outside the web root, a regular
-     * non-symlink file, and mode 0600.
+     * non-symlink file, and mode 0600. `operator_managed_volume` records an
+     * operator's choice to protect the selected live stores using their host,
+     * VM, or managed-volume encryption; HostScope cannot verify that claim.
      */
     'encryption' => [
-        'mode' => 'none', // none or sealed_copies_local
+        'mode' => 'none', // none, sealed_copies_local, or operator_managed_volume
+        // local_private_file is the only built-in key custody method today.
+        // Fleet, manual-unlock, and marketplace providers are future modes.
+        'key_custody' => 'local_private_file',
         'local_key_file' => '',
         // Null stores artifacts in data/sealed/; set an absolute private path to move them.
         'artifact_directory' => null,
-        // setup, account, host, ai. Missing optional databases are skipped.
-        'stores' => ['setup', 'account', 'host', 'ai'],
+        // config, setup, account, host, ai. Missing optional databases are skipped.
+        'stores' => ['config', 'setup', 'account', 'host', 'ai'],
+        // These make the policy visible to the operator; scheduling remains
+        // their cron/host scheduler responsibility.
+        'backup_schedule' => 'daily', // manual, daily, or weekly
+        'retention_days' => 30, // 0 keeps every local sealed artifact
     ],
 
     /* Local-only marketplace catalog. Packages are data manifests; copying a
