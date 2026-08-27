@@ -26,8 +26,10 @@ function keyCustodyOpen(array $config, ?string $webRoot = null): PDO
     $directory = keyCustodyPrivateDirectory(dirname($path), $webRoot);
     $path = $directory . '/' . basename($path);
     if (is_link($path)) throw new RuntimeException('custody database must not be a symbolic link');
+    $previousUmask = umask(0077);
+    try {
     $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
-    $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA busy_timeout = 5000'); $pdo->exec('PRAGMA foreign_keys = ON'); @chmod($path, 0600);
+    $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA busy_timeout = 5000'); $pdo->exec('PRAGMA foreign_keys = ON');
     $pdo->exec('CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS access_tokens (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, scope TEXT NOT NULL, token_hash TEXT NOT NULL, public_key BLOB, created_at INTEGER NOT NULL, revoked_at INTEGER)');
     if (!keyCustodyTableHasColumn($pdo, 'access_tokens', 'public_key')) $pdo->exec('ALTER TABLE access_tokens ADD COLUMN public_key BLOB');
@@ -45,7 +47,15 @@ function keyCustodyOpen(array $config, ?string $webRoot = null): PDO
     $pdo->exec('CREATE INDEX IF NOT EXISTS custody_keys_tenant_state ON custody_keys (tenant_id, state, created_at DESC)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS key_envelopes (id TEXT PRIMARY KEY, key_id TEXT NOT NULL REFERENCES custody_keys(id) ON DELETE CASCADE, artifact_id TEXT NOT NULL, envelope BLOB NOT NULL, created_at INTEGER NOT NULL, UNIQUE(key_id, artifact_id))');
     $pdo->exec('CREATE TABLE IF NOT EXISTS custody_audit (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, at INTEGER NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL)');
+    keyCustodyPrivateSqliteFiles($path);
     return $pdo;
+    } finally { umask($previousUmask); }
+}
+
+/** SQLite companion files can hold uncheckpointed credential metadata. */
+function keyCustodyPrivateSqliteFiles(string $path): void
+{
+    foreach ([$path, $path . '-wal', $path . '-shm'] as $file) if (is_file($file) && !is_link($file)) @chmod($file, 0600);
 }
 
 function keyCustodyTableHasColumn(PDO $pdo, string $table, string $column): bool

@@ -26,8 +26,10 @@ function replicaRelayOpen(array $config, ?string $webRoot = null): PDO
     $database = $directory . '/' . basename($database);
     if (is_link($database)) throw new RuntimeException('relay database must not be a symbolic link');
     replicaRelayPrivateDirectory((string)($config['artifact_directory'] ?? ''), $webRoot);
+    $previousUmask = umask(0077);
+    try {
     $pdo = new PDO('sqlite:' . $database, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-    $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA foreign_keys = ON'); $pdo->exec('PRAGMA busy_timeout = 5000'); @chmod($database, 0600);
+    $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA foreign_keys = ON'); $pdo->exec('PRAGMA busy_timeout = 5000');
     $pdo->exec('CREATE TABLE IF NOT EXISTS tenants (id TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL, created_at INTEGER NOT NULL)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS access_tokens (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, scope TEXT NOT NULL, token_hash TEXT NOT NULL, public_key BLOB, created_at INTEGER NOT NULL, revoked_at INTEGER)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS access_tokens_tenant_scope ON access_tokens (tenant_id, scope, revoked_at)');
@@ -35,7 +37,15 @@ function replicaRelayOpen(array $config, ?string $webRoot = null): PDO
     $pdo->exec('CREATE TABLE IF NOT EXISTS artifacts (tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, artifact_id TEXT NOT NULL, sha256 TEXT NOT NULL, bytes INTEGER NOT NULL, created_at INTEGER NOT NULL, verified_at INTEGER NOT NULL, PRIMARY KEY (tenant_id, artifact_id))');
     $pdo->exec('CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, action TEXT NOT NULL, subject TEXT NOT NULL, detail TEXT NOT NULL)');
     $pdo->prepare('DELETE FROM client_nonces WHERE expires_at < ?')->execute([time()]);
+    replicaRelayPrivateSqliteFiles($database);
     return $pdo;
+    } finally { umask($previousUmask); }
+}
+
+/** SQLite companion files may retain ciphertext metadata after a crash. */
+function replicaRelayPrivateSqliteFiles(string $path): void
+{
+    foreach ([$path, $path . '-wal', $path . '-shm'] as $file) if (is_file($file) && !is_link($file)) @chmod($file, 0600);
 }
 
 /** @return array{tenant_id:string,scope:string,token_id:string} */

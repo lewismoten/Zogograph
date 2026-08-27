@@ -33,6 +33,9 @@ custodyExpect(str_contains((string)$api, "confirm_recovery must be true") && str
 $root = sys_get_temp_dir() . '/hostscope-custody-' . bin2hex(random_bytes(4)); mkdir($root, 0700, true);
 try {
     $pdo = keyCustodyOpen(['database' => $root . '/service.db']);
+    foreach ([$root . '/service.db', $root . '/service.db-wal', $root . '/service.db-shm'] as $privateFile) if (is_file($privateFile)) {
+        custodyExpect((fileperms($privateFile) & 0077) === 0, 'custody SQLite metadata companion has broad permissions');
+    }
     try { keyCustodyOpen(['database' => 'relative.db']); throw new RuntimeException('relative custody database path was accepted'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'relative custody database path was accepted', $error->getMessage()); }
     try { keyCustodyOpen(['database' => $root . '/web/service.db'], $root . '/web'); throw new RuntimeException('web-root custody database path was accepted'); }

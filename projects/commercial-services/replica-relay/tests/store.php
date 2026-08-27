@@ -16,6 +16,9 @@ try {
     $config = ['database' => $root . '/service.db', 'artifact_directory' => $root . '/artifacts', 'maximum_artifact_bytes' => 1024, 'maximum_tenant_bytes' => 512, 'maximum_tenant_artifacts' => 1];
     $pdo = replicaRelayOpen($config); $tenant = replicaRelayCreateTenant($pdo, 'Example');
     relayExpect(strtolower((string)$pdo->query('PRAGMA journal_mode')->fetchColumn()) === 'wal', 'relay service metadata database did not enable WAL');
+    foreach ([$root . '/service.db', $root . '/service.db-wal', $root . '/service.db-shm'] as $privateFile) if (is_file($privateFile)) {
+        relayExpect((fileperms($privateFile) & 0077) === 0, 'relay SQLite metadata companion has broad permissions');
+    }
     try { replicaRelayCreateTenant($pdo, "forged\ntenant"); throw new RuntimeException('multiline relay tenant name was accepted'); }
     catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'multiline relay tenant name was accepted', $error->getMessage()); }
     try { replicaRelayOpen(['database' => 'relative.db', 'artifact_directory' => $root . '/bad']); throw new RuntimeException('relative relay database path was accepted'); }
