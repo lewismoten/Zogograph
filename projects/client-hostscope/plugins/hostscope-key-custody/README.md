@@ -14,7 +14,10 @@ can remain usable until it expires.
 The signed settings schema accepts only an `https://` service base and the
 opaque enrolled `ten_…` tenant identifier. This catches common setup mistakes
 before settings are stored; the adapter performs stricter URL checks again when
-it connects.
+it connects. It also accepts only the generated `tok_…` enrolled-client token
+syntax, never a token containing whitespace or header-like content, and refuses
+control characters, overlong identifiers, or oversized envelopes before making
+a request.
 
 It sends artifact and envelope identifiers, authenticated request metadata, and
 wrapped-key material only. It must not upload metrics, SQLite databases,

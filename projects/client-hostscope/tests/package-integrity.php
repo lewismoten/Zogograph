@@ -30,11 +30,17 @@ try {
         'custody request signature does not verify');
     try { new \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient('https://user@example.test', 'test-token', base64_encode($custodySecret)); throw new RuntimeException('custody client accepted an ambiguous endpoint'); }
     catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'custody client accepted an ambiguous endpoint', $error->getMessage()); }
+    try { new \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient('https://example.test', "tok_" . str_repeat('a', 20) . ".bad\r\nvalue", base64_encode($custodySecret)); throw new RuntimeException('custody client accepted a malformed bearer credential'); }
+    catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'custody client accepted a malformed bearer credential', $error->getMessage()); }
     $custodySource = file_get_contents(__DIR__ . '/../plugins/hostscope-key-custody/src/KeyCustodyHttpClient.php');
     packageExpect($custodySource !== false && str_contains($custodySource, 'int $requestedTtl = 0')
         && str_contains($custodySource, "'requested_ttl_seconds' => \$requestedTtl")
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYPEER => true')
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYHOST => 2'), 'custody client does not enforce its secure transport defaults');
+    $custodyDirectory = __DIR__ . '/../plugins/hostscope-key-custody';
+    $custodyManifest = json_decode((string)file_get_contents($custodyDirectory . '/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
+    packageExpect(is_array($custodyManifest) && packageVerifyIntegrity($custodyManifest, $custodyDirectory)['ok'],
+        'key custody package manifest does not cover its installed files');
     $relayPair = sodium_crypto_sign_keypair(); $relaySecret = sodium_crypto_sign_secretkey($relayPair);
     try { new \HostScope\Plugin\ReplicaRelay\ReplicaRelayHttpClient('https://user@example.test', 'test-token', base64_encode($relaySecret)); throw new RuntimeException('relay client accepted an ambiguous endpoint'); }
     catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'relay client accepted an ambiguous endpoint', $error->getMessage()); }

@@ -17,6 +17,9 @@ final class KeyCustodyHttpClient
             || $url['host'] === '' || isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment']) || $clientToken === '') {
             throw new \InvalidArgumentException('key custody endpoint or client credential is invalid');
         }
+        if (!preg_match('~^tok_[a-f0-9]{20}\.[A-Za-z0-9+/_-]+={0,2}$~', $clientToken)) {
+            throw new \InvalidArgumentException('key custody client credential is invalid');
+        }
         if (!function_exists('curl_init')) throw new \RuntimeException('cURL is required for remote key custody');
         if (!function_exists('sodium_crypto_sign_detached')) throw new \RuntimeException('libsodium is required for remote key custody');
         $this->clientSigningKey = base64_decode($clientSigningKey, true);
@@ -38,6 +41,8 @@ final class KeyCustodyHttpClient
 
     public function storeEnvelope(string $keyId, string $artifactId, string $envelope): array
     {
+        self::validateIdentity($keyId, $artifactId);
+        if ($envelope === '' || strlen($envelope) > 1048576) throw new \InvalidArgumentException('key custody envelope is invalid');
         return $this->request('POST', '/v1/keys/' . rawurlencode($keyId) . '/envelopes', [
             'artifact_id' => $artifactId, 'envelope_base64' => base64_encode($envelope),
         ]);
@@ -46,6 +51,7 @@ final class KeyCustodyHttpClient
     /** Returns key material only for immediate in-memory use by the caller. */
     public function unwrap(string $keyId, string $artifactId, int $requestedTtl = 0): string
     {
+        self::validateIdentity($keyId, $artifactId);
         if ($requestedTtl < 0 || $requestedTtl > 900) throw new \InvalidArgumentException('requested key cache duration is invalid');
         $response = $this->request('POST', '/v1/keys/' . rawurlencode($keyId) . '/unwrap-authorizations', [
             'artifact_id' => $artifactId, 'nonce' => bin2hex(random_bytes(16)), 'requested_ttl_seconds' => $requestedTtl,
@@ -53,6 +59,14 @@ final class KeyCustodyHttpClient
         $key = base64_decode((string)($response['key_material'] ?? ''), true);
         if (!is_string($key) || strlen($key) !== 32) throw new \RuntimeException('key custody service returned invalid key material');
         return $key;
+    }
+
+    private static function validateIdentity(string $keyId, string $artifactId): void
+    {
+        if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200
+            || preg_match('/[\x00-\x1F\x7F]/', $artifactId)) {
+            throw new \InvalidArgumentException('key custody artifact identity is invalid');
+        }
     }
 
     private function request(string $method, string $path, array $body): array
