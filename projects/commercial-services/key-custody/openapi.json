@@ -70,7 +70,7 @@
       "billingService": {"type": "http", "scheme": "bearer", "description": "Private commercial billing-control token. It can apply entitlements only and is never accepted by custody key endpoints."}
     },
     "parameters": {
-      "KeyId": {"name": "keyId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{12,120}$"}},
+      "KeyId": {"name": "keyId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^key_[a-f0-9]{32}$"}},
       "ClientTimestamp": {"name": "X-HostScope-Timestamp", "in": "header", "required": true, "schema": {"type": "string", "pattern": "^[0-9]{10,}$"}},
       "ClientNonce": {"name": "X-HostScope-Nonce", "in": "header", "required": true, "schema": {"type": "string", "pattern": "^[A-Za-z0-9_-]{16,200}$"}},
       "ClientSignature": {"name": "X-HostScope-Signature", "in": "header", "required": true, "description": "Base64 Ed25519 signature over METHOD, path, timestamp, nonce, and Base64 SHA-256 request-body hash separated by newlines.", "schema": {"type": "string"}}

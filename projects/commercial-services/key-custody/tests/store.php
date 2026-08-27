@@ -7,6 +7,8 @@ custodyExpect(is_array($contract) && (($contract['components']['schemas']['Unwra
     'published custody API contract does not use zero key caching by default');
 custodyExpect(($contract['components']['schemas']['EnvelopeStore']['required'] ?? []) === ['artifact_id', 'envelope_base64'],
     'published custody API contract omits required envelope fields');
+custodyExpect(($contract['components']['parameters']['KeyId']['schema']['pattern'] ?? null) === '^key_[a-f0-9]{32}$',
+    'published custody API contract does not match the accepted key identifier format');
 custodyExpect(isset($contract['paths']['/internal/subscriptions/{tenantId}']) && isset($contract['components']['securitySchemes']['billingService']),
     'published custody API contract omits the isolated billing control plane');
 foreach (['/keys', '/subscription', '/billing/checkout', '/billing/portal'] as $path) {
