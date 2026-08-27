@@ -11,7 +11,11 @@ mkdir($source . '/src', 0700, true);
 mkdir($source . '/migrations', 0700, true);
 mkdir($root . '/web', 0700, true);
 file_put_contents($source . '/src/Provider.php', "<?php declare(strict_types=1);\n");
-file_put_contents($source . '/settings.schema.json', "{}\n");
+file_put_contents($source . '/settings.schema.json', json_encode([
+    'type' => 'object', 'additionalProperties' => false, 'required' => ['retention_days', 'custody_secret'],
+    'properties' => ['retention_days' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 90],
+        'custody_secret' => ['type' => 'string', 'pattern' => '^secret_ref:test-runtime:']],
+], JSON_THROW_ON_ERROR));
 file_put_contents($source . '/migrations/001-private-evidence.sql', "CREATE TABLE private_evidence (value TEXT NOT NULL);\n");
 try {
     $api = file_get_contents(__DIR__ . '/../api.php'); $dashboard = file_get_contents(__DIR__ . '/../index.js'); $page = file_get_contents(__DIR__ . '/../index.html');
@@ -79,6 +83,10 @@ try {
     packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['retention_days' => 30, 'custody_secret' => $reference], 'administrator');
     runtimeExpect(packageRuntimeSettings($pdo, $config, 'test-runtime')['retention_days'] === 30,
         'package SQLite-backed settings were not retained');
+    try { packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['retention_days' => 0, 'custody_secret' => $reference], 'administrator'); throw new RuntimeException('invalid schema value was accepted'); }
+    catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'invalid schema value was accepted', $error->getMessage()); }
+    try { packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['retention_days' => 30, 'custody_secret' => $reference, 'undeclared' => true], 'administrator'); throw new RuntimeException('undeclared schema setting was accepted'); }
+    catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'undeclared schema setting was accepted', $error->getMessage()); }
     try { packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['custody_secret' => 'raw-secret'], 'administrator'); throw new RuntimeException('raw package secret was accepted'); }
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'raw package secret was accepted', $error->getMessage()); }
     try { packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['custody_secret' => 'secret_ref:another-package:abcdefghijklmnop'], 'administrator'); throw new RuntimeException('another package secret reference was accepted'); }

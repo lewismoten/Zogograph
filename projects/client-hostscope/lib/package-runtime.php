@@ -35,7 +35,7 @@ function packageRuntimeTrustedKeys(array $keys): array
     return $out;
 }
 
-/** @return array{id:string,version:string,publisher:string,capabilities:list<string>,runtime:array,data:array,integrity:array,signature:array} */
+/** @return array{id:string,version:string,publisher:string,capabilities:list<string>,runtime:array,settings_schema:?string,data:array,integrity:array,signature:array} */
 function packageRuntimeManifest(string $directory, array $trustedKeys): array
 {
     $root = realpath($directory);
@@ -86,7 +86,8 @@ function packageRuntimeManifest(string $directory, array $trustedKeys): array
         throw new InvalidArgumentException($signature['ok'] ? 'package publisher does not match its trusted key' : $signature['detail']);
     }
     return ['id' => $id, 'version' => $version, 'publisher' => $publisher, 'capabilities' => $capabilities,
-        'runtime' => $runtime, 'data' => $data, 'integrity' => (array)$raw['integrity'], 'signature' => (array)$raw['signature']];
+        'runtime' => $runtime, 'settings_schema' => isset($raw['settings_schema']) ? (string)$raw['settings_schema'] : null,
+        'data' => $data, 'integrity' => (array)$raw['integrity'], 'signature' => (array)$raw['signature']];
 }
 
 function packageRuntimeRelativePath(string $path): bool
@@ -297,6 +298,7 @@ function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $
     packageRuntimeInstalled($pdo, $id);
     packageRuntimeValidateSettings($settings);
     packageRuntimeValidateSettingsSecretReferences($settings, $id);
+    packageRuntimeValidateManifestSettings($pdo, $id, $settings);
     $store = setupStoreOpen($config, true);
     if ($store === null) throw new RuntimeException('could not open package settings store');
     $store->exec('CREATE TABLE IF NOT EXISTS package_runtime_settings (
@@ -307,6 +309,78 @@ function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $
     $store->prepare('INSERT INTO package_runtime_settings (package_id, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
         ON CONFLICT(package_id) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by')
         ->execute([$id, $value, time(), mb_substr($actor, 0, 120)]);
+}
+
+/** Enforces a small, predictable JSON Schema subset from the signed package.
+ * Unsupported keywords are deliberately ignored until they are implemented. */
+function packageRuntimeValidateManifestSettings(PDO $pdo, string $id, array $settings): void
+{
+    $stmt = $pdo->prepare('SELECT manifest_json, install_path FROM runtime_packages WHERE package_id = ?');
+    $stmt->execute([$id]); $package = $stmt->fetch();
+    if (!is_array($package)) throw new InvalidArgumentException('package is not installed');
+    $manifest = json_decode((string)$package['manifest_json'], true);
+    $relative = is_array($manifest) ? (string)($manifest['settings_schema'] ?? '') : '';
+    if ($relative === '') return;
+    $root = realpath((string)$package['install_path']); $path = $root === false ? false : realpath($root . '/' . $relative);
+    if ($root === false || $path === false || is_link($root . '/' . $relative) || !is_file($path)
+        || !str_starts_with($path, rtrim($root, '/') . '/')) throw new RuntimeException('installed package settings schema is unavailable');
+    $integrity = packageVerifyIntegrity($manifest, $root);
+    if (!$integrity['ok']) throw new RuntimeException('installed package integrity failed: ' . $integrity['detail']);
+    $schema = json_decode((string)file_get_contents($path), true, 64, JSON_THROW_ON_ERROR);
+    if (!is_array($schema)) throw new InvalidArgumentException('package settings schema is invalid');
+    packageRuntimeValidateSchemaValue($settings, $schema, 'settings', 0);
+}
+
+function packageRuntimeValidateSchemaValue(mixed $value, array $schema, string $name, int $depth): void
+{
+    if ($depth > 12) throw new InvalidArgumentException('package settings schema is nested too deeply');
+    $type = $schema['type'] ?? null;
+    $valid = match ($type) {
+        null => true, 'object' => is_array($value) && !array_is_list($value), 'array' => is_array($value) && array_is_list($value),
+        'string' => is_string($value), 'integer' => is_int($value), 'number' => is_int($value) || is_float($value),
+        'boolean' => is_bool($value), 'null' => $value === null, default => throw new InvalidArgumentException('package settings schema has an unsupported type'),
+    };
+    if (!$valid) throw new InvalidArgumentException($name . ' has the wrong type');
+    if (isset($schema['enum']) && (!is_array($schema['enum']) || !in_array($value, $schema['enum'], true))) {
+        throw new InvalidArgumentException($name . ' is not an allowed value');
+    }
+    if (is_string($value)) {
+        if (isset($schema['minLength']) && (!is_int($schema['minLength']) || mb_strlen($value) < $schema['minLength'])) throw new InvalidArgumentException($name . ' is too short');
+        if (isset($schema['maxLength']) && (!is_int($schema['maxLength']) || mb_strlen($value) > $schema['maxLength'])) throw new InvalidArgumentException($name . ' is too long');
+        if (isset($schema['pattern'])) {
+            if (!is_string($schema['pattern'])) throw new InvalidArgumentException('package settings schema pattern is invalid');
+            $match = @preg_match('~' . str_replace('~', '\\~', $schema['pattern']) . '~uD', $value);
+            if ($match === false) throw new InvalidArgumentException('package settings schema pattern is invalid');
+            if ($match !== 1) throw new InvalidArgumentException($name . ' has an invalid format');
+        }
+    }
+    if (is_int($value) || is_float($value)) {
+        if (isset($schema['minimum']) && (!is_int($schema['minimum']) && !is_float($schema['minimum']) || $value < $schema['minimum'])) throw new InvalidArgumentException($name . ' is below the allowed minimum');
+        if (isset($schema['maximum']) && (!is_int($schema['maximum']) && !is_float($schema['maximum']) || $value > $schema['maximum'])) throw new InvalidArgumentException($name . ' is above the allowed maximum');
+    }
+    if (is_array($value) && array_is_list($value)) {
+        if (isset($schema['minItems']) && (!is_int($schema['minItems']) || count($value) < $schema['minItems'])) throw new InvalidArgumentException($name . ' has too few values');
+        if (isset($schema['maxItems']) && (!is_int($schema['maxItems']) || count($value) > $schema['maxItems'])) throw new InvalidArgumentException($name . ' has too many values');
+        if (($schema['uniqueItems'] ?? false) === true && count(array_unique(array_map(fn($item) => serialize($item), $value))) !== count($value)) throw new InvalidArgumentException($name . ' must not repeat values');
+        if (isset($schema['items'])) {
+            if (!is_array($schema['items'])) throw new InvalidArgumentException('package settings schema items are invalid');
+            foreach ($value as $index => $item) packageRuntimeValidateSchemaValue($item, $schema['items'], $name . '[' . $index . ']', $depth + 1);
+        }
+    }
+    if (is_array($value) && !array_is_list($value)) {
+        $properties = $schema['properties'] ?? [];
+        if (!is_array($properties)) throw new InvalidArgumentException('package settings schema properties are invalid');
+        foreach ((array)($schema['required'] ?? []) as $required) {
+            if (!is_string($required) || !array_key_exists($required, $value)) throw new InvalidArgumentException($name . ' is missing ' . $required);
+        }
+        if (($schema['additionalProperties'] ?? true) === false) foreach (array_keys($value) as $key) {
+            if (!array_key_exists($key, $properties)) throw new InvalidArgumentException($name . '.' . $key . ' is not allowed');
+        }
+        foreach ($value as $key => $child) if (isset($properties[$key])) {
+            if (!is_array($properties[$key])) throw new InvalidArgumentException('package settings schema property is invalid');
+            packageRuntimeValidateSchemaValue($child, $properties[$key], $name . '.' . $key, $depth + 1);
+        }
+    }
 }
 
 function packageRuntimeInstalled(PDO $pdo, string $id): void

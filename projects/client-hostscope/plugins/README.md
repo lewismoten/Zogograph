@@ -11,6 +11,13 @@ administrator grants, create its private storage, and audit enablement before
 loading the entry point. A package must not be loaded directly by PHP include
 paths or by copying its files into the web tree.
 
+When declared, the signed `settings_schema` is enforced before settings are
+stored. HostScope supports the small JSON Schema subset needed by packages:
+object properties/required fields, `additionalProperties`, scalar and array
+types, enums, string length/patterns, numeric limits, and array item limits.
+Keep package schemas within that subset so an administrator gets a clear
+configuration error instead of silently accepting an unsupported rule.
+
 Packages may declare an ordered `data.migrations` list of signed
 `migrations/NNN-name.sql` files. Core re-verifies installed hashes before it
 applies those files transactionally to that package's private SQLite database
