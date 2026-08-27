@@ -27,9 +27,11 @@ billing credentials. Billing is managed through the commercial account
 API/browser flow, separately from enrolled-client credentials.
 
 The adapter can read a signed, minimal envelope-readiness projection: current
-envelope usage, quota, and whether another envelope may be stored. This lets a
-deployment explain an upload refusal before sending ciphertext, without giving
-it a billing, management, key-creation, or account-recovery credential.
+envelope usage, quota, renewal timestamp, and whether another envelope may be
+stored. This lets a deployment explain an upload refusal before sending
+ciphertext, without giving it a billing, management, key-creation, or
+account-recovery credential. A passed renewal pauses only new envelope writes;
+it never makes an existing artifact unrecoverable.
 
 `KeyCustodyHttpClient::healthEndpoint($url, $pin)` calls the unauthenticated
 `/v1/health` probe before enrollment, using the same HTTPS and optional SPKI
