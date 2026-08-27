@@ -189,6 +189,12 @@ function migrationStatementApplied(PDO $pdo, string $sql): bool
 function migrations(): array
 {
     return [
+        54 => [
+            /* The manifest is signed but not part of its own file list. Keep
+             * an install-time digest so a later on-disk manifest change is
+             * visible alongside immutable package-file tampering. */
+            'ALTER TABLE runtime_packages ADD COLUMN manifest_sha256 TEXT',
+        ],
         53 => [
             'CREATE TABLE runtime_package_revocations (
                 package_id TEXT PRIMARY KEY REFERENCES runtime_packages(package_id) ON DELETE CASCADE,

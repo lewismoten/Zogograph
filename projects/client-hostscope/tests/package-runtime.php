@@ -101,6 +101,11 @@ try {
     runtimeExpect(!$altered['integrity'] && str_starts_with($altered['state'], 'integrity failed:'), 'changed package file was not flagged by runtime status');
     try { packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator'); throw new RuntimeException('altered package was enabled'); }
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'altered package was enabled', $error->getMessage()); }
+    copy($source . '/src/Provider.php', $installed['install_path'] . '/src/Provider.php');
+    file_put_contents($installed['install_path'] . '/manifest.json', (string)file_get_contents($source . '/manifest.json') . "\n");
+    $manifestAltered = packageRuntimePackages($pdo)[0];
+    runtimeExpect(!$manifestAltered['integrity'] && str_contains($manifestAltered['integrity_detail'], 'manifest has changed'),
+        'changed installed package manifest was not flagged by runtime status');
     echo "package runtime checks passed\n";
 } finally {
     foreach (glob($root . '/*') ?: [] as $path) {

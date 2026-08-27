@@ -128,11 +128,15 @@ function packageRuntimeInstall(array $config, PDO $pdo, string $source, string $
         packageRuntimeRemoveDirectory($target);
         throw $error;
     }
+    $manifestHash = hash_file('sha256', $target . '/manifest.json');
+    if (!is_string($manifestHash) || !preg_match('/^[a-f0-9]{64}$/', $manifestHash)) {
+        packageRuntimeRemoveDirectory($target); throw new RuntimeException('could not fingerprint installed package manifest');
+    }
     $now = time();
-    $pdo->prepare('INSERT INTO runtime_packages (package_id, version, publisher, manifest_json, install_path, installed_at, enabled_at, changed_at, changed_by)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)')
+    $pdo->prepare('INSERT INTO runtime_packages (package_id, version, publisher, manifest_json, manifest_sha256, install_path, installed_at, enabled_at, changed_at, changed_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)')
         ->execute([$manifest['id'], $manifest['version'], $manifest['publisher'],
-            json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), $target, $now, $now, mb_substr($actor, 0, 120)]);
+            json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), $manifestHash, $target, $now, $now, mb_substr($actor, 0, 120)]);
     return ['id' => $manifest['id'], 'version' => $manifest['version'], 'publisher' => $manifest['publisher'], 'install_path' => $target];
 }
 
@@ -164,14 +168,14 @@ function packageRuntimePackages(PDO $pdo): array
         $grants[$row['package_id']][] = $row['capability'];
     }
     $out = [];
-    foreach ($pdo->query('SELECT packages.package_id, packages.version, packages.publisher, packages.manifest_json, packages.install_path, packages.enabled_at, revocations.reason AS revocation_reason
+    foreach ($pdo->query('SELECT packages.package_id, packages.version, packages.publisher, packages.manifest_json, packages.manifest_sha256, packages.install_path, packages.enabled_at, revocations.reason AS revocation_reason
         FROM runtime_packages packages LEFT JOIN runtime_package_revocations revocations ON revocations.package_id = packages.package_id ORDER BY packages.package_id')->fetchAll() as $row) {
         $manifest = json_decode((string)$row['manifest_json'], true) ?: [];
         $required = (array)($manifest['capabilities'] ?? []);
         $given = $grants[$row['package_id']] ?? [];
         sort($given, SORT_STRING);
         $revoked = $row['revocation_reason'] !== null;
-        $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$row['install_path']);
+        $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$row['install_path'], (string)($row['manifest_sha256'] ?? ''));
         $enabled = $integrity['ok'] && !$revoked && $row['enabled_at'] !== null && $required === $given;
         $out[] = ['id' => $row['package_id'], 'version' => $row['version'], 'publisher' => $row['publisher'],
             'enabled' => $enabled, 'revoked' => $revoked, 'integrity' => $integrity['ok'], 'integrity_detail' => $integrity['detail'], 'capabilities' => $required, 'grants' => $given,
@@ -182,11 +186,11 @@ function packageRuntimePackages(PDO $pdo): array
 
 function packageRuntimeSetEnabled(PDO $pdo, string $id, array $grants, bool $enabled, string $actor): void
 {
-    $row = $pdo->prepare('SELECT manifest_json, install_path FROM runtime_packages WHERE package_id = ?');
+    $row = $pdo->prepare('SELECT manifest_json, manifest_sha256, install_path FROM runtime_packages WHERE package_id = ?');
     $row->execute([$id]); $package = $row->fetch(); $manifest = is_array($package) ? json_decode((string)$package['manifest_json'], true) : null;
     if (!is_array($manifest)) throw new InvalidArgumentException('package is not installed');
     if ($enabled) {
-        $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$package['install_path']);
+        $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$package['install_path'], (string)($package['manifest_sha256'] ?? ''));
         if (!$integrity['ok']) throw new InvalidArgumentException('installed package integrity failed: ' . $integrity['detail']);
         $revoked = $pdo->prepare('SELECT COUNT(*) FROM runtime_package_revocations WHERE package_id = ?'); $revoked->execute([$id]);
         if ((int)$revoked->fetchColumn() !== 0) throw new InvalidArgumentException('package is revoked; lift the revocation only after review');
@@ -207,10 +211,13 @@ function packageRuntimeSetEnabled(PDO $pdo, string $id, array $grants, bool $ena
 }
 
 /** @return array{ok:bool,detail:string} */
-function packageRuntimeVerifyInstalledPackage(array $manifest, string $directory): array
+function packageRuntimeVerifyInstalledPackage(array $manifest, string $directory, string $manifestHash): array
 {
     $root = realpath($directory);
     if ($root === false || is_link($directory) || !is_dir($root)) return ['ok' => false, 'detail' => 'installed package directory is unavailable'];
+    if (!preg_match('/^[a-f0-9]{64}$/', $manifestHash)) return ['ok' => false, 'detail' => 'install-time manifest fingerprint is unavailable; reinstall the package'];
+    $actual = hash_file('sha256', $root . '/manifest.json');
+    if (!is_string($actual) || !hash_equals($manifestHash, $actual)) return ['ok' => false, 'detail' => 'installed package manifest has changed'];
     return packageVerifyIntegrity($manifest, $root);
 }
 
@@ -257,14 +264,15 @@ function packageRuntimePrivateDatabase(PDO $registry, array $config, string $id)
 /** Applies only signed declarative SQL to the package's own SQLite file. */
 function packageRuntimeApplyPrivateMigrations(PDO $registry, PDO $private, string $id): void
 {
-    $row = $registry->prepare('SELECT manifest_json, install_path FROM runtime_packages WHERE package_id = ?');
+    $row = $registry->prepare('SELECT manifest_json, manifest_sha256, install_path FROM runtime_packages WHERE package_id = ?');
     $row->execute([$id]); $package = $row->fetch();
     if (!is_array($package)) throw new InvalidArgumentException('package is not installed');
     $manifest = json_decode((string)$package['manifest_json'], true);
-    $root = realpath((string)$package['install_path']);
-    if (!is_array($manifest) || $root === false || is_link((string)$package['install_path'])) throw new RuntimeException('installed package is unavailable');
-    $integrity = packageVerifyIntegrity($manifest, $root);
+    if (!is_array($manifest)) throw new RuntimeException('installed package is unavailable');
+    $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$package['install_path'], (string)($package['manifest_sha256'] ?? ''));
     if (!$integrity['ok']) throw new RuntimeException('installed package integrity failed: ' . $integrity['detail']);
+    $root = realpath((string)$package['install_path']);
+    if ($root === false) throw new RuntimeException('installed package is unavailable');
     $migrations = (array)(($manifest['data'] ?? [])['migrations'] ?? []);
     $private->exec('CREATE TABLE IF NOT EXISTS package_runtime_migrations (migration TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)');
     $applied = $private->query('SELECT migration FROM package_runtime_migrations')->fetchAll(PDO::FETCH_COLUMN);
@@ -326,7 +334,7 @@ function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $
  * Unsupported keywords are deliberately ignored until they are implemented. */
 function packageRuntimeValidateManifestSettings(PDO $pdo, string $id, array $settings): void
 {
-    $stmt = $pdo->prepare('SELECT manifest_json, install_path FROM runtime_packages WHERE package_id = ?');
+    $stmt = $pdo->prepare('SELECT manifest_json, manifest_sha256, install_path FROM runtime_packages WHERE package_id = ?');
     $stmt->execute([$id]); $package = $stmt->fetch();
     if (!is_array($package)) throw new InvalidArgumentException('package is not installed');
     $manifest = json_decode((string)$package['manifest_json'], true);
@@ -335,7 +343,7 @@ function packageRuntimeValidateManifestSettings(PDO $pdo, string $id, array $set
     $root = realpath((string)$package['install_path']); $path = $root === false ? false : realpath($root . '/' . $relative);
     if ($root === false || $path === false || is_link($root . '/' . $relative) || !is_file($path)
         || !str_starts_with($path, rtrim($root, '/') . '/')) throw new RuntimeException('installed package settings schema is unavailable');
-    $integrity = packageVerifyIntegrity($manifest, $root);
+    $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$package['install_path'], (string)($package['manifest_sha256'] ?? ''));
     if (!$integrity['ok']) throw new RuntimeException('installed package integrity failed: ' . $integrity['detail']);
     $schema = json_decode((string)file_get_contents($path), true, 64, JSON_THROW_ON_ERROR);
     if (!is_array($schema)) throw new InvalidArgumentException('package settings schema is invalid');
