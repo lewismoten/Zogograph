@@ -252,7 +252,6 @@ function keyCustodyCreateKey(PDO $pdo, string $tenant, string $name, int $ttl, s
 function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artifactId, string $master): string
 {
     if (strlen($master) !== 32 || !keyCustodyArtifactId($artifactId)) throw new InvalidArgumentException('custody key authorization is invalid');
-    keyCustodyConsumeUnwrapAllowance($pdo, $tenant);
     $envelope = $pdo->prepare('SELECT envelopes.envelope FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE envelopes.key_id = ? AND keys.tenant_id = ? AND envelopes.artifact_id = ?');
     $envelope->execute([$id, $tenant, $artifactId]);
     $sealed = $envelope->fetchColumn();
@@ -265,12 +264,14 @@ function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $artif
      * service upgrade never strands an existing artifact. They cannot accept
      * new envelopes and are disclosed to management as legacy until rotated. */
     if ($row['wrapping_public_key'] === null) {
+        keyCustodyConsumeUnwrapAllowance($pdo, $tenant);
         keyCustodyAudit($pdo, $tenant, 'key_unwrap_authorized_legacy', $id, 'artifact=' . $artifactId);
         return $private;
     }
     if (!is_string($row['wrapping_public_key']) || !function_exists('sodium_crypto_box_seal_open')) throw new RuntimeException('custody key wrapping material is unavailable');
     $plain = sodium_crypto_box_seal_open($sealed, sodium_crypto_box_keypair_from_secretkey_and_publickey($private, $row['wrapping_public_key']));
     if (!is_string($plain) || strlen($plain) !== 32) throw new RuntimeException('artifact data key could not be unwrapped');
+    keyCustodyConsumeUnwrapAllowance($pdo, $tenant);
     keyCustodyAudit($pdo, $tenant, 'key_unwrap_authorized', $id, 'artifact=' . $artifactId);
     return $plain;
 }

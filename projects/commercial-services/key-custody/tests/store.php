@@ -209,6 +209,8 @@ try {
         'custody cache recommendation did not preserve the zero-cache default');
     try { keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:missing', $master); throw new RuntimeException('unknown artifact envelope was authorized'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'unknown artifact envelope was authorized', $error->getMessage()); }
+    custodyExpect((int)$pdo->query('SELECT count FROM custody_unwrap_usage WHERE tenant_id = ' . $pdo->quote($client['tenant_id']) . ' ORDER BY window_started DESC LIMIT 1')->fetchColumn() === 1,
+        'a failed custody unwrap consumed the successful-recovery release allowance');
     $legacyId = 'key_' . bin2hex(random_bytes(16)); $legacyKey = random_bytes(32); $legacyNonce = random_bytes(12);
     $legacyWrapped = openssl_encrypt($legacyKey, 'aes-256-gcm', $master, OPENSSL_RAW_DATA, $legacyNonce, $legacyTag, $legacyId, 16);
     $pdo->prepare('INSERT INTO custody_keys (id, tenant_id, name, wrapped_key, wrap_nonce, wrap_tag, wrapping_public_key, authorization_ttl, state, created_at, rotated_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL)')
