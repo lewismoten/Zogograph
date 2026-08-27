@@ -56,7 +56,7 @@ try {
         $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody); $body = custodyBody($rawBody);
         $envelope = base64_decode((string)($body['envelope_base64'] ?? ''), true);
         if (!is_string($envelope)) throw new InvalidArgumentException('envelope_base64 is invalid');
-        custodyReply(201, ['envelope' => keyCustodyStoreEnvelope($pdo, $auth['tenant_id'], $match[1], trim((string)($body['artifact_id'] ?? '')), $envelope)]);
+        custodyReply(201, ['envelope' => keyCustodyStoreEnvelope($pdo, $auth['tenant_id'], $match[1], trim((string)($body['artifact_id'] ?? '')), $envelope, keyCustodyReadMasterKey($config, __DIR__))]);
     }
     if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/wrapping-key$#', $path, $match) && $method === 'GET') {
         $auth = keyCustodyAuthenticateClientRequest($pdo, $bearer, $method, $path, $clientTimestamp, $clientNonce, $clientSignature, $rawBody);

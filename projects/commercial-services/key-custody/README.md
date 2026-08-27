@@ -59,6 +59,11 @@ requests rather than silently accepting insecure traffic.
   under its private service master key. The unwrap endpoint may return only the
   named artifact data key over HTTPS after a scoped signed request; it never
   exposes a private wrapping key through billing or management APIs.
+- Before recording an envelope, the service transiently opens it with that
+  private wrapping half and refuses anything other than a 256-bit data key.
+  The plaintext result is neither persisted nor written to the audit log. This
+  prevents malformed recovery records from being accepted merely because they
+  have the right ciphertext length.
 - Log every enrollment, policy, authorization, rotation, disablement, and
   billing state change without recording plaintext keys, envelopes, or tokens.
 - Default to disabled remote custody, one tenant per account, 15-minute unwrap

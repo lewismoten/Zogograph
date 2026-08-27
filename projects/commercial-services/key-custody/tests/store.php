@@ -115,11 +115,13 @@ try {
     try { keyCustodyApplySubscription($pdo, $management['tenant_id'], 'starter', 'active', -1, null); throw new RuntimeException('invalid billing quota was accepted'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'invalid billing quota was accepted', $error->getMessage()); }
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'past_due', 2, null);
-    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:blocked', random_bytes(80)); throw new RuntimeException('past-due subscription stored an envelope'); }
+    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:blocked', random_bytes(80), $master); throw new RuntimeException('past-due subscription stored an envelope'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'past-due subscription stored an envelope', $error->getMessage()); }
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'active', 2, null);
-    $envelope = keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $sealedDataKey);
-    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], "account:\nforged", $sealedDataKey); throw new RuntimeException('multiline artifact identifier was accepted'); }
+    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:forged', random_bytes(SODIUM_CRYPTO_BOX_SEALBYTES + 32), $master); throw new RuntimeException('unopenable envelope was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'unopenable envelope was accepted', $error->getMessage()); }
+    $envelope = keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $sealedDataKey, $master);
+    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], "account:\nforged", $sealedDataKey, $master); throw new RuntimeException('multiline artifact identifier was accepted'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'multiline artifact identifier was accepted', $error->getMessage()); }
     custodyExpect(keyCustodyListEnvelopes($pdo, $management['tenant_id'], $key['id'])[0]['id'] === $envelope['id'], 'envelope metadata was not retained');
     custodyExpect(keyCustodyListKeys($pdo, $management['tenant_id'])[0]['envelope_count'] === 1, 'management key list omitted registered envelope count');
@@ -129,7 +131,7 @@ try {
     keyCustodySetSubscription($pdo, $management['tenant_id'], 'free', 'active', 2, null, 1);
     custodyExpect(!keyCustodyClientSubscription($pdo, $client['tenant_id'])['can_store_envelopes'],
         'enrolled client entitlement allowed an envelope after its quota was filled');
-    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:quota', random_bytes(80)); throw new RuntimeException('subscription envelope quota was exceeded'); }
+    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:quota', random_bytes(80), $master); throw new RuntimeException('subscription envelope quota was exceeded'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'subscription envelope quota was exceeded', $error->getMessage()); }
     custodyExpect(hash_equals($artifactDataKey, keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)), 'client unwrap did not recover the sealed artifact data key');
     custodyExpect(keyCustodyCacheRecommendation($pdo, $client['tenant_id'], $key['id'], 900) === 120,
@@ -147,7 +149,7 @@ try {
     custodyExpect(hash_equals($legacyKey, keyCustodyUnwrapKey($pdo, $client['tenant_id'], $legacyId, 'legacy:artifact', $master))
         && in_array('legacy_symmetric', array_column(keyCustodyListKeys($pdo, $management['tenant_id']), 'wrapping_mode'), true),
         'service upgrade did not preserve recoverability or disclose legacy symmetric custody records');
-    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $legacyId, 'legacy:new', random_bytes(SODIUM_CRYPTO_BOX_SEALBYTES + 32)); throw new RuntimeException('legacy custody key accepted a new envelope'); }
+    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $legacyId, 'legacy:new', random_bytes(SODIUM_CRYPTO_BOX_SEALBYTES + 32), $master); throw new RuntimeException('legacy custody key accepted a new envelope'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'legacy custody key accepted a new envelope', $error->getMessage()); }
     $replacement = keyCustodyRotateKey($pdo, $management['tenant_id'], $key['id'], $master);
     custodyExpect($replacement['id'] !== $key['id'] && keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $replacement['id'], 'custody key rotation did not create a replacement');
