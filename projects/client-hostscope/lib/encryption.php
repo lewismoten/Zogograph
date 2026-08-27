@@ -27,7 +27,7 @@ function encryptionCreateLocalKey(string $path, string $webRoot): void
     if (!is_dir($directory) || !is_writable($directory)) {
         throw new RuntimeException('the local key directory is not writable');
     }
-    $handle = @fopen($path, 'x');
+    $handle = encryptionWithPrivateUmask(fn() => @fopen($path, 'x'));
     if ($handle === false) {
         throw new RuntimeException('refusing to replace an existing local key');
     }
@@ -170,7 +170,7 @@ function encryptionSealFile(string $source, string $destination, string $kek, st
         throw new RuntimeException('refusing to replace an existing sealed artifact');
     }
     $in = fopen($source, 'rb');
-    $out = @fopen($destination, 'xb');
+    $out = encryptionWithPrivateUmask(fn() => @fopen($destination, 'xb'));
     if ($in === false || $out === false) {
         if (is_resource($in)) fclose($in);
         if (is_resource($out)) fclose($out);
@@ -242,7 +242,7 @@ function encryptionSealSqliteSnapshot(PDO $pdo, string $destination, string $kek
     $snapshot = $destination . '.snapshot-' . bin2hex(random_bytes(8)) . '.db';
     try {
         /* VACUUM INTO includes committed WAL pages; copying the main file does not. */
-        $pdo->exec('VACUUM INTO ' . $pdo->quote($snapshot));
+        encryptionWithPrivateUmask(fn() => $pdo->exec('VACUUM INTO ' . $pdo->quote($snapshot)));
         @chmod($snapshot, 0600);
         return encryptionSealFile($snapshot, $destination, $kek, $artifactId);
     } finally {
@@ -772,7 +772,7 @@ function encryptionOpenFile(string $source, string $destination, string $kek): v
         throw new RuntimeException('the encrypted source or output destination is unavailable');
     }
     $in = fopen($source, 'rb');
-    $out = @fopen($destination, 'xb');
+    $out = encryptionWithPrivateUmask(fn() => @fopen($destination, 'xb'));
     if ($in === false || $out === false) {
         if (is_resource($in)) fclose($in);
         if (is_resource($out)) fclose($out);
@@ -982,4 +982,12 @@ function encryptionWriteAll($stream, string $data): void
         if (!is_int($written) || $written <= 0) throw new RuntimeException('could not write the sealed artifact');
         $offset += $written;
     }
+}
+
+/** Runs a file-creating operation under an owner-only umask and restores it. */
+function encryptionWithPrivateUmask(callable $operation): mixed
+{
+    $previous = umask(0077);
+    try { return $operation(); }
+    finally { umask($previous); }
 }

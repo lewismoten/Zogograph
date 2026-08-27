@@ -148,6 +148,7 @@ try {
     $sealedInfo = encryptionSealFile($source, $sealed, $key, 'stats:1');
     encryptionExpect($sealedInfo['plaintext_bytes'] === filesize($source), 'sealed byte count is wrong');
     encryptionExpect(!str_contains((string)file_get_contents($sealed), 'private sqlite record'), 'sealed copy contains plaintext');
+    encryptionExpect((fileperms($sealed) & 0077) === 0, 'sealed artifact permissions are too broad');
     $secondSealed = $root . '/source-second.sealed';
     encryptionSealFile($source, $secondSealed, $key, 'stats:1');
     $sealedHeader = function (string $path): array {
@@ -168,6 +169,7 @@ try {
         'sealed artifacts unexpectedly reused a data-encryption key');
     encryptionOpenFile($sealed, $opened, $key);
     encryptionExpect(hash_file('sha256', $source) === hash_file('sha256', $opened), 'opened copy differs from source');
+    encryptionExpect((fileperms($opened) & 0077) === 0, 'decrypted recovery output permissions are too broad');
     encryptionVerifySealedArtifact($sealed, $key, (int)filesize($source));
     file_put_contents($root . '/not-a-store', 'not sqlite');
     try { encryptionVerifyRecoveredStore($root . '/not-a-store', 'account'); throw new RuntimeException('invalid recovered SQLite was accepted'); }
