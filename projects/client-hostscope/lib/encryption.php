@@ -585,6 +585,49 @@ function encryptionRotateConfiguredArtifacts(array &$config, PDO $pdo, string $w
     }
 }
 
+/** Retires superseded ciphertext only after current-key verification proves a
+ * replacement exists for every affected store. @return int retired count */
+function encryptionRetireSupersededArtifacts(array $config, PDO $pdo, string $webRoot, string $oldKeyPath): int
+{
+    $settings = (array)($config['encryption'] ?? []);
+    if (($settings['mode'] ?? 'none') !== 'sealed_copies_local') throw new RuntimeException('local sealed copies are not enabled');
+    $oldKey = encryptionReadLocalKey($oldKeyPath, $webRoot);
+    $checked = encryptionVerifyConfiguredCopies($config, $pdo, $webRoot);
+    if ($checked['failed'] > 0) throw new RuntimeException('current sealed copies must verify before superseded copies can be retired');
+    $directory = (string)($settings['artifact_directory'] ?? '') ?: dirname((string)$config['database']) . '/sealed';
+    $directory = realpath($directory);
+    if ($directory === false || is_link($directory) || !is_dir($directory)) throw new RuntimeException('the sealed-artifact directory is unavailable');
+    $rows = $pdo->query("SELECT artifact_id, store, local_path FROM encryption_artifacts WHERE state = 'superseded' ORDER BY created_at, artifact_id")->fetchAll();
+    if ($rows === []) return 0;
+    $current = $pdo->query("SELECT store, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verified' GROUP BY store")->fetchAll();
+    $coverage = []; foreach ($current as $row) $coverage[(string)$row['store']] = (int)$row['copies'];
+    $renames = [];
+    foreach ($rows as $row) {
+        $store = (string)$row['store']; $source = (string)$row['local_path']; $real = realpath($source);
+        if (($coverage[$store] ?? 0) < 1) throw new RuntimeException("no current verified replacement exists for {$store}");
+        if ($real === false || is_link($source) || !is_file($real) || !str_starts_with($real, rtrim($directory, '/') . '/') || !str_ends_with($real, '.sealed')) throw new RuntimeException('a superseded artifact path is unsafe or unavailable');
+        $temporary = $directory . '/.retire-' . bin2hex(random_bytes(12));
+        try { encryptionOpenFile($real, $temporary . '.verify', $oldKey); }
+        finally { @unlink($temporary . '.verify'); }
+        $renames[] = ['artifact_id' => (string)$row['artifact_id'], 'source' => $real, 'temporary' => $temporary];
+    }
+    $moved = [];
+    try {
+        foreach ($renames as $rename) { if (!rename($rename['source'], $rename['temporary'])) throw new RuntimeException('could not stage superseded ciphertext for retirement'); $moved[] = $rename; }
+        $pdo->beginTransaction();
+        try {
+            $mark = $pdo->prepare("UPDATE encryption_artifacts SET state = 'retired' WHERE artifact_id = ? AND state = 'superseded'");
+            foreach ($moved as $rename) $mark->execute([$rename['artifact_id']]);
+            $pdo->commit();
+        } catch (Throwable $error) { if ($pdo->inTransaction()) $pdo->rollBack(); throw $error; }
+    } catch (Throwable $error) {
+        foreach (array_reverse($moved) as $rename) if (is_file($rename['temporary'])) @rename($rename['temporary'], $rename['source']);
+        throw $error;
+    }
+    foreach ($moved as $rename) if (!@unlink($rename['temporary'])) throw new RuntimeException('retired ciphertext metadata is recorded but a staged file could not be removed');
+    return count($moved);
+}
+
 function encryptionRequire(string $kek, string $artifactId): void
 {
     if (!encryptionAvailable()) throw new RuntimeException('OpenSSL AES-256-GCM support is required for sealed copies');

@@ -294,6 +294,15 @@ superseded ciphertext or retiring the old key. The low-level
 standalone artifact; it does not update the encrypted-artifact ledger or the
 configured key and is not the normal installation rotation workflow.
 
+After that recovery drill, retire superseded ciphertext with the old key. The
+command re-verifies current-key artifacts first, refuses retirement unless each
+affected store has a current verified replacement, then authenticates each old
+artifact before removal:
+
+```bash
+php scripts/retire-superseded-sealed.php --old-key /secure/hostscope/primary.key --confirm
+```
+
 ## Optional: signed executable packages
 
 The normal marketplace remains data-only. Executable packages, including the
