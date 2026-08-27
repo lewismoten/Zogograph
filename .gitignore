@@ -1,7 +1,9 @@
 # Holds the password hash and the mask secret.
-lib/config.php
+projects/client-hostscope/lib/config.php
 
 # The database, its write-ahead log, and anything else the collector leaves.
 data/*
 !data/.htaccess
+projects/client-hostscope/data/*
+!projects/client-hostscope/data/.htaccess
 .DS_Store

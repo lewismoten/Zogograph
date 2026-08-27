@@ -1,0 +1,7 @@
+# Holds the password hash and the mask secret.
+lib/config.php
+
+# SQLite stores and collector output are installation data, not source.
+data/*
+!data/.htaccess
+.DS_Store
