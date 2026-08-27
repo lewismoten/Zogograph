@@ -24,6 +24,8 @@ try {
     $protection = setupStoreConfigurationProtection($configFile);
     setupVaultExpect($protection['state'] === 'ok' && str_contains($protection['detail'], 'encrypted'),
         'encrypted setup configuration was not reported as protected');
+    setupVaultExpect(setupStoreConfigurationProtectionForSettings($settings, $root . '/web')['state'] === 'ok',
+        'dashboard settings could not report encrypted setup configuration');
     $badBootstrap = $bootstrap; $badBootstrap['setup_key_file'] = $root . '/keys/missing.key';
     $badPath = $root . '/web/bad.php'; file_put_contents($badPath, "<?php return " . var_export($badBootstrap, true) . ";\n");
     try { loadConfiguredSettings($badPath); throw new RuntimeException('encrypted configuration fell back without its key'); }

@@ -40,6 +40,9 @@ try {
         && str_contains($api, "'encryption-recovery-drill' => doEncryptionRecoveryDrill")
         && str_contains($api, 'requireWrite($post)') && str_contains($api, "logAction(\$pdo, 'encryption_seal'"),
         'encryption status is not protected by its dashboard page access rule');
+    encryptionExpect($api !== false && str_contains($api, "'setup_configuration' => setupStoreConfigurationProtectionForSettings")
+        && $dashboard !== false && str_contains($dashboard, 'Setup configuration at rest'),
+        'Protection dashboard does not report setup configuration at-rest status');
     encryptionExpect($dashboard !== false && str_contains($dashboard, 'function renderEncryptionStatus')
         && str_contains($dashboard, 'Verified encrypted copies protect backup artifacts')
         && str_contains($dashboard, 'Operator-declared host/volume coverage (not verified)')

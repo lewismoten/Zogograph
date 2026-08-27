@@ -81,6 +81,24 @@ function setupStoreConfigurationProtection(string $configFile): array
     }
 }
 
+/** @return array{state:string,detail:string} Same status when only loaded settings are available. */
+function setupStoreConfigurationProtectionForSettings(array $settings, string $webRoot): array
+{
+    try {
+        $store = setupStoreOpen($settings, false);
+        if ($store === null) return ['state' => 'warning', 'detail' => 'The setup database has not been created yet; no full configuration is stored.'];
+        $sealed = $store->query("SELECT value FROM setup_values WHERE name = 'config_encrypted'")->fetchColumn();
+        if (is_string($sealed) && $sealed !== '') {
+            $encryption = (array)($settings['encryption'] ?? []);
+            setupStoreOpenConfig($sealed, (string)($encryption['local_key_file'] ?? ''));
+            return ['state' => 'ok', 'detail' => 'The full setup configuration is encrypted with the configured external local key.'];
+        }
+        return ['state' => 'warning', 'detail' => 'The full setup configuration is permission-protected but not encrypted at rest.'];
+    } catch (Throwable) {
+        return ['state' => 'error', 'detail' => 'HostScope could not verify the encrypted setup configuration. Check the private key path and restore only a verified backup.'];
+    }
+}
+
 /** Loads setup.db when present, otherwise a legacy all-in-one config.php. */
 function loadConfiguredSettings(string $configFile): array
 {

@@ -5689,7 +5689,10 @@ function doPackageRuntimeSecretDelete(array $config, PDO $pdo, bool $post): arra
 function encryptionStatusView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) throw new ActionRefused('sign in to view encryption status');
-    return encryptionStatus($pdo, $config, __DIR__) + ['can_change' => accessAllows($config, 'write')];
+    return encryptionStatus($pdo, $config, __DIR__) + [
+        'setup_configuration' => setupStoreConfigurationProtectionForSettings($config, __DIR__),
+        'can_change' => accessAllows($config, 'write'),
+    ];
 }
 
 /** Creates a deliberate first/replacement copy from the signed-in dashboard. */
