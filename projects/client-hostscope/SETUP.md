@@ -73,6 +73,17 @@ of that key with your private setup-database backup. Without a configured key,
 `setup.db` relies on its owner-only file permissions and is not encrypted at
 rest.
 
+After first setup, after changing the local key, and before retiring an old
+key, verify the active configuration without disclosing its contents:
+
+```bash
+php scripts/verify-setup-config.php --expect-encrypted
+```
+
+The command exits nonzero if encrypted configuration cannot be opened. Omit
+`--expect-encrypted` only for an intentional no-key installation; it will then
+report the permission-only state without treating it as a command failure.
+
 Alternatively, from the deployed directory, run the same wizard in a terminal:
 
 ```bash
