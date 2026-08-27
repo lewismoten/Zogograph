@@ -280,7 +280,33 @@ function encryptionValidateSettings(array $config, string $webRoot): void
     if (($settings['key_custody'] ?? 'local_private_file') !== 'local_private_file') {
         throw new InvalidArgumentException('the selected key-custody method is unavailable in this HostScope release');
     }
+    encryptionValidateRetentionSettings($settings);
     encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot);
+}
+
+/** Refuses malformed hand-edited policy before an explicit sealing run can
+ * interpret it as an accidental no-retention or no-reminder setting. */
+function encryptionValidateRetentionSettings(array $settings): void
+{
+    $whole = static function (mixed $value, string $label): void {
+        if ((!is_int($value) && !(is_string($value) && ctype_digit($value))) || (int)$value < 0 || (int)$value > 36500) {
+            throw new InvalidArgumentException("{$label} must be a whole number from 0 to 36500");
+        }
+    };
+    $whole($settings['retention_days'] ?? 0, 'encrypted-copy retention');
+    $whole($settings['recovery_drill_max_age_days'] ?? 90, 'recovery-drill review period');
+    $stores = $settings['retention_days_by_store'] ?? [];
+    if (!is_array($stores)) throw new InvalidArgumentException('per-store encrypted-copy retention must be an object');
+    foreach ($stores as $store => $days) {
+        if (!is_string($store) || !in_array($store, ['config', 'setup', 'account', 'host', 'ai'], true)) throw new InvalidArgumentException('per-store encrypted-copy retention has an invalid store');
+        $whole($days, 'per-store encrypted-copy retention');
+    }
+    $tiers = $settings['retention_recovery_tiers'] ?? [];
+    if (!is_array($tiers)) throw new InvalidArgumentException('long-term recovery retention must be an object');
+    foreach ($tiers as $tier => $copies) {
+        if (!is_string($tier) || !in_array($tier, ['daily', 'weekly', 'monthly'], true)) throw new InvalidArgumentException('long-term recovery retention has an invalid tier');
+        $whole($copies, 'long-term recovery retention');
+    }
 }
 
 /** Safe operational status for the protected browser/API surface. It reports

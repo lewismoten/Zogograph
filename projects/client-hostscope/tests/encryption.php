@@ -76,6 +76,13 @@ try {
     } catch (InvalidArgumentException|RuntimeException $error) {
         encryptionExpect($error->getMessage() !== 'invalid encryption setup policy was accepted', $error->getMessage());
     }
+    try {
+        encryptionValidateSettings(['encryption' => ['mode' => 'sealed_copies_local', 'local_key_file' => $keyPath,
+            'stores' => ['account'], 'retention_recovery_tiers' => ['monthly' => -1]]], $web);
+        throw new RuntimeException('invalid long-term recovery retention was accepted');
+    } catch (InvalidArgumentException $error) {
+        encryptionExpect($error->getMessage() !== 'invalid long-term recovery retention was accepted', $error->getMessage());
+    }
     file_put_contents($source, str_repeat("private sqlite record\n", 100000));
     $sealedInfo = encryptionSealFile($source, $sealed, $key, 'stats:1');
     encryptionExpect($sealedInfo['plaintext_bytes'] === filesize($source), 'sealed byte count is wrong');
