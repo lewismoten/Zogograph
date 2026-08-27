@@ -1,0 +1,4 @@
+# Transitional protection for ignored local installation data left at the
+# repository root during the client-project migration. Move this data privately
+# into projects/client-hostscope/data/ before serving the new client path.
+Require all denied
