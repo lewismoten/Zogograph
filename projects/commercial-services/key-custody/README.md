@@ -54,9 +54,10 @@ Set the generated absolute path in `config.php`. Keep the printed management
 token, client token, and client signing private key separately; the service
 retains only token hashes and the signing public key and cannot show the token
 or private key again. `api.php` currently implements key list/create, client unwrap,
-subscription read, and configured billing portal/checkout session links. It is
-a low-cost SQLite reference service; deploy it behind HTTPS and an authenticated
-reverse proxy before exposing it publicly. Envelope storage, key rotation, and
+subscription status plus pending change-request read/withdrawal, and configured
+billing portal/checkout session links. It is a low-cost SQLite reference
+service; deploy it behind HTTPS and an authenticated reverse proxy before
+exposing it publicly. Envelope storage, key rotation, and
 timestamp/nonce replay protection with signed client requests are included.
 mTLS enrollment and payment-provider integration remain the next service
 increments.

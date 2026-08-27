@@ -244,11 +244,31 @@ function keyCustodyRequestSubscriptionChange(PDO $pdo, string $tenant, string $a
     }
     $active = $pdo->prepare("SELECT COUNT(*) FROM subscriptions WHERE tenant_id = ? AND state IN ('active', 'past_due')"); $active->execute([$tenant]);
     if ((int)$active->fetchColumn() !== 1) throw new InvalidArgumentException('subscription is unavailable');
+    $pending = $pdo->prepare("SELECT COUNT(*) FROM subscription_requests WHERE tenant_id = ? AND state = 'pending'"); $pending->execute([$tenant]);
+    if ((int)$pending->fetchColumn() !== 0) throw new InvalidArgumentException('a subscription request is already pending');
     $id = 'subreq_' . bin2hex(random_bytes(12)); $now = time();
     $pdo->prepare('INSERT INTO subscription_requests (id, tenant_id, action, requested_plan, state, created_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?, NULL)')
         ->execute([$id, $tenant, $action, $plan === '' ? null : $plan, 'pending', $now]);
     keyCustodyAudit($pdo, $tenant, 'subscription_request', $id, $action . ($plan ? '; plan=' . $plan : ''));
     return ['id' => $id, 'action' => $action, 'requested_plan' => $plan === '' ? null : $plan, 'state' => 'pending', 'created_at' => $now];
+}
+
+/** @return list<array{id:string,action:string,requested_plan:?string,state:string,created_at:int,resolved_at:?int}> */
+function keyCustodySubscriptionRequests(PDO $pdo, string $tenant): array
+{
+    $stmt = $pdo->prepare('SELECT id, action, requested_plan, state, created_at, resolved_at FROM subscription_requests WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 20');
+    $stmt->execute([$tenant]);
+    return array_map(fn(array $row): array => ['id' => $row['id'], 'action' => $row['action'], 'requested_plan' => $row['requested_plan'],
+        'state' => $row['state'], 'created_at' => (int)$row['created_at'], 'resolved_at' => $row['resolved_at'] === null ? null : (int)$row['resolved_at']], $stmt->fetchAll());
+}
+
+function keyCustodyWithdrawSubscriptionRequest(PDO $pdo, string $tenant, string $id): void
+{
+    if (!preg_match('/^subreq_[a-f0-9]{24}$/', $id)) throw new InvalidArgumentException('subscription request id is invalid');
+    $stmt = $pdo->prepare("UPDATE subscription_requests SET state = 'withdrawn', resolved_at = ? WHERE id = ? AND tenant_id = ? AND state = 'pending'");
+    $stmt->execute([time(), $id, $tenant]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('pending subscription request is unavailable');
+    keyCustodyAudit($pdo, $tenant, 'subscription_request_withdraw', $id, 'management request');
 }
 
 function keyCustodySubscriptionAllows(PDO $pdo, string $tenant): void

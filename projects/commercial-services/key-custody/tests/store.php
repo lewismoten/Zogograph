@@ -34,6 +34,11 @@ try {
     custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['state'] === 'active', 'initial subscription state is unavailable');
     $change = keyCustodyRequestSubscriptionChange($pdo, $management['tenant_id'], 'change_plan', 'pro');
     custodyExpect($change['state'] === 'pending' && $change['requested_plan'] === 'pro', 'subscription change request was not retained');
+    custodyExpect(keyCustodySubscriptionRequests($pdo, $management['tenant_id'])[0]['id'] === $change['id'], 'subscription request is not visible to the tenant');
+    try { keyCustodyRequestSubscriptionChange($pdo, $management['tenant_id'], 'cancel', null); throw new RuntimeException('a second pending subscription request was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'a second pending subscription request was accepted', $error->getMessage()); }
+    keyCustodyWithdrawSubscriptionRequest($pdo, $management['tenant_id'], $change['id']);
+    custodyExpect(keyCustodySubscriptionRequests($pdo, $management['tenant_id'])[0]['state'] === 'withdrawn', 'subscription request was not withdrawn');
     $envelope = keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $key['id'], 'account:20260827', random_bytes(80));
     custodyExpect(keyCustodyListEnvelopes($pdo, $management['tenant_id'], $key['id'])[0]['id'] === $envelope['id'], 'envelope metadata was not retained');
     custodyExpect(strlen(keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)) === 32, 'client unwrap did not recover an active custody key');

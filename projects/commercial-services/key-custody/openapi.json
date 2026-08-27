@@ -26,8 +26,11 @@
       "post": {"summary": "Replace all enrolled-client credentials", "security": [{"accountSession": []}], "responses": {"201": {"description": "One-time replacement bearer token and Ed25519 private signing key; all prior enrolled-client credentials are revoked."}}}
     },
     "/subscription": {
-      "get": {"summary": "Read plan, quota, renewal, and custody availability", "responses": {"200": {"description": "Subscription state"}}},
+      "get": {"summary": "Read plan, quota, renewal, custody availability, and the tenant's recent change requests", "responses": {"200": {"description": "Subscription state and request history"}}},
       "patch": {"summary": "Request a plan change or cancellation", "responses": {"202": {"description": "Auditable pending billing request"}}}
+    },
+    "/subscription/requests/{requestId}": {
+      "delete": {"summary": "Withdraw the tenant's pending subscription request", "security": [{"accountSession": []}], "parameters": [{"name": "requestId", "in": "path", "required": true, "schema": {"type": "string", "pattern": "^subreq_[a-f0-9]{24}$"}}], "responses": {"200": {"description": "Request withdrawn"}, "403": {"description": "Request was not pending or does not belong to the tenant"}}}
     },
     "/billing/checkout": {
       "post": {"summary": "Create a hosted checkout or invoice session", "responses": {"201": {"description": "Opaque billing-session URL/reference"}}}

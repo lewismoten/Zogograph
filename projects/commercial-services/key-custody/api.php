@@ -61,12 +61,17 @@ try {
             'warning' => 'Store both values now. The service cannot show them again; the previous enrolled-client credential has been revoked.']);
     }
     if ($path === '/v1/subscription' && $method === 'GET') {
-        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['subscription' => keyCustodySubscription($pdo, $auth['tenant_id'])]);
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['subscription' => keyCustodySubscription($pdo, $auth['tenant_id']), 'requests' => keyCustodySubscriptionRequests($pdo, $auth['tenant_id'])]);
     }
     if ($path === '/v1/subscription' && $method === 'PATCH') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); $body = custodyBody($rawBody);
         $request = keyCustodyRequestSubscriptionChange($pdo, $auth['tenant_id'], (string)($body['action'] ?? ''), isset($body['plan']) ? (string)$body['plan'] : null);
         custodyReply(202, ['request' => $request, 'detail' => 'The commercial billing service must approve and apply this request.']);
+    }
+    if (preg_match('#^/v1/subscription/requests/(subreq_[a-f0-9]{24})$#', $path, $match) && $method === 'DELETE') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management');
+        keyCustodyWithdrawSubscriptionRequest($pdo, $auth['tenant_id'], $match[1]);
+        custodyReply(200, ['id' => $match[1], 'state' => 'withdrawn']);
     }
     if (in_array($path, ['/v1/billing/checkout', '/v1/billing/portal'], true) && $method === 'POST') {
         keyCustodyAuthenticate($pdo, $bearer, 'management'); $portal = trim((string)($config['billing_portal_url'] ?? ''));
