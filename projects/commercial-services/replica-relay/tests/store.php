@@ -6,6 +6,8 @@ $root = sys_get_temp_dir() . '/hostscope-relay-' . bin2hex(random_bytes(4)); mkd
 try {
     $config = ['database' => $root . '/service.db', 'artifact_directory' => $root . '/artifacts', 'maximum_artifact_bytes' => 1024, 'maximum_tenant_bytes' => 512, 'maximum_tenant_artifacts' => 1];
     $pdo = replicaRelayOpen($config); $tenant = replicaRelayCreateTenant($pdo, 'Example');
+    try { replicaRelayCreateTenant($pdo, "forged\ntenant"); throw new RuntimeException('multiline relay tenant name was accepted'); }
+    catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'multiline relay tenant name was accepted', $error->getMessage()); }
     try { replicaRelayOpen(['database' => 'relative.db', 'artifact_directory' => $root . '/bad']); throw new RuntimeException('relative relay database path was accepted'); }
     catch (RuntimeException $error) { relayExpect($error->getMessage() !== 'relative relay database path was accepted', $error->getMessage()); }
     try { replicaRelayOpen(['database' => $root . '/bad.db', 'artifact_directory' => 'relative-artifacts']); throw new RuntimeException('relative relay artifact directory was accepted'); }

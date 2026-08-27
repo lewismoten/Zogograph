@@ -74,7 +74,7 @@ function keyCustodyWithWriteLock(PDO $pdo, callable $operation): mixed
 function keyCustodyCreateTenant(PDO $pdo, string $name): array
 {
     $name = trim($name);
-    if ($name === '' || mb_strlen($name) > 120) throw new InvalidArgumentException('tenant name is invalid');
+    if ($name === '' || mb_strlen($name) > 120 || preg_match('/[\x00-\x1F\x7F]/', $name)) throw new InvalidArgumentException('tenant name is invalid');
     $tenant = 'ten_' . bin2hex(random_bytes(12)); $now = time();
     $pdo->beginTransaction();
     try {

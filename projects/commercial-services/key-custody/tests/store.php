@@ -28,6 +28,8 @@ try {
     try { keyCustodyOpen(['database' => $root . '/web/service.db'], $root . '/web'); throw new RuntimeException('web-root custody database path was accepted'); }
     catch (RuntimeException $error) { custodyExpect($error->getMessage() !== 'web-root custody database path was accepted', $error->getMessage()); }
     $tenant = keyCustodyCreateTenant($pdo, 'Example');
+    try { keyCustodyCreateTenant($pdo, "forged\ntenant"); throw new RuntimeException('multiline custody tenant name was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'multiline custody tenant name was accepted', $error->getMessage()); }
     [$initialClientTokenId] = explode('.', $tenant['client_token'], 2);
     $pdo->prepare('INSERT INTO client_nonces (token_id, nonce, expires_at) VALUES (?, ?, ?)')->execute([$initialClientTokenId, 'expired_nonce_abcdefghijklmnop', time() - 1]);
     keyCustodyOpen(['database' => $root . '/service.db']);

@@ -86,7 +86,7 @@ function replicaRelayClientDigestPayload(string $method, string $path, string $t
 function replicaRelayCreateTenant(PDO $pdo, string $name): array
 {
     if (!function_exists('sodium_crypto_sign_keypair')) throw new RuntimeException('libsodium is required for relay enrollment');
-    $name = trim($name); if ($name === '' || strlen($name) > 120) throw new InvalidArgumentException('tenant name must contain 1 to 120 characters');
+    $name = trim($name); if ($name === '' || mb_strlen($name) > 120 || preg_match('/[\x00-\x1F\x7F]/', $name)) throw new InvalidArgumentException('tenant name must contain 1 to 120 printable characters');
     $tenant = 'ten_' . bin2hex(random_bytes(12)); $now = time();
     $pdo->prepare('INSERT INTO tenants (id, name, active, created_at) VALUES (?, ?, 1, ?)')->execute([$tenant, $name, $now]);
     $management = replicaRelayCreateToken($pdo, $tenant, 'management', null);
