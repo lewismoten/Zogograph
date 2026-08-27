@@ -413,7 +413,33 @@ function packageRuntimeSettings(PDO $pdo, array $config, string $id): array
     $value = $store->prepare('SELECT value FROM package_runtime_settings WHERE package_id = ?');
     $value->execute([$id]);
     $decoded = json_decode((string)$value->fetchColumn(), true);
-    return is_array($decoded) ? $decoded : [];
+    return array_replace(packageRuntimeSettingsDefaults($pdo, $id), is_array($decoded) ? $decoded : []);
+}
+
+/** Safe schema defaults reduce setup friction; they never synthesize secrets. */
+function packageRuntimeSettingsDefaults(PDO $pdo, string $id): array
+{
+    $stmt = $pdo->prepare('SELECT manifest_json, manifest_sha256, install_path FROM runtime_packages WHERE package_id = ?');
+    $stmt->execute([$id]); $package = $stmt->fetch();
+    $manifest = is_array($package) ? json_decode((string)$package['manifest_json'], true) : null;
+    $relative = is_array($manifest) ? (string)($manifest['settings_schema'] ?? '') : '';
+    if ($relative === '') return [];
+    $root = realpath((string)$package['install_path']); $path = $root === false ? false : realpath($root . '/' . $relative);
+    if ($root === false || $path === false || is_link($root . '/' . $relative) || !is_file($path)
+        || !str_starts_with($path, rtrim($root, '/') . '/')) throw new RuntimeException('installed package settings schema is unavailable');
+    $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$package['install_path'], (string)($package['manifest_sha256'] ?? ''));
+    if (!$integrity['ok']) throw new RuntimeException('installed package integrity failed: ' . $integrity['detail']);
+    $schema = json_decode((string)file_get_contents($path), true, 64, JSON_THROW_ON_ERROR);
+    if (!is_array($schema) || ($schema['type'] ?? null) !== 'object') throw new InvalidArgumentException('package settings schema is invalid');
+    $defaults = [];
+    foreach ((array)($schema['properties'] ?? []) as $name => $property) {
+        if (is_string($name) && is_array($property) && array_key_exists('default', $property)
+            && !preg_match('/(?:secret|token|password|private[_-]?key)/i', $name)) {
+            packageRuntimeValidateSchemaValue($property['default'], $property, 'settings default.' . $name, 0);
+            $defaults[$name] = $property['default'];
+        }
+    }
+    return $defaults;
 }
 
 function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $settings, string $actor): void

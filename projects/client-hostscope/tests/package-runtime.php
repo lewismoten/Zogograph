@@ -14,7 +14,7 @@ mkdir($root . '/web', 0700, true);
 file_put_contents($source . '/src/Provider.php', "<?php declare(strict_types=1); namespace TestRuntime; final class Provider { public function capability(): array { return ['id' => 'test-runtime', 'state' => 'available', 'reason' => 'test']; } }\n");
 file_put_contents($source . '/settings.schema.json', json_encode([
     'type' => 'object', 'additionalProperties' => false, 'required' => ['retention_days', 'custody_secret'],
-    'properties' => ['retention_days' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 90],
+        'properties' => ['retention_days' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 90, 'default' => 30],
         'custody_secret' => ['type' => 'string', 'pattern' => '^secret_ref:test-runtime:']],
 ], JSON_THROW_ON_ERROR));
 file_put_contents($source . '/migrations/001-private-evidence.sql', "CREATE TABLE private_evidence (value TEXT NOT NULL);\n");
@@ -98,6 +98,8 @@ try {
     migrate($pdo, true);
     $installed = packageRuntimeInstall($config, $pdo, $source, 'administrator');
     runtimeExpect(is_file($installed['install_path'] . '/src/Provider.php'), 'signed package file was not installed');
+    runtimeExpect(packageRuntimeSettings($pdo, $config, 'test-runtime')['retention_days'] === 30,
+        'signed package settings defaults were not shown before setup');
     if (function_exists('proc_open')) {
         try { packageRuntimeInvokeProbe($pdo, $config, 'test-runtime'); throw new RuntimeException('unconfigured probe launcher was accepted'); }
         catch (RuntimeException $error) { runtimeExpect($error->getMessage() !== 'unconfigured probe launcher was accepted', $error->getMessage()); }
