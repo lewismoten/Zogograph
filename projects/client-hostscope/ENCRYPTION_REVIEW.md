@@ -19,6 +19,7 @@ in [ENCRYPTION_DECISIONS.md](ENCRYPTION_DECISIONS.md).
 | live-store protection | operator-managed volume where available | Setup → Encryption | Protects SQLite, WAL, logs, and config together without changing application queries. |
 | remote replication | off | Fleet Encryption → Replicas | A replica should never be created without a deliberately enrolled peer. |
 | commercial services | off | Marketplace → installed package | A customer deployment must never depend on HostScope-operated services. |
+| remote service identity | normal HTTPS CA and hostname validation | provider package settings | This is the low-friction portable default; an optional SPKI pin adds a deliberate certificate-key rotation procedure. |
 
 These are seeded settings, not hard-coded policy. The only bootstrap values
 that remain in `lib/config.php` are the local setup-store path and enough
@@ -39,6 +40,7 @@ authenticated website/API.
 | MySQL/MariaDB backend | when multi-node query/write needs outweigh SQLite simplicity | storage package | It is a storage backend, not an encryption feature. It adds credentials, migrations, backups, and server operations. |
 | Redis | when an explicit cache/queue use case exists | cache package | Redis is not durable encrypted metric storage by default; an exposed Redis service is a serious data-disclosure risk. |
 | Commercial key hosting | before pricing or customer onboarding | commercial-services/key-custody package | Keep key custody and ciphertext replication as separate tenant-isolated roles; establish recovery, deletion, audit, and incident terms. |
+| TLS public-key pin | before enabling it or rotating a pinned service certificate key | provider package settings | A pin supplements CA validation but can block recovery if it is not migrated before the service certificate key changes. |
 | Product/domain naming | before public launch or rebrand | commercial-site deployment settings | Domains and labels must not change encrypted artifact identifiers, peer identities, signing keys, or stored customer data. |
 
 ## Recommended initial product direction
@@ -97,6 +99,15 @@ Transport credentials, package-download credentials, and data-encryption keys
 must be distinct. A replica endpoint accepts ciphertext and metadata only. A
 custody endpoint receives a wrapped data key and returns a short-lived unwrap
 authorization only after policy evaluation; it does not accept metric data.
+
+Normal HTTPS certificate and hostname validation is the recommended default for
+small deployments. The custody and replica provider packages also support an
+optional `sha256//...` SPKI pin after an administrator has recorded an
+endpoint-identity migration procedure. A pin must be updated and tested before
+the remote certificate **key** rotates; it is not a replacement for enrolled
+client credentials. On the service side, SQLite metadata, key material, and
+ciphertext artifacts use absolute, non-symlinked private paths outside the web
+root. A reverse-proxy path prefix is routing only, never a storage boundary.
 
 ## Package choices without overload
 
