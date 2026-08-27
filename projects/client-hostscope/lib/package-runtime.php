@@ -448,6 +448,11 @@ function packageRuntimeSaveSettings(PDO $pdo, array $config, string $id, array $
     packageRuntimeValidateSettings($settings);
     packageRuntimeValidateSettingsSecretReferences($settings, $id);
     packageRuntimeValidateManifestSettings($pdo, $id, $settings);
+    foreach (packageRuntimeSettingsSecretReferences($settings, $id) as $reference) {
+        if (!packageRuntimeSecretExists($config, $id, $reference)) {
+            throw new InvalidArgumentException('store the referenced package secret before saving these settings');
+        }
+    }
     $store = setupStoreOpen($config, true);
     if ($store === null) throw new RuntimeException('could not open package settings store');
     $store->exec('CREATE TABLE IF NOT EXISTS package_runtime_settings (
@@ -564,11 +569,21 @@ function packageRuntimeValidateSettings(array $settings): void
 
 function packageRuntimeValidateSettingsSecretReferences(array $settings, string $id): void
 {
-    $walk = function (mixed $value) use (&$walk, $id): void {
+    packageRuntimeSettingsSecretReferences($settings, $id);
+}
+
+/** @return list<string> References only; this never resolves secret material. */
+function packageRuntimeSettingsSecretReferences(array $settings, string $id): array
+{
+    $references = [];
+    $walk = function (mixed $value) use (&$walk, $id, &$references): void {
         if (is_array($value)) { foreach ($value as $child) $walk($child); return; }
-        if (is_string($value) && str_starts_with($value, 'secret_ref:')) packageRuntimeValidateSecretReference($id, $value);
+        if (is_string($value) && str_starts_with($value, 'secret_ref:')) {
+            packageRuntimeValidateSecretReference($id, $value); $references[] = $value;
+        }
     };
     $walk($settings);
+    return array_values(array_unique($references));
 }
 
 /** Uses a separately configured key when present, otherwise the local
@@ -631,11 +646,29 @@ function packageRuntimeSecretValue(PDO $registry, array $config, string $id, str
     return $plain;
 }
 
+/** Checks only package ownership and record presence; it never decrypts a secret. */
+function packageRuntimeSecretExists(array $config, string $id, string $reference): bool
+{
+    packageRuntimeValidateSecretReference($id, $reference);
+    $store = setupStoreOpen($config, false);
+    if ($store === null || (int)$store->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'package_runtime_secrets'")->fetchColumn() !== 1) return false;
+    $stmt = $store->prepare('SELECT COUNT(*) FROM package_runtime_secrets WHERE reference = ? AND package_id = ?');
+    $stmt->execute([$reference, $id]);
+    return (int)$stmt->fetchColumn() === 1;
+}
+
 function packageRuntimeSecretDelete(PDO $registry, array $config, string $id, string $reference): void
 {
     packageRuntimeInstalled($registry, $id); packageRuntimeValidateSecretReference($id, $reference);
     $store = setupStoreOpen($config, false);
     if ($store === null) throw new InvalidArgumentException('package secret is unavailable');
+    if ((int)$store->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'package_runtime_settings'")->fetchColumn() === 1) {
+        $settings = $store->prepare('SELECT value FROM package_runtime_settings WHERE package_id = ?'); $settings->execute([$id]); $encoded = $settings->fetchColumn();
+        $value = is_string($encoded) ? json_decode($encoded, true) : null;
+        if (is_array($value) && in_array($reference, packageRuntimeSettingsSecretReferences($value, $id), true)) {
+            throw new InvalidArgumentException('remove this secret reference from package settings before deleting it');
+        }
+    }
     $stmt = $store->prepare('DELETE FROM package_runtime_secrets WHERE reference = ? AND package_id = ?'); $stmt->execute([$reference, $id]);
     if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('package secret is unavailable');
 }

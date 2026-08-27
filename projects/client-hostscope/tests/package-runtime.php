@@ -194,8 +194,14 @@ try {
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'raw package secret was accepted', $error->getMessage()); }
     try { packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['custody_secret' => 'secret_ref:another-package:abcdefghijklmnop'], 'administrator'); throw new RuntimeException('another package secret reference was accepted'); }
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'another package secret reference was accepted', $error->getMessage()); }
+    try { packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['retention_days' => 30, 'custody_secret' => 'secret_ref:test-runtime:abcdefghijklmnop'], 'administrator'); throw new RuntimeException('missing package secret reference was accepted'); }
+    catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'missing package secret reference was accepted', $error->getMessage()); }
     try { packageRuntimeSecretValue($pdo, $config, 'wrong-package', $reference); throw new RuntimeException('another package read a secret'); }
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'another package read a secret', $error->getMessage()); }
+    try { packageRuntimeSecretDelete($pdo, $config, 'test-runtime', $reference); throw new RuntimeException('referenced package secret was deleted'); }
+    catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'referenced package secret was deleted', $error->getMessage()); }
+    $replacementReference = packageRuntimeSecretStore($pdo, $config, 'test-runtime', 'replacement-client-credential', 'administrator');
+    packageRuntimeSaveSettings($pdo, $config, 'test-runtime', ['retention_days' => 30, 'custody_secret' => $replacementReference], 'administrator');
     packageRuntimeSecretDelete($pdo, $config, 'test-runtime', $reference);
     try { packageRuntimeSecretValue($pdo, $config, 'test-runtime', $reference); throw new RuntimeException('deleted package secret was recovered'); }
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'deleted package secret was recovered', $error->getMessage()); }

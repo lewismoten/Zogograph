@@ -30,6 +30,10 @@ values. Core encrypts the referenced value in `setup.db` using a key file kept
 outside the web root; it never returns the plaintext through the settings API.
 The same local key as sealed copies is the simple default, while a separate
 0600 key file is available for administrators who require separate custody.
+Core refuses to save a reference until its encrypted secret record exists, and
+refuses to delete a secret that active package settings still reference. Remove
+or replace the reference first; this prevents a later provider invocation from
+failing because a credential was silently orphaned.
 
 The package-runtime dashboard rehashes installed immutable files and compares
 the installed manifest with its install-time fingerprint before it reports a
