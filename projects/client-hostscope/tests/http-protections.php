@@ -170,7 +170,7 @@ foreach ([
         throw new RuntimeException('missing account restore safeguard: ' . $required);
     }
 }
-foreach (['--sealed', '--key', 'encryptionOpenFile', 'encryptionReadLocalKey', 'sealed-restore-'] as $required) {
+foreach (['--sealed', '--key', 'encryptionOpenFile', 'encryptionReadLocalKey', 'sealed-restore-', 'if ($decrypted !== null) @unlink($decrypted);'] as $required) {
     if (!str_contains($restore, $required)) {
         throw new RuntimeException('missing sealed account restore safeguard: ' . $required);
     }

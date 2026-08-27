@@ -92,6 +92,8 @@ try {
     fwrite(STDOUT, "Restored account database. Start the web app and cron only after this command exits.\n");
 } catch (Throwable $e) {
     @unlink($temporary);
+    // exit does not run finally on every supported PHP runtime.
+    if ($decrypted !== null) @unlink($decrypted);
     fwrite(STDERR, 'Restore refused: ' . $e->getMessage() . "\n");
     exit(1);
 } finally {
