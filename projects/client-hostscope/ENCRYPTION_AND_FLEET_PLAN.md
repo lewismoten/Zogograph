@@ -274,7 +274,10 @@ The SQLCipher adapter can detect a real SQLCipher PDO build and opens no normal
 SQLite fallback, but it is not activatable: the package runtime does not yet
 execute package code and no recovery-tested conversion path exists. Fleet
 replication, self-managed custody, third-party KMS/HSM packages, MySQL/MariaDB
-storage, and Redis remain design/package work. The commercial key-custody
+storage, and Redis remain client-package work. The commercial replica-relay
+reference service is separately deployable: it accepts only signed,
+hash-verified ciphertext and has no custody or unwrap API, but no client
+package can use it yet. The commercial key-custody
 reference service is separately testable and requires signed enrollment plus
 an active service entitlement for new envelopes; it is not connected to a
 client runtime or needed for local recovery. Its customer-management API can

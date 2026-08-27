@@ -138,6 +138,13 @@ reference, and revoked. It cannot execute until the isolated runtime is built.
 This preserves customer choice without claiming that an untested provider is
 already protecting live data.
 
+`commercial-services/replica-relay/` is now a separately deployable,
+ciphertext-only reference service with isolated tenant enrollment, SQLite
+metadata, private artifact files, and a signed API. It is not yet an end-user
+client capability: no full-client relay package may upload to it until the
+isolated runtime, retry/coverage ledger, recovery verification, and deletion
+acknowledgement protocol are implemented and tested.
+
 The key-custody service is a separate reference deployment, not a default
 customer dependency. If it is offered later, keep its base URL, plan/price,
 retention, recovery contacts, and supported-package matrix in commercial
