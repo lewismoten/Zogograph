@@ -112,6 +112,12 @@ try {
     } catch (RuntimeException $error) {
         encryptionExpect($error->getMessage() !== 'symlinked default encrypted-copy directory was accepted', $error->getMessage());
     }
+    try {
+        encryptionArtifactDirectory(['database' => $web . '/data/stats.db', 'encryption' => []], $web);
+        throw new RuntimeException('web-root default encrypted-copy directory was accepted');
+    } catch (RuntimeException $error) {
+        encryptionExpect($error->getMessage() !== 'web-root default encrypted-copy directory was accepted', $error->getMessage());
+    }
     @unlink($defaultSealed);
     encryptionValidateSettings(['encryption' => ['mode' => 'sealed_copies_local',
         'local_key_file' => $keyPath, 'stores' => ['account']]], $web);

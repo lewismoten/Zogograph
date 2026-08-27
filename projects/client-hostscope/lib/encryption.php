@@ -94,11 +94,17 @@ function encryptionArtifactDirectory(array $config, string $webRoot): string
     $configured = (string)($settings['artifact_directory'] ?? '');
     if ($configured === '') {
         $default = dirname((string)$config['database']) . '/sealed';
+        $root = realpath($webRoot);
+        $candidate = encryptionCanonicalPotentialPath($default);
+        if (is_string($root) && is_string($candidate) && ($candidate === $root || str_starts_with($candidate, rtrim($root, '/') . '/'))) {
+            throw new RuntimeException('the default encrypted-copy directory must be outside the web root');
+        }
         if (is_link($default) || (!is_dir($default) && !@mkdir($default, 0700, true) && !is_dir($default))) {
             throw new RuntimeException('the default encrypted-copy directory is unavailable or unsafe');
         }
         $real = realpath($default);
-        if ($real === false || is_link($default) || !is_dir($real) || !is_writable($real)) {
+        if ($real === false || is_link($default) || !is_dir($real) || !is_writable($real)
+            || (is_string($root) && ($real === $root || str_starts_with($real, rtrim($root, '/') . '/')))) {
             throw new RuntimeException('the default encrypted-copy directory is unavailable or unsafe');
         }
         @chmod($real, 0700);
