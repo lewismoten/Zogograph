@@ -13,6 +13,13 @@ backed by the required SQLCipher build, it must leave existing plaintext files
 untouched and report the unavailable capability. It must never silently use
 normal SQLite after the administrator chose live database encryption.
 
+When the isolated runtime eventually opens a selected database, the adapter
+will prove more than driver availability: after applying the caller-owned
+256-bit key it reads the SQLite schema and requires SQLCipher's full
+`cipher_integrity_check` to return `ok`. A wrong key, a plaintext file, or an
+integrity failure is refused before HostScope enables WAL or performs any
+application work.
+
 Before activation the runtime must create and verify a sealed recovery artifact,
 convert one selected store at a time, validate schema and application queries,
 prove WAL and crash recovery, and retain the original until the administrator

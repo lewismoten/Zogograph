@@ -20,6 +20,10 @@ try {
     }
     try { $sqlcipher->open($root . '/sqlcipher.db', 'short'); throw new RuntimeException('SQLCipher provider accepted an invalid key'); }
     catch (InvalidArgumentException|RuntimeException $error) { packageExpect($error->getMessage() !== 'SQLCipher provider accepted an invalid key', $error->getMessage()); }
+    $sqlcipherSource = file_get_contents(__DIR__ . '/../plugins/sqlcipher-encrypted-sqlite/src/SqlcipherStorageProvider.php');
+    packageExpect($sqlcipherSource !== false && str_contains($sqlcipherSource, 'SELECT COUNT(*) FROM sqlite_master')
+        && str_contains($sqlcipherSource, 'PRAGMA cipher_integrity_check'),
+        'SQLCipher provider does not prove the opened database and supplied key');
     $custodyMetadata = \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::requestMetadata();
     packageExpect(ctype_digit($custodyMetadata['timestamp']) && preg_match('/^[A-Za-z0-9_-]{16,}$/', $custodyMetadata['nonce']) === 1,
         'custody client request metadata is not replay-safe');

@@ -47,7 +47,17 @@ final class SqlcipherStorageProvider
         $pdo->exec("PRAGMA key = \"x'" . bin2hex($key) . "'\"");
         $version = trim((string)$pdo->query('PRAGMA cipher_version')->fetchColumn());
         if ($version === '') throw new \RuntimeException('SQLCipher key setup was not verified; refusing plaintext fallback');
-        $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA busy_timeout = 5000');
+        try {
+            // cipher_version proves the driver, not that this particular file
+            // opened with the supplied key. Read the schema and then force
+            // SQLCipher's full-page authentication check before returning it.
+            $pdo->query('SELECT COUNT(*) FROM sqlite_master')->fetchColumn();
+            $integrity = strtolower(trim((string)$pdo->query('PRAGMA cipher_integrity_check')->fetchColumn()));
+            if ($integrity !== 'ok') throw new \RuntimeException('SQLCipher integrity proof was not ok');
+        } catch (\Throwable $error) {
+            throw new \RuntimeException('SQLCipher key or database integrity proof failed; refusing plaintext fallback', 0, $error);
+        }
+        $pdo->exec('PRAGMA foreign_keys = ON'); $pdo->exec('PRAGMA journal_mode = WAL'); $pdo->exec('PRAGMA busy_timeout = 5000');
         return $pdo;
     }
 }
