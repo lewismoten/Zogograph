@@ -17,11 +17,18 @@ marketplaceExpect($enabled['enabled'] === true && marketplacePackages(['marketpl
     'catalog package enablement was not persisted');
 marketplaceExpect(marketplaceAlertRecommendations(['marketplace' => ['directory' => $root]], $pdo)[0]['rule'] === 'host_uptime',
     'enabled recommendation package was not exposed as data-only guidance');
+$updatedManifest = json_decode((string)file_get_contents($root . '/uptime-pack.json'), true);
+$updatedManifest['version'] = '1.0.1';
+file_put_contents($root . '/uptime-pack.json', json_encode($updatedManifest));
+$updated = marketplacePackages(['marketplace' => ['directory' => $root]], $pdo)[0];
+marketplaceExpect(!$updated['enabled'] && $updated['requires_reapproval'], 'changed package version did not require fresh approval');
 $disabled = marketplaceSetEnabled(['marketplace' => ['directory' => $root]], $pdo, 'uptime-pack', false, 'administrator');
 marketplaceExpect($disabled['enabled'] === false && marketplaceAlertRecommendations(['marketplace' => ['directory' => $root]], $pdo) === [],
     'disabled recommendation package remained active');
 try { marketplaceManifest(['id'=>'Bad','version'=>'1','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['shell']]); throw new RuntimeException('unsafe manifest was accepted'); } catch (InvalidArgumentException) {}
 try { marketplaceManifest(['id'=>'bad-guidance','version'=>'1.0.0','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['alert_recommendations'], 'recommendations'=>[['rule'=>'same_rule','severity'=>'warning','reason'=>'x'], ['rule'=>'same_rule','severity'=>'error','reason'=>'y']]]); throw new RuntimeException('duplicate package guidance was accepted'); } catch (InvalidArgumentException) {}
+$incompatible = marketplaceManifest(['id'=>'future-runtime','version'=>'1.0.0','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['alert_recommendations'], 'compatibility'=>['min_php'=>'999.0.0']]);
+marketplaceExpect(!marketplaceCompatibility($pdo, $incompatible)['can_enable'], 'incompatible package can be enabled');
 $signed = marketplaceManifest(['id'=>'signed-pack','version'=>'1.0.0','name'=>'Signed pack','publisher'=>'Example publisher','summary'=>'Signed guidance.','license'=>'Proprietary','capabilities'=>['alert_recommendations']]);
 if (function_exists('sodium_crypto_sign_keypair')) {
     $pair = sodium_crypto_sign_keypair();

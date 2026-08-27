@@ -9,7 +9,7 @@ const MARKETPLACE_MAX_PACKAGES = 200;
 const MARKETPLACE_MAX_MANIFEST_BYTES = 65536;
 const MARKETPLACE_SIGNATURE_ALGORITHM = 'ed25519';
 
-/** @return array{id:string,version:string,name:string,publisher:string,summary:string,license:string,capabilities:list<string>,recommendations:list<array{rule:string,severity:string,reason:string}>,signature:?array{key_id:string,algorithm:string,value:string}} */
+/** @return array{id:string,version:string,name:string,publisher:string,summary:string,license:string,capabilities:list<string>,recommendations:list<array{rule:string,severity:string,reason:string}>,compatibility:array{min_php?:string,max_php?:string,min_schema?:int,max_schema?:int},signature:?array{key_id:string,algorithm:string,value:string}} */
 function marketplaceManifest(array $raw): array
 {
     $id = trim((string)($raw['id'] ?? ''));
@@ -40,9 +40,28 @@ function marketplaceManifest(array $raw): array
         $recommendations[] = compact('rule', 'severity', 'reason');
     }
     if (count($recommendations) > 30) throw new InvalidArgumentException('package has too many recommendations');
+    $compatibility = [];
+    if (array_key_exists('compatibility', $raw)) {
+        if (!is_array($raw['compatibility'])) throw new InvalidArgumentException('package compatibility is invalid');
+        if (array_diff(array_keys($raw['compatibility']), ['min_php', 'max_php', 'min_schema', 'max_schema']) !== []) throw new InvalidArgumentException('package compatibility is invalid');
+        foreach (['min_php', 'max_php'] as $field) {
+            if (!array_key_exists($field, $raw['compatibility'])) continue;
+            $value = trim((string)$raw['compatibility'][$field]);
+            if (!preg_match('/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-z0-9.-]+)?$/i', $value)) throw new InvalidArgumentException('package compatibility is invalid');
+            $compatibility[$field] = $value;
+        }
+        foreach (['min_schema', 'max_schema'] as $field) {
+            if (!array_key_exists($field, $raw['compatibility'])) continue;
+            if (filter_var($raw['compatibility'][$field], FILTER_VALIDATE_INT) === false || (int)$raw['compatibility'][$field] < 0) throw new InvalidArgumentException('package compatibility is invalid');
+            $compatibility[$field] = (int)$raw['compatibility'][$field];
+        }
+        if ((isset($compatibility['min_php'], $compatibility['max_php']) && version_compare($compatibility['min_php'], $compatibility['max_php'], '>'))
+            || (isset($compatibility['min_schema'], $compatibility['max_schema']) && $compatibility['min_schema'] > $compatibility['max_schema'])) throw new InvalidArgumentException('package compatibility range is invalid');
+    }
     $signature = null;
     if (array_key_exists('signature', $raw)) {
         if (!is_array($raw['signature'])) throw new InvalidArgumentException('package signature is invalid');
+        if (array_diff(array_keys($raw['signature']), ['key_id', 'algorithm', 'value']) !== []) throw new InvalidArgumentException('package signature is invalid');
         $key_id = trim((string)($raw['signature']['key_id'] ?? ''));
         $algorithm = trim((string)($raw['signature']['algorithm'] ?? ''));
         $value = trim((string)($raw['signature']['value'] ?? ''));
@@ -51,7 +70,7 @@ function marketplaceManifest(array $raw): array
         $signature = compact('key_id', 'algorithm', 'value');
     }
     sort($capabilities, SORT_STRING);
-    return compact('id', 'version', 'name', 'publisher', 'summary', 'license', 'capabilities', 'recommendations', 'signature');
+    return compact('id', 'version', 'name', 'publisher', 'summary', 'license', 'capabilities', 'recommendations', 'compatibility', 'signature');
 }
 
 /** Stable signed bytes: package JSON objects have lexical keys, arrays keep their order. */
@@ -89,6 +108,23 @@ function marketplaceProvenance(array $config, array $manifest): array
         : ['status' => 'invalid', 'detail' => 'Signature does not match this manifest.', 'can_enable' => false, 'key_id' => $key_id];
 }
 
+/** @return array{status:string,detail:string,can_enable:bool,schema:int} */
+function marketplaceCompatibility(PDO $pdo, array $manifest): array
+{
+    $schema = 0;
+    try { $schema = (int)$pdo->query('SELECT COALESCE(MAX(version), 0) FROM schema_version')->fetchColumn(); }
+    catch (Throwable) { /* The marketplace can be inspected while a legacy database is being recovered. */ }
+    $requires = $manifest['compatibility'];
+    $problems = [];
+    if (isset($requires['min_php']) && version_compare(PHP_VERSION, $requires['min_php'], '<')) $problems[] = 'requires PHP ' . $requires['min_php'] . ' or newer';
+    if (isset($requires['max_php']) && version_compare(PHP_VERSION, $requires['max_php'], '>')) $problems[] = 'requires PHP ' . $requires['max_php'] . ' or older';
+    if (isset($requires['min_schema']) && $schema < $requires['min_schema']) $problems[] = 'requires schema ' . $requires['min_schema'] . ' or newer';
+    if (isset($requires['max_schema']) && $schema > $requires['max_schema']) $problems[] = 'requires schema ' . $requires['max_schema'] . ' or older';
+    return $problems === []
+        ? ['status' => 'compatible', 'detail' => 'Compatible with this HostScope runtime.', 'can_enable' => true, 'schema' => $schema]
+        : ['status' => 'incompatible', 'detail' => implode('; ', $problems), 'can_enable' => false, 'schema' => $schema];
+}
+
 /** @return list<array{package:string,rule:string,severity:string,reason:string}> */
 function marketplaceAlertRecommendations(array $config, PDO $pdo): array
 {
@@ -124,10 +160,14 @@ function marketplacePackages(array $config, PDO $pdo): array
     $catalog = marketplaceCatalog($config);
     $states = [];
     foreach ($pdo->query('SELECT package_id, version, enabled_at, changed_at, changed_by FROM marketplace_packages')->fetchAll() as $row) $states[$row['package_id']] = $row;
-    return array_map(function (array $package) use ($states): array {
+    return array_map(function (array $package) use ($states, $pdo): array {
         $state = $states[$package['id']] ?? null;
-        return $package + ['enabled' => $state !== null && $state['enabled_at'] !== null,
-            'installed_version' => $state['version'] ?? null, 'changed_at' => $state['changed_at'] ?? null];
+        $compatibility = marketplaceCompatibility($pdo, $package);
+        $requires_reapproval = $state !== null && $state['enabled_at'] !== null && $state['version'] !== $package['version'];
+        return $package + ['enabled' => $state !== null && $state['enabled_at'] !== null && !$requires_reapproval
+                && $package['provenance']['can_enable'] && $compatibility['can_enable'],
+            'installed_version' => $state['version'] ?? null, 'changed_at' => $state['changed_at'] ?? null,
+            'compatibility' => $compatibility, 'requires_reapproval' => $requires_reapproval];
     }, $catalog['packages']);
 }
 
@@ -137,11 +177,13 @@ function marketplaceSetEnabled(array $config, PDO $pdo, string $id, bool $enable
     $catalog = marketplaceCatalog($config);
     $package = current(array_filter($catalog['packages'], fn(array $row): bool => $row['id'] === $id));
     if (!is_array($package)) throw new InvalidArgumentException('package is not available in the local catalog');
-    if (!$package['provenance']['can_enable']) throw new InvalidArgumentException('package provenance cannot be verified');
+    $compatibility = marketplaceCompatibility($pdo, $package);
+    if ($enabled && !$package['provenance']['can_enable']) throw new InvalidArgumentException('package provenance cannot be verified');
+    if ($enabled && !$compatibility['can_enable']) throw new InvalidArgumentException('package is incompatible with this HostScope runtime');
     $now = time();
     $pdo->prepare('INSERT INTO marketplace_packages (package_id, version, enabled_at, changed_at, changed_by)
         VALUES (?, ?, ?, ?, ?) ON CONFLICT(package_id) DO UPDATE SET version = excluded.version,
         enabled_at = excluded.enabled_at, changed_at = excluded.changed_at, changed_by = excluded.changed_by')
         ->execute([$id, $package['version'], $enabled ? $now : null, $now, mb_substr($actor, 0, 120)]);
-    return $package + ['enabled' => $enabled];
+    return $package + ['compatibility' => $compatibility, 'enabled' => $enabled];
 }

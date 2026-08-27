@@ -11648,8 +11648,9 @@ function renderMarketplace(data) {
     { label: "What it offers", className: "cmd", render: row => row.summary },
     { label: "Capabilities", render: row => row.capabilities.join(", ") },
     { label: "Trust", render: row => row.provenance.status },
+    { label: "Compatibility", render: row => row.compatibility.status },
     { label: "License", render: row => row.license },
-    { label: "Status", render: row => row.enabled ? "enabled" : "not enabled" },
+    { label: "Status", render: row => row.requires_reapproval ? "review required" : row.enabled ? "enabled" : "not enabled" },
     { label: "", className: "row-actions", render: row => {
       const wrap = document.createDocumentFragment();
       if (row.recommendations?.length) {
@@ -11660,8 +11661,8 @@ function renderMarketplace(data) {
       if (!data.can_change) return wrap;
       const button = document.createElement("button"); button.className = row.enabled ? "link danger" : "link";
       button.textContent = row.enabled ? "Disable" : "Enable";
-      button.disabled = !row.provenance.can_enable;
-      button.title = row.provenance.can_enable ? "" : row.provenance.detail;
+      button.disabled = !row.provenance.can_enable || !row.compatibility.can_enable;
+      button.title = row.provenance.can_enable && row.compatibility.can_enable ? "" : `${row.provenance.detail} ${row.compatibility.detail}`;
       button.addEventListener("click", async () => {
         if (!(await confirmDialog(`${row.enabled ? "Disable" : "Enable"} ${row.name}?\n\nCapabilities: ${row.capabilities.join(", ")}`, row.enabled ? "Disable package" : "Enable package"))) return;
         try { await post("marketplace-enable", { id: row.id, enabled: row.enabled ? "0" : "1" }); await refreshMarketplace(); notice(`${row.name} ${row.enabled ? "disabled" : "enabled"}.`, true); }
