@@ -16,8 +16,9 @@ if (!is_string($input) || strlen($input) > 65536) { fwrite(STDERR, "Worker reque
 try {
     $request = json_decode($input, true, 16, JSON_THROW_ON_ERROR);
     $manifest = json_decode((string)file_get_contents($root . '/manifest.json'), true, 64, JSON_THROW_ON_ERROR);
-    if (!is_array($request) || array_diff(array_keys($request), ['api', 'operation', 'package_id']) !== [] || count($request) !== 3
-        || ($request['api'] ?? null) !== '1.0' || !is_string($request['operation'] ?? null)
+    if (!is_array($request) || array_diff(array_keys($request), ['api', 'invocation_id', 'operation', 'package_id']) !== [] || count($request) !== 4
+        || ($request['api'] ?? null) !== '1.0' || !is_string($request['invocation_id'] ?? null)
+        || !preg_match('/^[a-f0-9]{32}$/', $request['invocation_id']) || !is_string($request['operation'] ?? null)
         || !is_array($manifest) || ($request['package_id'] ?? null) !== ($manifest['id'] ?? null)) throw new RuntimeException('Worker request is invalid.');
     $runtime = (array)($manifest['runtime'] ?? []); $entrypoint = (string)($runtime['entrypoint'] ?? ''); $class = (string)($runtime['provider_class'] ?? '');
     $operations = array_values((array)($runtime['operations'] ?? []));
@@ -30,5 +31,5 @@ try {
     $result = $request['operation'] === 'capability' ? $provider->capability() : $provider->preflight();
     if (!is_array($result) || !is_string($result['id'] ?? null) || !is_string($result['state'] ?? null) || !is_string($result['reason'] ?? null)
         || strlen(json_encode($result, JSON_THROW_ON_ERROR)) > 4096) throw new RuntimeException('Package capability response is invalid.');
-    fwrite(STDOUT, json_encode(['api' => '1.0', 'package_id' => $manifest['id'], 'operation' => $request['operation'], 'result' => $result], JSON_UNESCAPED_SLASHES) . "\n");
+    fwrite(STDOUT, json_encode(['api' => '1.0', 'invocation_id' => $request['invocation_id'], 'package_id' => $manifest['id'], 'operation' => $request['operation'], 'result' => $result], JSON_UNESCAPED_SLASHES) . "\n");
 } catch (Throwable $error) { fwrite(STDERR, 'Worker refused: ' . $error->getMessage() . "\n"); exit(1); }

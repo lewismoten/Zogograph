@@ -69,20 +69,20 @@ try {
         $pipes = []; $worker = proc_open([PHP_BINARY, __DIR__ . '/../scripts/package-runtime-worker.php', '--package-root', $source],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, ['HOSTSCOPE_PACKAGE_SANDBOX' => '1']);
         runtimeExpect(is_resource($worker), 'could not start package sandbox worker');
-        fwrite($pipes[0], json_encode(['api' => '1.0', 'operation' => 'capability', 'package_id' => 'test-runtime'], JSON_THROW_ON_ERROR)); fclose($pipes[0]);
+        fwrite($pipes[0], json_encode(['api' => '1.0', 'invocation_id' => str_repeat('a', 32), 'operation' => 'capability', 'package_id' => 'test-runtime'], JSON_THROW_ON_ERROR)); fclose($pipes[0]);
         $output = stream_get_contents($pipes[1]); $errors = stream_get_contents($pipes[2]); fclose($pipes[1]); fclose($pipes[2]);
         runtimeExpect(proc_close($worker) === 0 && str_contains($output, 'test-runtime') && $errors === '', 'package sandbox worker did not return bounded capability facts');
         $pipes = []; $unknown = proc_open([PHP_BINARY, __DIR__ . '/../scripts/package-runtime-worker.php', '--package-root', $source],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, ['HOSTSCOPE_PACKAGE_SANDBOX' => '1']);
         runtimeExpect(is_resource($unknown), 'could not start package worker unknown-field test');
-        fwrite($pipes[0], json_encode(['api' => '1.0', 'operation' => 'capability', 'package_id' => 'test-runtime', 'unexpected' => true], JSON_THROW_ON_ERROR)); fclose($pipes[0]);
+        fwrite($pipes[0], json_encode(['api' => '1.0', 'invocation_id' => str_repeat('a', 32), 'operation' => 'capability', 'package_id' => 'test-runtime', 'unexpected' => true], JSON_THROW_ON_ERROR)); fclose($pipes[0]);
         $unknownOutput = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]); fclose($pipes[1]); fclose($pipes[2]);
         runtimeExpect(proc_close($unknown) === 1 && str_contains($unknownOutput, 'Worker request is invalid'), 'package worker accepted an unknown request field');
         $sqlcipherRoot = realpath(__DIR__ . '/../plugins/sqlcipher-encrypted-sqlite');
         $pipes = []; $sqlcipher = proc_open([PHP_BINARY, __DIR__ . '/../scripts/package-runtime-worker.php', '--package-root', $sqlcipherRoot],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, ['HOSTSCOPE_PACKAGE_SANDBOX' => '1']);
         runtimeExpect(is_resource($sqlcipher), 'could not start SQLCipher preflight worker');
-        fwrite($pipes[0], json_encode(['api' => '1.0', 'operation' => 'sqlcipher_preflight', 'package_id' => 'sqlcipher-encrypted-sqlite'], JSON_THROW_ON_ERROR)); fclose($pipes[0]);
+        fwrite($pipes[0], json_encode(['api' => '1.0', 'invocation_id' => str_repeat('a', 32), 'operation' => 'sqlcipher_preflight', 'package_id' => 'sqlcipher-encrypted-sqlite'], JSON_THROW_ON_ERROR)); fclose($pipes[0]);
         $preflightOutput = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]); fclose($pipes[1]); fclose($pipes[2]);
         runtimeExpect(proc_close($sqlcipher) === 0 && str_contains($preflightOutput, 'sqlcipher_preflight')
             && (str_contains($preflightOutput, 'unavailable') || str_contains($preflightOutput, 'preflight-ready')),
@@ -96,6 +96,23 @@ try {
     migrate($pdo, true);
     $installed = packageRuntimeInstall($config, $pdo, $source, 'administrator');
     runtimeExpect(is_file($installed['install_path'] . '/src/Provider.php'), 'signed package file was not installed');
+    if (function_exists('proc_open')) {
+        try { packageRuntimeInvokeProbe($pdo, $config, 'test-runtime'); throw new RuntimeException('unconfigured probe launcher was accepted'); }
+        catch (RuntimeException $error) { runtimeExpect($error->getMessage() !== 'unconfigured probe launcher was accepted', $error->getMessage()); }
+        $launcher = $root . '/probe-launcher.sh';
+        file_put_contents($launcher, "#!/bin/sh\nHOSTSCOPE_PACKAGE_SANDBOX=1 exec " . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__DIR__ . '/../scripts/package-runtime-worker.php') . ' --package-root ' . escapeshellarg($installed['install_path']) . "\n");
+        chmod($launcher, 0700);
+        $config['package_runtime']['probe_invokers'] = ['test-runtime' => [
+            'command' => [$launcher], 'isolation_profile' => 'test-one-shot-sandbox-v1',
+            'package_manifest_sha256' => hash_file('sha256', $installed['install_path'] . '/manifest.json'),
+        ]];
+        $probe = packageRuntimeInvokeProbe($pdo, $config, 'test-runtime');
+        runtimeExpect(($probe['id'] ?? null) === 'test-runtime' && ($probe['state'] ?? null) === 'available',
+            'attested no-secret package capability probe did not return its signed package result');
+        $badInvoker = $config; $badInvoker['package_runtime']['probe_invokers']['test-runtime']['package_manifest_sha256'] = str_repeat('0', 64);
+        try { packageRuntimeInvokeProbe($pdo, $badInvoker, 'test-runtime'); throw new RuntimeException('probe launcher accepted another package release'); }
+        catch (RuntimeException $error) { runtimeExpect($error->getMessage() !== 'probe launcher accepted another package release', $error->getMessage()); }
+    }
     $before = packageRuntimePackages($pdo)[0];
     runtimeExpect(!$before['enabled'] && $before['state'] === 'needs explicit capability grants', 'package activated without a grant');
     $futureApi = $signed; $futureApi['runtime']['minimum_api'] = '999.0';

@@ -607,3 +607,91 @@ function packageRuntimeSecretDelete(PDO $registry, array $config, string $id, st
     $stmt = $store->prepare('DELETE FROM package_runtime_secrets WHERE reference = ? AND package_id = ?'); $stmt->execute([$reference, $id]);
     if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('package secret is unavailable');
 }
+
+/** Reads a deployment-owned launcher definition. It is intentionally absent
+ * from browser/package settings: changing an executable command is host policy. */
+function packageRuntimeProbeInvoker(array $config, string $id, string $manifestHash): array
+{
+    $entry = (array)(((array)($config['package_runtime'] ?? []))['probe_invokers'][$id] ?? []);
+    $command = array_values((array)($entry['command'] ?? []));
+    $profile = trim((string)($entry['isolation_profile'] ?? ''));
+    $declaredHash = strtolower(trim((string)($entry['package_manifest_sha256'] ?? '')));
+    if (count($command) < 1 || count($command) > 24 || !preg_match('/^[a-z0-9][a-z0-9._:-]{2,120}$/i', $profile)
+        || !preg_match('/^[a-f0-9]{64}$/', $declaredHash) || !hash_equals($manifestHash, $declaredHash)) {
+        throw new RuntimeException('no reviewed isolated probe launcher is configured for this exact package release');
+    }
+    foreach ($command as $index => $argument) {
+        if (!is_string($argument) || $argument === '' || strlen($argument) > 1024 || str_contains($argument, "\0")) {
+            throw new RuntimeException('isolated probe launcher command is invalid');
+        }
+        if ($index === 0 && (!str_starts_with($argument, '/') || !is_file($argument) || !is_executable($argument))) {
+            throw new RuntimeException('isolated probe launcher executable is unavailable');
+        }
+    }
+    return ['command' => $command, 'isolation_profile' => $profile];
+}
+
+/**
+ * Launches only a signed no-secret readiness probe through an operator-owned
+ * sandbox command. It deliberately does not grant isolated_package_runtime or
+ * enable a provider: an attestation record is not proof of live-operation safety.
+ * @return array{id:string,state:string,reason:string,version?:string}
+ */
+function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, string $operation = 'capability'): array
+{
+    if (!function_exists('proc_open')) throw new RuntimeException('this PHP deployment cannot launch an isolated probe');
+    $row = $registry->prepare('SELECT manifest_json, manifest_sha256, install_path, enabled_at FROM runtime_packages WHERE package_id = ?');
+    $row->execute([$id]); $package = $row->fetch();
+    $manifest = is_array($package) ? json_decode((string)$package['manifest_json'], true) : null;
+    if (!is_array($manifest)) throw new InvalidArgumentException('package is not installed');
+    $integrity = packageRuntimeVerifyInstalledPackage($manifest, (string)$package['install_path'], (string)$package['manifest_sha256']);
+    if (!$integrity['ok']) throw new RuntimeException('installed package integrity failed: ' . $integrity['detail']);
+    $revoked = $registry->prepare('SELECT 1 FROM runtime_package_revocations WHERE package_id = ?'); $revoked->execute([$id]);
+    if ($revoked->fetchColumn()) throw new RuntimeException('package is revoked');
+    $signedOperations = (array)($manifest['runtime']['operations'] ?? []);
+    if (!in_array($operation, ['capability', 'sqlcipher_preflight'], true) || !in_array($operation, $signedOperations, true)) {
+        throw new InvalidArgumentException('package operation is not a signed no-secret probe');
+    }
+    $invoker = packageRuntimeProbeInvoker($config, $id, (string)$package['manifest_sha256']);
+    $invocationId = bin2hex(random_bytes(16));
+    $request = json_encode(['api' => PACKAGE_RUNTIME_API_VERSION, 'invocation_id' => $invocationId, 'operation' => $operation, 'package_id' => $id], JSON_THROW_ON_ERROR);
+    $pipes = [];
+    $process = proc_open($invoker['command'], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null,
+        ['PATH' => '/usr/bin:/bin'], ['bypass_shell' => true]);
+    if (!is_resource($process)) throw new RuntimeException('could not start isolated probe launcher');
+    try {
+        fwrite($pipes[0], $request . "\n"); fclose($pipes[0]);
+        stream_set_blocking($pipes[1], false); stream_set_blocking($pipes[2], false);
+        $stdout = ''; $stderr = ''; $deadline = microtime(true) + 15;
+        do {
+            $read = [$pipes[1], $pipes[2]]; $write = null; $except = null;
+            @stream_select($read, $write, $except, 0, 200000);
+            foreach ($read as $stream) {
+                $chunk = stream_get_contents($stream);
+                if ($stream === $pipes[1]) $stdout .= $chunk; else $stderr .= $chunk;
+            }
+            if (strlen($stdout) > 8192 || strlen($stderr) > 4096) throw new RuntimeException('isolated probe output exceeded its limit');
+            $status = proc_get_status($process);
+            if (!$status['running']) break;
+        } while (microtime(true) < $deadline);
+        if (($status['running'] ?? false)) { proc_terminate($process); throw new RuntimeException('isolated probe timed out'); }
+        $stdout .= stream_get_contents($pipes[1]); $stderr .= stream_get_contents($pipes[2]);
+        $reportedExit = $status['exitcode'] ?? -1;
+        fclose($pipes[1]); fclose($pipes[2]); $exit = proc_close($process); $process = null;
+        if ($exit === -1 && is_int($reportedExit) && $reportedExit >= 0) $exit = $reportedExit;
+        if ($exit !== 0) throw new RuntimeException('isolated probe failed' . ($stderr === '' ? '' : ': ' . mb_substr(trim($stderr), 0, 300)));
+        $response = json_decode($stdout, true, 16, JSON_THROW_ON_ERROR);
+        if (!is_array($response) || array_keys($response) !== ['api', 'invocation_id', 'package_id', 'operation', 'result']
+            || ($response['api'] ?? null) !== PACKAGE_RUNTIME_API_VERSION || ($response['invocation_id'] ?? null) !== $invocationId
+            || ($response['package_id'] ?? null) !== $id || ($response['operation'] ?? null) !== $operation || !is_array($response['result'] ?? null)) {
+            throw new RuntimeException('isolated probe response is invalid');
+        }
+        $result = $response['result'];
+        if (($result['id'] ?? null) !== $id || !is_string($result['state'] ?? null) || !is_string($result['reason'] ?? null)
+            || strlen(json_encode($result, JSON_THROW_ON_ERROR)) > 4096) throw new RuntimeException('isolated probe result is invalid');
+        return $result;
+    } finally {
+        foreach ($pipes as $pipe) if (is_resource($pipe)) @fclose($pipe);
+        if (is_resource($process)) { @proc_terminate($process); @proc_close($process); }
+    }
+}

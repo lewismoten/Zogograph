@@ -73,6 +73,21 @@ return [
         // Optional 0600 key outside the web root for encrypted package secrets.
         // Blank reuses encryption.local_key_file when one is configured.
         'secret_key_file' => '',
+        /* Optional no-secret probe launchers. This is deployment-owned host
+         * policy, deliberately not a website setting: each command must be an
+         * absolute argument vector for a reviewed container/service sandbox.
+         * Pin it to the installed manifest hash after reviewing an update.
+         * It permits only capability/sqlcipher_preflight evidence; it does not
+         * enable packages or authorize a live encryption/provider operation.
+         *
+         * 'probe_invokers' => [
+         *   'sqlcipher-encrypted-sqlite' => [
+         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/hostscope/sqlcipher-probe.yml', 'run', '--rm', '-T', 'package-worker'],
+         *     'isolation_profile' => 'container-no-network-readonly-v1',
+         *     'package_manifest_sha256' => 'the installed manifest.json SHA-256',
+         *   ],
+         * ],
+         */
     ],
 
     // Sign-in. Without this nobody can unmask paths or delete anything, which
