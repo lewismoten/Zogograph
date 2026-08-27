@@ -165,3 +165,5 @@ The operator-facing review checklist is
 [`client-hostscope/ENCRYPTION_REVIEW.md`](client-hostscope/ENCRYPTION_REVIEW.md).
 The concise set of adopted defaults and future configuration locations is
 [`client-hostscope/ENCRYPTION_DECISIONS.md`](client-hostscope/ENCRYPTION_DECISIONS.md).
+The deployment handoff and launch gates are collected in
+[`DEPLOYMENT_CHECKLIST.md`](DEPLOYMENT_CHECKLIST.md).

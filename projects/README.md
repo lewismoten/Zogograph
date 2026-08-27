@@ -22,4 +22,6 @@ must be migrated only after its writers have stopped.
 
 See [DIRECTION.md](DIRECTION.md) for the recommended initial VPS paths,
 separation boundaries, rebrand-safe endpoint rules, and encryption launch
-policy.
+policy. [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md) is the corresponding
+operator-ready handoff: per-project boundaries, database/configuration
+ownership, customer protection defaults, and launch gates.
