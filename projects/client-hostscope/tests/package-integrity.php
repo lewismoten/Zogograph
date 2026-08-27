@@ -44,6 +44,8 @@ try {
     $relayPair = sodium_crypto_sign_keypair(); $relaySecret = sodium_crypto_sign_secretkey($relayPair);
     try { new \HostScope\Plugin\ReplicaRelay\ReplicaRelayHttpClient('https://user@example.test', 'test-token', base64_encode($relaySecret)); throw new RuntimeException('relay client accepted an ambiguous endpoint'); }
     catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'relay client accepted an ambiguous endpoint', $error->getMessage()); }
+    try { new \HostScope\Plugin\ReplicaRelay\ReplicaRelayHttpClient('https://example.test', "tok_" . str_repeat('a', 20) . ".bad\r\nvalue", base64_encode($relaySecret)); throw new RuntimeException('relay client accepted a malformed bearer credential'); }
+    catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'relay client accepted a malformed bearer credential', $error->getMessage()); }
     $relaySource = file_get_contents(__DIR__ . '/../plugins/hostscope-replica-relay/src/ReplicaRelayHttpClient.php');
     packageExpect($relaySource !== false && str_contains($relaySource, 'CURLOPT_UPLOAD => true')
         && str_contains($relaySource, 'CURLOPT_SSL_VERIFYPEER => true') && str_contains($relaySource, 'CURLOPT_SSL_VERIFYHOST => 2'),

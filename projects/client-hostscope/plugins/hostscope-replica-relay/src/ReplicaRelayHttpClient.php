@@ -15,6 +15,9 @@ final class ReplicaRelayHttpClient
             || $url['host'] === '' || isset($url['user']) || isset($url['pass']) || isset($url['query']) || isset($url['fragment']) || $clientToken === '') {
             throw new \InvalidArgumentException('replica relay endpoint or client credential is invalid');
         }
+        if (!preg_match('~^tok_[a-f0-9]{20}\.[A-Za-z0-9+/_-]+={0,2}$~', $clientToken)) {
+            throw new \InvalidArgumentException('replica relay client credential is invalid');
+        }
         if (!function_exists('curl_init') || !function_exists('sodium_crypto_sign_detached')) throw new \RuntimeException('cURL and libsodium are required for replica relay');
         $this->signingKey = base64_decode($clientSigningKey, true);
         if (!is_string($this->signingKey) || strlen($this->signingKey) !== SODIUM_CRYPTO_SIGN_SECRETKEYBYTES) throw new \InvalidArgumentException('replica relay signing credential is invalid');
