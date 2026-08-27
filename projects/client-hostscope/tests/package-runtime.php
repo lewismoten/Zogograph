@@ -2,6 +2,7 @@
 declare(strict_types=1);
 require_once __DIR__ . '/../lib/db.php';
 require_once __DIR__ . '/../lib/package-runtime.php';
+require_once __DIR__ . '/../lib/configure.php';
 function runtimeExpect(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
 if (!function_exists('sodium_crypto_sign_keypair')) { echo "package runtime checks skipped: sodium is unavailable\n"; exit(0); }
 $root = sys_get_temp_dir() . '/hostscope-runtime-' . bin2hex(random_bytes(4));
@@ -11,6 +12,14 @@ file_put_contents($source . '/src/Provider.php', "<?php declare(strict_types=1);
 file_put_contents($source . '/settings.schema.json', "{}\n");
 try {
     $pair = sodium_crypto_sign_keypair();
+    $trustedKey = ['test-publisher' => ['publisher' => 'Test publisher',
+        'public_key' => base64_encode(sodium_crypto_sign_publickey($pair))]];
+    runtimeExpect(packageRuntimeTrustedKeys($trustedKey) === $trustedKey, 'trusted publisher key was not normalized');
+    $field = array_column(configFields(require __DIR__ . '/../lib/config.sample.php'), null, 'key')['package_runtime_trusted_keys'];
+    [, $keyProblem] = parseField($field, json_encode($trustedKey, JSON_THROW_ON_ERROR));
+    runtimeExpect($keyProblem === null, 'valid trusted publisher key was rejected by setup');
+    [, $badKeyProblem] = parseField($field, '{"test-publisher":{"publisher":"Test publisher","public_key":"bad"}}');
+    runtimeExpect($badKeyProblem !== null, 'invalid trusted publisher key was accepted by setup');
     $manifest = [
         'id' => 'test-runtime', 'version' => '1.0.0', 'publisher' => 'Test publisher',
         'capabilities' => ['package_private_database'],

@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__ . '/package-runtime.php';
 
 /*
  * What a config is made of, described once.
@@ -87,6 +88,18 @@ function configFields(array $sample): array
                 'sealed_copies_local' => 'Encrypted copies with a local private key',
                 'operator_managed_volume' => 'My host/VM encrypts the selected live stores',
             ],
+        ],
+        [
+            'key' => 'package_runtime_trusted_keys',
+            'path' => ['package_runtime', 'trusted_keys'],
+            'type' => 'json',
+            'label' => 'Trusted executable-package publishers',
+            'help' => 'Optional. Add only a publisher key you independently trust. Each key id maps to a publisher name and Base64 Ed25519 public_key. A signed package cannot install unless its publisher and key match this list.',
+            'default' => (array)($sample['package_runtime']['trusted_keys'] ?? []),
+            'validate' => function (array $value): ?string {
+                try { packageRuntimeTrustedKeys($value); return null; }
+                catch (InvalidArgumentException $error) { return $error->getMessage(); }
+            },
         ],
         [
             'key' => 'encryption_key_custody',
@@ -811,6 +824,10 @@ function parseField(array $field, mixed $raw): array
         $decoded = json_decode((string)$raw, true);
         if (!is_array($decoded) || json_last_error() !== JSON_ERROR_NONE) {
             return [$field['default'], 'Enter a valid JSON object or array.'];
+        }
+        if (isset($field['validate'])) {
+            $problem = ($field['validate'])($decoded);
+            if ($problem !== null) return [$field['default'], $problem];
         }
         return [$decoded, null];
     }

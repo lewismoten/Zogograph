@@ -11,6 +11,28 @@ const PACKAGE_RUNTIME_CAPABILITIES = [
     'key_provider', 'ciphertext_replica', 'network_client',
 ];
 
+/** @return array<string, array{publisher:string,public_key:string}> */
+function packageRuntimeTrustedKeys(array $keys): array
+{
+    $out = [];
+    if (count($keys) > 100) throw new InvalidArgumentException('too many trusted package publisher keys');
+    if ($keys !== [] && !defined('SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES')) {
+        throw new InvalidArgumentException('PHP sodium support is required for trusted package publisher keys');
+    }
+    foreach ($keys as $keyId => $key) {
+        $keyId = trim((string)$keyId);
+        $publisher = trim((string)(is_array($key) ? ($key['publisher'] ?? '') : ''));
+        $public = base64_decode((string)(is_array($key) ? ($key['public_key'] ?? '') : ''), true);
+        if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $keyId) || $publisher === '' || mb_strlen($publisher) > 120
+            || $public === false || strlen($public) !== SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES) {
+            throw new InvalidArgumentException('a trusted package publisher key is invalid');
+        }
+        $out[$keyId] = ['publisher' => $publisher, 'public_key' => base64_encode($public)];
+    }
+    ksort($out, SORT_STRING);
+    return $out;
+}
+
 /** @return array{id:string,version:string,publisher:string,capabilities:list<string>,runtime:array,integrity:array,signature:array} */
 function packageRuntimeManifest(string $directory, array $trustedKeys): array
 {
@@ -74,7 +96,7 @@ function packageRuntimeDirectory(array $config): string
 /** @return array{id:string,version:string,publisher:string,install_path:string} */
 function packageRuntimeInstall(array $config, PDO $pdo, string $source, string $actor): array
 {
-    $trusted = (array)($config['package_runtime']['trusted_keys'] ?? []);
+    $trusted = packageRuntimeTrustedKeys((array)($config['package_runtime']['trusted_keys'] ?? []));
     $manifest = packageRuntimeManifest($source, $trusted);
     $root = realpath($source);
     $base = packageRuntimeDirectory($config);

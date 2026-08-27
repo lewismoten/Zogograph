@@ -5585,7 +5585,12 @@ function doMarketplaceRollback(array $config, PDO $pdo, bool $post): array
 function packageRuntimeView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) throw new ActionRefused('sign in to view installed packages');
-    return ['packages' => packageRuntimePackages($pdo), 'can_change' => accessAllows($config, 'write')];
+    $publishers = [];
+    foreach (packageRuntimeTrustedKeys((array)($config['package_runtime']['trusted_keys'] ?? [])) as $id => $key) {
+        $publishers[] = ['key_id' => $id, 'publisher' => $key['publisher']];
+    }
+    return ['packages' => packageRuntimePackages($pdo), 'trusted_publishers' => $publishers,
+        'can_change' => accessAllows($config, 'write')];
 }
 
 function doPackageRuntimeEnable(PDO $pdo, bool $post): array
