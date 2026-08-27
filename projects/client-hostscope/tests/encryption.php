@@ -30,6 +30,7 @@ try {
     $dashboard = file_get_contents(__DIR__ . '/../index.js');
     $page = file_get_contents(__DIR__ . '/../index.html');
     $rotation = file_get_contents(__DIR__ . '/../scripts/rotate-sealed-copies.php');
+    $setupGuide = file_get_contents(__DIR__ . '/../SETUP.md');
     encryptionExpect($api !== false && str_contains($api, "'encryption-status' => 'sys-encryption'"),
         'encryption status is not protected by its dashboard page access rule');
     encryptionExpect($dashboard !== false && str_contains($dashboard, 'function renderEncryptionStatus')
@@ -41,6 +42,9 @@ try {
     encryptionExpect($rotation !== false && str_contains($rotation, 'encryptionRotateConfiguredArtifacts')
         && str_contains($rotation, 'saveConfiguredSettings') && str_contains($rotation, '--confirm'),
         'configured sealed-copy rotation does not preserve recovery evidence before switching keys');
+    encryptionExpect($setupGuide !== false && str_contains($setupGuide, '--recovery-drill --quiet')
+        && str_contains($setupGuide, 'Quarterly non-destructive recovery drill'),
+        'setup guide does not provide a recurring recovery-drill schedule');
 
     $sample = require __DIR__ . '/../lib/config.sample.php';
     $fields = array_column(configFields($sample), null, 'key');

@@ -242,6 +242,10 @@ host/VM volume protection: HostScope cannot verify a host encryption claim.
 # Weekly full ciphertext/authentication re-check. It creates no new copy and
 # decrypts each retained artifact only into a short-lived private temporary file.
 43 4 * * 0 /absolute/path/to/php /absolute/path/to/hostscope/cron.php --verify-sealed --quiet
+
+# Quarterly non-destructive recovery drill. Keep this at or below the selected
+# Recovery-drill review period; the default 90 days makes this a good start.
+17 5 1 1,4,7,10 * /absolute/path/to/php /absolute/path/to/hostscope/cron.php --recovery-drill --quiet
 ```
 
 The key is never kept in HostScope configuration or its databases. A lost key
