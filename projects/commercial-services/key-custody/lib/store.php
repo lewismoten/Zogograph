@@ -48,6 +48,7 @@ function keyCustodyOpen(array $config, ?string $webRoot = null): PDO
     $pdo->exec('CREATE INDEX IF NOT EXISTS custody_keys_tenant_state ON custody_keys (tenant_id, state, created_at DESC)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS key_envelopes (id TEXT PRIMARY KEY, key_id TEXT NOT NULL REFERENCES custody_keys(id) ON DELETE CASCADE, artifact_id TEXT NOT NULL, envelope BLOB NOT NULL, created_at INTEGER NOT NULL, UNIQUE(key_id, artifact_id))');
     $pdo->exec('CREATE TABLE IF NOT EXISTS custody_unwrap_usage (tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, window_started INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (tenant_id, window_started))');
+    $pdo->prepare('DELETE FROM custody_unwrap_usage WHERE window_started < ?')->execute([intdiv(time(), 3600) * 3600 - 172800]);
     $pdo->exec('CREATE TABLE IF NOT EXISTS custody_audit (id INTEGER PRIMARY KEY, tenant_id TEXT NOT NULL, at INTEGER NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL)');
     keyCustodyPrivateSqliteFiles($path);
     return $pdo;

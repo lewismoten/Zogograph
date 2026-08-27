@@ -50,9 +50,11 @@ try {
     try { keyCustodyCreateTenant($pdo, "forged\ntenant"); throw new RuntimeException('multiline custody tenant name was accepted'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'multiline custody tenant name was accepted', $error->getMessage()); }
     [$initialClientTokenId] = explode('.', $tenant['client_token'], 2);
+    $pdo->prepare('INSERT INTO custody_unwrap_usage (tenant_id, window_started, count) VALUES (?, ?, 1)')->execute([$tenant['tenant_id'], intdiv(time(), 3600) * 3600 - 172801]);
     $pdo->prepare('INSERT INTO client_nonces (token_id, nonce, expires_at) VALUES (?, ?, ?)')->execute([$initialClientTokenId, 'expired_nonce_abcdefghijklmnop', time() - 1]);
     keyCustodyOpen(['database' => $root . '/service.db']);
     custodyExpect((int)$pdo->query('SELECT COUNT(*) FROM client_nonces')->fetchColumn() === 0, 'expired client replay nonce was not pruned during service open');
+    custodyExpect((int)$pdo->query('SELECT COUNT(*) FROM custody_unwrap_usage')->fetchColumn() === 0, 'expired custody recovery-release usage was not pruned during service open');
     $management = keyCustodyAuthenticate($pdo, $tenant['management_token'], 'management');
     $metadataBackup = keyCustodyBackupMetadata($pdo, $root . '/metadata-backup.db', $root . '/web');
     $backupPdo = new PDO('sqlite:' . $metadataBackup['path']);
