@@ -192,14 +192,19 @@ encrypted at rest, select **My host/VM encrypts the selected live stores** and
 choose the protected stores. This records the operator's policy but does not
 attempt to verify host-level encryption or create HostScope copies.
 
-Run a first copy manually, then schedule it separately from normal collection:
+Run a first copy, then schedule future copies separately from normal
+collection. An administrator with write access can use **System → Protection**
+to create the first verified copies and run the non-destructive drill. Those
+browser actions require confirmation, are CSRF-protected and audited, never
+reveal the key, and remove temporary decrypted verification files. The CLI
+commands remain suitable for scheduled or shell-only deployments:
 
 ```bash
 php cron.php --seal
 ```
 
-Immediately record a non-destructive recovery drill before treating the policy
-as ready:
+Immediately record the non-destructive recovery drill before treating the
+policy as ready:
 
 ```bash
 php cron.php --recovery-drill
