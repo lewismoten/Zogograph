@@ -52,6 +52,12 @@ automatically block their recovery: billing must not become a way to hold an
 operator's encrypted data hostage. Retention/deletion terms remain explicit
 commercial policy and must provide notice and recovery export procedures.
 
+Each subscription also has an `envelope_quota`, initially 1,000. It limits new
+named artifact envelopes per tenant, not re-saving an existing envelope and not
+recovery of an existing artifact. This keeps the low-cost SQLite deployment
+bounded without using a billing failure to strand a customer's data. The
+commercial billing control plane can adjust it alongside the key quota.
+
 ## Current reference API
 
 Copy `config.sample.php` to `config.php`, create a private Base64 256-bit
@@ -91,7 +97,7 @@ have only the commercial billing backend call:
 ```text
 PATCH /v1/internal/subscriptions/{tenantId}
 Authorization: Bearer <contents of billing.token>
-{"plan":"starter","state":"active","key_quota":2,"renews_at":1767225600}
+{"plan":"starter","state":"active","key_quota":2,"envelope_quota":1000,"renews_at":1767225600}
 ```
 
 This endpoint changes only plan, state, quota, renewal metadata, and pending

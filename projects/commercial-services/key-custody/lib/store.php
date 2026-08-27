@@ -19,7 +19,8 @@ function keyCustodyOpen(array $config): PDO
     $pdo->exec('CREATE TABLE IF NOT EXISTS client_nonces (token_id TEXT NOT NULL REFERENCES access_tokens(id) ON DELETE CASCADE, nonce TEXT NOT NULL, expires_at INTEGER NOT NULL, PRIMARY KEY (token_id, nonce))');
     $pdo->exec('CREATE INDEX IF NOT EXISTS client_nonces_expiry ON client_nonces (expires_at)');
     $pdo->prepare('DELETE FROM client_nonces WHERE expires_at < ?')->execute([time()]);
-    $pdo->exec('CREATE TABLE IF NOT EXISTS subscriptions (tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE, plan TEXT NOT NULL, state TEXT NOT NULL, key_quota INTEGER NOT NULL, renews_at INTEGER, changed_at INTEGER NOT NULL)');
+    $pdo->exec('CREATE TABLE IF NOT EXISTS subscriptions (tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE, plan TEXT NOT NULL, state TEXT NOT NULL, key_quota INTEGER NOT NULL, envelope_quota INTEGER NOT NULL DEFAULT 1000, renews_at INTEGER, changed_at INTEGER NOT NULL)');
+    if (!keyCustodyTableHasColumn($pdo, 'subscriptions', 'envelope_quota')) $pdo->exec('ALTER TABLE subscriptions ADD COLUMN envelope_quota INTEGER NOT NULL DEFAULT 1000');
     $pdo->exec('CREATE TABLE IF NOT EXISTS subscription_requests (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, action TEXT NOT NULL, requested_plan TEXT, state TEXT NOT NULL, created_at INTEGER NOT NULL, resolved_at INTEGER)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS subscription_requests_tenant_state ON subscription_requests (tenant_id, state, created_at DESC)');
     $pdo->exec('CREATE TABLE IF NOT EXISTS custody_keys (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE, name TEXT NOT NULL, wrapped_key BLOB NOT NULL, wrap_nonce BLOB NOT NULL, wrap_tag BLOB NOT NULL, authorization_ttl INTEGER NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL, rotated_at INTEGER)');
@@ -46,7 +47,7 @@ function keyCustodyCreateTenant(PDO $pdo, string $name): array
     $pdo->prepare('INSERT INTO tenants (id, name, active, created_at) VALUES (?, ?, 1, ?)')->execute([$tenant, $name, $now]);
     $management = keyCustodyCreateToken($pdo, $tenant, 'management');
     $client = keyCustodyCreateClientCredential($pdo, $tenant, 'initial enrollment');
-    $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, renews_at, changed_at) VALUES (?, ?, ?, ?, NULL, ?)')->execute([$tenant, 'free', 'active', 2, $now]);
+    $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, envelope_quota, renews_at, changed_at) VALUES (?, ?, ?, ?, ?, NULL, ?)')->execute([$tenant, 'free', 'active', 2, 1000, $now]);
     keyCustodyAudit($pdo, $tenant, 'tenant_create', $tenant, 'initial free plan');
     $pdo->commit();
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
@@ -232,6 +233,12 @@ function keyCustodyStoreEnvelope(PDO $pdo, string $tenant, string $keyId, string
     }
     $key = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'"); $key->execute([$keyId, $tenant]);
     if ((int)$key->fetchColumn() !== 1) throw new InvalidArgumentException('custody key is unavailable');
+    $exists = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes WHERE key_id = ? AND artifact_id = ?'); $exists->execute([$keyId, $artifactId]);
+    if ((int)$exists->fetchColumn() === 0) {
+        $usage = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE keys.tenant_id = ?'); $usage->execute([$tenant]);
+        $quota = $pdo->prepare('SELECT envelope_quota FROM subscriptions WHERE tenant_id = ?'); $quota->execute([$tenant]);
+        if ((int)$usage->fetchColumn() >= (int)$quota->fetchColumn()) throw new InvalidArgumentException('subscription envelope quota is reached');
+    }
     $id = 'env_' . bin2hex(random_bytes(16)); $now = time();
     $pdo->prepare('INSERT INTO key_envelopes (id, key_id, artifact_id, envelope, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(key_id, artifact_id) DO UPDATE SET id = excluded.id, envelope = excluded.envelope, created_at = excluded.created_at')
         ->execute([$id, $keyId, $artifactId, $envelope, $now]);
@@ -314,21 +321,21 @@ function keyCustodyDeleteEnvelope(PDO $pdo, string $tenant, string $keyId, strin
     keyCustodyAudit($pdo, $tenant, 'envelope_delete', $keyId, 'artifact=' . $artifactId);
 }
 
-function keyCustodySetSubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt): void
+function keyCustodySetSubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt, int $envelopeQuota = 1000): void
 {
-    if (!preg_match('/^[a-z][a-z0-9_-]{0,62}$/', $plan) || !in_array($state, ['active', 'past_due', 'cancelled'], true) || $quota < 0 || $quota > 10000) throw new InvalidArgumentException('subscription policy is invalid');
-    $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, renews_at, changed_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET plan = excluded.plan, state = excluded.state, key_quota = excluded.key_quota, renews_at = excluded.renews_at, changed_at = excluded.changed_at')
-        ->execute([$tenant, $plan, $state, $quota, $renewsAt, time()]);
-    keyCustodyAudit($pdo, $tenant, 'subscription_change', $tenant, $plan . '; ' . $state . '; quota=' . $quota);
+    if (!preg_match('/^[a-z][a-z0-9_-]{0,62}$/', $plan) || !in_array($state, ['active', 'past_due', 'cancelled'], true) || $quota < 0 || $quota > 10000 || $envelopeQuota < 0 || $envelopeQuota > 1000000) throw new InvalidArgumentException('subscription policy is invalid');
+    $pdo->prepare('INSERT INTO subscriptions (tenant_id, plan, state, key_quota, envelope_quota, renews_at, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id) DO UPDATE SET plan = excluded.plan, state = excluded.state, key_quota = excluded.key_quota, envelope_quota = excluded.envelope_quota, renews_at = excluded.renews_at, changed_at = excluded.changed_at')
+        ->execute([$tenant, $plan, $state, $quota, $envelopeQuota, $renewsAt, time()]);
+    keyCustodyAudit($pdo, $tenant, 'subscription_change', $tenant, $plan . '; ' . $state . '; key_quota=' . $quota . '; envelope_quota=' . $envelopeQuota);
 }
 
 /** Applies an entitlement from the separately authenticated commercial billing
  * control plane. It has no authority to read or unwrap custody keys. */
-function keyCustodyApplySubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt): void
+function keyCustodyApplySubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt, int $envelopeQuota = 1000): void
 {
     $pdo->beginTransaction();
     try {
-        keyCustodySetSubscription($pdo, $tenant, $plan, $state, $quota, $renewsAt);
+        keyCustodySetSubscription($pdo, $tenant, $plan, $state, $quota, $renewsAt, $envelopeQuota);
         $pdo->prepare("UPDATE subscription_requests SET state = 'applied', resolved_at = ? WHERE tenant_id = ? AND state = 'pending'")
             ->execute([time(), $tenant]);
         keyCustodyAudit($pdo, $tenant, 'subscription_apply', $tenant, 'commercial billing control plane');
@@ -347,12 +354,12 @@ function keyCustodyListKeys(PDO $pdo, string $tenant): array
         'state' => $row['state'], 'created_at' => (int)$row['created_at'], 'envelope_count' => (int)$row['envelope_count']], $stmt->fetchAll());
 }
 
-/** @return array{plan:string,state:string,key_quota:int,renews_at:?int} */
+/** @return array{plan:string,state:string,key_quota:int,envelope_quota:int,renews_at:?int} */
 function keyCustodySubscription(PDO $pdo, string $tenant): array
 {
-    $stmt = $pdo->prepare('SELECT plan, state, key_quota, renews_at FROM subscriptions WHERE tenant_id = ?'); $stmt->execute([$tenant]); $row = $stmt->fetch();
+    $stmt = $pdo->prepare('SELECT plan, state, key_quota, envelope_quota, renews_at FROM subscriptions WHERE tenant_id = ?'); $stmt->execute([$tenant]); $row = $stmt->fetch();
     if (!is_array($row)) throw new InvalidArgumentException('subscription is unavailable');
-    return ['plan' => $row['plan'], 'state' => $row['state'], 'key_quota' => (int)$row['key_quota'], 'renews_at' => $row['renews_at'] === null ? null : (int)$row['renews_at']];
+    return ['plan' => $row['plan'], 'state' => $row['state'], 'key_quota' => (int)$row['key_quota'], 'envelope_quota' => (int)$row['envelope_quota'], 'renews_at' => $row['renews_at'] === null ? null : (int)$row['renews_at']];
 }
 
 /** @return array{id:string,action:string,requested_plan:?string,state:string,created_at:int} */
