@@ -44,7 +44,8 @@ try {
         'relay client does not stream ciphertext with secure transport defaults');
     $relayDirectory = __DIR__ . '/../plugins/hostscope-replica-relay';
     $relayManifest = json_decode((string)file_get_contents($relayDirectory . '/manifest.json'), true, 512, JSON_THROW_ON_ERROR);
-    packageExpect(is_array($relayManifest) && packageVerifyIntegrity($relayManifest, $relayDirectory)['ok'],
+    packageExpect(is_array($relayManifest) && in_array('ciphertext_replica', (array)($relayManifest['capabilities'] ?? []), true)
+        && packageVerifyIntegrity($relayManifest, $relayDirectory)['ok'],
         'replica relay package manifest does not cover its installed files');
     $pair = sodium_crypto_sign_keypair();
     $signed = packageSignManifest($manifest, $root, 'test-publisher', sodium_crypto_sign_secretkey($pair));
