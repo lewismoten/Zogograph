@@ -32,6 +32,10 @@ try {
     $custodySignature = sodium_crypto_sign_detached($custodyPayload, $custodySecret);
     packageExpect(sodium_crypto_sign_verify_detached($custodySignature, $custodyPayload, sodium_crypto_sign_publickey($custodyPair)),
         'custody request signature does not verify');
+    $wrappingPair = sodium_crypto_box_keypair(); $artifactDataKey = random_bytes(32);
+    $sealedArtifactKey = \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::sealDataKey($artifactDataKey, sodium_crypto_box_publickey($wrappingPair));
+    packageExpect(hash_equals($artifactDataKey, (string)sodium_crypto_box_seal_open($sealedArtifactKey, $wrappingPair)),
+        'custody adapter public-key envelope does not open with the matching custody keypair');
     try { new \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient('https://user@example.test', 'test-token', base64_encode($custodySecret)); throw new RuntimeException('custody client accepted an ambiguous endpoint'); }
     catch (InvalidArgumentException $error) { packageExpect($error->getMessage() !== 'custody client accepted an ambiguous endpoint', $error->getMessage()); }
     try { new \HostScope\Plugin\KeyCustody\KeyCustodyHttpClient('https://example.test', "tok_" . str_repeat('a', 20) . ".bad\r\nvalue", base64_encode($custodySecret)); throw new RuntimeException('custody client accepted a malformed bearer credential'); }
