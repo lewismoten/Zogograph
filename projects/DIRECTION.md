@@ -81,6 +81,7 @@ cannot verify.
 | Local protection | Verified AES-GCM sealed copies, daily, retaining 30 days; key file outside the document root with an offline recovery copy. | Enable automatic deletion only after recovery exercises and monitoring are operating. |
 | Live SQLite | Host/VM volume encryption where the operator manages it; SQLCipher only through a tested optional package. | Expand the tested OS/PHP/PDO matrix only after WAL, migration, backup, crash-recovery, and performance tests. |
 | Key custody | Local custody first. Hosted custody is optional and disabled by default. | Launch/enable it only with independent review, tenant isolation, recovery drills, incident response, and customer terms. |
+| Provider enrollment | Verify an HTTPS service identity before accepting an enrolled-client credential; normal CA/hostname validation is default and SPKI pinning is optional. | Change the connection-test contract only with a reviewed endpoint-migration and certificate-key rotation procedure. |
 | Remote copies | Disabled by default; replica relays receive ciphertext only. | Recommend two independent replicas only after enrollment, deletion acknowledgements, and outage tests exist. |
 | Database alternatives | Keep SQLite as the normal deployment. MySQL/MariaDB and Redis are optional packages, not encryption choices. | Add MySQL/MariaDB only for a demonstrated multi-node storage need; use Redis only as a TLS-authenticated cache or queue with no secrets by default. |
 | Package execution | Trusted signed packages with explicit capability grants and private package data. | Do not load package code until isolation, secret references, revocation, migrations, and audit evidence are complete. |
@@ -158,6 +159,14 @@ billing-control token that can apply entitlement state only. None substitutes
 for another, and none should be stored as normal client configuration. The
 client's future provider package receives only the enrolled-client pair through
 encrypted package secret references.
+
+Before a provider package stores that enrolled-client pair, the Protection UI
+must run its unauthenticated endpoint probe and display the returned service
+identity and API version. The probe has no bearer, request signature, or key
+material. Reject an unexpected identity rather than treating a reachable URL
+as a trusted service. The initial UI should leave an SPKI pin blank unless the
+administrator has an approved certificate-key rotation process; CA and hostname
+verification remain required whether or not a pin is used.
 
 The detailed encryption design and implementation state live in
 [`client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md`](client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md).

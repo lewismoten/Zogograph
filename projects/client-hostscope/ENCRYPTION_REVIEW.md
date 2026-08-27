@@ -109,6 +109,14 @@ client credentials. On the service side, SQLite metadata, key material, and
 ciphertext artifacts use absolute, non-symlinked private paths outside the web
 root. A reverse-proxy path prefix is routing only, never a storage boundary.
 
+Provider onboarding has two separate stages. First, the setup UI invokes a
+credential-free `/v1/health` probe using the supplied HTTPS URL and optional
+pin, and verifies the expected service identity and API version. Only after
+the administrator has reviewed that result may it accept an enrolled-client
+bearer and signing key into encrypted package secret references. A successful
+TCP/TLS connection alone is not enrollment evidence; this split limits
+accidental credential disclosure to a mistyped or redirected endpoint.
+
 ## Package choices without overload
 
 The website should present a single **Protection** page. It first asks what the
