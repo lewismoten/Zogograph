@@ -55,6 +55,12 @@ exact binary body. The relay accepts timestamps within five minutes and stores
 nonces for ten minutes. It rejects replay, changed content, cross-tenant paths,
 symlinks, and oversized payloads. See `openapi.json` for the versioned contract.
 
+An enrolled deployment can use signed `GET /v1/client/entitlement` to see only
+its artifact count, ciphertext-byte usage, configured limits, and whether it
+can upload another artifact. This is not a management, download, deletion, or
+billing endpoint; it exists so a client can explain a capacity refusal before
+transferring ciphertext.
+
 The full client has no executable relay provider yet; this service is therefore
 not selectable by an end user until the isolated package runtime and the relay
 package's retry/coverage/deletion protocol are complete. It is intentionally

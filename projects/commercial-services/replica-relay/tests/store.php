@@ -10,6 +10,9 @@ try {
     catch (RuntimeException $error) { relayExpect($error->getMessage() !== 'relative relay database path was accepted', $error->getMessage()); }
     try { replicaRelayOpen(['database' => $root . '/bad.db', 'artifact_directory' => 'relative-artifacts']); throw new RuntimeException('relative relay artifact directory was accepted'); }
     catch (RuntimeException $error) { relayExpect($error->getMessage() !== 'relative relay artifact directory was accepted', $error->getMessage()); }
+    $initialEntitlement = replicaRelayClientEntitlement($pdo, $config, $tenant['tenant_id']);
+    relayExpect($initialEntitlement['artifact_used'] === 0 && $initialEntitlement['storage_used_bytes'] === 0 && $initialEntitlement['can_store_artifact'],
+        'relay client did not receive its minimal initial capacity entitlement');
     $management = replicaRelayAuthenticate($pdo, $tenant['management_token'], 'management');
     $private = base64_decode($tenant['client_signing_private_key'], true); relayExpect(is_string($private), 'relay enrollment signing key is invalid');
     $artifact = 'account:20260827'; $ciphertext = random_bytes(256); $path = '/v1/artifacts/' . $artifact; $timestamp = (string)time(); $nonce = 'nonce_' . bin2hex(random_bytes(12));
@@ -18,6 +21,8 @@ try {
     $client = replicaRelayAuthenticateClientRequest($pdo, $tenant['client_token'], 'PUT', $path, $timestamp, $nonce, $signature, $ciphertext);
     $stored = replicaRelayStoreArtifact($pdo, $config, $client['tenant_id'], $artifact, $ciphertext, hash('sha256', $ciphertext));
     relayExpect($stored['bytes'] === 256 && is_file(replicaRelayArtifactPath($config, $client['tenant_id'], $artifact)), 'verified relay ciphertext was not stored privately');
+    relayExpect(replicaRelayClientEntitlement($pdo, $config, $client['tenant_id'])['storage_used_bytes'] === 256,
+        'relay client entitlement did not report used ciphertext storage');
     relayExpect(replicaRelayListArtifacts($pdo, $management['tenant_id'])[0]['sha256'] === hash('sha256', $ciphertext), 'management relay metadata omitted ciphertext digest');
     try { replicaRelayAuthenticateClientRequest($pdo, $tenant['client_token'], 'PUT', $path, $timestamp, $nonce, $signature, $ciphertext); throw new RuntimeException('replayed relay request was accepted'); }
     catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'replayed relay request was accepted', $error->getMessage()); }
@@ -26,6 +31,8 @@ try {
     $secondCiphertext = random_bytes(128);
     try { replicaRelayStoreArtifact($pdo, $config, $client['tenant_id'], 'account:second', $secondCiphertext, hash('sha256', $secondCiphertext)); throw new RuntimeException('relay tenant artifact quota was exceeded'); }
     catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'relay tenant artifact quota was exceeded', $error->getMessage()); }
+    relayExpect(!replicaRelayClientEntitlement($pdo, $config, $client['tenant_id'])['can_store_artifact'],
+        'relay client entitlement allowed another artifact after the quota was reached');
     $largeContent = random_bytes(1025); $large = fopen('php://temp', 'w+b'); fwrite($large, $largeContent); rewind($large);
     try { replicaRelayStoreArtifactStream($pdo, $config, $client['tenant_id'], 'account:oversize', $large, hash('sha256', $largeContent)); throw new RuntimeException('relay accepted oversized ciphertext'); }
     catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'relay accepted oversized ciphertext', $error->getMessage()); }

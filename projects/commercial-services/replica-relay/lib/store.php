@@ -180,6 +180,22 @@ function replicaRelayListArtifacts(PDO $pdo, string $tenant): array
     return array_map(fn(array $row): array => ['artifact_id' => $row['artifact_id'], 'sha256' => $row['sha256'], 'bytes' => (int)$row['bytes'], 'created_at' => (int)$row['created_at'], 'verified_at' => (int)$row['verified_at']], $stmt->fetchAll());
 }
 
+/** Minimal signed-client capacity view. It reveals no management metadata and
+ * cannot alter, list, or retrieve another artifact. */
+function replicaRelayClientEntitlement(PDO $pdo, array $config, string $tenant): array
+{
+    $maximumArtifact = (int)($config['maximum_artifact_bytes'] ?? 0);
+    $maximumBytes = (int)($config['maximum_tenant_bytes'] ?? $maximumArtifact);
+    $maximumArtifacts = (int)($config['maximum_tenant_artifacts'] ?? 1);
+    if ($maximumArtifact < 1 || $maximumBytes < 1 || $maximumArtifacts < 1) throw new RuntimeException('relay capacity policy is invalid');
+    $usage = $pdo->prepare('SELECT COUNT(*) AS artifacts, COALESCE(SUM(bytes), 0) AS bytes FROM artifacts WHERE tenant_id = ?');
+    $usage->execute([$tenant]); $row = $usage->fetch();
+    $artifacts = (int)($row['artifacts'] ?? 0); $bytes = (int)($row['bytes'] ?? 0);
+    return ['artifact_quota' => $maximumArtifacts, 'artifact_used' => $artifacts,
+        'storage_quota_bytes' => $maximumBytes, 'storage_used_bytes' => $bytes,
+        'can_store_artifact' => $artifacts < $maximumArtifacts && $bytes < $maximumBytes];
+}
+
 function replicaRelayDeleteArtifact(PDO $pdo, array $config, string $tenant, string $artifact): void
 {
     $stmt = $pdo->prepare('SELECT sha256 FROM artifacts WHERE tenant_id = ? AND artifact_id = ?'); $stmt->execute([$tenant, $artifact]);

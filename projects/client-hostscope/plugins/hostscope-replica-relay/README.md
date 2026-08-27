@@ -16,6 +16,11 @@ the method/path/timestamp/nonce/digest, verifies TLS and hostname, and follows
 no redirects. It has no upload method for a live SQLite database or a plaintext
 export. The relay may receive ciphertext, but never an unwrap authorization.
 
+Before a scheduled upload, the adapter can read its signed, minimal storage
+readiness projection: artifact count, ciphertext bytes, configured ceilings,
+and whether another artifact can be stored. It has no authority to list,
+download, delete, manage, or bill the relay account.
+
 The package remains a design preview until the isolated runtime can enforce its
 capabilities and the core replication ledger can prove upload, remote digest
 verification, retry, retention, deletion acknowledgement, and recovery.

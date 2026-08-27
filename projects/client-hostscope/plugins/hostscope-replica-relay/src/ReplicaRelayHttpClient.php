@@ -34,6 +34,32 @@ final class ReplicaRelayHttpClient
         finally { fclose($stream); }
     }
 
+    /** Reads only this enrolled deployment's ciphertext capacity. It does not
+     * grant artifact listing, deletion, download, or billing authority. */
+    public function storageEntitlement(): array
+    {
+        $timestamp = (string)time(); $nonce = rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');
+        $path = '/v1/client/entitlement'; $digest = hash('sha256', '', true);
+        $payload = "GET\n" . $path . "\n" . $timestamp . "\n" . $nonce . "\n" . base64_encode($digest);
+        $signature = base64_encode(sodium_crypto_sign_detached($payload, $this->signingKey));
+        $handle = curl_init(rtrim($this->baseUrl, '/') . $path); if ($handle === false) throw new \RuntimeException('could not initialize replica relay request');
+        try {
+            curl_setopt_array($handle, [CURLOPT_CUSTOMREQUEST => 'GET', CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 30, CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $this->clientToken,
+                    'X-HostScope-Timestamp: ' . $timestamp, 'X-HostScope-Nonce: ' . $nonce, 'X-HostScope-Signature: ' . $signature]]);
+            $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+            $response = is_string($raw) ? json_decode($raw, true) : null;
+            $entitlement = is_array($response) ? ($response['entitlement'] ?? null) : null;
+            if ($status < 200 || $status >= 300 || !is_array($entitlement)
+                || !is_int($entitlement['artifact_quota'] ?? null) || !is_int($entitlement['artifact_used'] ?? null)
+                || !is_int($entitlement['storage_quota_bytes'] ?? null) || !is_int($entitlement['storage_used_bytes'] ?? null)
+                || !is_bool($entitlement['can_store_artifact'] ?? null)) throw new \RuntimeException('replica relay entitlement request was refused');
+            return $entitlement;
+        } finally { curl_close($handle); }
+    }
+
     private function request(string $method, string $path, $stream, int $bytes, string $digest): array
     {
         $timestamp = (string)time(); $nonce = rtrim(strtr(base64_encode(random_bytes(24)), '+/', '-_'), '=');

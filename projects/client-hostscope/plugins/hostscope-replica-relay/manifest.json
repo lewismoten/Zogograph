@@ -11,10 +11,10 @@
   "data": {"directory": "data", "migration_namespace": "hostscope_replica_relay"},
   "compatibility": {"min_php": "8.1.0", "requires_extensions": ["curl", "openssl", "sodium"], "requires_runtime_capability": "isolated_package_runtime"},
   "integrity": {"algorithm": "sha256", "files": {
-    "README.md": "392313e3fd6af15e2d404fb1d0eea2ea32189b0a2c1dd098da3cd230c1c86abc",
+    "README.md": "0908600136a9627a04ba4a7120c5105e90c0b73e49a225cd959e6bf0077e9a89",
     "settings.schema.json": "a153916864a0f0592a02a97a3dc8406e46b602e82bf00745114be21b74944026",
     "src/ReplicaRelayProvider.php": "b5b4d0be4fcfc72c3c2b9fca43333881f13dc5b3c50faabbf498659f872587df",
-    "src/ReplicaRelayHttpClient.php": "4944c50359faaacd845035a421ff0faa82a34cddd66c8a4694ed0c703a104672"
+    "src/ReplicaRelayHttpClient.php": "3c0c2c937fd6901d40e0e5277a47edde51ff40c116c1b077dea7b2b538a8c192"
   }},
   "state": "design-preview"
 }
