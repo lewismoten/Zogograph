@@ -55,7 +55,8 @@ try {
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYPEER => true')
         && str_contains($custodySource, 'CURLOPT_SSL_VERIFYHOST => 2')
         && str_contains($custodySource, 'CURLOPT_PINNEDPUBLICKEY') && str_contains($custodySource, 'function apiUrl')
-        && str_contains($custodySource, "'/v1'")
+        && str_contains($custodySource, "'/v1'") && str_contains($custodySource, 'KeyCustodyRetryException')
+        && str_contains($custodySource, "retry_after_seconds")
         && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::class, 'health')
         && method_exists(\HostScope\Plugin\KeyCustody\KeyCustodyHttpClient::class, 'healthEndpoint'), 'custody client does not enforce its secure transport defaults');
     $custodyDirectory = __DIR__ . '/../plugins/hostscope-key-custody';

@@ -46,6 +46,11 @@ ciphertext, without giving it a billing, management, key-creation, or
 account-recovery credential. A passed renewal pauses only new envelope writes;
 it never makes an existing artifact unrecoverable.
 
+If the service temporarily reaches its tenant recovery-release throttle, the
+adapter preserves its bounded `retry_after_seconds` response as a dedicated
+retry exception. A future active client can explain this as a temporary retry
+window rather than an enrollment, billing, or permanent recovery failure.
+
 `KeyCustodyHttpClient::healthEndpoint($url, $pin)` calls the unauthenticated
 `/v1/health` probe before enrollment, using the same HTTPS and optional SPKI
 pin configuration but sending no bearer, signature, or key material. The

@@ -3,6 +3,14 @@ declare(strict_types=1);
 
 namespace HostScope\Plugin\KeyCustody;
 
+final class KeyCustodyRetryException extends \RuntimeException
+{
+    public function __construct(public readonly int $retryAfterSeconds)
+    {
+        parent::__construct('key custody recovery release is temporarily throttled');
+    }
+}
+
 /** HTTP adapter for an ephemeral client credential supplied by a secret
  * provider. It intentionally retains no response/key cache. */
 final class KeyCustodyHttpClient
@@ -165,6 +173,10 @@ final class KeyCustodyHttpClient
             $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
             if (!is_string($raw)) throw new \RuntimeException('key custody request failed: ' . curl_error($handle));
             $response = json_decode($raw, true);
+            if ($status === 429 && is_array($response) && is_int($response['retry_after_seconds'] ?? null)
+                && $response['retry_after_seconds'] >= 1 && $response['retry_after_seconds'] <= 3600) {
+                throw new KeyCustodyRetryException($response['retry_after_seconds']);
+            }
             if (!is_array($response) || $status < 200 || $status >= 300) throw new \RuntimeException('key custody request was refused');
             return $response;
         } finally { curl_close($handle); }
