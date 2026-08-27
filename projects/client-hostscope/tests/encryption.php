@@ -66,6 +66,24 @@ try {
     $sealedInfo = encryptionSealFile($source, $sealed, $key, 'stats:1');
     encryptionExpect($sealedInfo['plaintext_bytes'] === filesize($source), 'sealed byte count is wrong');
     encryptionExpect(!str_contains((string)file_get_contents($sealed), 'private sqlite record'), 'sealed copy contains plaintext');
+    $secondSealed = $root . '/source-second.sealed';
+    encryptionSealFile($source, $secondSealed, $key, 'stats:1');
+    $sealedHeader = function (string $path): array {
+        $handle = fopen($path, 'rb');
+        if ($handle === false) throw new RuntimeException('could not read sealed artifact header');
+        try {
+            encryptionExpect(fread($handle, strlen(ENCRYPTION_MAGIC)) === ENCRYPTION_MAGIC, 'sealed artifact magic is invalid');
+            $size = unpack('Nsize', (string)fread($handle, 4))['size'];
+            return json_decode((string)fread($handle, $size), true, 64, JSON_THROW_ON_ERROR);
+        } finally { fclose($handle); }
+    };
+    $firstHeader = $sealedHeader($sealed); $secondHeader = $sealedHeader($secondSealed);
+    $firstDek = openssl_decrypt(base64_decode($firstHeader['wrapped_key'], true), 'aes-256-gcm', $key, OPENSSL_RAW_DATA,
+        base64_decode($firstHeader['wrap_nonce'], true), base64_decode($firstHeader['wrap_tag'], true), 'stats:1');
+    $secondDek = openssl_decrypt(base64_decode($secondHeader['wrapped_key'], true), 'aes-256-gcm', $key, OPENSSL_RAW_DATA,
+        base64_decode($secondHeader['wrap_nonce'], true), base64_decode($secondHeader['wrap_tag'], true), 'stats:1');
+    encryptionExpect(is_string($firstDek) && is_string($secondDek) && strlen($firstDek) === 32 && !hash_equals($firstDek, $secondDek),
+        'sealed artifacts unexpectedly reused a data-encryption key');
     encryptionOpenFile($sealed, $opened, $key);
     encryptionExpect(hash_file('sha256', $source) === hash_file('sha256', $opened), 'opened copy differs from source');
     encryptionVerifySealedArtifact($sealed, $key, (int)filesize($source));
