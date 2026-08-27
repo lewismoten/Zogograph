@@ -43,6 +43,8 @@ try {
     encryptionExpect($api !== false && str_contains($api, "'setup_configuration' => setupStoreConfigurationProtectionForSettings")
         && $dashboard !== false && str_contains($dashboard, 'Setup configuration at rest'),
         'Protection dashboard does not report setup configuration at-rest status');
+    encryptionExpect($dashboard !== false && str_contains($dashboard, 'Live SQLCipher option')
+        && encryptionSqlcipherCapability()['state'] !== '', 'Protection dashboard does not report SQLCipher driver readiness');
     encryptionExpect($dashboard !== false && str_contains($dashboard, 'function renderEncryptionStatus')
         && str_contains($dashboard, 'Verified encrypted copies protect backup artifacts')
         && str_contains($dashboard, 'Operator-declared host/volume coverage (not verified)')

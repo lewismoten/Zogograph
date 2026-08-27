@@ -11745,6 +11745,7 @@ function renderEncryptionStatus(data) {
     ["Protection evidence", evidence[data.evidence] || "Needs attention"],
   ];
   if (data.setup_configuration) overview.push(["Setup configuration at rest", data.setup_configuration.state === "ok" ? "Encrypted and verified" : data.setup_configuration.state === "error" ? "Verification failed" : "Private permissions only"]);
+  if (data.sqlcipher) overview.push(["Live SQLCipher option", data.sqlcipher.state === "driver-ready" ? "Driver detected; provider remains inactive" : "Driver not detected"]);
   if (data.storage_estimate?.required_bytes) {
     const free = data.storage_estimate.free_bytes == null ? "free space unavailable" : `${humanBytes(data.storage_estimate.free_bytes)} free`;
     overview.push(["Space for next seal", `${humanBytes(data.storage_estimate.required_bytes)} estimated · ${free}`]);
@@ -11764,6 +11765,7 @@ function renderEncryptionStatus(data) {
   if (retired) overview.push(["Retired recovery copies", String(retired)]);
   const parts = [factGrid(overview)];
   if (data.setup_configuration?.state !== "ok") parts.push(note(`Setup configuration: ${data.setup_configuration?.detail || "status unavailable"}`));
+  if (data.sqlcipher) parts.push(note(`Live SQLCipher option: ${data.sqlcipher.detail}`));
   if (data.mode === "none") {
     parts.push(note("Protection is off. Live SQLite databases and ordinary copies remain unencrypted unless your host protects their storage separately. Start with the setup wizard's Encryption section; HostScope will not generate, upload, or store a private key from this page."));
   } else if (data.mode === "operator_managed_volume") {

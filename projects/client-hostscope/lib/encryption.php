@@ -448,7 +448,8 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     $settings = (array)($config['encryption'] ?? []);
     $mode = (string)($settings['mode'] ?? 'none');
     $stores = encryptionSelectedStores($settings);
-    $status = ['mode' => $mode, 'stores' => $stores, 'policy' => encryptionPolicySummary($settings), 'waiting_stores' => [], 'superseded_artifacts' => [], 'retired_artifacts' => [], 'ready' => false, 'evidence' => 'none', 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null];
+    $status = ['mode' => $mode, 'stores' => $stores, 'policy' => encryptionPolicySummary($settings), 'waiting_stores' => [], 'superseded_artifacts' => [], 'retired_artifacts' => [], 'ready' => false, 'evidence' => 'none', 'warnings' => [], 'artifacts' => [], 'storage_estimate' => null,
+        'sqlcipher' => encryptionSqlcipherCapability()];
     if ($mode === 'none') {
         $status['warnings'][] = 'Encryption is off. Live SQLite files and copies remain unencrypted unless host storage protection is configured separately.';
         return $status;
@@ -518,6 +519,21 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     $status['ready'] = $expected !== [] && encryptionAvailable() && count(array_filter($status['warnings'], fn(string $warning): bool => !str_contains($warning, 'is not present yet, so it is waiting'))) === 0;
     if ($status['ready']) $status['evidence'] = 'verified_sealed_copies';
     return $status;
+}
+
+/** Core-owned read-only probe; detecting a driver never enables live encryption. */
+function encryptionSqlcipherCapability(): array
+{
+    if (!class_exists(PDO::class) || !in_array('sqlite', PDO::getAvailableDrivers(), true)) {
+        return ['state' => 'unavailable', 'detail' => 'PDO SQLite is unavailable.'];
+    }
+    try {
+        $pdo = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+        $version = trim((string)$pdo->query('PRAGMA cipher_version')->fetchColumn());
+    } catch (Throwable) { $version = ''; }
+    return $version === ''
+        ? ['state' => 'unavailable', 'detail' => 'No SQLCipher-capable PDO SQLite driver was detected.']
+        : ['state' => 'driver-ready', 'detail' => 'SQLCipher PDO driver detected (' . $version . '). The signed isolated provider and recovery migration are still required.'];
 }
 
 /** Does not expose source paths, but calls out aliases and broad local access
