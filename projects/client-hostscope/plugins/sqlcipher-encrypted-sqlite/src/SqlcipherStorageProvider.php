@@ -30,6 +30,32 @@ final class SqlcipherStorageProvider
         throw new \RuntimeException('The isolated HostScope package runtime is not installed. SQLCipher activation remains unavailable.');
     }
 
+    /** Uses only a random disposable sandbox database; no production path/key enters this probe. */
+    public function preflight(): array
+    {
+        $capability = $this->capability();
+        if ($capability['state'] !== 'driver-ready') return $capability;
+        $path = tempnam(sys_get_temp_dir(), 'hostscope-sqlcipher-');
+        if ($path === false) throw new \RuntimeException('could not create SQLCipher preflight file');
+        @unlink($path); $key = random_bytes(32);
+        try {
+            $first = $this->open($path, $key);
+            $first->exec('CREATE TABLE preflight_proof (value TEXT NOT NULL)'); $first->prepare('INSERT INTO preflight_proof (value) VALUES (?)')->execute(['verified']);
+            $first = null;
+            $second = $this->open($path, $key);
+            if ($second->query('SELECT value FROM preflight_proof')->fetchColumn() !== 'verified') throw new \RuntimeException('SQLCipher reopen proof failed');
+            $second = null;
+            $wrong = new \PDO('sqlite:' . $path, null, null, [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+            $wrong->exec("PRAGMA key = \"x'" . bin2hex(random_bytes(32)) . "'\"");
+            try { $wrong->query('SELECT COUNT(*) FROM sqlite_master')->fetchColumn(); }
+            catch (\Throwable) { return ['id' => 'sqlcipher-encrypted-sqlite', 'state' => 'preflight-ready',
+                'reason' => 'SQLCipher created, reopened, and rejected a wrong-key disposable database.']; }
+            throw new \RuntimeException('SQLCipher wrong-key proof failed');
+        } finally {
+            foreach ([$path, $path . '-wal', $path . '-shm'] as $file) @unlink($file);
+        }
+    }
+
     /** Opens a SQLCipher database after proving the active driver exposes
      * cipher_version. `$key` is caller-owned, held only for this operation. */
     public function open(string $path, string $key): \PDO

@@ -14,7 +14,7 @@
     "kind": "hostscope-isolated-php-package",
     "entrypoint": "src/SqlcipherStorageProvider.php",
     "provider_class": "HostScope\\Plugin\\SqlcipherEncryptedSqlite\\SqlcipherStorageProvider",
-    "operations": ["capability"],
+    "operations": ["capability", "sqlcipher_preflight"],
     "minimum_api": "1.0"
   },
   "settings_schema": "settings.schema.json",
@@ -32,7 +32,7 @@
     "files": {
       "README.md": "e4c0eb7d2ad695870189029ddfb708fcad9b894c078bf99c2a404313eee2e180",
       "settings.schema.json": "57f9b194e2a9673e2546d435074d6930942be67b43066603ad34d40331547f84",
-      "src/SqlcipherStorageProvider.php": "603cfa3cb41b635595a73c18c37a4e162d125e3876014b41e6ff2a774364f011"
+      "src/SqlcipherStorageProvider.php": "0c05483c655e73bdce05bd10698a73f0df875dad08d197f428167f46048fc402"
     }
   },
   "state": "design-preview"

@@ -67,7 +67,7 @@ function packageRuntimeManifest(string $directory, array $trustedKeys): array
     if (($runtime['kind'] ?? '') !== 'hostscope-isolated-php-package'
         || !preg_match('/^[0-9]+\.[0-9]+$/', $runtimeApi)
         || !preg_match('/^(?:[A-Za-z_][A-Za-z0-9_]*\\\\)*[A-Za-z_][A-Za-z0-9_]*$/', $providerClass)
-        || $operations !== ['capability']
+        || $operations !== ($id === 'sqlcipher-encrypted-sqlite' ? ['capability', 'sqlcipher_preflight'] : ['capability'])
         || !packageRuntimeRelativePath((string)($runtime['entrypoint'] ?? ''))
         || !is_file($root . '/' . $runtime['entrypoint'])) {
         throw new InvalidArgumentException('package runtime declaration is invalid');
