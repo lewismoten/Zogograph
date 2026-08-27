@@ -290,7 +290,7 @@ function keyCustodyStoreEnvelope(PDO $pdo, string $tenant, string $keyId, string
         if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200 || !defined('SODIUM_CRYPTO_BOX_SEALBYTES') || $envelope === '' || strlen($envelope) !== SODIUM_CRYPTO_BOX_SEALBYTES + 32) {
             throw new InvalidArgumentException('key envelope request is invalid');
         }
-        $key = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'"); $key->execute([$keyId, $tenant]);
+        $key = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active' AND wrapping_public_key IS NOT NULL"); $key->execute([$keyId, $tenant]);
         if ((int)$key->fetchColumn() !== 1) throw new InvalidArgumentException('custody key is unavailable');
         $exists = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes WHERE key_id = ? AND artifact_id = ?'); $exists->execute([$keyId, $artifactId]);
         if ((int)$exists->fetchColumn() === 0) {

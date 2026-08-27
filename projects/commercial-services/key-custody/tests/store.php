@@ -139,6 +139,8 @@ try {
     custodyExpect(hash_equals($legacyKey, keyCustodyUnwrapKey($pdo, $client['tenant_id'], $legacyId, 'legacy:artifact', $master))
         && in_array('legacy_symmetric', array_column(keyCustodyListKeys($pdo, $management['tenant_id']), 'wrapping_mode'), true),
         'service upgrade did not preserve recoverability or disclose legacy symmetric custody records');
+    try { keyCustodyStoreEnvelope($pdo, $client['tenant_id'], $legacyId, 'legacy:new', random_bytes(SODIUM_CRYPTO_BOX_SEALBYTES + 32)); throw new RuntimeException('legacy custody key accepted a new envelope'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'legacy custody key accepted a new envelope', $error->getMessage()); }
     $replacement = keyCustodyRotateKey($pdo, $management['tenant_id'], $key['id'], $master);
     custodyExpect($replacement['id'] !== $key['id'] && keyCustodyListKeys($pdo, $management['tenant_id'])[0]['id'] === $replacement['id'], 'custody key rotation did not create a replacement');
     custodyExpect(hash_equals($artifactDataKey, keyCustodyUnwrapKey($pdo, $client['tenant_id'], $key['id'], 'account:20260827', $master)),
