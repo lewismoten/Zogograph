@@ -89,6 +89,29 @@ function keyCustodyUnwrapKey(PDO $pdo, string $tenant, string $id, string $maste
     return $plain;
 }
 
+/** @return array{id:string,artifact_id:string,created_at:int} */
+function keyCustodyStoreEnvelope(PDO $pdo, string $tenant, string $keyId, string $artifactId, string $envelope): array
+{
+    if (!preg_match('/^key_[a-f0-9]{32}$/', $keyId) || $artifactId === '' || strlen($artifactId) > 200 || $envelope === '' || strlen($envelope) > 1048576) {
+        throw new InvalidArgumentException('key envelope request is invalid');
+    }
+    $key = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE id = ? AND tenant_id = ? AND state = 'active'"); $key->execute([$keyId, $tenant]);
+    if ((int)$key->fetchColumn() !== 1) throw new InvalidArgumentException('custody key is unavailable');
+    $id = 'env_' . bin2hex(random_bytes(16)); $now = time();
+    $pdo->prepare('INSERT INTO key_envelopes (id, key_id, artifact_id, envelope, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(key_id, artifact_id) DO UPDATE SET id = excluded.id, envelope = excluded.envelope, created_at = excluded.created_at')
+        ->execute([$id, $keyId, $artifactId, $envelope, $now]);
+    keyCustodyAudit($pdo, $tenant, 'envelope_store', $keyId, 'artifact=' . $artifactId);
+    return ['id' => $id, 'artifact_id' => $artifactId, 'created_at' => $now];
+}
+
+/** @return list<array{id:string,artifact_id:string,created_at:int}> */
+function keyCustodyListEnvelopes(PDO $pdo, string $tenant, string $keyId): array
+{
+    $stmt = $pdo->prepare('SELECT envelopes.id, envelopes.artifact_id, envelopes.created_at FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE envelopes.key_id = ? AND keys.tenant_id = ? ORDER BY envelopes.created_at DESC');
+    $stmt->execute([$keyId, $tenant]);
+    return array_map(fn(array $row): array => ['id' => $row['id'], 'artifact_id' => $row['artifact_id'], 'created_at' => (int)$row['created_at']], $stmt->fetchAll());
+}
+
 function keyCustodySetSubscription(PDO $pdo, string $tenant, string $plan, string $state, int $quota, ?int $renewsAt): void
 {
     if (!preg_match('/^[a-z][a-z0-9_-]{0,62}$/', $plan) || !in_array($state, ['active', 'past_due', 'cancelled'], true) || $quota < 0 || $quota > 10000) throw new InvalidArgumentException('subscription policy is invalid');

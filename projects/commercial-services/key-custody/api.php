@@ -26,7 +26,16 @@ try {
         $key = keyCustodyCreateKey($pdo, $auth['tenant_id'], (string)($body['name'] ?? ''), (int)($body['authorization_ttl_seconds'] ?? 0), keyCustodyReadMasterKey($config, __DIR__));
         custodyReply(201, ['key' => $key]);
     }
-    if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/unwrap$#', $path, $match) && $method === 'POST') {
+    if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/envelopes$#', $path, $match) && $method === 'POST') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'client'); $body = custodyBody();
+        $envelope = base64_decode((string)($body['envelope_base64'] ?? ''), true);
+        if (!is_string($envelope)) throw new InvalidArgumentException('envelope_base64 is invalid');
+        custodyReply(201, ['envelope' => keyCustodyStoreEnvelope($pdo, $auth['tenant_id'], $match[1], trim((string)($body['artifact_id'] ?? '')), $envelope)]);
+    }
+    if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/envelopes$#', $path, $match) && $method === 'GET') {
+        $auth = keyCustodyAuthenticate($pdo, $bearer, 'management'); custodyReply(200, ['envelopes' => keyCustodyListEnvelopes($pdo, $auth['tenant_id'], $match[1])]);
+    }
+    if (preg_match('#^/v1/keys/(key_[a-f0-9]{32})/unwrap-authorizations$#', $path, $match) && $method === 'POST') {
         $auth = keyCustodyAuthenticate($pdo, $bearer, 'client'); $body = custodyBody();
         if (trim((string)($body['artifact_id'] ?? '')) === '' || trim((string)($body['nonce'] ?? '')) === '') throw new InvalidArgumentException('artifact and nonce are required');
         $key = keyCustodyUnwrapKey($pdo, $auth['tenant_id'], $match[1], keyCustodyReadMasterKey($config, __DIR__));
