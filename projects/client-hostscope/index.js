@@ -47,7 +47,8 @@ window.addEventListener("unhandledrejection", event => {
 /** How long a confirmation survives the refresh that its own action triggered. */
 const NOTICE_KEEP_SECONDS = 10;
 
-const SERIES_COLORS = ["#73b7ff", "#ffb86b", "#75d58a", "#d5a6ff", "#ff7f9f"];
+const SERIES_COLORS = ["#73b7ff", "#ffb86b", "#75d58a", "#d5a6ff", "#ff7f9f",
+  "#50d3c4", "#f0cf63", "#9fb0ff", "#e98bc3", "#9ad26f"];
 const seriesColor = i => SERIES_COLORS[i % SERIES_COLORS.length];
 
 /** How often the page refreshes itself, awake and in live mode. */
@@ -1520,13 +1521,18 @@ function drawSparkline(canvas, dial) {
   for (let i = 0; i < points.length - 1; i++) {
     const band = bandOf(Number(points[i].value), dial.warn, dial.crit);
     if (!band || band === "ok") continue;
-
-    ctx.fillStyle = band === "crit"
-      ? "rgba(242, 97, 107, 0.22)"
-      : "rgba(240, 163, 94, 0.18)";
     const from = x(points[i].at);
     const to = x(points[i + 1].at);
-    ctx.fillRect(from, 0, Math.max(1, to - from), height);
+
+    if (band === "crit") {
+      ctx.fillStyle = "rgba(242, 97, 107, 0.22)";
+      ctx.fillRect(from, 0, Math.max(1, to - from), height);
+    } else {
+      // Warning is a lower-half band, leaving the quiet upper half clear so
+      // amber does not visually merge into a critical red background.
+      ctx.fillStyle = "rgba(240, 163, 94, 0.18)";
+      ctx.fillRect(from, height / 2, Math.max(1, to - from), height / 2);
+    }
   }
 
   ctx.beginPath();
@@ -17795,10 +17801,13 @@ async function refreshProcesses() {
 
   let data;
   try {
+    const to = Math.floor(Date.now() / 1000);
     data = await api("processes", {
       by: $("procBy").value,
       limit: 15,
       group: $("procGroup").checked ? 1 : 0,
+      from: to - state.range,
+      to,
     });
   } catch (error) {
     $("processBody").textContent = String(error.message || error);
@@ -17847,6 +17856,32 @@ async function refreshProcesses() {
     $("procStopNote").textContent = data.can_stop ? "" : (data.stop_reason || "");
   }
 
+  renderProcessTrend(data.trend || { metric: data.by, names: [], rows: [] });
+
+}
+
+/** The top recorded process groups across the selected time range. */
+function renderProcessTrend(trend) {
+  const chart = $("processTrendChart");
+  const note = $("processTrendNote");
+  if (!chart || !note) return;
+
+  const memory = trend.metric === "memory";
+  const names = Array.isArray(trend.names) ? trend.names.slice(0, 10) : [];
+  note.textContent = names.length
+    ? `Top ${names.length} recorded process groups for the selected range. Recent reporters lead; `
+      + `peak ${memory ? "memory" : "CPU"} users fill the remaining slots, so a resolved `
+      + `problem remains visible. Names join replacement PIDs into one line.`
+    : "No busy process snapshots fall inside this range. Process history is recorded only when the configured CPU or memory threshold is crossed.";
+
+  drawLineChart(chart, Array.isArray(trend.rows) ? trend.rows : [], names.map(name => ({
+    key: name,
+    label: name,
+  })), {
+    axis: memory ? bytesAxis : percentAxis,
+    zeroBased: true,
+    empty: "No recorded process load in this range",
+  });
 }
 
 /**

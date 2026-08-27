@@ -3452,6 +3452,7 @@ function processList(array $config, PDO $pdo, bool $signedIn): array
     // grouped is how you read the list. Both, rather than a choice.
     $group = ($_GET['group'] ?? '1') !== '0';
     $live = listProcesses($by, clampInt($_GET['limit'] ?? 15, 1, 100), $group);
+    [$from, $to] = window();
     $stopping = signalsAvailable($config);
 
     return [
@@ -3462,6 +3463,7 @@ function processList(array $config, PDO $pdo, bool $signedIn): array
         'rows' => $stopping['available']
             ? annotateEligibility($config, $live['rows'])
             : $live['rows'],
+        'trend' => processTrend($pdo, $from, $to, $by),
         // So the Stop buttons are only drawn where they could actually work.
         'can_stop' => $stopping['available'],
         'stop_reason' => $stopping['reason'],

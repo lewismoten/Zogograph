@@ -1302,6 +1302,14 @@
   <div id="processBody"></div>
   <p class="muted small" id="procStopNote"></p>
 
+  <h3 class="sub-head">Reported process load over this range</h3>
+  <p class="muted small sub-note" id="processTrendNote">
+    The newest reported processes lead this list, with high peaks retained so a
+    process that has settled down is still visible. Names group replacement
+    workers together; PIDs are intentionally not a chart identity.
+  </p>
+  <canvas id="processTrendChart"></canvas>
+
   <h3 class="sub-head">Stop by command line</h3>
   <p class="muted small sub-note">
     For when the name is not specific enough to aim with — twelve

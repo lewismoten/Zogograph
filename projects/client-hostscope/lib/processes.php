@@ -450,3 +450,68 @@ function recordedProcesses(PDO $pdo, int $limit = 12): array
 
     return $out;
 }
+
+/**
+ * The recorded process trend for one requested window.
+ *
+ * A PID is deliberately absent: short jobs and restarted workers get a new
+ * PID before the next busy snapshot. `name` is the same stable grouping used
+ * when the snapshot is written. Recent reporters get most of the chart slots,
+ * while peak ranking fills the remainder so an overnight culprit is not lost
+ * merely because it is quiet now.
+ *
+ * @return array{metric: string, names: list<string>, rows: list<array<string, int|float|null>>}
+ */
+function processTrend(PDO $pdo, int $from, int $to, string $metric, int $limit = 10): array
+{
+    $metric = $metric === 'memory' ? 'memory' : 'cpu';
+    $limit = max(1, min(10, $limit));
+    $peak = $metric === 'memory' ? 'MAX(rss_bytes)' : 'MAX(cpu_percent)';
+    $summary = $pdo->prepare(
+        'SELECT name, MAX(taken_at) AS last_at, ' . $peak . ' AS peak
+           FROM process_samples
+          WHERE taken_at BETWEEN ? AND ?
+          GROUP BY name'
+    );
+    $summary->execute([$from, $to]);
+    $all = $summary->fetchAll();
+
+    $recent = $all;
+    usort($recent, fn(array $a, array $b): int => ((int)$b['last_at'] <=> (int)$a['last_at'])
+        ?: ((float)$b['peak'] <=> (float)$a['peak']) ?: strcmp((string)$a['name'], (string)$b['name']));
+    $heavy = $all;
+    usort($heavy, fn(array $a, array $b): int => ((float)$b['peak'] <=> (float)$a['peak'])
+        ?: ((int)$b['last_at'] <=> (int)$a['last_at']) ?: strcmp((string)$a['name'], (string)$b['name']));
+
+    $chosen = [];
+    // Seven current/recent answers, then the best historic peaks. The exact
+    // split makes recency the default without turning "was it webalizer last
+    // night?" into a question the chart cannot answer.
+    foreach (array_merge(array_slice($recent, 0, 7), $heavy, $recent) as $row) {
+        $name = (string)$row['name'];
+        if (!isset($chosen[$name])) $chosen[$name] = true;
+        if (count($chosen) >= $limit) break;
+    }
+    $names = array_keys($chosen);
+    if ($names === []) return ['metric' => $metric, 'names' => [], 'rows' => []];
+
+    $holders = implode(', ', array_fill(0, count($names), '?'));
+    $value = $metric === 'memory' ? 'MAX(rss_bytes)' : 'MAX(cpu_percent)';
+    $rows = $pdo->prepare(
+        'SELECT taken_at, name, ' . $value . ' AS value
+           FROM process_samples
+          WHERE taken_at BETWEEN ? AND ? AND name IN (' . $holders . ')
+          GROUP BY taken_at, name
+          ORDER BY taken_at, name'
+    );
+    $rows->execute([$from, $to, ...$names]);
+
+    $points = [];
+    foreach ($rows->fetchAll() as $row) {
+        $at = (int)$row['taken_at'];
+        if (!isset($points[$at])) $points[$at] = ['taken_at' => $at];
+        $points[$at][(string)$row['name']] = $row['value'] === null ? null : (float)$row['value'];
+    }
+
+    return ['metric' => $metric, 'names' => $names, 'rows' => array_values($points)];
+}
