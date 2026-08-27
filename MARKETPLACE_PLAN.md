@@ -21,7 +21,7 @@ browser.
 
 1. [x] Manifest schema, strict validation, and bounded local catalog discovery.
 2. [x] Database-backed enablement state, audit records, and capability review.
-3. [x] Administrator catalog UI with package detail, enable/disable, and safe
+3. [x] Administrator catalog UI with search, package detail, enable/disable, and safe
    unavailable/error states.
 4. [x] First data-only package type: alert-rule recommendations.
 5. [x] Signed package verification, compatibility checks, install/rollback,

@@ -11646,8 +11646,14 @@ function renderMarketplace(data) {
     parts.push(install);
   }
   if (!data.packages.length) { parts.push(note("No valid local package manifests were found.")); body.replaceChildren(...parts); return; }
-  const holder = document.createElement("div"); holder.id = "marketplaceTable"; parts.push(holder); body.replaceChildren(...parts);
-  renderTable("marketplaceTable", data.packages, [
+  const filter = document.createElement("input"); filter.type = "search"; filter.className = "wide-field"; filter.placeholder = "Search packages, publishers, or capabilities"; filter.setAttribute("aria-label", "Search marketplace packages");
+  const holder = document.createElement("div"); holder.id = "marketplaceTable"; parts.push(filter, holder); body.replaceChildren(...parts);
+  const draw = () => {
+    const query = filter.value.trim().toLocaleLowerCase();
+    const rows = data.packages.filter(row => !query || [row.id, row.name, row.publisher, row.summary, row.license, ...row.capabilities].join(" ").toLocaleLowerCase().includes(query));
+    holder.replaceChildren();
+    if (!rows.length) { holder.append(note("No marketplace packages match that search.")); return; }
+    renderTable("marketplaceTable", rows, [
     { label: "Package", className: "name", render: row => `${row.name} · ${row.version}` },
     { label: "Publisher", render: row => row.publisher },
     { label: "What it offers", className: "cmd", render: row => row.summary },
@@ -11679,7 +11685,10 @@ function renderMarketplace(data) {
       wrap.appendChild(button);
       return wrap;
     }},
-  ], null, row => row.enabled ? "row-ok" : "", row => row.id);
+    ], null, row => row.enabled ? "row-ok" : "", row => row.id);
+  };
+  filter.addEventListener("input", draw);
+  draw();
 }
 
 function showMarketplaceInstallDialog() {
