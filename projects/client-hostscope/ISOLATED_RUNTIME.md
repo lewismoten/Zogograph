@@ -27,6 +27,15 @@ private-data paths. The marker is an operator attestation, not sandbox proof:
 run the worker only from the container/OS service described above. Core does
 not invoke it yet, so its presence does not enable executable packages.
 
+[`deploy/package-worker.compose.example.yml`](deploy/package-worker.compose.example.yml)
+is an optional Docker-compatible one-shot sandbox starting point. It disables
+networking, drops Linux capabilities, uses a read-only root and read-only
+package release, runs as an unprivileged numeric account, and sets conservative
+process/memory/CPU limits. Copy it outside the web root and review every host
+path/image tag. It intentionally does not mount core data, configuration, or
+key files; add a package-private data mount only for a later signed operation
+that has passed its release gate.
+
 Do not mount the HostScope web root, core databases, setup database, bootstrap
 configuration, key files, SSH agent, Docker socket, home directory, or a broad
 host filesystem. Disable outbound networking by default; grant it only for a
