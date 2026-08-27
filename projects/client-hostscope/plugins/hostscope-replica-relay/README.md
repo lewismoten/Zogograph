@@ -16,6 +16,13 @@ the method/path/timestamp/nonce/digest, verifies TLS and hostname, and follows
 no redirects. It has no upload method for a live SQLite database or a plaintext
 export. The relay may receive ciphertext, but never an unwrap authorization.
 
+For a higher-assurance deployment, `tls_spki_pin` may contain the relay
+certificate's Base64 `sha256//...` Subject Public Key Info hash. It supplements
+normal CA and hostname checks; leave it unset for the recommended low-friction
+configuration. Before rotating the relay certificate key or moving to a new
+service identity, test and update the pin through an authenticated, audited
+identity migration. A public-key pin is not a secret or an enrollment token.
+
 Before a scheduled upload, the adapter can read its signed, minimal storage
 readiness projection: artifact count, ciphertext bytes, configured ceilings,
 and whether another artifact can be stored. It has no authority to list,

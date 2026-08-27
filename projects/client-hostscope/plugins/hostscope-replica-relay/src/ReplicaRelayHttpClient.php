@@ -8,7 +8,7 @@ final class ReplicaRelayHttpClient
 {
     private readonly string $signingKey;
 
-    public function __construct(private readonly string $baseUrl, private readonly string $clientToken, string $clientSigningKey)
+    public function __construct(private readonly string $baseUrl, private readonly string $clientToken, string $clientSigningKey, private readonly ?string $tlsSpkiPin = null)
     {
         $url = parse_url($baseUrl);
         if (!filter_var($baseUrl, FILTER_VALIDATE_URL) || !is_array($url) || strtolower((string)($url['scheme'] ?? '')) !== 'https' || !is_string($url['host'] ?? null)
@@ -17,6 +17,9 @@ final class ReplicaRelayHttpClient
         }
         if (!preg_match('~^tok_[a-f0-9]{20}\.[A-Za-z0-9+/_-]+={0,2}$~', $clientToken)) {
             throw new \InvalidArgumentException('replica relay client credential is invalid');
+        }
+        if ($tlsSpkiPin !== null && preg_match('~^sha256//[A-Za-z0-9+/]{43}=$~', $tlsSpkiPin) !== 1) {
+            throw new \InvalidArgumentException('replica relay TLS public-key pin is invalid');
         }
         if (!function_exists('curl_init') || !function_exists('sodium_crypto_sign_detached')) throw new \RuntimeException('cURL and libsodium are required for replica relay');
         $this->signingKey = base64_decode($clientSigningKey, true);
@@ -44,11 +47,11 @@ final class ReplicaRelayHttpClient
         $signature = base64_encode(sodium_crypto_sign_detached($payload, $this->signingKey));
         $handle = curl_init(rtrim($this->baseUrl, '/') . $path); if ($handle === false) throw new \RuntimeException('could not initialize replica relay request');
         try {
-            curl_setopt_array($handle, [CURLOPT_CUSTOMREQUEST => 'GET', CURLOPT_RETURNTRANSFER => true,
+            curl_setopt_array($handle, $this->transportOptions([CURLOPT_CUSTOMREQUEST => 'GET', CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 30, CURLOPT_FOLLOWLOCATION => false,
                 CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
                 CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $this->clientToken,
-                    'X-HostScope-Timestamp: ' . $timestamp, 'X-HostScope-Nonce: ' . $nonce, 'X-HostScope-Signature: ' . $signature]]);
+                    'X-HostScope-Timestamp: ' . $timestamp, 'X-HostScope-Nonce: ' . $nonce, 'X-HostScope-Signature: ' . $signature]]));
             $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
             $response = is_string($raw) ? json_decode($raw, true) : null;
             $entitlement = is_array($response) ? ($response['entitlement'] ?? null) : null;
@@ -68,14 +71,20 @@ final class ReplicaRelayHttpClient
         $signature = base64_encode(sodium_crypto_sign_detached($payload, $this->signingKey));
         $handle = curl_init(rtrim($this->baseUrl, '/') . $path); if ($handle === false) throw new \RuntimeException('could not initialize replica relay request');
         try {
-            curl_setopt_array($handle, [CURLOPT_UPLOAD => true, CURLOPT_INFILE => $stream, CURLOPT_INFILESIZE => $bytes, CURLOPT_RETURNTRANSFER => true,
+            curl_setopt_array($handle, $this->transportOptions([CURLOPT_UPLOAD => true, CURLOPT_INFILE => $stream, CURLOPT_INFILESIZE => $bytes, CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_CONNECTTIMEOUT => 10, CURLOPT_TIMEOUT => 300, CURLOPT_FOLLOWLOCATION => false, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
                 CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $this->clientToken, 'Content-Type: application/octet-stream', 'X-HostScope-Ciphertext-SHA256: ' . $digest,
-                    'X-HostScope-Timestamp: ' . $timestamp, 'X-HostScope-Nonce: ' . $nonce, 'X-HostScope-Signature: ' . $signature]]);
+                    'X-HostScope-Timestamp: ' . $timestamp, 'X-HostScope-Nonce: ' . $nonce, 'X-HostScope-Signature: ' . $signature]]));
             $raw = curl_exec($handle); $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
             if (!is_string($raw)) throw new \RuntimeException('replica relay request failed: ' . curl_error($handle));
             $response = json_decode($raw, true); if (!is_array($response) || $status < 200 || $status >= 300) throw new \RuntimeException('replica relay request was refused');
             return $response;
         } finally { curl_close($handle); }
+    }
+
+    private function transportOptions(array $options): array
+    {
+        if ($this->tlsSpkiPin !== null) $options[CURLOPT_PINNEDPUBLICKEY] = $this->tlsSpkiPin;
+        return $options;
     }
 }
