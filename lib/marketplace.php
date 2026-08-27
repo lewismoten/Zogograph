@@ -7,8 +7,9 @@ declare(strict_types=1);
 const MARKETPLACE_CAPABILITIES = ['alert_recommendations'];
 const MARKETPLACE_MAX_PACKAGES = 200;
 const MARKETPLACE_MAX_MANIFEST_BYTES = 65536;
+const MARKETPLACE_SIGNATURE_ALGORITHM = 'ed25519';
 
-/** @return array{id:string,version:string,name:string,publisher:string,summary:string,license:string,capabilities:list<string>,recommendations:list<array{rule:string,severity:string,reason:string}>} */
+/** @return array{id:string,version:string,name:string,publisher:string,summary:string,license:string,capabilities:list<string>,recommendations:list<array{rule:string,severity:string,reason:string}>,signature:?array{key_id:string,algorithm:string,value:string}} */
 function marketplaceManifest(array $raw): array
 {
     $id = trim((string)($raw['id'] ?? ''));
@@ -39,8 +40,53 @@ function marketplaceManifest(array $raw): array
         $recommendations[] = compact('rule', 'severity', 'reason');
     }
     if (count($recommendations) > 30) throw new InvalidArgumentException('package has too many recommendations');
+    $signature = null;
+    if (array_key_exists('signature', $raw)) {
+        if (!is_array($raw['signature'])) throw new InvalidArgumentException('package signature is invalid');
+        $key_id = trim((string)($raw['signature']['key_id'] ?? ''));
+        $algorithm = trim((string)($raw['signature']['algorithm'] ?? ''));
+        $value = trim((string)($raw['signature']['value'] ?? ''));
+        if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $key_id) || $algorithm !== MARKETPLACE_SIGNATURE_ALGORITHM
+            || base64_decode($value, true) === false) throw new InvalidArgumentException('package signature is invalid');
+        $signature = compact('key_id', 'algorithm', 'value');
+    }
     sort($capabilities, SORT_STRING);
-    return compact('id', 'version', 'name', 'publisher', 'summary', 'license', 'capabilities', 'recommendations');
+    return compact('id', 'version', 'name', 'publisher', 'summary', 'license', 'capabilities', 'recommendations', 'signature');
+}
+
+/** Stable signed bytes: package JSON objects have lexical keys, arrays keep their order. */
+function marketplaceCanonicalJson(mixed $value): string
+{
+    if (is_array($value)) {
+        if (array_is_list($value)) return '[' . implode(',', array_map(marketplaceCanonicalJson(...), $value)) . ']';
+        ksort($value, SORT_STRING);
+        $items = [];
+        foreach ($value as $key => $item) $items[] = json_encode((string)$key, JSON_UNESCAPED_SLASHES) . ':' . marketplaceCanonicalJson($item);
+        return '{' . implode(',', $items) . '}';
+    }
+    return json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+}
+
+/** @return array{status:string,detail:string,can_enable:bool,key_id:?string} */
+function marketplaceProvenance(array $config, array $manifest): array
+{
+    $signature = $manifest['signature'];
+    if ($signature === null) return ['status' => 'local unsigned', 'detail' => 'Local manifest; reviewed by an administrator.', 'can_enable' => true, 'key_id' => null];
+    $key_id = $signature['key_id'];
+    $key = (array)(($config['marketplace']['trusted_keys'] ?? [])[$key_id] ?? []);
+    if (($key['publisher'] ?? null) !== $manifest['publisher']) return ['status' => 'untrusted', 'detail' => 'No matching trusted publisher key.', 'can_enable' => false, 'key_id' => $key_id];
+    $public = base64_decode((string)($key['public_key'] ?? ''), true);
+    $signed = base64_decode($signature['value'], true);
+    if ($public === false || strlen($public) !== 32 || $signed === false || strlen($signed) !== 64) {
+        return ['status' => 'invalid', 'detail' => 'Publisher key or signature is malformed.', 'can_enable' => false, 'key_id' => $key_id];
+    }
+    if (!function_exists('sodium_crypto_sign_verify_detached')) return ['status' => 'unavailable', 'detail' => 'PHP sodium support is unavailable.', 'can_enable' => false, 'key_id' => $key_id];
+    $payload = $manifest;
+    unset($payload['signature']);
+    $verified = sodium_crypto_sign_verify_detached($signed, marketplaceCanonicalJson($payload), $public);
+    return $verified
+        ? ['status' => 'verified', 'detail' => 'Signature verified against the configured publisher key.', 'can_enable' => true, 'key_id' => $key_id]
+        : ['status' => 'invalid', 'detail' => 'Signature does not match this manifest.', 'can_enable' => false, 'key_id' => $key_id];
 }
 
 /** @return list<array{package:string,rule:string,severity:string,reason:string}> */
@@ -65,7 +111,7 @@ function marketplaceCatalog(array $config): array
         $file = $directory . '/' . $entry;
         if (is_link($file) || !is_file($file) || filesize($file) > MARKETPLACE_MAX_MANIFEST_BYTES) { $errors[] = "$entry is not a safe manifest"; continue; }
         $raw = json_decode((string)file_get_contents($file), true);
-        try { if (!is_array($raw)) throw new InvalidArgumentException('not JSON'); $manifest = marketplaceManifest($raw); if ($manifest['id'] . '.json' !== $entry) throw new InvalidArgumentException('id does not match filename'); $packages[$manifest['id']] = $manifest; }
+        try { if (!is_array($raw)) throw new InvalidArgumentException('not JSON'); $manifest = marketplaceManifest($raw); if ($manifest['id'] . '.json' !== $entry) throw new InvalidArgumentException('id does not match filename'); $manifest['provenance'] = marketplaceProvenance($config, $manifest); $packages[$manifest['id']] = $manifest; }
         catch (Throwable $error) { $errors[] = "$entry: " . $error->getMessage(); }
     }
     ksort($packages, SORT_STRING);
@@ -91,6 +137,7 @@ function marketplaceSetEnabled(array $config, PDO $pdo, string $id, bool $enable
     $catalog = marketplaceCatalog($config);
     $package = current(array_filter($catalog['packages'], fn(array $row): bool => $row['id'] === $id));
     if (!is_array($package)) throw new InvalidArgumentException('package is not available in the local catalog');
+    if (!$package['provenance']['can_enable']) throw new InvalidArgumentException('package provenance cannot be verified');
     $now = time();
     $pdo->prepare('INSERT INTO marketplace_packages (package_id, version, enabled_at, changed_at, changed_by)
         VALUES (?, ?, ?, ?, ?) ON CONFLICT(package_id) DO UPDATE SET version = excluded.version,

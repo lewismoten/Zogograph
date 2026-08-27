@@ -9,6 +9,7 @@ file_put_contents($root . '/bad.json', '{');
 $catalog = marketplaceCatalog(['marketplace' => ['directory' => $root]]);
 marketplaceExpect(count($catalog['packages']) === 1 && $catalog['packages'][0]['id'] === 'uptime-pack', 'valid marketplace manifest was not discovered');
 marketplaceExpect(count($catalog['errors']) === 1, 'malformed manifest was not reported');
+marketplaceExpect($catalog['packages'][0]['provenance']['status'] === 'local unsigned', 'unsigned local manifest was misclassified');
 $pdo = new PDO('sqlite::memory:', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
 $pdo->exec('CREATE TABLE marketplace_packages (package_id TEXT PRIMARY KEY, version TEXT, enabled_at INTEGER, changed_at INTEGER, changed_by TEXT)');
 $enabled = marketplaceSetEnabled(['marketplace' => ['directory' => $root]], $pdo, 'uptime-pack', true, 'administrator');
@@ -21,6 +22,25 @@ marketplaceExpect($disabled['enabled'] === false && marketplaceAlertRecommendati
     'disabled recommendation package remained active');
 try { marketplaceManifest(['id'=>'Bad','version'=>'1','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['shell']]); throw new RuntimeException('unsafe manifest was accepted'); } catch (InvalidArgumentException) {}
 try { marketplaceManifest(['id'=>'bad-guidance','version'=>'1.0.0','name'=>'x','publisher'=>'x','summary'=>'x','license'=>'x','capabilities'=>['alert_recommendations'], 'recommendations'=>[['rule'=>'same_rule','severity'=>'warning','reason'=>'x'], ['rule'=>'same_rule','severity'=>'error','reason'=>'y']]]); throw new RuntimeException('duplicate package guidance was accepted'); } catch (InvalidArgumentException) {}
+$signed = marketplaceManifest(['id'=>'signed-pack','version'=>'1.0.0','name'=>'Signed pack','publisher'=>'Example publisher','summary'=>'Signed guidance.','license'=>'Proprietary','capabilities'=>['alert_recommendations']]);
+if (function_exists('sodium_crypto_sign_keypair')) {
+    $pair = sodium_crypto_sign_keypair();
+    $secret = sodium_crypto_sign_secretkey($pair);
+    $public = sodium_crypto_sign_publickey($pair);
+    $payload = $signed;
+    unset($payload['signature']);
+    $signed['signature'] = ['key_id'=>'example-publisher', 'algorithm'=>'ed25519', 'value'=>base64_encode(sodium_crypto_sign_detached(marketplaceCanonicalJson($payload), $secret))];
+    $signed = marketplaceManifest($signed);
+    $trustConfig = ['marketplace' => ['trusted_keys' => ['example-publisher' => ['publisher'=>'Example publisher', 'public_key'=>base64_encode($public)]]]];
+    marketplaceExpect(marketplaceProvenance($trustConfig, $signed)['status'] === 'verified', 'valid publisher signature was not verified');
+    $signed['summary'] = 'Changed after signing.';
+    marketplaceExpect(marketplaceProvenance($trustConfig, $signed)['can_enable'] === false, 'tampered signed manifest can be enabled');
+} else {
+    $signed['signature'] = ['key_id'=>'example-publisher', 'algorithm'=>'ed25519', 'value'=>base64_encode(str_repeat('x', 64))];
+    $signed = marketplaceManifest($signed);
+    $trustConfig = ['marketplace' => ['trusted_keys' => ['example-publisher' => ['publisher'=>'Example publisher', 'public_key'=>base64_encode(str_repeat('x', 32))]]]];
+    marketplaceExpect(marketplaceProvenance($trustConfig, $signed)['status'] === 'unavailable', 'missing sodium was not reported');
+}
 $api = file_get_contents(__DIR__ . '/../api.php');
 marketplaceExpect($api !== false && str_contains($api, "'marketplace' => 'sys-marketplace'")
     && str_contains($api, "'marketplace-enable' => doMarketplaceEnable")

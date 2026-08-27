@@ -19,11 +19,15 @@ return [
 
     'database' => __DIR__ . '/../data/stats.db',
 
-    /* Local-only marketplace catalog. Packages are data manifests until a
-     * future signed-package installer is implemented; copying a package here
-     * never executes PHP, shell, or browser code. */
+    /* Local-only marketplace catalog. Packages are data manifests; copying a
+     * package here never executes PHP, shell, or browser code. A signed
+     * manifest is enabled only when its configured publisher key verifies. */
     'marketplace' => [
         'directory' => __DIR__ . '/../marketplace',
+        // 'trusted_keys' => [
+        //     'example-publisher' => ['publisher' => 'Example publisher',
+        //         'public_key' => 'base64 Ed25519 public key'],
+        // ],
     ],
 
     // Sign-in. Without this nobody can unmask paths or delete anything, which

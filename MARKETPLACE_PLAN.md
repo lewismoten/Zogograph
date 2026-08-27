@@ -36,6 +36,15 @@ Each delivery item requires a server-side authorization test, malformed
 manifest coverage, capability-denial coverage, migration/upgrade coverage, and
 documentation that describes actual behavior rather than planned behavior.
 
+### In progress: package provenance
+
+Manifests may carry an Ed25519 signature. When a signature is present,
+HostScope verifies it against a locally configured publisher key and refuses to
+enable a malformed, untrusted, or invalidly signed package. Unsigned packages
+remain local-only administrator-reviewed manifests. Compatibility ranges,
+package installation/rollback, release provenance, and every remote source are
+still unimplemented.
+
 ## Current package format
 
 Set `marketplace.directory` in `lib/config.php` (it defaults to the local
