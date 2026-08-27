@@ -49,6 +49,9 @@ try {
         'shared-host cron guidance was not shown without command execution');
     setupExpect($byLabel['HTTPS']['state'] === 'warning', 'plain HTTP was not called out before credential entry');
     setupExpect($byLabel['Encrypted copies']['state'] === 'warning', 'missing encryption capability was not reported');
+    setupExpect($byLabel['Setup configuration at rest']['state'] === 'warning'
+        && str_contains($byLabel['Setup configuration at rest']['detail'], 'not encrypted at rest'),
+        'plaintext setup configuration was not explained in preflight');
 
     $live = setupPreflight($root, $config, [
         'php_version' => '8.1.0', 'sqlite' => true, 'commands' => ['proc_open'], 'https' => true, 'cli' => true, 'encryption' => true,

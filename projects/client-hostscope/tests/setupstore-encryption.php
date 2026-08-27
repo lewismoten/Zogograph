@@ -21,6 +21,9 @@ try {
     $sealed = $store->query("SELECT value FROM setup_values WHERE name = 'config_encrypted'")->fetchColumn();
     setupVaultExpect(is_string($sealed) && !str_contains($sealed, 'sensitive-hash'), 'configuration was not encrypted in setup.db');
     setupVaultExpect(loadConfiguredSettings($configFile)['password_hash'] === 'sensitive-hash', 'encrypted configuration could not be loaded');
+    $protection = setupStoreConfigurationProtection($configFile);
+    setupVaultExpect($protection['state'] === 'ok' && str_contains($protection['detail'], 'encrypted'),
+        'encrypted setup configuration was not reported as protected');
     $badBootstrap = $bootstrap; $badBootstrap['setup_key_file'] = $root . '/keys/missing.key';
     $badPath = $root . '/web/bad.php'; file_put_contents($badPath, "<?php return " . var_export($badBootstrap, true) . ";\n");
     try { loadConfiguredSettings($badPath); throw new RuntimeException('encrypted configuration fell back without its key'); }

@@ -32,6 +32,7 @@ function setupPreflight(string $root, string $targetPath, ?array $runtime = null
         && in_array('aes-256-gcm', array_map('strtolower', openssl_get_cipher_methods()), true));
     $data = $root . '/data';
     $phpOk = version_compare($phpVersion, '8.1.0', '>=');
+    $configurationProtection = setupStoreConfigurationProtection($targetPath);
 
     return [
         ['label' => 'PHP', 'state' => $phpOk ? 'ok' : 'error',
@@ -42,6 +43,7 @@ function setupPreflight(string $root, string $targetPath, ?array $runtime = null
             'detail' => is_dir($data) && is_writable($data) ? 'data/ is writable.' : 'data/ must exist and be writable by PHP.'],
         ['label' => 'Configuration', 'state' => configuredSettingsWritable($targetPath) ? 'ok' : 'error',
             'detail' => configuredSettingsWritable($targetPath) ? 'The configuration store can be written.' : 'PHP cannot write the configuration store.'],
+        ['label' => 'Setup configuration at rest', 'state' => $configurationProtection['state'], 'detail' => $configurationProtection['detail']],
         ['label' => 'HTTPS', 'state' => $https ? 'ok' : 'warning',
             'detail' => $https ? 'This setup page is using HTTPS.' : 'Serve setup and the dashboard over HTTPS before entering credentials.'],
         ['label' => 'Timezone', 'state' => date_default_timezone_get() !== '' ? 'ok' : 'warning',

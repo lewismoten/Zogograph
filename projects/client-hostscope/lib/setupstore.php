@@ -54,6 +54,33 @@ function setupStorePrivateSqliteFiles(string $path): void
     foreach ([$path, $path . '-wal', $path . '-shm'] as $file) if (is_file($file) && !is_link($file)) @chmod($file, 0600);
 }
 
+/** @return array{state:string,detail:string} Safe at-rest status for setup UI. */
+function setupStoreConfigurationProtection(string $configFile): array
+{
+    if (!is_file($configFile)) return ['state' => 'warning',
+        'detail' => 'No saved configuration yet. Configure a local key to encrypt setup settings after the first save.'];
+    try {
+        $bootstrap = require $configFile;
+        if (!is_array($bootstrap)) throw new RuntimeException('bootstrap config is invalid');
+        $store = setupStoreOpen($bootstrap, false);
+        if ($store === null) return ['state' => 'warning',
+            'detail' => 'The setup database has not been created yet; no full configuration is stored.'];
+        $sealed = $store->query("SELECT value FROM setup_values WHERE name = 'config_encrypted'")->fetchColumn();
+        if (is_string($sealed) && $sealed !== '') {
+            setupStoreOpenConfig($sealed, (string)($bootstrap['setup_key_file'] ?? ''));
+            return ['state' => 'ok',
+                'detail' => 'The full setup configuration is encrypted with the configured external local key.'];
+        }
+        $plain = $store->query("SELECT value FROM setup_values WHERE name = 'config'")->fetchColumn();
+        return ['state' => is_string($plain) ? 'warning' : 'warning', 'detail' => is_string($plain)
+            ? 'The full setup configuration is permission-protected but not encrypted at rest. Configure a local key and save setup to migrate it.'
+            : 'No full setup configuration record was found.'];
+    } catch (Throwable) {
+        return ['state' => 'error',
+            'detail' => 'HostScope could not verify the encrypted setup configuration. Check the private key path and restore only a verified backup.'];
+    }
+}
+
 /** Loads setup.db when present, otherwise a legacy all-in-one config.php. */
 function loadConfiguredSettings(string $configFile): array
 {
