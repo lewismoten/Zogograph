@@ -13,7 +13,7 @@ foreach ([
     'X-Content-Type-Options "nosniff"',
     'X-Frame-Options "DENY"',
     'Referrer-Policy "no-referrer"',
-    'Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"',
+    'Permissions-Policy "camera=(), geolocation=(), microphone=(self), payment=(), usb=()"',
     '<FilesMatch "\\.(db|db-journal|db-wal|db-shm|sqlite|sqlite3)$">',
     '<Files "cron.php">',
     '<Files "host-cron.php">',

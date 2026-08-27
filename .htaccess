@@ -80,10 +80,9 @@ DirectoryIndex index.html
   # from presenting the dashboard inside an attacker-controlled frame too.
   Header always set X-Frame-Options "DENY"
   Header always set Referrer-Policy "no-referrer"
-  # The dashboard has no camera, microphone, location, payment, or USB use.
-  # Explicitly disabling them keeps a future embedded widget from gaining a
-  # browser capability merely because a host changes its defaults.
-  Header always set Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
+  # Voice dictation is an explicit local user action, so only this origin may
+  # request a microphone. The other unused browser capabilities stay denied.
+  Header always set Permissions-Policy "camera=(), geolocation=(), microphone=(self), payment=(), usb=()"
   # Nothing here should ever be cached by a shared proxy: even masked, the
   # sizes are information about a private machine.
   Header always set Cache-Control "no-store"

@@ -8595,24 +8595,27 @@ function toggleRecognition() {
     if (text) sayToChat(text).catch(error => notice(String(error.message || error)));
   };
   recognition.onend = () => {
-    if (voiceState.listen) recognition.start();
+    if (voiceState.listen && voiceState.listenMode === "always") recognition.start();
+  };
+  recognition.onerror = event => {
+    voiceState.listen = false;
+    $("chatListen").textContent = voiceState.listenMode === "push" ? "Hold to talk" : "Start listening";
+    notice(`Microphone listening stopped: ${event.error || "browser error"}.`);
   };
   voiceState.recognition = recognition;
   voiceState.listen = true;
   recognition.start();
-  $("chatListen").textContent = "Listening…";
+  $("chatListen").textContent = voiceState.listenMode === "push" ? "Listening…" : "Stop listening";
 }
 
 function applyVoicePreferences(preferences) {
+  const priorMode = voiceState.listenMode;
   voiceState.speak = preferences.speaking === "replies";
   voiceState.listenMode = preferences.listening;
-  if (preferences.listening === "never" && voiceState.listen) toggleRecognition();
+  if (voiceState.listen && (preferences.listening === "never" || priorMode !== preferences.listening)) toggleRecognition();
   $("chatSpeak").textContent = voiceState.speak ? "Speaking" : "Speak";
   $("chatListen").hidden = preferences.listening === "never";
-  $("chatListen").textContent = preferences.listening === "push" ? "Hold to talk" : "Listen";
-  if (preferences.listening === "always" && !voiceState.listen) {
-    try { toggleRecognition(); } catch (_) { /* Browser reports availability when the control is used. */ }
-  }
+  $("chatListen").textContent = preferences.listening === "push" ? "Hold to talk" : "Start listening";
 }
 
 /** How often to ask, by what the session is doing. */
@@ -14858,7 +14861,7 @@ function openDisplayPreferences() {
     fieldRow("Colour vision", colorVision, "High distinction uses a blue, orange, and violet status palette. Status words and symbols remain visible in every mode."),
     section("Voice", document.createElement("div")),
     fieldRow("Speaking", speaking, "Browser speech synthesis; replies are read aloud only when enabled."),
-    fieldRow("Listening", listening, "Push to talk requires holding the Listen button. Always on keeps recognition active until stopped."),
+    fieldRow("Listening", listening, "After applying, click Start listening to grant microphone permission. Push to talk requires holding the Listen button; Always on restarts recognition until stopped."),
   ], async () => {
     applyDisplayPreferences({ textSize: textSize.value, motion: motion.value, editorFont: editorFont.value, colorVision: colorVision.value, speaking: speaking.value, listening: listening.value });
     redrawCharts(document);
