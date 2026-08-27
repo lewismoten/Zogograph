@@ -10,6 +10,10 @@ try {
     catch (RuntimeException $error) { relayExpect($error->getMessage() !== 'relative relay database path was accepted', $error->getMessage()); }
     try { replicaRelayOpen(['database' => $root . '/bad.db', 'artifact_directory' => 'relative-artifacts']); throw new RuntimeException('relative relay artifact directory was accepted'); }
     catch (RuntimeException $error) { relayExpect($error->getMessage() !== 'relative relay artifact directory was accepted', $error->getMessage()); }
+    try { replicaRelayOpen(['database' => $root . '/web/service.db', 'artifact_directory' => $root . '/artifacts'], $root . '/web'); throw new RuntimeException('web-root relay database path was accepted'); }
+    catch (RuntimeException $error) { relayExpect($error->getMessage() !== 'web-root relay database path was accepted', $error->getMessage()); }
+    try { replicaRelayOpen(['database' => $root . '/service.db', 'artifact_directory' => $root . '/web/artifacts'], $root . '/web'); throw new RuntimeException('web-root relay artifact directory was accepted'); }
+    catch (RuntimeException $error) { relayExpect($error->getMessage() !== 'web-root relay artifact directory was accepted', $error->getMessage()); }
     $initialEntitlement = replicaRelayClientEntitlement($pdo, $config, $tenant['tenant_id']);
     relayExpect($initialEntitlement['artifact_used'] === 0 && $initialEntitlement['storage_used_bytes'] === 0 && $initialEntitlement['can_store_artifact'],
         'relay client did not receive its minimal initial capacity entitlement');
