@@ -14,3 +14,7 @@ projects.
 
 Each project owns its own deployment and credentials. No client installation
 depends on a commercial service by default.
+
+The recommended VPS topology, rebrand-safe naming rules, customer encryption
+choices, and commercial-service boundaries are recorded in
+[projects/DIRECTION.md](projects/DIRECTION.md).

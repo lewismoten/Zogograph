@@ -2,10 +2,17 @@
 
 ## Status
 
-This is a product and implementation plan. HostScope does **not** currently
-encrypt SQLite files or operate a key service. Encryption remains off until an
-administrator explicitly enables it in setup. No third-party key service is a
-default or prerequisite.
+This is a product and implementation plan. The client can create opt-in,
+verified encrypted copies of selected SQLite/configuration artifacts; it does
+**not** yet encrypt a live SQLite database. A separate reference key-custody
+service exists under `../commercial-services/key-custody/`, but it remains
+optional, disabled by default, and is not a prerequisite for a self-managed
+client. Encryption remains off until an administrator explicitly enables it in
+setup.
+
+For the deployment, branding, customer-choice, and launch-policy decisions
+that sit above this implementation plan, see
+[`../DIRECTION.md`](../DIRECTION.md).
 
 ## Goal and threat boundary
 

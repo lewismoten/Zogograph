@@ -4,6 +4,9 @@ Optional HostScope-operated services live here. They are separate from the
 public site and are never required for local collection, dashboard access, or
 local encrypted copies.
 
+The recommended provisional VPS paths, future domain migration rule, and
+service separation policy are in [`../DIRECTION.md`](../DIRECTION.md).
+
 ## Candidate services
 
 - AI proxy — applies account policy and forwards explicitly permitted requests

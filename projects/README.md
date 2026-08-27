@@ -19,3 +19,7 @@ documentation. Shared protocols must be versioned rather than importing
 production code across these folders. The root `data/` directory remains only
 as a protected transition location for an existing ignored local database; it
 must be migrated only after its writers have stopped.
+
+See [DIRECTION.md](DIRECTION.md) for the recommended initial VPS paths,
+separation boundaries, rebrand-safe endpoint rules, and encryption launch
+policy.
