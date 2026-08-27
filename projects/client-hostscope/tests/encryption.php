@@ -26,6 +26,17 @@ $sealed = $root . '/source.sealed';
 $opened = $root . '/opened.db';
 
 try {
+    $api = file_get_contents(__DIR__ . '/../api.php');
+    $dashboard = file_get_contents(__DIR__ . '/../index.js');
+    $page = file_get_contents(__DIR__ . '/../index.html');
+    encryptionExpect($api !== false && str_contains($api, "'encryption-status' => 'sys-encryption'"),
+        'encryption status is not protected by its dashboard page access rule');
+    encryptionExpect($dashboard !== false && str_contains($dashboard, 'function renderEncryptionStatus')
+        && str_contains($dashboard, 'Verified encrypted copies protect backup artifacts'),
+        'dashboard does not explain encrypted-copy limitations');
+    encryptionExpect($page !== false && str_contains($page, 'data-view="sys-encryption"')
+        && str_contains($page, 'id="encryptionBody"'), 'dashboard protection view is unavailable');
+
     $sample = require __DIR__ . '/../lib/config.sample.php';
     $fields = array_column(configFields($sample), null, 'key');
     encryptionExpect(isset($fields['encryption_mode']['options']['operator_managed_volume']),

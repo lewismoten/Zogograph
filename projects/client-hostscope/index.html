@@ -436,6 +436,11 @@
       <span class="nav-label">Account data</span>
       <span class="nav-badge" data-badge="sys-account" hidden></span>
     </a>
+    <a class="nav-item nav-sub" href="#/sys-encryption" data-nav="sys-encryption" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Protection</span>
+      <span class="nav-badge" data-badge="sys-encryption" hidden></span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-host-data" data-nav="sys-host-data" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Host data</span>
@@ -2581,6 +2586,14 @@
   <div class="panel-head"><h2>Marketplace</h2></div>
   <p class="muted small sub-note">Local package manifests only. Enabling a package records approval but does not execute package code; requested capabilities remain visible for review.</p>
   <div id="marketplaceBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="sys-encryption" hidden>
+<section class="panel">
+  <div class="panel-head"><h2>Data protection</h2></div>
+  <p class="muted small sub-note">This page reports HostScope evidence, not assumptions. It never shows key paths or key material. Change protection choices in the setup wizard; recovery and sealing stay CLI-only so a browser session cannot handle a private key.</p>
+  <div id="encryptionBody"></div>
 </section>
 </section>
 

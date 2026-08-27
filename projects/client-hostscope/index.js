@@ -11636,6 +11636,49 @@ async function refreshMarketplace() {
   catch (error) { body.replaceChildren(note(String(error.message || error))); }
 }
 
+async function refreshEncryptionStatus() {
+  const body = $("encryptionBody");
+  if (!body) return;
+  if (!state.signedIn) { body.replaceChildren(note("Sign in to view protection status.")); return; }
+  try { renderEncryptionStatus(await api("encryption-status")); }
+  catch (error) { body.replaceChildren(note(String(error.message || error))); }
+}
+
+function renderEncryptionStatus(data) {
+  const body = $("encryptionBody");
+  const names = { none: "Off", sealed_copies_local: "Verified encrypted copies", operator_managed_volume: "Host/VM volume protection" };
+  const parts = [factGrid([
+    ["Protection mode", names[data.mode] || "Unavailable"],
+    ["Selected stores", data.stores?.length ? data.stores.join(", ") : "None"],
+    ["Evidence", data.ready ? "Ready" : "Needs attention"],
+  ])];
+  if (data.mode === "none") {
+    parts.push(note("Protection is off. Live SQLite databases and ordinary copies remain unencrypted unless your host protects their storage separately. Start with the setup wizard's Encryption section; HostScope will not generate, upload, or store a private key from this page."));
+  } else if (data.mode === "operator_managed_volume") {
+    parts.push(note("HostScope records your host/VM protection policy but cannot verify it. Confirm that every selected database, SQLite WAL/SHM companion, configuration file, log, export, and backup destination is covered. This is not evidence of a verified encrypted copy."));
+  } else if (data.mode === "sealed_copies_local") {
+    parts.push(note("Verified encrypted copies protect backup artifacts, not the running SQLite database. Run `php cron.php --seal` from the server after setup, then schedule it. Recovery requires the private key outside the web root and an explicit CLI restore."));
+  } else {
+    parts.push(note("The selected protection mode is not available in this HostScope release. Keep the current data and recovery key safe while choosing a supported package or local mode."));
+  }
+  const artifacts = data.artifacts?.length ? data.artifacts : null;
+  if (artifacts) {
+    const holder = document.createElement("div"); holder.id = "encryptionArtifacts";
+    parts.push(holder);
+  }
+  if (data.warnings?.length) {
+    const warnings = document.createElement("ul"); warnings.className = "compact-list";
+    for (const warning of data.warnings) { const item = document.createElement("li"); item.textContent = warning; warnings.appendChild(item); }
+    parts.push(warnings);
+  }
+  body.replaceChildren(...parts);
+  if (artifacts) renderTable("encryptionArtifacts", artifacts, [
+    { label: "Store", render: row => row.store },
+    { label: "Verified copies", render: row => String(row.copies) },
+    { label: "Newest proof", render: row => whenSpan(row.created_at) },
+  ]);
+}
+
 function renderMarketplace(data) {
   const body = $("marketplaceBody");
   const parts = [note("Packages are discovered from the configured local marketplace directory. Remote downloads and executable hooks are not supported.")];
@@ -31341,6 +31384,12 @@ const VIEWS = {
     label: "Marketplace",
     parent: "system",
     refresh: () => refreshMarketplace(),
+  },
+  "sys-encryption": {
+    manual: true,
+    label: "Protection",
+    parent: "system",
+    refresh: () => refreshEncryptionStatus(),
   },
   "sys-changed": {
     /*

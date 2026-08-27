@@ -349,7 +349,7 @@ function requireActionAccess(array $config, string $action): void
         'peers' => 'sys-peers', 'marketplace' => 'sys-marketplace',
         'package-runtime' => 'sys-marketplace',
         'package-runtime-settings' => 'sys-marketplace',
-        'encryption-status' => 'sys-account',
+        'encryption-status' => 'sys-encryption',
         'labels' => 'net-labels', 'descriptions' => 'sys-descriptions',
         'changed' => 'sys-changed', 'capability-changes' => 'sys-changed',
         'installed' => 'sys-installed', 'symlinks' => 'storage-links',
