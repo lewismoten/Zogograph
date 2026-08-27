@@ -165,6 +165,30 @@ SQLite databases and the bootstrap configuration file; it does not alter the
 live database or its WAL journal. This is suitable for encrypted local archives
 and the later fleet-replica workflow.
 
+### Choose a protection path
+
+Start with the smallest path that meets the installation's recovery needs. The
+Protection page only shows optional methods after their package has been
+installed and its platform checks have passed.
+
+| situation | recommended setup choice | important limit |
+| --- | --- | --- |
+| shared host, single VPS, or a first installation | local encrypted copies; protect configuration, `setup`, and `account`; run daily and retain 30 days | protects copies and backup media, not the live SQLite files while HostScope runs |
+| host/VM/managed platform already encrypts its disks | record host/VM protection for the selected live stores, then still make encrypted recovery copies | HostScope records this as an operator statement; it cannot prove the platform's disk-encryption setting |
+| live SQLite files must be encrypted by HostScope | install the SQLCipher package only on a HostScope-tested PHP/PDO image and run its disposable preflight | do not activate it on an ordinary PDO SQLite build or treat a sealed copy as live-store encryption |
+| organization needs remote recovery, KMS/HSM, or hosted custody | install and review the compatible custody/replica/provider package, then enroll it through the Protection page | remote custody and replicas remain off until the provider runtime and recovery/availability gates are complete |
+
+The local encrypted-copy path is the initial recommendation because it works
+without a commercial account or special database driver. Add `host` and `ai`
+only after confirming that their evidence/history needs the same recovery
+protection. Keep encryption off if the owner cannot retain and test a recovery
+key; encryption without a usable recovery path can permanently lose data.
+
+For the product-owner reasons behind these defaults and the settings that must
+remain database-configurable, see [ENCRYPTION_DECISIONS.md](ENCRYPTION_DECISIONS.md).
+For the decisions to record before enabling advanced packages, see
+[ENCRYPTION_REVIEW.md](ENCRYPTION_REVIEW.md).
+
 Create a 256-bit local key outside the document root, then keep an offline
 recovery copy. The setup page has **Create a local encryption key** for this
 quick-start path: it creates a new file only, never replaces one, requires the
