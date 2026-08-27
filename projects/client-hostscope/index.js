@@ -11676,6 +11676,17 @@ function packageRuntimeActions(row, canChange) {
   settings.addEventListener("click", () => showPackageRuntimeSettings(row)); wrap.appendChild(settings);
   const secret = document.createElement("button"); secret.className = "link"; secret.textContent = "Add secret";
   secret.addEventListener("click", () => showPackageRuntimeSecret(row)); wrap.appendChild(secret);
+  if (row.revoked) {
+    const lift = document.createElement("button"); lift.className = "link"; lift.textContent = "Lift revocation";
+    lift.addEventListener("click", async () => {
+      if (!(await confirmDialog(`Lift the revocation for ${row.id}?\n\nThe package remains disabled. Review its files and explicitly grant/enable it again only if you trust it.`, "Lift package revocation"))) return;
+      try { await post("package-runtime-unrevoke", { id: row.id }); await refreshPackageRuntime(); notice(`${row.id} revocation lifted; it remains disabled.`, true); }
+      catch (error) { notice(String(error.message || error)); }
+    });
+    wrap.appendChild(lift); return wrap;
+  }
+  const revoke = document.createElement("button"); revoke.className = "link danger"; revoke.textContent = "Revoke";
+  revoke.addEventListener("click", () => showPackageRuntimeRevoke(row)); wrap.appendChild(revoke);
   const toggle = document.createElement("button"); toggle.className = row.enabled ? "link danger" : "link";
   toggle.textContent = row.enabled ? "Disable" : "Grant & enable";
   toggle.addEventListener("click", async () => {
@@ -11705,6 +11716,14 @@ function showPackageRuntimeSecret(row) {
     const result = await post("package-runtime-secret-create", { id: row.id, value: value.value });
     setTimeout(() => showListDialog("Secret reference created", [factGrid([["Reference", result.reference]])], "Copy this opaque reference into the package settings. It is the only value that settings will retain."), 0);
   }, "Create reference");
+}
+
+function showPackageRuntimeRevoke(row) {
+  const reason = document.createElement("textarea"); reason.className = "wide-field"; reason.rows = 4; reason.maxLength = 500;
+  showFormDialog(`Revoke ${row.id}`, [fieldRow("Reason", reason, "Revocation disables this package immediately and records why. Lifting it later still leaves the package disabled until capabilities are explicitly granted again.")], async () => {
+    await post("package-runtime-revoke", { id: row.id, reason: reason.value });
+    await refreshPackageRuntime(); notice(`${row.id} revoked.`, true);
+  }, "Revoke package");
 }
 
 function renderEncryptionStatus(data) {

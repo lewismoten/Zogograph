@@ -16,7 +16,8 @@ file_put_contents($source . '/migrations/001-private-evidence.sql', "CREATE TABL
 try {
     $api = file_get_contents(__DIR__ . '/../api.php'); $dashboard = file_get_contents(__DIR__ . '/../index.js'); $page = file_get_contents(__DIR__ . '/../index.html');
     runtimeExpect($api !== false && str_contains($api, "'package-runtime-enable' => 'sys-packages'")
-        && str_contains($api, "'package-runtime-secret-create' => 'sys-packages'"), 'package runtime writes are not page-access gated');
+        && str_contains($api, "'package-runtime-secret-create' => 'sys-packages'")
+        && str_contains($api, "'package-runtime-revoke' => 'sys-packages'"), 'package runtime writes are not page-access gated');
     runtimeExpect($dashboard !== false && str_contains($dashboard, 'function renderPackageRuntime')
         && str_contains($dashboard, 'does not run package code'), 'dashboard does not explain the package execution boundary');
     runtimeExpect($page !== false && str_contains($page, 'data-view="sys-packages"')
@@ -57,6 +58,13 @@ try {
     packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator');
     $after = packageRuntimePackages($pdo)[0];
     runtimeExpect($after['enabled'] && $after['state'] === 'registered; execution runtime pending', 'package was not registered after explicit grant');
+    packageRuntimeRevoke($pdo, 'test-runtime', 'test compromise response', 'administrator');
+    $revoked = packageRuntimePackages($pdo)[0];
+    runtimeExpect($revoked['revoked'] && !$revoked['enabled'] && str_starts_with($revoked['state'], 'revoked:'), 'package revocation did not disable the runtime record');
+    try { packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator'); throw new RuntimeException('revoked package was enabled'); }
+    catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'revoked package was enabled', $error->getMessage()); }
+    packageRuntimeLiftRevocation($pdo, 'test-runtime');
+    packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator');
     $private = packageRuntimePrivateDatabase($pdo, $config, 'test-runtime');
     runtimeExpect((int)$private->query("SELECT COUNT(*) FROM sqlite_master WHERE name = 'private_evidence'")->fetchColumn() === 1,
         'signed package private migration was not applied');

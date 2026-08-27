@@ -155,7 +155,7 @@ function packageRuntimeRemoveDirectory(string $directory): void
     @rmdir($directory);
 }
 
-/** @return list<array{id:string,version:string,publisher:string,enabled:bool,capabilities:list<string>,grants:list<string>,state:string}> */
+/** @return list<array{id:string,version:string,publisher:string,enabled:bool,revoked:bool,capabilities:list<string>,grants:list<string>,state:string}> */
 function packageRuntimePackages(PDO $pdo): array
 {
     $grants = [];
@@ -163,15 +163,17 @@ function packageRuntimePackages(PDO $pdo): array
         $grants[$row['package_id']][] = $row['capability'];
     }
     $out = [];
-    foreach ($pdo->query('SELECT package_id, version, publisher, manifest_json, enabled_at FROM runtime_packages ORDER BY package_id')->fetchAll() as $row) {
+    foreach ($pdo->query('SELECT packages.package_id, packages.version, packages.publisher, packages.manifest_json, packages.enabled_at, revocations.reason AS revocation_reason
+        FROM runtime_packages packages LEFT JOIN runtime_package_revocations revocations ON revocations.package_id = packages.package_id ORDER BY packages.package_id')->fetchAll() as $row) {
         $manifest = json_decode((string)$row['manifest_json'], true) ?: [];
         $required = (array)($manifest['capabilities'] ?? []);
         $given = $grants[$row['package_id']] ?? [];
         sort($given, SORT_STRING);
-        $enabled = $row['enabled_at'] !== null && $required === $given;
+        $revoked = $row['revocation_reason'] !== null;
+        $enabled = !$revoked && $row['enabled_at'] !== null && $required === $given;
         $out[] = ['id' => $row['package_id'], 'version' => $row['version'], 'publisher' => $row['publisher'],
-            'enabled' => $enabled, 'capabilities' => $required, 'grants' => $given,
-            'state' => $enabled ? 'registered; execution runtime pending' : 'needs explicit capability grants'];
+            'enabled' => $enabled, 'revoked' => $revoked, 'capabilities' => $required, 'grants' => $given,
+            'state' => $revoked ? 'revoked: ' . $row['revocation_reason'] : ($enabled ? 'registered; execution runtime pending' : 'needs explicit capability grants')];
     }
     return $out;
 }
@@ -181,6 +183,10 @@ function packageRuntimeSetEnabled(PDO $pdo, string $id, array $grants, bool $ena
     $row = $pdo->prepare('SELECT manifest_json FROM runtime_packages WHERE package_id = ?');
     $row->execute([$id]); $manifest = json_decode((string)$row->fetchColumn(), true);
     if (!is_array($manifest)) throw new InvalidArgumentException('package is not installed');
+    if ($enabled) {
+        $revoked = $pdo->prepare('SELECT COUNT(*) FROM runtime_package_revocations WHERE package_id = ?'); $revoked->execute([$id]);
+        if ((int)$revoked->fetchColumn() !== 0) throw new InvalidArgumentException('package is revoked; lift the revocation only after review');
+    }
     $required = (array)($manifest['capabilities'] ?? []);
     $grants = array_values(array_unique(array_intersect(PACKAGE_RUNTIME_CAPABILITIES, array_map('strval', $grants))));
     sort($required, SORT_STRING); sort($grants, SORT_STRING);
@@ -194,6 +200,28 @@ function packageRuntimeSetEnabled(PDO $pdo, string $id, array $grants, bool $ena
             ->execute([$enabled ? time() : null, time(), mb_substr($actor, 0, 120), $id]);
         $pdo->commit();
     } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
+}
+
+function packageRuntimeRevoke(PDO $pdo, string $id, string $reason, string $actor): void
+{
+    packageRuntimeInstalled($pdo, $id); $reason = trim($reason);
+    if ($reason === '' || mb_strlen($reason) > 500) throw new InvalidArgumentException('package revocation reason is required and must be at most 500 characters');
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare('INSERT INTO runtime_package_revocations (package_id, reason, revoked_at, revoked_by) VALUES (?, ?, ?, ?)
+            ON CONFLICT(package_id) DO UPDATE SET reason = excluded.reason, revoked_at = excluded.revoked_at, revoked_by = excluded.revoked_by')
+            ->execute([$id, $reason, time(), mb_substr($actor, 0, 120)]);
+        $pdo->prepare('UPDATE runtime_packages SET enabled_at = NULL, changed_at = ?, changed_by = ? WHERE package_id = ?')
+            ->execute([time(), mb_substr($actor, 0, 120), $id]);
+        $pdo->commit();
+    } catch (Throwable $error) { $pdo->rollBack(); throw $error; }
+}
+
+function packageRuntimeLiftRevocation(PDO $pdo, string $id): void
+{
+    packageRuntimeInstalled($pdo, $id);
+    $stmt = $pdo->prepare('DELETE FROM runtime_package_revocations WHERE package_id = ?'); $stmt->execute([$id]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('package is not revoked');
 }
 
 function packageRuntimePrivateDatabase(PDO $registry, array $config, string $id): PDO

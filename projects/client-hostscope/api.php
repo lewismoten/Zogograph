@@ -308,6 +308,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'marketplace-rollback' => doMarketplaceRollback($config, $pdo, $post),
         'package-runtime' => packageRuntimeView($config, $pdo, $signedIn),
         'package-runtime-enable' => doPackageRuntimeEnable($pdo, $post),
+        'package-runtime-revoke' => doPackageRuntimeRevoke($pdo, $post),
+        'package-runtime-unrevoke' => doPackageRuntimeLiftRevocation($pdo, $post),
         'package-runtime-settings' => packageRuntimeSettingsView($config, $pdo, $signedIn),
         'package-runtime-settings-save' => doPackageRuntimeSettingsSave($config, $pdo, $post),
         'package-runtime-secret-create' => doPackageRuntimeSecretCreate($config, $pdo, $post),
@@ -351,6 +353,8 @@ function requireActionAccess(array $config, string $action): void
         'peers' => 'sys-peers', 'marketplace' => 'sys-marketplace',
         'package-runtime' => 'sys-packages',
         'package-runtime-enable' => 'sys-packages',
+        'package-runtime-revoke' => 'sys-packages',
+        'package-runtime-unrevoke' => 'sys-packages',
         'package-runtime-settings' => 'sys-packages',
         'package-runtime-settings-save' => 'sys-packages',
         'package-runtime-secret-create' => 'sys-packages',
@@ -5615,6 +5619,24 @@ function doPackageRuntimeEnable(PDO $pdo, bool $post): array
     catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, $enabled ? 'package_runtime_enable' : 'package_runtime_disable', $id, 'ok', 0, 0,
         implode(', ', $grants));
+    return ['ok' => true, 'packages' => packageRuntimePackages($pdo)];
+}
+
+function doPackageRuntimeRevoke(PDO $pdo, bool $post): array
+{
+    requireWrite($post); $id = trim((string)($_POST['id'] ?? '')); $reason = trim((string)($_POST['reason'] ?? ''));
+    try { packageRuntimeRevoke($pdo, $id, $reason, currentAccountName()); }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'package_runtime_revoke', $id, 'ok', 0, 0, $reason);
+    return ['ok' => true, 'packages' => packageRuntimePackages($pdo)];
+}
+
+function doPackageRuntimeLiftRevocation(PDO $pdo, bool $post): array
+{
+    requireWrite($post); $id = trim((string)($_POST['id'] ?? ''));
+    try { packageRuntimeLiftRevocation($pdo, $id); }
+    catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
+    logAction($pdo, 'package_runtime_unrevoke', $id, 'ok', 0, 0, 'requires explicit re-enable');
     return ['ok' => true, 'packages' => packageRuntimePackages($pdo)];
 }
 

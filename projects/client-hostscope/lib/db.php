@@ -189,6 +189,12 @@ function migrationStatementApplied(PDO $pdo, string $sql): bool
 function migrations(): array
 {
     return [
+        53 => [
+            'CREATE TABLE runtime_package_revocations (
+                package_id TEXT PRIMARY KEY REFERENCES runtime_packages(package_id) ON DELETE CASCADE,
+                reason TEXT NOT NULL, revoked_at INTEGER NOT NULL, revoked_by TEXT NOT NULL
+            )',
+        ],
         52 => [
             'ALTER TABLE encryption_artifacts ADD COLUMN last_verified_at INTEGER',
             'UPDATE encryption_artifacts SET last_verified_at = created_at WHERE last_verified_at IS NULL',

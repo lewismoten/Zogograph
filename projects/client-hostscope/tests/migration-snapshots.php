@@ -76,7 +76,7 @@ try {
     $partial->exec('CREATE INDEX alert_mutes_rule_expiry ON alert_mutes (rule, expires_at DESC)');
     $partial->exec('CREATE INDEX actions_actor_at ON actions (actor, at)');
     migrate($partial);
-    migrationTestExpect((int)$partial->query('SELECT MAX(version) FROM schema_version')->fetchColumn() === 52,
+    migrationTestExpect((int)$partial->query('SELECT MAX(version) FROM schema_version')->fetchColumn() === 53,
         'interrupted migration did not recover to the current schema version');
     migrationTestExpect((int)$partial->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'encryption_artifacts'")->fetchColumn() === 1
         && (int)$partial->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'encryption_replicas'")->fetchColumn() === 1,
@@ -86,6 +86,8 @@ try {
     migrationTestExpect((int)$partial->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'runtime_packages'")->fetchColumn() === 1
         && (int)$partial->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'runtime_package_grants'")->fetchColumn() === 1,
         'package runtime registry migration did not complete');
+    migrationTestExpect((int)$partial->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'runtime_package_revocations'")->fetchColumn() === 1,
+        'package runtime revocation migration did not complete');
     $partial = null;
 
     unlink($snapshot);
