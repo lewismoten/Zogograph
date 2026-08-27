@@ -71,6 +71,8 @@ try {
     $client = keyCustodyAuthenticate($pdo, $replacementCredential['token'], 'client');
     custodyExpect($client['tenant_id'] === $management['tenant_id'], 'replacement client credential did not authenticate');
     $master = random_bytes(32); $key = keyCustodyCreateKey($pdo, $management['tenant_id'], 'primary', 300, $master);
+    try { keyCustodyCreateKey($pdo, $management['tenant_id'], "forged\nkey", 300, $master); throw new RuntimeException('multiline custody key name was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'multiline custody key name was accepted', $error->getMessage()); }
     $wrappingPublic = base64_decode($key['wrapping_public_key'], true);
     custodyExpect(is_string($wrappingPublic) && keyCustodyWrappingPublicKey($pdo, $client['tenant_id'], $key['id']) === $key['wrapping_public_key'],
         'enrolled client could not obtain the custody public wrapping key');
@@ -86,6 +88,8 @@ try {
     custodyExpect($policy['name'] === 'primary policy' && $policy['authorization_ttl'] === 120, 'custody key policy was not updated');
     try { keyCustodyUpdateKeyPolicy($pdo, $management['tenant_id'], $key['id'], 1); throw new RuntimeException('invalid custody key policy was accepted'); }
     catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'invalid custody key policy was accepted', $error->getMessage()); }
+    try { keyCustodyUpdateKeyPolicy($pdo, $management['tenant_id'], $key['id'], 120, "forged\npolicy"); throw new RuntimeException('multiline custody key policy name was accepted'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'multiline custody key policy name was accepted', $error->getMessage()); }
     custodyExpect(in_array('key_create', array_column(keyCustodyAuditEvents($pdo, $management['tenant_id'], 10), 'action'), true), 'tenant audit history omitted the key creation');
     custodyExpect(in_array('key_policy_update', array_column(keyCustodyAuditEvents($pdo, $management['tenant_id'], 10), 'action'), true), 'tenant audit history omitted the policy update');
     custodyExpect(keyCustodySubscription($pdo, $management['tenant_id'])['state'] === 'active' && keyCustodySubscription($pdo, $management['tenant_id'])['envelope_quota'] === 1000

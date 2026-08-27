@@ -221,7 +221,7 @@ function keyCustodyCreateKey(PDO $pdo, string $tenant, string $name, int $ttl, s
     return keyCustodyWithWriteLock($pdo, function () use ($pdo, $tenant, $name, $ttl, $master): array {
         keyCustodySubscriptionAllows($pdo, $tenant);
         $name = trim($name);
-        if ($name === '' || mb_strlen($name) > 120 || $ttl < 60 || $ttl > 900 || strlen($master) !== 32) throw new InvalidArgumentException('key creation request is invalid');
+        if ($name === '' || mb_strlen($name) > 120 || preg_match('/[\x00-\x1F\x7F]/', $name) || $ttl < 60 || $ttl > 900 || strlen($master) !== 32) throw new InvalidArgumentException('key creation request is invalid');
         $used = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE tenant_id = ? AND state = 'active'"); $used->execute([$tenant]);
         $quota = $pdo->prepare('SELECT key_quota FROM subscriptions WHERE tenant_id = ?'); $quota->execute([$tenant]);
         if ((int)$used->fetchColumn() >= (int)$quota->fetchColumn()) throw new InvalidArgumentException('subscription key quota is reached');
@@ -330,7 +330,7 @@ function keyCustodyDisableKey(PDO $pdo, string $tenant, string $id): void
 function keyCustodyUpdateKeyPolicy(PDO $pdo, string $tenant, string $id, int $ttl, ?string $name = null): array
 {
     $name = $name === null ? null : trim($name);
-    if ($ttl < 60 || $ttl > 900 || ($name !== null && ($name === '' || mb_strlen($name) > 120))) {
+    if ($ttl < 60 || $ttl > 900 || ($name !== null && ($name === '' || mb_strlen($name) > 120 || preg_match('/[\x00-\x1F\x7F]/', $name)))) {
         throw new InvalidArgumentException('custody key policy is invalid');
     }
     $stmt = $pdo->prepare("UPDATE custody_keys SET authorization_ttl = ?, name = COALESCE(?, name) WHERE id = ? AND tenant_id = ? AND state IN ('active', 'rotating')");
