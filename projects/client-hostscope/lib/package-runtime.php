@@ -748,7 +748,7 @@ function packageRuntimeProbeInvoker(array $config, string $id, string $manifestH
  * launcher. The configured origin must match the saved provider endpoint. */
 function packageRuntimeCustodyCredentialInvoker(array $config, string $id, string $manifestHash, string $serviceBaseUrl, string $invokerGroup = 'custody_credential_check_invokers', string $purpose = 'credential-check'): array
 {
-    if (!in_array($invokerGroup, ['custody_credential_check_invokers', 'custody_envelope_invokers'], true)) throw new InvalidArgumentException('custody launcher configuration group is invalid');
+    if (!in_array($invokerGroup, ['custody_credential_check_invokers', 'custody_envelope_invokers', 'custody_unwrap_invokers'], true)) throw new InvalidArgumentException('custody launcher configuration group is invalid');
     $entry = (array)(((array)($config['package_runtime'] ?? [])[$invokerGroup][$id] ?? []));
     $command = array_values((array)($entry['command'] ?? [])); $profile = trim((string)($entry['isolation_profile'] ?? ''));
     $hash = strtolower(trim((string)($entry['package_manifest_sha256'] ?? ''))); $originParts = parse_url((string)($entry['network_egress_origin'] ?? ''));
@@ -855,7 +855,7 @@ function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, str
     $revoked = $registry->prepare('SELECT 1 FROM runtime_package_revocations WHERE package_id = ?'); $revoked->execute([$id]);
     if ($revoked->fetchColumn()) throw new RuntimeException('package is revoked');
     $signedOperations = (array)($manifest['runtime']['operations'] ?? []);
-    $allowed = $credentialOperation ? ['custody_enrollment_check', 'custody_store_envelope'] : ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe'];
+    $allowed = $credentialOperation ? ['custody_enrollment_check', 'custody_store_envelope', 'custody_unwrap_artifact'] : ['capability', 'sqlcipher_preflight', 'custody_endpoint_probe'];
     if (!in_array($operation, $allowed, true) || !in_array($operation, $signedOperations, true)) {
         throw new InvalidArgumentException('package operation is not a signed no-secret probe');
     }
@@ -876,9 +876,14 @@ function packageRuntimeInvokeProbe(PDO $registry, array $config, string $id, str
             || !is_string($input['data_key'] ?? null) || !is_string(base64_decode($input['data_key'], true)) || strlen((string)base64_decode($input['data_key'], true)) !== 32) {
             throw new InvalidArgumentException('custody envelope-store input is invalid');
         }
+    } elseif ($operation === 'custody_unwrap_artifact') {
+        if (!$credentialOperation || array_diff(array_keys($input), ['service_base_url', 'tls_spki_pin', 'client_credential', 'client_signing_key', 'custody_key_id', 'artifact_id']) !== []
+            || !is_string($input['service_base_url'] ?? null) || (($input['tls_spki_pin'] ?? null) !== null && !is_string($input['tls_spki_pin']))
+            || !is_string($input['client_credential'] ?? null) || !is_string($input['client_signing_key'] ?? null)
+            || !preg_match('/^key_[a-f0-9]{32}$/', (string)($input['custody_key_id'] ?? '')) || !is_string($input['artifact_id'] ?? null)) throw new InvalidArgumentException('custody recovery input is invalid');
     } elseif ($input !== []) throw new InvalidArgumentException('this probe does not accept input');
     $invoker = $credentialOperation ? packageRuntimeCustodyCredentialInvoker($config, $id, (string)$package['manifest_sha256'], (string)$input['service_base_url'],
-        $operation === 'custody_store_envelope' ? 'custody_envelope_invokers' : 'custody_credential_check_invokers', $operation === 'custody_store_envelope' ? 'envelope-store' : 'credential-check')
+        $operation === 'custody_store_envelope' ? 'custody_envelope_invokers' : ($operation === 'custody_unwrap_artifact' ? 'custody_unwrap_invokers' : 'custody_credential_check_invokers'), $operation === 'custody_store_envelope' ? 'envelope-store' : ($operation === 'custody_unwrap_artifact' ? 'recovery-unwrap' : 'credential-check'))
         : packageRuntimeProbeInvoker($config, $id, (string)$package['manifest_sha256']);
     $invocationId = bin2hex(random_bytes(16));
     $requestData = ['api' => PACKAGE_RUNTIME_API_VERSION, 'invocation_id' => $invocationId, 'operation' => $operation, 'package_id' => $id];
