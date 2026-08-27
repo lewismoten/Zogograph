@@ -460,6 +460,10 @@
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Marketplace</span>
     </a>
+    <a class="nav-item nav-sub" href="#/sys-packages" data-nav="sys-packages" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Package runtime</span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-notes" data-nav="sys-notes" data-parent="system">
       <span class="nav-icon" aria-hidden="true">⌕</span>
       <span class="nav-label">Forensics</span>
@@ -2594,6 +2598,14 @@
   <div class="panel-head"><h2>Data protection</h2></div>
   <p class="muted small sub-note">This page reports HostScope evidence, not assumptions. It never shows key paths or key material. Change protection choices in the setup wizard; recovery and sealing stay CLI-only so a browser session cannot handle a private key.</p>
   <div id="encryptionBody"></div>
+</section>
+</section>
+
+<section class="view" data-view="sys-packages" hidden>
+<section class="panel">
+  <div class="panel-head"><h2>Executable package runtime</h2></div>
+  <p class="muted small sub-note">Signed packages are reviewed here before any future runtime can use them. Enabling records explicit capability grants and private-package settings; it does not execute package PHP in this HostScope release.</p>
+  <div id="packageRuntimeBody"></div>
 </section>
 </section>
 

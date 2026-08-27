@@ -14,6 +14,13 @@ file_put_contents($source . '/src/Provider.php', "<?php declare(strict_types=1);
 file_put_contents($source . '/settings.schema.json', "{}\n");
 file_put_contents($source . '/migrations/001-private-evidence.sql', "CREATE TABLE private_evidence (value TEXT NOT NULL);\n");
 try {
+    $api = file_get_contents(__DIR__ . '/../api.php'); $dashboard = file_get_contents(__DIR__ . '/../index.js'); $page = file_get_contents(__DIR__ . '/../index.html');
+    runtimeExpect($api !== false && str_contains($api, "'package-runtime-enable' => 'sys-packages'")
+        && str_contains($api, "'package-runtime-secret-create' => 'sys-packages'"), 'package runtime writes are not page-access gated');
+    runtimeExpect($dashboard !== false && str_contains($dashboard, 'function renderPackageRuntime')
+        && str_contains($dashboard, 'does not run package code'), 'dashboard does not explain the package execution boundary');
+    runtimeExpect($page !== false && str_contains($page, 'data-view="sys-packages"')
+        && str_contains($page, 'id="packageRuntimeBody"'), 'package runtime dashboard view is unavailable');
     $pair = sodium_crypto_sign_keypair();
     $trustedKey = ['test-publisher' => ['publisher' => 'Test publisher',
         'public_key' => base64_encode(sodium_crypto_sign_publickey($pair))]];

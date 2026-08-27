@@ -11644,6 +11644,69 @@ async function refreshEncryptionStatus() {
   catch (error) { body.replaceChildren(note(String(error.message || error))); }
 }
 
+async function refreshPackageRuntime() {
+  const body = $("packageRuntimeBody");
+  if (!body) return;
+  if (!state.signedIn) { body.replaceChildren(note("Sign in to review executable packages.")); return; }
+  try { renderPackageRuntime(await api("package-runtime")); }
+  catch (error) { body.replaceChildren(note(String(error.message || error))); }
+}
+
+function renderPackageRuntime(data) {
+  const body = $("packageRuntimeBody");
+  const parts = [note("A package must have a trusted publisher, a valid signed file manifest, and every requested capability granted explicitly. The current runtime does not load package PHP; this is a deliberate safety boundary.")];
+  if (data.trusted_publishers?.length) parts.push(factGrid(data.trusted_publishers.map(row => ["Trusted publisher", `${row.publisher} (${row.key_id})`])));
+  else parts.push(note("No executable-package publisher keys are trusted yet. Add a publisher key in setup before installing a signed package."));
+  if (!data.packages?.length) { parts.push(note("No signed executable packages are installed.")); body.replaceChildren(...parts); return; }
+  const holder = document.createElement("div"); holder.id = "packageRuntimeTable"; parts.push(holder); body.replaceChildren(...parts);
+  renderTable("packageRuntimeTable", data.packages, [
+    { label: "Package", render: row => `${row.id} · ${row.version}` },
+    { label: "Publisher", render: row => row.publisher },
+    { label: "Requested capabilities", render: row => row.capabilities.join(", ") },
+    { label: "Granted", render: row => row.grants.length ? row.grants.join(", ") : "None" },
+    { label: "Status", render: row => row.state },
+    { label: "", className: "row-actions", render: row => packageRuntimeActions(row, data.can_change) },
+  ], null, row => row.enabled ? "row-ok" : "", row => row.id);
+}
+
+function packageRuntimeActions(row, canChange) {
+  const wrap = document.createDocumentFragment();
+  if (!canChange) return wrap;
+  const settings = document.createElement("button"); settings.className = "link"; settings.textContent = "Settings";
+  settings.addEventListener("click", () => showPackageRuntimeSettings(row)); wrap.appendChild(settings);
+  const secret = document.createElement("button"); secret.className = "link"; secret.textContent = "Add secret";
+  secret.addEventListener("click", () => showPackageRuntimeSecret(row)); wrap.appendChild(secret);
+  const toggle = document.createElement("button"); toggle.className = row.enabled ? "link danger" : "link";
+  toggle.textContent = row.enabled ? "Disable" : "Grant & enable";
+  toggle.addEventListener("click", async () => {
+    const verb = row.enabled ? "Disable" : "Grant every listed capability and enable";
+    if (!(await confirmDialog(`${verb} ${row.id}?\n\nCapabilities: ${row.capabilities.join(", ")}\n\nThis records permission only; it does not run package code.`, `${verb} package`))) return;
+    try { await post("package-runtime-enable", { id: row.id, enabled: row.enabled ? "0" : "1", grants: row.enabled ? "" : row.capabilities.join(",") }); await refreshPackageRuntime(); notice(`${row.id} ${row.enabled ? "disabled" : "enabled for future runtime use"}.`, true); }
+    catch (error) { notice(String(error.message || error)); }
+  });
+  wrap.appendChild(toggle); return wrap;
+}
+
+async function showPackageRuntimeSettings(row) {
+  try {
+    const data = await api("package-runtime-settings", { id: row.id });
+    const settings = document.createElement("textarea"); settings.className = "wide-field"; settings.rows = 14; settings.spellcheck = false;
+    settings.value = JSON.stringify(data.settings, null, 2);
+    showFormDialog(`${row.id} settings`, [fieldRow("Settings JSON", settings, "Use only package-scoped secret_ref: values for credentials. Raw tokens and private keys are refused.")], async () => {
+      await post("package-runtime-settings-save", { id: row.id, settings: settings.value });
+      notice("Package settings saved.", true);
+    });
+  } catch (error) { notice(String(error.message || error)); }
+}
+
+function showPackageRuntimeSecret(row) {
+  const value = document.createElement("input"); value.type = "password"; value.className = "wide-field"; value.autocomplete = "off";
+  showFormDialog(`Add encrypted secret for ${row.id}`, [fieldRow("Secret value", value, "This value is encrypted in setup.db with your external package/encryption key. It is never returned after saving.")], async () => {
+    const result = await post("package-runtime-secret-create", { id: row.id, value: value.value });
+    setTimeout(() => showListDialog("Secret reference created", [factGrid([["Reference", result.reference]])], "Copy this opaque reference into the package settings. It is the only value that settings will retain."), 0);
+  }, "Create reference");
+}
+
 function renderEncryptionStatus(data) {
   const body = $("encryptionBody");
   const names = { none: "Off", sealed_copies_local: "Verified encrypted copies", operator_managed_volume: "Host/VM volume protection" };
@@ -31385,6 +31448,12 @@ const VIEWS = {
     label: "Marketplace",
     parent: "system",
     refresh: () => refreshMarketplace(),
+  },
+  "sys-packages": {
+    manual: true,
+    label: "Package runtime",
+    parent: "system",
+    refresh: () => refreshPackageRuntime(),
   },
   "sys-encryption": {
     manual: true,
