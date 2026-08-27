@@ -106,6 +106,11 @@ try {
     $manifestAltered = packageRuntimePackages($pdo)[0];
     runtimeExpect(!$manifestAltered['integrity'] && str_contains($manifestAltered['integrity_detail'], 'manifest has changed'),
         'changed installed package manifest was not flagged by runtime status');
+    copy($source . '/manifest.json', $installed['install_path'] . '/manifest.json');
+    file_put_contents($installed['install_path'] . '/src/unexpected.php', "<?php declare(strict_types=1);\n");
+    $extraFile = packageRuntimePackages($pdo)[0];
+    runtimeExpect(!$extraFile['integrity'] && str_contains($extraFile['integrity_detail'], 'files differ'),
+        'unexpected installed package file was not flagged by runtime status');
     echo "package runtime checks passed\n";
 } finally {
     foreach (glob($root . '/*') ?: [] as $path) {
