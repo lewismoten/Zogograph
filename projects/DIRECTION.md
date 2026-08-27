@@ -3,7 +3,9 @@
 This is the decision record for the separated HostScope projects. It gives a
 safe launch direction while keeping customer-facing choices in authenticated,
 database-backed settings instead of source code. It deliberately uses
-**HostScope** and the current provisional URL as replaceable labels.
+**HostScope** and the current provisional URL as replaceable labels. The
+companion [IMPLEMENTATION_DIRECTION.md](IMPLEMENTATION_DIRECTION.md) records
+which parts are usable now versus deliberately staged.
 
 ## Recommended initial topology
 
@@ -135,9 +137,14 @@ directions: live SQLCipher conversion, fleet custody, ciphertext relays,
 external KMS/HSM providers, MySQL/MariaDB storage, and Redis caching. An
 installed executable package can be reviewed, granted only its declared
 capabilities, configured using its signed schema, given a package-scoped secret
-reference, and revoked. It cannot execute until the isolated runtime is built.
-This preserves customer choice without claiming that an untested provider is
-already protecting live data.
+reference, and revoked. It cannot perform normal package execution; the only
+exception is a deployment-attested diagnostic worker. Its ordinary probes have
+no secrets. A separately configured custody launcher may make a single
+endpoint-restricted subscription-readiness request with the enrolled client
+pair, only after a fresh identity probe and explicit grant. It cannot upload an
+envelope, unwrap a key, or receive an artifact/database path. This preserves
+customer choice without claiming that an untested provider is already
+protecting live data.
 
 `commercial-services/replica-relay/` is now a separately deployable,
 ciphertext-only reference service with isolated tenant enrollment, SQLite

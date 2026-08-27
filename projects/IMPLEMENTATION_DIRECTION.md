@@ -47,9 +47,14 @@ only capabilities supplied by installed compatible packages.
 
 Installing a package exposes its reviewed metadata and settings; it does not
 enable encryption, send data, or grant it secrets. The current isolated worker
-can run only signed, deployment-attested, no-secret diagnostics. A successful
-diagnostic is prerequisite evidence, never proof that a provider is active or
-that a live store is encrypted.
+runs signed, deployment-attested, no-secret diagnostics. A separately
+configured, endpoint-restricted launcher may perform one custody
+enrollment-readiness check with only the enrolled client bearer/signing pair,
+after a fresh identity probe and explicit approval. That check reads service
+subscription readiness only; it cannot store an envelope, unwrap a key, or
+receive an artifact or database path. Every diagnostic is prerequisite
+evidence, never proof that a provider is active or that a live store is
+encrypted.
 
 ## Configuration authority
 
@@ -106,3 +111,21 @@ and stable opaque identities.
 
 Until those records are approved, the safe default is local sealed copies,
 local recovery custody, and no commercial-service dependency.
+
+## Current delivery boundary
+
+| capability | status | configuration/review location |
+| --- | --- | --- |
+| local sealed-copy encryption and recovery drills | usable | client Protection settings and `client-hostscope/SETUP.md` |
+| setup-store record encryption with a local external key | usable | client bootstrap key-path configuration and Setup/Protection UI |
+| SQLCipher platform inspection/preflight | diagnostic only | installed SQLCipher package plus reviewed isolated launcher |
+| custody endpoint identity probe | diagnostic only | installed custody package settings and no-secret launcher |
+| custody enrolled-client subscription readiness | diagnostic only | separate endpoint-restricted launcher, explicit grants, and encrypted package secret references |
+| remote envelope upload, verification, or remote unwrap recovery | not enabled | `client-hostscope/CUSTODY_ARTIFACT_CONTRACT.md`; requires a dedicated reviewed release gate |
+| ciphertext replica upload/recovery | not enabled | relay package and fleet recovery/retry/deletion contract |
+
+This boundary is intentional. It lets a customer validate a provider and their
+enrollment without quietly turning a configuration test into a key-release or
+data-upload path. The eventual remote-envelope flow must retain the verified
+local recovery envelope, record only envelope/ciphertext digests in the core
+ledger, and demonstrate an isolated recovery drill before it can be offered.
