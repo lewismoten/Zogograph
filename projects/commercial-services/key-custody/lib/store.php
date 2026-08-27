@@ -443,7 +443,7 @@ function keyCustodyListKeys(PDO $pdo, string $tenant): array
         'wrapping_mode' => $row['wrapping_public_key'] === null ? 'legacy_symmetric' : 'asymmetric_artifact_envelope'], $stmt->fetchAll());
 }
 
-/** @return array{plan:string,state:string,key_quota:int,key_used:int,can_create_keys:bool,envelope_quota:int,envelope_used:int,renews_at:?int} */
+/** @return array{plan:string,state:string,key_quota:int,key_used:int,can_create_keys:bool,envelope_quota:int,envelope_used:int,renews_at:?int,accepting_new_custody_operations:bool} */
 function keyCustodySubscription(PDO $pdo, string $tenant): array
 {
     $stmt = $pdo->prepare('SELECT plan, state, key_quota, envelope_quota, renews_at FROM subscriptions WHERE tenant_id = ?'); $stmt->execute([$tenant]); $row = $stmt->fetch();
@@ -451,9 +451,11 @@ function keyCustodySubscription(PDO $pdo, string $tenant): array
     $keys = $pdo->prepare("SELECT COUNT(*) FROM custody_keys WHERE tenant_id = ? AND state = 'active'"); $keys->execute([$tenant]);
     $used = $pdo->prepare('SELECT COUNT(*) FROM key_envelopes envelopes JOIN custody_keys keys ON keys.id = envelopes.key_id WHERE keys.tenant_id = ?'); $used->execute([$tenant]);
     $keyUsed = (int)$keys->fetchColumn();
+    $renewsAt = $row['renews_at'] === null ? null : (int)$row['renews_at'];
+    $accepting = $row['state'] === 'active' && ($renewsAt === null || $renewsAt >= time());
     return ['plan' => $row['plan'], 'state' => $row['state'], 'key_quota' => (int)$row['key_quota'], 'key_used' => $keyUsed,
-        'can_create_keys' => $row['state'] === 'active' && $keyUsed < (int)$row['key_quota'], 'envelope_quota' => (int)$row['envelope_quota'],
-        'envelope_used' => (int)$used->fetchColumn(), 'renews_at' => $row['renews_at'] === null ? null : (int)$row['renews_at']];
+        'can_create_keys' => $accepting && $keyUsed < (int)$row['key_quota'], 'envelope_quota' => (int)$row['envelope_quota'],
+        'envelope_used' => (int)$used->fetchColumn(), 'renews_at' => $renewsAt, 'accepting_new_custody_operations' => $accepting];
 }
 
 /** Minimal enrolled-client view. It intentionally omits management request
@@ -465,7 +467,7 @@ function keyCustodyClientSubscription(PDO $pdo, string $tenant): array
         'state' => $subscription['state'],
         'envelope_quota' => $subscription['envelope_quota'],
         'envelope_used' => $subscription['envelope_used'],
-        'can_store_envelopes' => $subscription['state'] === 'active'
+        'can_store_envelopes' => $subscription['accepting_new_custody_operations']
             && $subscription['envelope_used'] < $subscription['envelope_quota'],
     ];
 }
@@ -509,8 +511,11 @@ function keyCustodyWithdrawSubscriptionRequest(PDO $pdo, string $tenant, string 
 
 function keyCustodySubscriptionAllows(PDO $pdo, string $tenant): void
 {
-    $stmt = $pdo->prepare('SELECT state FROM subscriptions WHERE tenant_id = ?'); $stmt->execute([$tenant]);
-    if ($stmt->fetchColumn() !== 'active') throw new InvalidArgumentException('subscription does not permit custody operations');
+    $stmt = $pdo->prepare('SELECT state, renews_at FROM subscriptions WHERE tenant_id = ?'); $stmt->execute([$tenant]); $subscription = $stmt->fetch();
+    if (!is_array($subscription) || $subscription['state'] !== 'active') throw new InvalidArgumentException('subscription does not permit custody operations');
+    if ($subscription['renews_at'] !== null && (int)$subscription['renews_at'] < time()) {
+        throw new InvalidArgumentException('subscription renewal is overdue; new custody operations are paused while existing recovery remains available');
+    }
 }
 
 function keyCustodyAudit(PDO $pdo, string $tenant, string $action, string $target, string $detail): void

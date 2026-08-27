@@ -140,6 +140,10 @@ try {
     $applied = keyCustodySubscription($pdo, $management['tenant_id']);
     custodyExpect($applied['plan'] === 'starter' && $applied['key_quota'] === 3 && $applied['renews_at'] === 1767225600,
         'billing control plane did not apply subscription entitlement');
+    custodyExpect(!$applied['accepting_new_custody_operations'] && !$applied['can_create_keys'],
+        'overdue subscription still allowed new custody operations');
+    try { keyCustodyCreateKey($pdo, $management['tenant_id'], 'overdue renewal', 300, $master); throw new RuntimeException('overdue subscription created a custody key'); }
+    catch (InvalidArgumentException $error) { custodyExpect($error->getMessage() !== 'overdue subscription created a custody key', $error->getMessage()); }
     custodyExpect(keyCustodySubscriptionRequests($pdo, $management['tenant_id'])[0]['id'] === $pending['id']
         && keyCustodySubscriptionRequests($pdo, $management['tenant_id'])[0]['state'] === 'applied', 'billing control plane did not resolve pending request');
     try { keyCustodyApplySubscription($pdo, $management['tenant_id'], 'starter', 'active', -1, null); throw new RuntimeException('invalid billing quota was accepted'); }
