@@ -538,7 +538,10 @@ function keyCustodyAuditEvents(PDO $pdo, string $tenant, int $limit = 50): array
 function keyCustodyReadMasterKey(array $config, string $webRoot): string
 {
     $path = (string)($config['master_key_file'] ?? '');
-    if ($path === '' || !str_starts_with($path, '/') || is_link($path) || !is_file($path) || (fileperms($path) & 0077) !== 0 || str_starts_with(realpath($path) ?: '', rtrim(realpath($webRoot) ?: $webRoot, '/') . '/')) throw new RuntimeException('custody master key file is unavailable or unsafe');
+    $directory = dirname($path); $realDirectory = realpath($directory);
+    if ($path === '' || !str_starts_with($path, '/') || is_link($directory) || $realDirectory === false) throw new RuntimeException('custody master key file is unavailable or unsafe');
+    $path = $realDirectory . '/' . basename($path);
+    if (is_link($path) || !is_file($path) || (fileperms($path) & 0077) !== 0 || str_starts_with(realpath($path) ?: '', rtrim(realpath($webRoot) ?: $webRoot, '/') . '/')) throw new RuntimeException('custody master key file is unavailable or unsafe');
     $key = base64_decode(trim((string)file_get_contents($path)), true);
     if (!is_string($key) || strlen($key) !== 32) throw new RuntimeException('custody master key must contain Base64 256-bit material');
     return $key;
@@ -575,7 +578,10 @@ function keyCustodyReadBillingServiceToken(array $config, string $webRoot): stri
 {
     $path = (string)($config['billing_service_token_file'] ?? '');
     if ($path === '') throw new RuntimeException('commercial billing integration is not configured');
-    if (!str_starts_with($path, '/') || is_link($path) || !is_file($path) || (fileperms($path) & 0077) !== 0
+    $directory = dirname($path); $realDirectory = realpath($directory);
+    if (!str_starts_with($path, '/') || is_link($directory) || $realDirectory === false) throw new RuntimeException('commercial billing token file is unavailable or unsafe');
+    $path = $realDirectory . '/' . basename($path);
+    if (is_link($path) || !is_file($path) || (fileperms($path) & 0077) !== 0
         || str_starts_with(realpath($path) ?: '', rtrim(realpath($webRoot) ?: $webRoot, '/') . '/')) {
         throw new RuntimeException('commercial billing token file is unavailable or unsafe');
     }
