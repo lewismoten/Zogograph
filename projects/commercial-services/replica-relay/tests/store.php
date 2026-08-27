@@ -4,7 +4,7 @@ require_once __DIR__ . '/../lib/store.php';
 function relayExpect(bool $condition, string $message): void { if (!$condition) throw new RuntimeException($message); }
 $root = sys_get_temp_dir() . '/hostscope-relay-' . bin2hex(random_bytes(4)); mkdir($root, 0700, true);
 try {
-    $config = ['database' => $root . '/service.db', 'artifact_directory' => $root . '/artifacts', 'maximum_artifact_bytes' => 1024];
+    $config = ['database' => $root . '/service.db', 'artifact_directory' => $root . '/artifacts', 'maximum_artifact_bytes' => 1024, 'maximum_tenant_bytes' => 512, 'maximum_tenant_artifacts' => 1];
     $pdo = replicaRelayOpen($config); $tenant = replicaRelayCreateTenant($pdo, 'Example');
     try { replicaRelayOpen(['database' => 'relative.db', 'artifact_directory' => $root . '/bad']); throw new RuntimeException('relative relay database path was accepted'); }
     catch (RuntimeException $error) { relayExpect($error->getMessage() !== 'relative relay database path was accepted', $error->getMessage()); }
@@ -23,6 +23,9 @@ try {
     catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'replayed relay request was accepted', $error->getMessage()); }
     try { replicaRelayStoreArtifact($pdo, $config, $client['tenant_id'], $artifact, $ciphertext, str_repeat('0', 64)); throw new RuntimeException('relay accepted mismatched ciphertext digest'); }
     catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'relay accepted mismatched ciphertext digest', $error->getMessage()); }
+    $secondCiphertext = random_bytes(128);
+    try { replicaRelayStoreArtifact($pdo, $config, $client['tenant_id'], 'account:second', $secondCiphertext, hash('sha256', $secondCiphertext)); throw new RuntimeException('relay tenant artifact quota was exceeded'); }
+    catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'relay tenant artifact quota was exceeded', $error->getMessage()); }
     $largeContent = random_bytes(1025); $large = fopen('php://temp', 'w+b'); fwrite($large, $largeContent); rewind($large);
     try { replicaRelayStoreArtifactStream($pdo, $config, $client['tenant_id'], 'account:oversize', $large, hash('sha256', $largeContent)); throw new RuntimeException('relay accepted oversized ciphertext'); }
     catch (InvalidArgumentException $error) { relayExpect($error->getMessage() !== 'relay accepted oversized ciphertext', $error->getMessage()); }

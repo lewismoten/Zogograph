@@ -130,9 +130,14 @@ function replicaRelayStoreArtifact(PDO $pdo, array $config, string $tenant, stri
 function replicaRelayStoreArtifactStream(PDO $pdo, array $config, string $tenant, string $artifact, $stream, string $providedHash): array
 {
     $maximum = (int)($config['maximum_artifact_bytes'] ?? 0);
-    if ($maximum < 1 || !preg_match('/^[a-f0-9]{64}$/', $providedHash)) throw new InvalidArgumentException('relay artifact content or digest is invalid');
+    // Existing small deployments remain usable after this limit was added:
+    // absent settings conservatively allow one maximum-sized artifact.
+    $tenantMaximum = (int)($config['maximum_tenant_bytes'] ?? $maximum);
+    $tenantArtifacts = (int)($config['maximum_tenant_artifacts'] ?? 1);
+    if ($maximum < 1 || $tenantMaximum < 1 || $tenantArtifacts < 1 || !preg_match('/^[a-f0-9]{64}$/', $providedHash)) throw new InvalidArgumentException('relay artifact content or digest is invalid');
     $path = replicaRelayArtifactPath($config, $tenant, $artifact); $directory = dirname($path);
     if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) throw new RuntimeException('could not create private relay artifact directory');
+    if (is_link($directory)) throw new RuntimeException('relay artifact directory is unsafe');
     $temporary = $path . '.tmp.' . bin2hex(random_bytes(8));
     $output = fopen($temporary, 'xb'); if ($output === false) throw new RuntimeException('could not prepare relay artifact storage');
     $hash = hash_init('sha256'); $bytes = 0;
@@ -146,11 +151,26 @@ function replicaRelayStoreArtifactStream(PDO $pdo, array $config, string $tenant
     } catch (Throwable $error) { @unlink($temporary); throw $error; }
     finally { fclose($output); }
     if ($bytes < 1 || !hash_equals($providedHash, hash_final($hash))) { @unlink($temporary); throw new InvalidArgumentException('relay artifact content or digest is invalid'); }
-    if (!rename($temporary, $path)) { @unlink($temporary); throw new RuntimeException('could not store relay artifact'); }
-    @chmod($path, 0600); $now = time();
-    $pdo->prepare('INSERT INTO artifacts (tenant_id, artifact_id, sha256, bytes, created_at, verified_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, artifact_id) DO UPDATE SET sha256=excluded.sha256, bytes=excluded.bytes, created_at=excluded.created_at, verified_at=excluded.verified_at')->execute([$tenant, $artifact, $providedHash, $bytes, $now, $now]);
-    replicaRelayAudit($pdo, $tenant, 'artifact_store', $artifact, 'ciphertext hash verified');
-    return ['artifact_id' => $artifact, 'sha256' => $providedHash, 'bytes' => $bytes, 'created_at' => $now];
+    $pdo->exec('BEGIN IMMEDIATE');
+    try {
+        $existing = $pdo->prepare('SELECT bytes FROM artifacts WHERE tenant_id = ? AND artifact_id = ?'); $existing->execute([$tenant, $artifact]);
+        $oldBytes = $existing->fetchColumn();
+        $usage = $pdo->prepare('SELECT COUNT(*) AS artifacts, COALESCE(SUM(bytes), 0) AS bytes FROM artifacts WHERE tenant_id = ?'); $usage->execute([$tenant]);
+        $used = $usage->fetch();
+        if ($oldBytes === false && (int)$used['artifacts'] >= $tenantArtifacts) throw new InvalidArgumentException('relay tenant artifact quota is reached');
+        if ((int)$used['bytes'] - ($oldBytes === false ? 0 : (int)$oldBytes) + $bytes > $tenantMaximum) throw new InvalidArgumentException('relay tenant storage quota is reached');
+        $now = time();
+        $pdo->prepare('INSERT INTO artifacts (tenant_id, artifact_id, sha256, bytes, created_at, verified_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(tenant_id, artifact_id) DO UPDATE SET sha256=excluded.sha256, bytes=excluded.bytes, created_at=excluded.created_at, verified_at=excluded.verified_at')->execute([$tenant, $artifact, $providedHash, $bytes, $now, $now]);
+        if (!rename($temporary, $path)) throw new RuntimeException('could not store relay artifact');
+        @chmod($path, 0600);
+        replicaRelayAudit($pdo, $tenant, 'artifact_store', $artifact, 'ciphertext hash verified');
+        $pdo->exec('COMMIT');
+        return ['artifact_id' => $artifact, 'sha256' => $providedHash, 'bytes' => $bytes, 'created_at' => $now];
+    } catch (Throwable $error) {
+        try { $pdo->exec('ROLLBACK'); } catch (Throwable) { /* Transaction was not opened. */ }
+        @unlink($temporary);
+        throw $error;
+    }
 }
 
 /** @return list<array{artifact_id:string,sha256:string,bytes:int,created_at:int,verified_at:int}> */

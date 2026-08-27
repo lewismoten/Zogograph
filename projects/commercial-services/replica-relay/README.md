@@ -13,6 +13,13 @@ point, not a claim that SQLite is suitable for unlimited artifacts. Set
 paths outside the document root, and use object storage only through a later
 adapter that preserves the same tenant isolation and digest verification.
 
+Set `maximum_tenant_bytes` and `maximum_tenant_artifacts` as well. The reference
+service enforces both limits in the same immediate SQLite transaction that
+records a ciphertext upload, so concurrent clients cannot both spend the last
+available storage or artifact unit. The sample's 20 GiB / 2,000-artifact
+ceiling is a conservative VPS default; a later billing adapter can apply
+tenant-specific limits without changing the ciphertext protocol.
+
 The deployed API enforces that its SQLite directory and ciphertext directory
 are absolute, non-symlinked private paths outside its web root. It creates them
 with owner-only permissions; a relative or web-root path is refused instead of
