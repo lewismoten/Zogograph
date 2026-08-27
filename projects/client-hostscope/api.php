@@ -315,6 +315,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'package-runtime-secret-create' => doPackageRuntimeSecretCreate($config, $pdo, $post),
         'package-runtime-secret-delete' => doPackageRuntimeSecretDelete($config, $pdo, $post),
         'encryption-status' => encryptionStatusView($config, $pdo, $signedIn),
+        'encryption-seal' => doEncryptionSeal($config, $pdo, $post),
+        'encryption-recovery-drill' => doEncryptionRecoveryDrill($config, $pdo, $post),
         'peer-save' => doPeerSave($config, $pdo, $post),
         'peer-delete' => doPeerDelete($config, $pdo, $post),
         'peer-transport-rotate' => doPeerTransportRotate($config, $pdo, $post),
@@ -360,6 +362,8 @@ function requireActionAccess(array $config, string $action): void
         'package-runtime-secret-create' => 'sys-packages',
         'package-runtime-secret-delete' => 'sys-packages',
         'encryption-status' => 'sys-encryption',
+        'encryption-seal' => 'sys-encryption',
+        'encryption-recovery-drill' => 'sys-encryption',
         'labels' => 'net-labels', 'descriptions' => 'sys-descriptions',
         'changed' => 'sys-changed', 'capability-changes' => 'sys-changed',
         'installed' => 'sys-installed', 'symlinks' => 'storage-links',
@@ -5685,7 +5689,46 @@ function doPackageRuntimeSecretDelete(array $config, PDO $pdo, bool $post): arra
 function encryptionStatusView(array $config, PDO $pdo, bool $signedIn): array
 {
     if (!$signedIn) throw new ActionRefused('sign in to view encryption status');
-    return encryptionStatus($pdo, $config, __DIR__);
+    return encryptionStatus($pdo, $config, __DIR__) + ['can_change' => accessAllows($config, 'write')];
+}
+
+/** Creates a deliberate first/replacement copy from the signed-in dashboard. */
+function doEncryptionSeal(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    if (($config['encryption']['mode'] ?? 'none') !== 'sealed_copies_local') {
+        throw new ActionRefused('choose verified encrypted copies in setup before creating a sealed artifact');
+    }
+    try {
+        $sealed = encryptionSealConfiguredCopies($config, $pdo, __DIR__);
+        if ($sealed === []) throw new RuntimeException('no selected stores are available');
+        encryptionRecordArtifacts($pdo, $sealed);
+        $pruned = encryptionPruneConfiguredCopies($config, $pdo);
+        logAction($pdo, 'encryption_seal', null, 'ok', 0, count($sealed), 'created verified encrypted copies from the Protection page');
+        return ['ok' => true, 'created' => count($sealed), 'pruned' => (int)$pruned['removed'],
+            'warnings' => $pruned['warnings'], 'status' => encryptionStatus($pdo, $config, __DIR__)];
+    } catch (Throwable $error) {
+        logAction($pdo, 'encryption_seal', null, 'failed', 0, 0, 'could not create verified encrypted copies');
+        throw new ActionRefused('could not create verified encrypted copies; review Protection status and the server problem log');
+    }
+}
+
+/** Records recovery evidence only after independently reopening every current copy. */
+function doEncryptionRecoveryDrill(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    if (($config['encryption']['mode'] ?? 'none') !== 'sealed_copies_local') {
+        throw new ActionRefused('choose verified encrypted copies in setup before running a recovery drill');
+    }
+    try {
+        $drill = encryptionRunRecoveryDrill($config, $pdo, __DIR__);
+        logAction($pdo, 'encryption_recovery_drill', null, 'ok', 0, (int)$drill['tested'], 'non-destructive encrypted-copy recovery drill completed');
+        return ['ok' => true, 'tested' => (int)$drill['tested'], 'warnings' => $drill['warnings'],
+            'status' => encryptionStatus($pdo, $config, __DIR__)];
+    } catch (Throwable $error) {
+        logAction($pdo, 'encryption_recovery_drill', null, 'failed', 0, 0, 'could not complete encrypted-copy recovery drill');
+        throw new ActionRefused('could not complete the recovery drill; review Protection status and the server problem log');
+    }
 }
 
 function doClearProblems(array $config, PDO $pdo, bool $post): array

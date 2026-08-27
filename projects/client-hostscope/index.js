@@ -11766,6 +11766,32 @@ function renderEncryptionStatus(data) {
     parts.push(note("Bootstrap configuration recovery is deliberately CLI-only: `scripts/restore-config.php` authenticates and parses the sealed PHP without executing it, atomically replaces `lib/config.php`, and leaves the prior configuration as a sealed rollback artifact. Test the recovered settings before deleting that artifact."));
     parts.push(note("Optional remote key custody and ciphertext replica storage are not selectable yet. Their future signed providers will use only enrolled-client credentials kept as encrypted package secrets. Never enter a custody or relay management token, billing credential, plaintext database, or recovery key into this client."));
     if (superseded) parts.push(note("Superseded copies remain encrypted with an earlier local key after rotation. Keep that key until you have completed a replacement-key recovery drill; they are not deleted automatically."));
+    if (data.can_change) {
+      const actions = document.createElement("div"); actions.className = "row-actions";
+      const seal = document.createElement("button"); seal.type = "button"; seal.textContent = "Create verified encrypted copies";
+      seal.addEventListener("click", async () => {
+        if (!(await confirmDialog("Create a fresh encrypted copy of every selected available store now? This does not encrypt the running database. Retention pruning may remove only expired, hash-verified copies and never the newest verified copy for a store.", "Create encrypted copies"))) return;
+        seal.disabled = true;
+        try {
+          const result = await post("encryption-seal"); await refreshEncryptionStatus();
+          notice(`Created ${result.created} verified encrypted ${result.created === 1 ? "copy" : "copies"}.${result.pruned ? ` Pruned ${result.pruned} expired ${result.pruned === 1 ? "copy" : "copies"}.` : ""}`, true);
+        } catch (error) { notice(String(error.message || error)); }
+        finally { seal.disabled = false; }
+      });
+      const drill = document.createElement("button"); drill.type = "button"; drill.textContent = "Run non-destructive recovery drill";
+      drill.disabled = !data.artifacts?.length;
+      drill.title = drill.disabled ? "Create verified encrypted copies before running a recovery drill." : "";
+      drill.addEventListener("click", async () => {
+        if (!(await confirmDialog("Decrypt and validate the latest verified copy of every selected store now? Live data is not changed and decrypted temporary files are removed.", "Run recovery drill"))) return;
+        drill.disabled = true;
+        try {
+          const result = await post("encryption-recovery-drill"); await refreshEncryptionStatus();
+          notice(`Recovery drill verified ${result.tested} selected ${result.tested === 1 ? "store" : "stores"}.`, true);
+        } catch (error) { notice(String(error.message || error)); }
+        finally { drill.disabled = false; }
+      });
+      actions.append(seal, drill); parts.push(actions);
+    }
   } else {
     parts.push(note("The selected protection mode is not available in this HostScope release. Keep the current data and recovery key safe while choosing a supported package or local mode."));
   }
