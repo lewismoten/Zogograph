@@ -52,6 +52,10 @@ and client tokens separately; the service retains only password hashes and
 cannot show either token again. `api.php` currently implements key list/create, client unwrap,
 subscription read, and configured billing portal/checkout session links. It is
 a low-cost SQLite reference service; deploy it behind HTTPS and an authenticated
-reverse proxy before exposing it publicly. mTLS enrollment, envelope storage,
-key rotation, request replay protection, and payment-provider integration are
-the next service increments.
+reverse proxy before exposing it publicly. Envelope storage, key rotation, and
+timestamp/nonce replay protection are included. mTLS enrollment, signed client
+assertions, and payment-provider integration remain the next service increments.
+
+On Apache, the included `.htaccess` routes `/v1/...` requests to `api.php` and
+denies direct configuration/database files. Nginx and other servers must apply
+the equivalent route and direct-file-denial rules in their own configuration.
