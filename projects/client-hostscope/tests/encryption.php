@@ -158,6 +158,9 @@ try {
     $sealedInfo = encryptionSealFile($source, $sealed, $key, 'stats:1');
     encryptionExpect(hash_equals(encryptionReadArtifactDataKey($sealed, $key, 'stats:1'), encryptionReadArtifactDataKey($sealed, $key, 'stats:1')),
         'sealed artifact data key could not be reopened for in-memory custody wrapping');
+    $providerOpened = $root . '/provider-opened.db';
+    encryptionOpenFileWithDataKey($sealed, $providerOpened, encryptionReadArtifactDataKey($sealed, $key, 'stats:1'), 'stats:1');
+    encryptionExpect(hash_file('sha256', $providerOpened) === hash_file('sha256', $source), 'transient provider key did not authenticate and recover the sealed artifact');
     try { encryptionReadArtifactDataKey($sealed, $key, 'stats:other'); throw new RuntimeException('sealed artifact data key accepted a mismatched identity'); }
     catch (RuntimeException $error) { encryptionExpect($error->getMessage() !== 'sealed artifact data key accepted a mismatched identity', $error->getMessage()); }
     encryptionExpect($sealedInfo['plaintext_bytes'] === filesize($source), 'sealed byte count is wrong');

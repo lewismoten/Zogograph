@@ -681,6 +681,14 @@ function encryptionRecordRemoteEnvelopeStored(PDO $pdo, string $artifactId, stri
     if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('remote envelope receipt does not match a pending verified artifact');
 }
 
+/** Marks only a matching stored remote envelope as recovery-drill verified. */
+function encryptionRecordRemoteEnvelopeVerified(PDO $pdo, string $artifactId, string $providerPackage, string $providerKeyId): void
+{
+    $stmt = $pdo->prepare("UPDATE encryption_remote_envelopes SET state = 'verified', verified_at = ?, detail = NULL WHERE artifact_id = ? AND provider_package = ? AND provider_key_id = ? AND state = 'stored'");
+    $stmt->execute([time(), $artifactId, $providerPackage, $providerKeyId]);
+    if ($stmt->rowCount() !== 1) throw new InvalidArgumentException('remote envelope recovery verification does not match a stored envelope');
+}
+
 /** Leaves a bounded, non-secret retry explanation; it never changes local
  * artifact evidence or deletes a prior stored receipt. */
 function encryptionRecordRemoteEnvelopeFailure(PDO $pdo, string $artifactId, string $providerPackage, string $providerKeyId, string $detail): void
@@ -921,6 +929,32 @@ function encryptionReadArtifactDataKey(string $source, string $kek, string $arti
         if (!is_string($dek) || strlen($dek) !== 32) throw new RuntimeException('the artifact key cannot be opened');
         return $dek;
     } finally { fclose($in); }
+}
+
+/** Authenticates one sealed artifact with a transient provider-released DEK.
+ * The caller must remove the output immediately after its recovery check. */
+function encryptionOpenFileWithDataKey(string $source, string $destination, string $dek, string $artifactId): void
+{
+    if (!encryptionAvailable() || strlen($dek) !== 32 || !is_file($source) || !is_readable($source) || file_exists($destination)) throw new RuntimeException('the encrypted source, transient key, or output destination is unavailable');
+    $in = fopen($source, 'rb'); $out = encryptionWithPrivateUmask(fn() => @fopen($destination, 'xb'));
+    if ($in === false || $out === false) { if (is_resource($in)) fclose($in); if (is_resource($out)) fclose($out); throw new RuntimeException('could not open sealed-artifact recovery files'); }
+    try {
+        if (encryptionReadExact($in, strlen(ENCRYPTION_MAGIC)) !== ENCRYPTION_MAGIC) throw new RuntimeException('the artifact is not a HostScope sealed copy');
+        [$header, $headerText] = encryptionReadArtifactHeader($in);
+        if (!hash_equals((string)$header['artifact_id'], $artifactId)) throw new RuntimeException('the sealed artifact identity does not match its recovery ledger');
+        $prefix = base64_decode((string)($header['nonce_prefix'] ?? ''), true);
+        if (!is_string($prefix) || strlen($prefix) !== 4) throw new RuntimeException('the sealed artifact nonce is invalid');
+        $aadPrefix = hash('sha256', $headerText, true);
+        for ($index = 0;; $index++) {
+            $bytes = unpack('Nsize', encryptionReadExact($in, 4))['size']; if ($bytes === 0) break;
+            if ($bytes > ENCRYPTION_CHUNK_BYTES) throw new RuntimeException('an encrypted chunk is too large');
+            $plain = openssl_decrypt(encryptionReadExact($in, $bytes), 'aes-256-gcm', $dek, OPENSSL_RAW_DATA, encryptionChunkNonce($prefix, $index), encryptionReadExact($in, 16), $aadPrefix . encryptionChunkIndex($index));
+            if (!is_string($plain)) throw new RuntimeException('the artifact data failed authentication');
+            encryptionWriteAll($out, $plain);
+        }
+        if (fgetc($in) !== false) throw new RuntimeException('the artifact has trailing data');
+    } catch (Throwable $error) { fclose($in); fclose($out); @unlink($destination); throw $error; }
+    fclose($in); fclose($out); @chmod($destination, 0600);
 }
 
 /** Reads the bounded authenticated artifact header. Version 1 remains the
