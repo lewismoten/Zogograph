@@ -553,11 +553,14 @@ function keyCustodyBackupMetadata(PDO $pdo, string $destination, string $webRoot
         throw new RuntimeException('custody metadata backup directory must be private and outside the web root');
     }
     $path = $real . '/' . basename($destination);
+    $previousUmask = umask(0077);
+    try {
     $pdo->exec('VACUUM INTO ' . $pdo->quote($path));
     if (!is_file($path) || is_link($path)) throw new RuntimeException('could not create custody metadata backup');
     @chmod($path, 0600); $hash = hash_file('sha256', $path);
     if (!is_string($hash)) throw new RuntimeException('could not hash custody metadata backup');
     return ['path' => $path, 'bytes' => (int)filesize($path), 'sha256' => $hash];
+    } finally { umask($previousUmask); }
 }
 
 /** Reads a distinct billing-control token from a private 0600 file. */
