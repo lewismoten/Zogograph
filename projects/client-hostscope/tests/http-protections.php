@@ -176,6 +176,13 @@ foreach (['--sealed', '--key', 'encryptionOpenFile', 'encryptionReadLocalKey', '
     }
 }
 
+$storeRestore = file_get_contents(__DIR__ . '/../scripts/restore-store.php');
+if ($storeRestore === false) throw new RuntimeException('could not read generic store restore command');
+foreach (["PHP_SAPI !== 'cli'", "'--writers-stopped'", "['setup', 'account', 'host', 'ai']", 'databaseFullIntegrity($candidate)',
+    "'setup' => 'setup_values'", "'host' => 'host_samples'", "'ai' => 'ai_sessions'", "VACUUM INTO", '@rename($temporary, $target)', '@unlink($target . \'-wal\')'] as $required) {
+    if (!str_contains($storeRestore, $required)) throw new RuntimeException('missing generic store restore safeguard: ' . $required);
+}
+
 $api = file_get_contents(__DIR__ . '/../api.php');
 if ($api === false || !str_contains($api, "'peer-transport-rotate' => doPeerTransportRotate")) {
     throw new RuntimeException('remote delivery rotation route is missing');

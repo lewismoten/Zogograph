@@ -238,6 +238,26 @@ only the account database; configuration, host, and assistant artifacts are
 intentionally separate recovery operations because they have different owners
 and availability contracts.
 
+Use the generic restore command for the other sealed SQLite stores. It requires
+the same stopped-writer acknowledgement, checks that the decrypted candidate
+has the expected store table, creates a private pre-restore snapshot beside the
+target, atomically replaces it, and removes stale WAL/SHM companions:
+
+```bash
+php scripts/restore-store.php --store setup --sealed /secure/setup.sealed \
+  --key /secure/hostscope/primary.key --writers-stopped
+php scripts/restore-store.php --store host --sealed /secure/host.sealed \
+  --key /secure/hostscope/primary.key --writers-stopped
+php scripts/restore-store.php --store ai --sealed /secure/ai.sealed \
+  --key /secure/hostscope/primary.key --writers-stopped
+```
+
+Restoring `setup` changes the saved website/package policy, credentials, and
+encryption settings. Keep a separate copy of the current bootstrap
+`lib/config.php`; restoring that PHP bootstrap itself remains a deliberate
+manual recovery action after reviewing its decrypted contents, not something a
+CLI command silently replaces.
+
 To replace a key, create the replacement key, write a separate rotated copy,
 verify that it decrypts, and only then retire the old sealed copy and key:
 
