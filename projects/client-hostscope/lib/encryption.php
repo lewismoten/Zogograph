@@ -290,7 +290,7 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     catch (Throwable $error) { $status['warnings'][] = 'The private local key is not ready: ' . $error->getMessage(); }
     if ($stores === []) $status['warnings'][] = 'No databases or configuration artifact have been selected.';
     try {
-        $stmt = $pdo->query('SELECT store, MAX(created_at) AS created_at, COUNT(*) AS copies FROM encryption_artifacts GROUP BY store');
+        $stmt = $pdo->query("SELECT store, MAX(created_at) AS created_at, COUNT(*) AS copies FROM encryption_artifacts WHERE state = 'verified' GROUP BY store");
         foreach ($stmt->fetchAll() as $row) $status['artifacts'][] = ['store' => $row['store'], 'created_at' => (int)$row['created_at'], 'copies' => (int)$row['copies']];
     } catch (Throwable) { $status['warnings'][] = 'No encrypted artifact ledger is available yet.'; }
     $covered = array_column($status['artifacts'], 'store');

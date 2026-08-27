@@ -119,6 +119,10 @@ try {
         $pruned = encryptionPruneConfiguredCopies($retentionConfig, $live);
         encryptionExpect($pruned['removed'] === 1 && !is_file($oldPath), 'expired verified sealed artifact was not pruned');
         encryptionExpect(is_file((string)$copies[1]['local_path']), 'newest verified sealed artifact was pruned');
+        $afterPrune = encryptionStatus($live, $retentionConfig, $web);
+        $accountEvidence = array_values(array_filter($afterPrune['artifacts'], fn(array $artifact): bool => $artifact['store'] === 'account'));
+        encryptionExpect(count($accountEvidence) === 1 && $accountEvidence[0]['copies'] === 1,
+            'pruned encrypted artifacts were reported as current verified copies');
     }
 
     $tampered = $root . '/tampered.sealed';
