@@ -166,6 +166,10 @@ function openIdVerifyOwnToken(array $config, string $token): ?array
     $audiences = is_array($aud) ? $aud : [$aud];
     $registered = false;
     foreach ($audiences as $id) if (is_string($id) && openIdClient($config, $id) !== null) $registered = true;
+    $now = time();
     return $registered && hash_equals((string)openIdIssuer($config), (string)($claims['iss'] ?? ''))
-        && (int)($claims['exp'] ?? 0) >= time() && is_string($claims['sub'] ?? null) ? $claims : null;
+        && (int)($claims['exp'] ?? 0) >= $now
+        && (int)($claims['iat'] ?? 0) > 0 && (int)$claims['iat'] <= $now + 60
+        && (!isset($claims['nbf']) || (int)$claims['nbf'] <= $now + 60)
+        && is_string($claims['sub'] ?? null) ? $claims : null;
 }

@@ -14161,6 +14161,11 @@ async function openTerminalEditor(path) {
   searchTools.append(find, findButton);
   if (editable) searchTools.append(replace, replaceButton, allButton);
   searchTools.append(searchStatus);
+  const editorKeys = document.createElement("p");
+  editorKeys.className = "muted small editor-shortcuts";
+  editorKeys.textContent = editable
+    ? "Find: Ctrl/Cmd+F · Replace: Ctrl/Cmd+H · Undo: Ctrl/Cmd+Z · Redo: Ctrl/Cmd+Shift+Z · Review: Ctrl/Cmd+Shift+D"
+    : "Find: Ctrl/Cmd+F";
   text.addEventListener("keydown", event => {
     if (!(event.ctrlKey || event.metaKey)) return;
     if (event.key.toLowerCase() === "f") { event.preventDefault(); find.focus(); }
@@ -14178,7 +14183,7 @@ async function openTerminalEditor(path) {
     ["Modified", data.modified ? humanTime(data.modified) : "unknown"],
     ["Permissions", data.mode || "unknown"],
   ]);
-  const parts = [location, metadata, note_, searchTools];
+  const parts = [location, metadata, note_, searchTools, editorKeys];
   if (editable && data.backups?.length) {
     const backup = document.createElement("select");
     for (const copy of data.backups) {
@@ -14776,9 +14781,11 @@ function displayPreferences() {
     return {
       textSize: ["small", "default", "large"].includes(stored.textSize) ? stored.textSize : "default",
       motion: ["system", "reduce"].includes(stored.motion) ? stored.motion : "system",
+      editorFont: ["system", "compact", "classic"].includes(stored.editorFont) ? stored.editorFont : "system",
+      colorVision: ["system", "distinguish"].includes(stored.colorVision) ? stored.colorVision : "system",
     };
   } catch (_) {
-    return { textSize: "default", motion: "system" };
+    return { textSize: "default", motion: "system", editorFont: "system", colorVision: "system" };
   }
 }
 
@@ -14788,6 +14795,10 @@ function applyDisplayPreferences(preferences, remember = true) {
   else root.dataset.textSize = preferences.textSize;
   if (preferences.motion === "system") delete root.dataset.motion;
   else root.dataset.motion = preferences.motion;
+  if (preferences.editorFont === "system") delete root.dataset.editorFont;
+  else root.dataset.editorFont = preferences.editorFont;
+  if (preferences.colorVision === "system") delete root.dataset.colorVision;
+  else root.dataset.colorVision = preferences.colorVision;
   if (!remember) return;
   try { localStorage.setItem(DISPLAY_PREFERENCES_KEY, JSON.stringify(preferences)); } catch (_) { }
 }
@@ -14806,11 +14817,25 @@ function openDisplayPreferences() {
     option.value = value; option.textContent = label; option.selected = value === current.motion;
     motion.appendChild(option);
   }
+  const editorFont = document.createElement("select");
+  for (const [value, label] of [["system", "System monospace"], ["compact", "Compact monospace"], ["classic", "Classic monospace"]]) {
+    const option = document.createElement("option");
+    option.value = value; option.textContent = label; option.selected = value === current.editorFont;
+    editorFont.appendChild(option);
+  }
+  const colorVision = document.createElement("select");
+  for (const [value, label] of [["system", "Default palette"], ["distinguish", "High-distinction palette"]]) {
+    const option = document.createElement("option");
+    option.value = value; option.textContent = label; option.selected = value === current.colorVision;
+    colorVision.appendChild(option);
+  }
   showFormDialog("Display preferences", [
     fieldRow("Text size", textSize, "Applies to this browser only."),
     fieldRow("Motion", motion, "Reduce motion disables decorative animation and transitions in this browser."),
+    fieldRow("Editor typeface", editorFont, "Changes only local code, diff, and syntax readers. No file content leaves this browser."),
+    fieldRow("Colour vision", colorVision, "High distinction uses a blue, orange, and violet status palette. Status words and symbols remain visible in every mode."),
   ], async () => {
-    applyDisplayPreferences({ textSize: textSize.value, motion: motion.value });
+    applyDisplayPreferences({ textSize: textSize.value, motion: motion.value, editorFont: editorFont.value, colorVision: colorVision.value });
     redrawCharts(document);
   }, "Apply display choices");
 }

@@ -189,6 +189,18 @@ function migrationStatementApplied(PDO $pdo, string $sql): bool
 function migrations(): array
 {
     return [
+        48 => [
+            /* Deferred notification evidence survives a cron restart. Each
+             * alert is queued once; transport records its final outcome on
+             * the alert instead of silently replacing the original event. */
+            'CREATE TABLE alert_delivery_queue (
+                alert_id INTEGER PRIMARY KEY,
+                queued_at INTEGER NOT NULL,
+                due_at INTEGER NOT NULL,
+                reason TEXT NOT NULL
+            )',
+            'CREATE INDEX alert_delivery_queue_due ON alert_delivery_queue (due_at)',
+        ],
         47 => [
             /* One-time MFA recovery codes are password-hashed, so neither a
              * database export nor an accidental query result can log someone

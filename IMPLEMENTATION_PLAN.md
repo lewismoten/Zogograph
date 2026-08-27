@@ -237,6 +237,27 @@ Editor dialogs now ask before a Close or Escape discards changed native-textarea
 content. The guard compares the browser-normalized opened value, so preserved
 CRLF files do not produce a false unsaved-change warning.
 
+The browser-only display preferences now include a choice of system, compact,
+or classic monospace typeface for the editor, diff, and syntax preview. It
+uses only local installed fonts and affects neither stored files nor other
+users, keeping readability control independent of access or server settings.
+
+Display preferences also provide an explicit high-distinction blue, orange,
+and violet status palette for common red/green colour-vision differences.
+Status words and symbols remain present in every palette, so colour is never
+the only state cue.
+
+The browser editor now states its native keyboard controls beside the editing
+surface, including undo, redo, find, replace, and change review. This retains
+the browser's reliable textarea history instead of creating a second unsafe
+history layer around protected file saves.
+
+A timezone-aware working-hours decision primitive now has deterministic tests
+for ordinary weekday delivery, after-hours delay, and Error/Critical bypass.
+It is a foundation only: delivery queue persistence, recovery summaries, and
+the user/team schedule interface remain required before working-hours delivery
+can be marked complete.
+
 The editor now also refuses environment files, private keys, local databases,
 and known secret-bearing configuration files on the server, even if they sit
 inside the watched root. This keeps credentials out of browser responses and
@@ -308,7 +329,7 @@ The supported OpenID provider path now loads configuration through the same
 store as the rest of the application and audibly records authorization-code
 issuance and token exchange. A repeatable OpenSSL-backed check covers discovery,
 strict S256 PKCE, one-time code consumption, RS256 token verification, audience,
-and nonce. This is evidence for peer identity only, not a claim that external
+nonce, and future time-claim rejection. This is evidence for peer identity only, not a claim that external
 OIDC sign-in is implemented.
 
 The overview now recognizes an installation with no vital reading or completed

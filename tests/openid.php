@@ -33,6 +33,13 @@ openIdExpect(openIdConsumeCode($pdo, $code, $verifier) === null, 'authorization 
 $claims = openIdVerifyOwnToken($config, openIdIdToken($config, $grant));
 openIdExpect(is_array($claims) && $claims['sub'] === 'operator' && $claims['nonce'] === 'nonce-value',
     'issued OpenID ID token did not verify with its registered audience and nonce');
+$claims['iat'] = time() + 120;
+$header = openIdBase64Url(json_encode(['alg' => 'RS256', 'typ' => 'JWT']) ?: '{}');
+$body = openIdBase64Url(json_encode($claims, JSON_UNESCAPED_SLASHES) ?: '{}');
+openssl_sign($header . '.' . $body, $signature, $private, OPENSSL_ALGO_SHA256);
+$future = $header . '.' . $body . '.' . openIdBase64Url($signature);
+openIdExpect(openIdVerifyOwnToken($config, $future) === null,
+    'a locally signed token issued too far in the future was accepted');
 $bad = openIdCreateCode($pdo, 'peer-client', 'https://peer.example/callback', $challenge,
     'operator', ['Operator'], null);
 openIdExpect(openIdConsumeCode($pdo, $bad, str_repeat('x', 43)) === null,

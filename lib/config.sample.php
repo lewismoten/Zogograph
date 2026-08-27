@@ -65,6 +65,19 @@ return [
             'chat_id' => '',
         ],
         /*
+         * Future delayed-delivery policy. It is off by default: a missing or
+         * incomplete setting must never hold an operational alert. When queue
+         * delivery is enabled, Information and Warning notifications may wait
+         * outside this local schedule; Error and Critical always bypass it.
+         */
+        'delivery_hours' => [
+            'enabled' => false,
+            'timezone' => 'America/New_York',
+            'days' => [1, 2, 3, 4, 5], // ISO Monday through Friday
+            'start' => '09:00',
+            'end' => '17:00',
+        ],
+        /*
          * Where to send it. Several addresses, separated by semicolons.
          *
          * A semicolon because that is what mail clients use and therefore what

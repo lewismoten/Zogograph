@@ -46,6 +46,49 @@ require_once __DIR__ . '/updates.php';
 const TREND_WINDOW_SECONDS = 86400;
 
 /**
+ * Decides whether a non-urgent notification falls inside configured working
+ * hours. This is deliberately pure: queueing and transport must agree on the
+ * exact same timezone/DST decision.
+ *
+ * @return array{disposition:'immediate'|'delayed',reason:?string}
+ */
+function alertWorkingHoursDecision(array $delivery, string $severity, int $at): array
+{
+    if (in_array($severity, ['error', 'critical'], true) || empty($delivery['enabled'])) {
+        return ['disposition' => 'immediate', 'reason' => null];
+    }
+    $zone = (string)($delivery['timezone'] ?? 'UTC');
+    try { $time = (new DateTimeImmutable('@' . $at))->setTimezone(new DateTimeZone($zone)); }
+    catch (Throwable) { return ['disposition' => 'immediate', 'reason' => null]; }
+    $days = array_values(array_filter(array_map('intval', (array)($delivery['days'] ?? [1,2,3,4,5])), fn(int $d) => $d >= 1 && $d <= 7));
+    $start = preg_match('/^\d\d:\d\d$/', (string)($delivery['start'] ?? '09:00')) ? (string)$delivery['start'] : '09:00';
+    $end = preg_match('/^\d\d:\d\d$/', (string)($delivery['end'] ?? '17:00')) ? (string)$delivery['end'] : '17:00';
+    $clock = $time->format('H:i');
+    $inside = in_array((int)$time->format('N'), $days, true)
+        && ($start <= $end ? ($clock >= $start && $clock < $end) : ($clock >= $start || $clock < $end));
+    return $inside ? ['disposition' => 'immediate', 'reason' => null]
+        : ['disposition' => 'delayed', 'reason' => 'Outside configured working hours (' . $time->format('T') . ').'];
+}
+
+/** Records one deferred alert idempotently; the original alert remains evidence. */
+function queueAlertDelivery(PDO $pdo, int $alertId, int $dueAt, string $reason, ?int $now = null): void
+{
+    $now ??= time();
+    $pdo->prepare('INSERT OR IGNORE INTO alert_delivery_queue (alert_id, queued_at, due_at, reason) VALUES (?, ?, ?, ?)')
+        ->execute([$alertId, $now, max($now, $dueAt), mb_substr($reason, 0, 240)]);
+}
+
+/** @return list<array{alert_id:int,due_at:int,reason:string}> */
+function dueAlertDeliveries(PDO $pdo, ?int $now = null, int $limit = 100): array
+{
+    $stmt = $pdo->prepare('SELECT alert_id, due_at, reason FROM alert_delivery_queue WHERE due_at <= ? ORDER BY due_at, alert_id LIMIT ?');
+    $stmt->bindValue(1, $now ?? time(), PDO::PARAM_INT);
+    $stmt->bindValue(2, max(1, min(100, $limit)), PDO::PARAM_INT);
+    $stmt->execute();
+    return $stmt->fetchAll();
+}
+
+/**
  * Change the read state of named alerts without touching their evidence.
  *
  * Keeping this separate from the request handler makes the important part of

@@ -30,6 +30,7 @@
   --topbar-height: 60px;
   --sidebar-width: 232px;
   --radius: 12px;
+  --editor-font: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 
   color: var(--text);
   font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -37,6 +38,15 @@
 }
 :root[data-text-size="small"] { font-size: 13px; }
 :root[data-text-size="large"] { font-size: 18px; }
+:root[data-editor-font="compact"] { --editor-font: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+:root[data-editor-font="classic"] { --editor-font: "Courier New", Courier, monospace; }
+/* Blue, orange, and violet remain distinguishable for common red/green colour
+   vision differences. Words, icons, and non-colour state cues remain primary. */
+:root[data-color-vision="distinguish"] {
+  --ok: #55b4e6;
+  --warn: #f0aa45;
+  --crit: #c78ae8;
+}
 
 /* System motion preferences remain the default. This explicit setting is for
    people who need a consistent reduced-motion view across browsers/devices. */
@@ -2070,7 +2080,7 @@ svg.dial.is-dead { animation: none; }
 #listDialogBody textarea.terminal-editor {
   width: 100%;
   min-height: min(58vh, 34rem);
-  font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: .82rem/1.5 var(--editor-font);
   tab-size: 2;
 }
 .terminal-editor-wrap {
@@ -2091,7 +2101,7 @@ svg.dial.is-dead { animation: none; }
   user-select: none;
   color: var(--dim);
   text-align: right;
-  font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: .82rem/1.5 var(--editor-font);
   border-right: 1px solid var(--line-soft);
 }
 .terminal-editor-wrap textarea.terminal-editor {
@@ -2115,7 +2125,7 @@ svg.dial.is-dead { animation: none; }
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--bg);
-  font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: .82rem/1.5 var(--editor-font);
 }
 .terminal-editor-syntax {
   max-height: min(58vh, 34rem);
@@ -2128,12 +2138,13 @@ svg.dial.is-dead { animation: none; }
   border-radius: 6px;
   background: var(--bg);
   color: var(--text);
-  font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: .82rem/1.5 var(--editor-font);
 }
 .syntax-comment { color: var(--dim); font-style: italic; }
 .syntax-string { color: var(--ok); }
 .syntax-number { color: var(--warn); }
 .syntax-keyword { color: var(--accent); font-weight: 600; }
+.editor-shortcuts { margin: -4px 0 8px; }
 .editor-browser { border-top: 1px solid var(--line-soft); }
 .editor-browser-row { display: flex; gap: 12px; align-items: baseline; justify-content: space-between;
   padding: 7px 0; border-bottom: 1px solid var(--line-soft); }
