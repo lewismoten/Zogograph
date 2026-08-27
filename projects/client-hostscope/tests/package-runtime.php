@@ -49,7 +49,7 @@ try {
     $manifest = [
         'id' => 'test-runtime', 'version' => '1.0.0', 'publisher' => 'Test publisher',
         'capabilities' => ['package_private_database'],
-        'runtime' => ['kind' => 'hostscope-isolated-php-package', 'entrypoint' => 'src/Provider.php'],
+        'runtime' => ['kind' => 'hostscope-isolated-php-package', 'entrypoint' => 'src/Provider.php', 'minimum_api' => '1.0'],
         'settings_schema' => 'settings.schema.json',
         'data' => ['migrations' => ['migrations/001-private-evidence.sql']],
     ];
@@ -65,6 +65,8 @@ try {
     runtimeExpect(is_file($installed['install_path'] . '/src/Provider.php'), 'signed package file was not installed');
     $before = packageRuntimePackages($pdo)[0];
     runtimeExpect(!$before['enabled'] && $before['state'] === 'needs explicit capability grants', 'package activated without a grant');
+    $futureApi = $signed; $futureApi['runtime']['minimum_api'] = '999.0';
+    runtimeExpect(packageRuntimeCompatibility($futureApi)['status'] === 'unavailable', 'a package requiring a newer runtime API was accepted');
     try { packageRuntimeSetEnabled($pdo, 'test-runtime', [], true, 'administrator'); throw new RuntimeException('missing grant was accepted'); }
     catch (InvalidArgumentException $error) { runtimeExpect($error->getMessage() !== 'missing grant was accepted', $error->getMessage()); }
     packageRuntimeSetEnabled($pdo, 'test-runtime', ['package_private_database'], true, 'administrator');

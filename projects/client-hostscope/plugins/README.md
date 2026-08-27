@@ -54,6 +54,10 @@ that altered package code is safe.
 
 These packages are intentionally unavailable until the isolated runtime can
 enforce their capabilities, settings/secret boundaries, and audit trail.
+The deployment and JSON-RPC boundary for that runtime is specified in
+[`ISOLATED_RUNTIME.md`](../ISOLATED_RUNTIME.md). It deliberately requires a
+real OS/container sandbox; PHP-only restrictions are not considered execution
+isolation.
 
 The **Package runtime** page performs a core-owned, non-executing platform
 check before presenting a package as ready. It checks declared PHP version and

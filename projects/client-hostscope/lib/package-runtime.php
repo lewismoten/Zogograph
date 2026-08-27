@@ -13,6 +13,11 @@ const PACKAGE_RUNTIME_CAPABILITIES = [
     'key_provider', 'ciphertext_replica', 'network_client',
 ];
 
+/* This is a wire/API compatibility declaration, not evidence that PHP process
+ * isolation exists.  A future runner must reject packages newer than this
+ * contract before it loads their signed entry point. */
+const PACKAGE_RUNTIME_API_VERSION = '1.0';
+
 /** @return array<string, array{publisher:string,public_key:string}> */
 function packageRuntimeTrustedKeys(array $keys): array
 {
@@ -56,11 +61,14 @@ function packageRuntimeManifest(string $directory, array $trustedKeys): array
     }
     sort($capabilities, SORT_STRING);
     $runtime = (array)($raw['runtime'] ?? []);
+    $runtimeApi = trim((string)($runtime['minimum_api'] ?? ''));
     if (($runtime['kind'] ?? '') !== 'hostscope-isolated-php-package'
+        || !preg_match('/^[0-9]+\.[0-9]+$/', $runtimeApi)
         || !packageRuntimeRelativePath((string)($runtime['entrypoint'] ?? ''))
         || !is_file($root . '/' . $runtime['entrypoint'])) {
         throw new InvalidArgumentException('package runtime declaration is invalid');
     }
+    $runtime['minimum_api'] = $runtimeApi;
     foreach (['settings_schema'] as $field) {
         if (isset($raw[$field]) && (!packageRuntimeRelativePath((string)$raw[$field]) || !is_file($root . '/' . $raw[$field]))) {
             throw new InvalidArgumentException('package settings declaration is invalid');
@@ -114,6 +122,14 @@ function packageRuntimeManifestCompatibility(array $compatibility): array
 /** @return array{status:string,detail:string} Safe host facts; package PHP is never loaded. */
 function packageRuntimeCompatibility(array $manifest): array
 {
+    $runtime = (array)($manifest['runtime'] ?? []);
+    $minimumApi = trim((string)($runtime['minimum_api'] ?? ''));
+    if (!preg_match('/^[0-9]+\.[0-9]+$/', $minimumApi)) {
+        return ['status' => 'unavailable', 'detail' => 'package runtime API declaration is invalid'];
+    }
+    if (version_compare(PACKAGE_RUNTIME_API_VERSION, $minimumApi, '<')) {
+        return ['status' => 'unavailable', 'detail' => 'requires package runtime API ' . $minimumApi . ' or newer'];
+    }
     $requirements = packageRuntimeManifestCompatibility((array)($manifest['compatibility'] ?? []));
     if ($requirements['min_php'] !== '' && version_compare(PHP_VERSION, $requirements['min_php'], '<')) {
         return ['status' => 'unavailable', 'detail' => 'requires PHP ' . $requirements['min_php'] . ' or newer'];
