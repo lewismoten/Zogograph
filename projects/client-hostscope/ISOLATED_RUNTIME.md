@@ -21,10 +21,11 @@ dedicated container or operating-system service account. Mount only:
 
 HostScope includes `scripts/package-runtime-worker.php` as the initial runner
 component. It refuses to start unless its launcher sets
-`HOSTSCOPE_PACKAGE_SANDBOX=1`, accepts only a 64 KiB `capability` probe, and
-does not receive configuration, secrets, core database handles, or package
-private-data paths. The marker is an operator attestation, not sandbox proof:
-run the worker only from the container/OS service described above.
+`HOSTSCOPE_PACKAGE_SANDBOX=1`, accepts one bounded request, and does not
+receive configuration, core database handles, or package private-data paths.
+The normal probe operations receive no secrets. The marker is an operator
+attestation, not sandbox proof: run the worker only from the container/OS
+service described above.
 
 Core can now launch this narrow probe only when the deployment configuration
 defines a package-specific absolute command vector, names the reviewed sandbox
@@ -34,6 +35,19 @@ when the package release changes. The probe carries a fresh invocation ID and
 accepts only a matching bounded response. It can report package readiness or a
 SQLCipher disposable preflight; it neither enables a package nor grants the
 `isolated_package_runtime` capability.
+
+The sole credential-bearing operation currently implemented is
+`custody_enrollment_check`. It is intentionally separate from the no-network
+probe launcher: the deployment must define a distinct
+`custody_credential_check_invokers` command, manifest fingerprint, and a
+declared egress origin that exactly matches the saved custody endpoint. Before
+core sends the one-time enrolled bearer/signing pair through standard input, it
+requires fresh endpoint identity evidence and explicit `key_provider` plus
+`network_client` approval. The operation can only read signed
+`/v1/client/subscription` readiness; it cannot create an envelope, unwrap a
+key, or receive an artifact/database path. The deployment profile must enforce
+the single-origin egress rule—core validates the declaration but cannot turn a
+generic container network into an egress firewall.
 
 [`deploy/package-worker.compose.example.yml`](deploy/package-worker.compose.example.yml)
 is an optional Docker-compatible one-shot sandbox starting point. It disables
@@ -105,9 +119,10 @@ needs it, never expose a vault listing, and must redact it from logs and errors.
 
 Until these controls are implemented and independently tested, HostScope keeps
 the `isolated_package_runtime` capability unavailable. The deployment-attested
-probe is diagnostic evidence, not execution authority. Packages that require
-that capability cannot be enabled, opened for private storage, or used to make
-encryption or remote-custody claims.
+probe and custody enrollment-readiness check are diagnostic evidence, not
+envelope/unwrap execution authority. Packages that require that capability
+cannot be enabled, opened for private storage, or used to make live encryption
+or remote-custody recovery claims.
 
 [`PROVIDER_RPC_PLAN.md`](PROVIDER_RPC_PLAN.md) records the signed operation
 set, data boundary, deployment decision, and safe rollout order for the next
