@@ -14,7 +14,8 @@ service separation policy are in [`../DIRECTION.md`](../DIRECTION.md).
 - Key custody — authorizes short-lived unwrap operations for encrypted
   artifacts; it stores wrapped key material, never plaintext metrics.
 - Fleet replica relay — stores and verifies ciphertext artifacts for enrolled
-  customers without receiving a usable data key.
+  customers without receiving a usable data key. The low-cost reference
+  implementation lives in [`replica-relay/`](replica-relay/).
 
 Every service needs its own API, tenant isolation, retention policy, audit
 trail, incident response, and availability model. The client-side protocol is

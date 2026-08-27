@@ -1,0 +1,6 @@
+Options -Indexes
+RewriteEngine On
+RewriteRule ^v1/(.*)$ api.php/$1 [L,QSA]
+<FilesMatch "^(config\.php|config\.sample\.php|openapi\.json)$">
+  Require all denied
+</FilesMatch>

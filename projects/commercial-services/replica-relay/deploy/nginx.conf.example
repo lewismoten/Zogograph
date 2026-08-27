@@ -1,0 +1,20 @@
+# Include inside the HTTPS server for the provisional VPS. Replace the source
+# path and PHP-FPM socket. A separate HTTP server must redirect to HTTPS.
+location = /services/replica-relay { return 308 /services/replica-relay/; }
+
+# The API is the only public entry point. Forward the authenticated request and
+# preserve the original binary body for the client's Ed25519 signature check.
+location ~ ^/services/replica-relay(/v1/.*)$ {
+    include fastcgi_params;
+    fastcgi_param SCRIPT_FILENAME /srv/hostscope/projects/commercial-services/replica-relay/api.php;
+    fastcgi_param PATH_INFO $1;
+    fastcgi_param HTTPS on;
+    fastcgi_param HTTP_AUTHORIZATION $http_authorization;
+    fastcgi_pass unix:/run/php/php-fpm.sock;
+    add_header Cache-Control "no-store" always;
+    add_header X-Content-Type-Options "nosniff" always;
+}
+
+# SQLite metadata and ciphertext files must never be served directly.
+location ~ ^/services/replica-relay/(?:api\.php|config\.php|data|lib|scripts|tests)(?:/|$) { deny all; }
+location ~ ^/services/replica-relay/ { return 404; }
