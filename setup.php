@@ -193,6 +193,9 @@ function runWeb(
 
     $posted = $_SERVER['REQUEST_METHOD'] === 'POST';
     $configured = $existing !== null && is_file(setupStorePath(require $targetPath));
+    $activeSection = $configured
+        ? setupSection($fields, (string)($_GET['section'] ?? $_POST['section'] ?? 'basics'))
+        : 'basics';
 
     /*
      * Unlocking, and why it needs a session at all.
@@ -224,7 +227,8 @@ function runWeb(
             $_SESSION['setup_unlocked'] = time();
             // Redirected rather than rendered, so a refresh does not re-post a
             // password and the URL people end up bookmarking is a plain GET.
-            header('Location: ' . strtok((string)$_SERVER['REQUEST_URI'], '?'), true, 303);
+            header('Location: ' . strtok((string)$_SERVER['REQUEST_URI'], '?')
+                . '?section=' . rawurlencode($activeSection), true, 303);
             return;
         }
         $_SESSION['setup_error'] = $existing['password_hash'] === ''
@@ -259,6 +263,9 @@ function runWeb(
 
     if ($posted) {
         foreach ($fields as $field) {
+            if (!fieldIsInSection($field, $activeSection)) {
+                continue;
+            }
             $key = $field['key'];
             if ($field['type'] === 'password') {
                 continue;
@@ -337,6 +344,11 @@ function runWeb(
 
             if ($authorised) {
                 [$written, $writeError] = writeConfig($targetPath, $config, $root . '/lib');
+                if ($written && $configured) {
+                    header('Location: ' . strtok((string)$_SERVER['REQUEST_URI'], '?')
+                        . '?section=' . rawurlencode($activeSection) . '&saved=1', true, 303);
+                    return;
+                }
             }
         }
     }
@@ -346,8 +358,25 @@ function runWeb(
     echo webPage(
         $fields, $values, $errors, $rendered, $written, $writeError,
         $configured, $authorised, $posted, $existing, $refusal, $unlocked,
-        $root . '/lib/config.sample.php'
+        $root . '/lib/config.sample.php', $activeSection
     );
+}
+
+/** The settings pages, derived from the same field definitions as the CLI. */
+function setupSection(array $fields, string $asked): string
+{
+    if ($asked === 'basics') return 'basics';
+    foreach ($fields as $field) {
+        if (!empty($field['generated']) && ($field['section'] ?? '') === $asked) return $asked;
+    }
+    return 'basics';
+}
+
+function fieldIsInSection(array $field, string $section): bool
+{
+    return $section === 'basics'
+        ? empty($field['generated'])
+        : !empty($field['generated']) && ($field['section'] ?? '') === $section;
 }
 
 /**
@@ -384,7 +413,8 @@ function webPage(
     ?array $existing,
     ?string $refusal,
     bool $unlocked,
-    string $samplePath
+    string $samplePath,
+    string $activeSection
 ): string {
     $out = [];
     $out[] = '<!doctype html><html lang="en"><head><meta charset="utf-8">';
@@ -392,11 +422,14 @@ function webPage(
     $out[] = '<title>Disk Usage Monitor — setup</title>';
     $out[] = '<link rel="stylesheet" href="index.css">';
     $out[] = '<style>'
-        . 'body{max-width:1180px}'
+        . 'body{max-width:1180px;padding-top:0}'
+        . '.setup-header{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;background:var(--bg)}'
+        . '.setup-brand{display:flex;align-items:baseline;gap:9px;color:var(--text);text-decoration:none}.setup-brand strong{font-size:1.08rem}.setup-brand small{color:var(--muted)}'
+        . '.setup-header a:not(.setup-brand){color:var(--muted);font-size:.86rem}'
         . '.setup-layout{display:grid;grid-template-columns:210px minmax(0,1fr);gap:24px;align-items:start}'
         . '.setup-nav{position:sticky;top:16px;border:1px solid var(--line);border-radius:10px;padding:10px}'
         . '.setup-nav a{display:block;padding:7px 8px;border-radius:6px;color:var(--muted);text-decoration:none;font-size:.86rem}'
-        . '.setup-nav a:hover{background:var(--panel);color:var(--text)}'
+        . '.setup-nav a:hover,.setup-nav a.current{background:var(--panel);color:var(--text)}'
         . '.setup-main{min-width:0}'
         . '.wiz label{display:grid;gap:6px;margin-bottom:16px}'
         . '.wiz input[type=text],.wiz input[type=password],.wiz input[type=email]{width:100%}'
@@ -426,10 +459,17 @@ function webPage(
         . 'textarea[name]{min-height:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'
         . 'font-size:.85rem;background:#111;color:#eee;border:1px solid var(--line);'
         . 'border-radius:8px;padding:8px}'
-        . '@media(max-width:700px){.setup-layout{display:block}.setup-nav{position:static;display:flex;overflow-x:auto;gap:3px;margin-bottom:16px;white-space:nowrap}.setup-nav a{flex:0 0 auto}}'
+        . '@media(max-width:700px){.setup-header{padding:11px 0}.setup-layout{display:block}.setup-nav{position:static;display:flex;overflow-x:auto;gap:3px;margin-bottom:16px;white-space:nowrap}.setup-nav a{flex:0 0 auto}}'
         . '</style></head><body class="wiz">';
 
-    $out[] = '<h1>Disk Usage Monitor — setup</h1>';
+    $out[] = '<header class="setup-header"><a class="setup-brand" href="?section=basics">'
+        . '<strong>Hostscope</strong><small>Setup</small></a><a href="./">Open dashboard</a></header>';
+    $out[] = '<h1>Setup</h1>';
+
+    if (($_GET['saved'] ?? '') === '1') {
+        $out[] = '<div class="banner ok"><strong>Saved.</strong> This section is now stored in '
+            . '<code>data/setup.db</code>.</div>';
+    }
 
     if ($written) {
         $out[] = '<div class="banner ok"><strong>Settings saved in <code>data/setup.db</code>.</strong>'
@@ -491,16 +531,19 @@ function webPage(
         }
     }
     $out[] = '<div class="setup-layout"><aside class="setup-nav" aria-label="Setup sections">'
-        . '<a href="#section-basics">Basics</a>';
+        . '<a' . ($activeSection === 'basics' ? ' class="current"' : '') . ' href="?section=basics">Basics</a>';
     foreach (array_keys($sections) as $name) {
-        $out[] = '<a href="#section-' . h($name) . '">' . h(sectionTitle($name)) . '</a>';
+        $out[] = '<a' . ($activeSection === $name ? ' class="current"' : '')
+            . ' href="?section=' . rawurlencode($name) . '">' . h(sectionTitle($name)) . '</a>';
     }
-    $out[] = '</aside><main class="setup-main"><form method="post">';
+    $out[] = '</aside><main class="setup-main"><form method="post">'
+        . '<input type="hidden" name="section" value="' . h($activeSection) . '">';
 
     if ($configured && $existing['password_hash'] !== '' && !$unlocked) {
         // Its own form, so pressing enter in the password box unlocks rather
         // than submitting a whole config full of defaults.
         $out[] = '</form><form method="post"><input type="hidden" name="intent" value="unlock">'
+            . '<input type="hidden" name="section" value="' . h($activeSection) . '">'
             . '<fieldset><legend>Authorise</legend>'
             . '<span class="help">The password this install already uses. Enter it to edit the '
             . 'current settings and replace the file. Skip it and the form below starts from the '
@@ -522,67 +565,24 @@ function webPage(
             . '</fieldset>';
     }
 
-    /*
-     * The questions worth asking, then everything else.
-     *
-     * The hand-written fields are the install: without them nothing runs. The
-     * generated ones are every other option in the file, and there are ninety
-     * of them - presented as one flat list they would bury the four that
-     * matter and make the page read as a wall rather than a wizard.
-     *
-     * So they are grouped by their section and collapsed. Closed is not hidden:
-     * every one is in the form, submits with it, and keeps its current value
-     * whether or not anybody opened the group it is in.
-     */
-    $out[] = '<section id="section-basics">';
-    $sections = [];
-    foreach ($fields as $field) {
-        if (empty($field['generated'])) {
-            $out[] = renderField($field, $values, $errors, $configured);
-            continue;
-        }
-        $sections[$field['section']][] = $field;
+    $title = $activeSection === 'basics' ? 'Start here' : sectionTitle($activeSection);
+    $out[] = '<section class="setup-section"><h2>' . h($title) . '</h2>';
+    if ($activeSection === 'basics') {
+        $out[] = '<p class="help">The minimum needed to make this installation safe and useful. '
+            . 'Save this first; the rest of the sections can then be adjusted independently.</p>';
+    } else {
+        $help = sampleHelp($samplePath)['sections'][$activeSection] ?? '';
+        if ($help !== '') $out[] = '<p class="help">' . h(firstParagraph($help)) . '</p>';
     }
-
+    foreach ($fields as $field) {
+        if (fieldIsInSection($field, $activeSection)) {
+            $out[] = renderField($field, $values, $errors, $configured);
+        }
+    }
     $out[] = '</section>';
 
-    if ($sections) {
-        $out[] = '<h2 style="margin-top:30px">Everything else in the file</h2>';
-        $out[] = '<p class="help">Every remaining option in <code>lib/config.php</code>, '
-            . 'grouped the way the file groups them. They all have working defaults — open '
-            . 'a group only if you want to change something in it. What each one does is '
-            . 'read from the sample file itself, which is where the full explanation lives.</p>';
-
-        $notes = sampleHelp($samplePath)['sections'];
-
-        foreach ($sections as $name => $group) {
-            // A group is worth opening on its own errors: an answer that failed
-            // to parse inside a closed group would look like nothing happened.
-            $broken = false;
-            foreach ($group as $field) {
-                if (isset($errors[$field['key']])) {
-                    $broken = true;
-                }
-            }
-
-            $out[] = '<details id="section-' . h($name) . '"' . ($broken ? ' open' : '') . '>';
-            $out[] = '<summary>' . h(sectionTitle($name)) . ' — '
-                . count($group) . ' option' . (count($group) === 1 ? '' : 's')
-                . ($broken ? ' <strong>(needs another look)</strong>' : '') . '</summary>';
-
-            if (isset($notes[$name])) {
-                $out[] = '<p class="help">' . h(firstParagraph($notes[$name])) . '</p>';
-            }
-
-            foreach ($group as $field) {
-                $out[] = renderField($field, $values, $errors, $configured);
-            }
-            $out[] = '</details>';
-        }
-    }
-
     $out[] = '<button type="submit">'
-        . (!$configured || $unlocked ? 'Save settings' : 'Show me the config')
+        . (!$configured || $unlocked ? 'Save ' . h($title) : 'Show me the config')
         . '</button>';
     $out[] = '</form></main></div>';
 

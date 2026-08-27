@@ -6125,8 +6125,8 @@ function renderAiTools(data) {
   extensionText.className = "muted small";
   const inactive = groups.get(toolTab)?.filter(tool => !tool.enabled).length ?? 0;
   extensionText.textContent = inactive
-    ? `Mr. Radar starts with diagnostic tools. Enable ${TOOL_GROUP_NAMES[toolTab] ?? toolTab} tools if this conversation needs that subject.`
-    : `All ${TOOL_GROUP_NAMES[toolTab] ?? toolTab} tools are enabled for Mr. Radar.`;
+    ? `${chatState.who.name} starts with diagnostic tools. Enable ${TOOL_GROUP_NAMES[toolTab] ?? toolTab} tools if this conversation needs that subject.`
+    : `All ${TOOL_GROUP_NAMES[toolTab] ?? toolTab} tools are enabled for ${chatState.who.name}.`;
   extension.appendChild(extensionText);
   if (inactive && data.writable) {
     const enableGroup = document.createElement("button");
@@ -8356,7 +8356,7 @@ const chatState = {
   // restart with it.
   deadlines: new Map(),
   // Name, emoji and portrait, refreshed with the session.
-  who: { name: "Mr. Radar", emoji: "\u{1F4E1}", portrait: null },
+  who: { name: "Assistant", emoji: "✦", portrait: null },
 };
 
 /** How often to ask, by what the session is doing. */
@@ -8849,7 +8849,7 @@ function renderChatIdentity() {
   /*
    * The icon carries the mark, the label carries the name.
    *
-   * Both were carrying the emoji, so the menu read "📡 📡 Mr. Radar" - and once
+   * Both were carrying the emoji, so the menu read the mark twice - and once
    * it had drawn itself a portrait, a thumbnail and an emoji as well.
    */
   const navIcon = document.querySelector('[data-nav="sys-ai"] .nav-icon');
@@ -8879,7 +8879,7 @@ function renderChatIdentity() {
    * told "This page is Lookout" long after it had been renamed.
    */
   if (VIEWS["sys-ai"]) VIEWS["sys-ai"].label = who.name;
-  if (VIEWS["sys-ai-data"]) VIEWS["sys-ai-data"].label = `${who.name}'s data`;
+  if (VIEWS["sys-ai-data"]) VIEWS["sys-ai-data"].label = "Assistant data";
 
   const box = $("chatText");
   if (box && box.value === "") {
@@ -30169,7 +30169,7 @@ const VIEWS = {
   },
   "sys-ai-data": {
     // Renamed by renderChatIdentity along with everything else that says it.
-    label: "Mr. Radar's data",
+    label: "Assistant data",
     parent: "sys-ai",
     refresh: () => refreshAiStore(),
   },
@@ -30238,7 +30238,7 @@ const VIEWS = {
     manual: true,
     // Replaced by renderChatIdentity once the persona has loaded, because the
     // operator can rename it and a menu that keeps the old name is a bug.
-    label: "Mr. Radar",
+    label: "Assistant",
     parent: null,
     refresh: () => openChatFull(),
   },
@@ -30375,7 +30375,7 @@ const HELP_PROFILES = {
     ],
   },
   assistant: {
-    purpose: "Lets Mr. Radar investigate the monitored machine using only the tools this installation has made available.",
+    purpose: "Lets the assistant investigate the monitored machine using only the tools this installation has made available.",
     useful: "Start with a question in plain language. Read-only diagnostic tools are available first; anything that changes data, runs a command, or shares material asks for permission before it happens.",
     commands: ["php health.php", "php cron.php --vitals", "php cron.php --scan"],
     links: [

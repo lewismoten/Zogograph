@@ -350,7 +350,7 @@ function requireActionAccess(array $config, string $action): void
         throw new ActionRefused('your group cannot use this tool');
     }
     if (str_starts_with($action, 'ai') && !accessAllows($config, 'ai')) {
-        throw new ActionRefused('your group cannot use Mr. Radar');
+        throw new ActionRefused('your group cannot use the assistant');
     }
     $range = (int)($_GET['range'] ?? $_POST['range'] ?? 0);
     if ($range > 0 && !accessAllows($config, 'ranges', $range)) {
@@ -5714,7 +5714,7 @@ function requireAiUse(array $config, bool $post): void
         throw new ActionRefused('that must be a POST');
     }
     if (!isSignedIn() || !accessAllows($config, 'ai')) {
-        throw new ActionRefused('your group cannot use Mr. Radar');
+        throw new ActionRefused('your group cannot use the assistant');
     }
     if (!csrfValid($_POST['csrf'] ?? null)) {
         throw new ActionRefused('stale form token; reload and try again');

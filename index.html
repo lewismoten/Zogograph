@@ -340,8 +340,8 @@
       <span class="nav-badge" data-badge="net-rdns" hidden></span>
     </a>
     <a class="nav-item" href="#/sys-ai" data-nav="sys-ai">
-      <span class="nav-icon" aria-hidden="true">📡</span>
-      <span class="nav-label">Mr. Radar</span>
+      <span class="nav-icon" aria-hidden="true">✦</span>
+      <span class="nav-label">Assistant</span>
       <span class="nav-badge" data-badge="sys-ai" hidden></span>
     </a>
     <a class="nav-item nav-sub" href="#/sys-ai-identity" data-nav="sys-ai-identity" data-parent="sys-ai">
@@ -394,7 +394,7 @@
     </a>
     <a class="nav-item nav-sub" href="#/sys-ai-data" data-nav="sys-ai-data" data-parent="sys-ai">
       <span class="nav-icon" aria-hidden="true">›</span>
-      <span class="nav-label">Mr. Radar&rsquo;s data</span>
+      <span class="nav-label">Assistant data</span>
       <span class="nav-badge" data-badge="sys-ai-data" hidden></span>
     </a>
     <a class="nav-item" href="#/sys-terminal" data-nav="sys-terminal">
@@ -2320,10 +2320,10 @@
 <section class="view" data-view="sys-ai-identity" hidden>
 <section class="panel" id="aiSettingsPanel">
   <div class="panel-head">
-    <h2><span class="ai-name">Mr. Radar</span></h2>
+    <h2><span class="ai-name">Assistant</span></h2>
   </div>
   <p class="muted small sub-note">
-    <span class="ai-name">Mr. Radar</span> is a model you configure, given a fixed set of
+    <span class="ai-name">Assistant</span> is a model you configure, given a fixed set of
     read-only tools for looking at this machine — the name is the job: somebody on watch
     who tells you what they can see. It is off until you set it up, and when it is on this
     tool sends parts of your logs, your disk figures and your process list to whichever
@@ -2583,7 +2583,7 @@
     <button id="reportNow" class="link">Write one now</button>
   </div>
   <p class="muted small sub-note">
-    Written on a schedule by <span class="ai-name">Mr. Radar</span> from a fixed set of
+    Written on a schedule by <span class="ai-name">Assistant</span> from a fixed set of
     figures for the period — the same questions every time, so two summaries can be
     compared. What varies is what it makes of them. Each one is emailed when it is
     written; this is where they are kept.
@@ -2613,10 +2613,10 @@
   </p>
   <p class="muted small sub-note">
     It is a transcript, not a screen. Colour, bold, tabs and progress lines that
-    rewrite themselves all render; programs that want to take over the display
-    and read the keyboard &mdash; <code>vi</code>, <code>top</code>,
-    <code>ssh</code>, anything asking for a password &mdash; cannot be driven
-    from here, because there is nothing typing at them.
+    rewrite themselves all render. Text editors such as <code>vi</code> and
+    <code>nano</code> open a constrained browser editor instead. Programs that
+    need an interactive terminal &mdash; <code>top</code>, <code>ssh</code>, or
+    anything asking for a password &mdash; cannot be driven from here.
   </p>
   <div id="terminalBody"></div>
 </section>
@@ -2666,7 +2666,7 @@
 <section class="view" data-view="sys-memory" hidden>
 <section class="panel" id="memoryPanel">
   <div class="panel-head">
-    <h2>What <span class="ai-name">Mr. Radar</span> remembers</h2>
+    <h2>What <span class="ai-name">Assistant</span> remembers</h2>
     <div class="panel-controls">
       <button id="memoryAdd" class="link">Add one</button>
       <button id="memoryClear" class="link danger">Forget everything</button>
@@ -2687,7 +2687,7 @@
 <section class="view" data-view="sys-ai-data" hidden>
 <section class="panel" id="aiDataPanel">
   <div class="panel-head">
-    <h2><span class="ai-name">Mr. Radar</span>&rsquo;s database</h2>
+    <h2><span class="ai-name">Assistant</span>&rsquo;s database</h2>
     <div class="panel-controls">
       <button id="aiCompact" class="link">Reclaim empty space</button>
     </div>
@@ -2816,7 +2816,7 @@
     <div class="corner-choices" id="cornerChoices" hidden>
       <button type="button" id="cornerDiagnose">⌁ Run diagnosis</button>
       <button type="button" id="cornerNote">✎ Write a note</button>
-      <button type="button" id="cornerChat">📡 Ask Mr. Radar</button>
+      <button type="button" id="cornerChat">✦ Ask assistant</button>
     </div>
     <button id="noteButton" class="note-button" title="Open quick actions"
             aria-haspopup="true" aria-expanded="false"
@@ -2833,7 +2833,7 @@
   <div id="chatHome">
   <aside id="chatPanel" class="chat-panel" hidden aria-label="The troubleshooting assistant">
     <div class="chat-head" id="chatDragHandle" title="Drag to move this chat window">
-      <strong id="chatTitle">Mr. Radar</strong>
+      <strong id="chatTitle">Assistant</strong>
       <span class="muted small" id="chatCost"></span>
       <span class="chat-room" id="chatRoom" hidden></span>
       <select id="chatEffort" class="chat-effort" title="How hard to think"></select>
