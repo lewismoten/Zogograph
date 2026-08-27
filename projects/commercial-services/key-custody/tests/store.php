@@ -9,6 +9,12 @@ custodyExpect(($contract['components']['schemas']['EnvelopeStore']['required'] ?
     'published custody API contract omits required envelope fields');
 custodyExpect(isset($contract['paths']['/internal/subscriptions/{tenantId}']) && isset($contract['components']['securitySchemes']['billingService']),
     'published custody API contract omits the isolated billing control plane');
+foreach (['/keys', '/subscription', '/billing/checkout', '/billing/portal'] as $path) {
+    foreach ($contract['paths'][$path] as $operation) custodyExpect(($operation['security'][0]['accountSession'] ?? null) === [],
+        'published custody API contract omits management authentication for ' . $path);
+}
+custodyExpect(($contract['paths']['/keys/{keyId}/wrapping-key']['get']['security'][0]['enrolledClient'] ?? null) === [],
+    'published custody API contract omits enrolled-client authentication for public wrapping-key access');
 $api = file_get_contents(__DIR__ . '/../api.php');
 custodyExpect($api !== false && str_contains($api, 'CUSTODY_MAX_REQUEST_BYTES') && str_contains($api, 'request body is too large'),
     'custody API does not bound request-body intake before parsing');
