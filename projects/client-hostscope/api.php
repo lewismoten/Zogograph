@@ -27,7 +27,7 @@ $configFile = __DIR__ . '/lib/config.php';
 if (!is_file($configFile)) {
     http_response_code(503);
     header('Content-Type: application/json');
-    echo apiJson(['error' => 'Not configured. Copy lib/config.sample.php to lib/config.php.']);
+    apiRespond(['error' => 'Not configured. Copy lib/config.sample.php to lib/config.php.']);
     exit;
 }
 
@@ -110,12 +110,12 @@ $post = $_SERVER['REQUEST_METHOD'] === 'POST';
 
 try {
     $pdo = db($config);
-    echo apiJson(route($config, $pdo, $action, $post));
+    apiRespond(route($config, $pdo, $action, $post));
 } catch (ActionRefused $e) {
     // An expected refusal, not a fault: the message is written for the person
     // reading it and is safe to show.
     http_response_code(403);
-    echo apiJson(['error' => $e->getMessage()]);
+    apiRespond(['error' => $e->getMessage()]);
 }
 // Anything else falls through to the boundary installed above, which logs it
 // with a reference and returns that reference as JSON.
