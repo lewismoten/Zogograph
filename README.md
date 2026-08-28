@@ -19,6 +19,10 @@ The recommended VPS topology, rebrand-safe naming rules, customer encryption
 choices, and commercial-service boundaries are recorded in
 [projects/DIRECTION.md](projects/DIRECTION.md).
 
+See [Zogograph rebrand and migration](REBRAND_MIGRATION.md) for public-domain
+targets, renamed project directories, preserved compatibility identifiers, and
+administrator actions.
+
 For the operational implementation direction—what is usable now, what remains
 optional, and where it is configured—see
 [projects/IMPLEMENTATION_DIRECTION.md](projects/IMPLEMENTATION_DIRECTION.md).

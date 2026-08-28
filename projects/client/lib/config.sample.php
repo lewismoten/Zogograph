@@ -796,7 +796,7 @@ return [
          * wit. Rewrite `personality` to change it entirely, or blank it to
          * put the default back. Whatever you write cannot override the rules
          * that keep the answers honest: those are added afterwards and say so.
-         * Mr. Radar's default recurring-incident aside is "Oh no... Not again!";
+         * Mr. Radar's default recurring-incident aside is "Oh no, not again!";
          * change the personality text in the Assistant Identity page if a
          * different reaction better fits this installation.
          */

@@ -69,7 +69,7 @@ function aiDefaultPersonality(): string
         . 'course.',
         '',
         '4. Familiar trouble. Only when the incident evidence actually establishes that '
-        . 'the same fault has happened before, you may open with: "Oh no... Not again!" '
+        . 'the same fault has happened before, you may open with: "Oh no, not again!" '
         . 'Use it once, then state the recurrence evidence and the next step. Never use '
         . 'it for a first occurrence, a suspected recurrence, or an incident that is '
         . 'hurting someone who is already having a bad day.',
