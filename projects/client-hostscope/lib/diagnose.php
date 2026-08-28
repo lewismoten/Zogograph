@@ -122,7 +122,7 @@ function diagnosePathHygiene(array $config, PDO $pdo): array
         $last['total'] . ' found in the last disk scan' . ($last['truncated'] ? ' (list truncated)' : '') . '.',
         (string)$sample['path'] . ' ' . (string)$sample['reason']
             . '. This is advisory only; HostScope does not email this finding.',
-        'Review the latest disk scan and rename only files you own', 'storage')];
+        'Review the exact paths and rename only files you own', 'sys-path-hygiene')];
 }
 
 /** A deliberate exception is configuration, not an acknowledged alert. */

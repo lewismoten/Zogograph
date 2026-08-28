@@ -11732,6 +11732,52 @@ async function refreshMarketplace() {
   catch (error) { body.replaceChildren(note(String(error.message || error))); }
 }
 
+async function refreshPathHygiene() {
+  const body = $("pathHygieneBody");
+  if (!body) return;
+  if (!state.signedIn) { body.replaceChildren(note("Sign in to review path names.")); return; }
+  try { renderPathHygiene(await api("path-hygiene")); }
+  catch (error) { body.replaceChildren(note(String(error.message || error))); }
+}
+
+function visiblePathName(path) {
+  return String(path).replace(/ /g, "·").replace(/\t/g, "⇥").replace(/\r/g, "␍").replace(/\n/g, "␊");
+}
+
+function renderPathHygiene(data) {
+  const body = $("pathHygieneBody");
+  if (!data.enabled) { body.replaceChildren(note("Install and enable Path-name hygiene in the Marketplace to use this check.")); return; }
+  const last = data.last;
+  if (!last) { body.replaceChildren(note("Enabled, but no completed account disk scan has recorded path names yet.")); return; }
+  const parts = [factGrid([["Last scan", humanTime(last.checked_at)], ["Found", String(last.total)], ["Stored", String(last.findings.length)]])];
+  if (!last.findings.length) parts.push(note("No shell-confusing path names were found in the latest scan."));
+  else {
+    const holder = document.createElement("div"); holder.id = "pathHygieneTable"; parts.push(holder);
+    body.replaceChildren(...parts);
+    renderTable("pathHygieneTable", last.findings, [
+      { label: "Exact path", className: "name", render: row => { const code = document.createElement("code"); code.textContent = visiblePathName(row.path); code.title = row.path; return code; } },
+      { label: "Why", render: row => row.reason },
+      { label: "", className: "row-actions", render: row => {
+        const wrap = document.createDocumentFragment();
+        if (!data.can_change) return wrap;
+        const rename = document.createElement("button"); rename.className = "link"; rename.textContent = "Rename";
+        rename.addEventListener("click", () => showPathHygieneRename(row)); wrap.appendChild(rename); return wrap;
+      } },
+    ]);
+    if (last.truncated) parts.push(note("The scan found more names than this page retains. Rename these, then run another disk scan."));
+  }
+  body.replaceChildren(...parts);
+}
+
+function showPathHygieneRename(row) {
+  const name = document.createElement("input"); name.className = "wide-field"; name.value = String(row.path).split("/").pop().trim();
+  showFormDialog("Rename path", [fieldRow("New name", name, `Current: ${visiblePathName(row.path)}`)], async () => {
+    const result = await post("path-hygiene-rename", { path: row.path, name: name.value });
+    $("noteDialog").close(); renderPathHygiene({ enabled: true, last: result.last, can_change: true });
+    notice(`Renamed to ${result.result.to}.`, true);
+  }, "Rename");
+}
+
 async function refreshEncryptionStatus() {
   const body = $("encryptionBody");
   if (!body) return;
@@ -31814,6 +31860,11 @@ const VIEWS = {
     label: "Marketplace",
     parent: "system",
     refresh: () => refreshMarketplace(),
+  },
+  "sys-path-hygiene": {
+    label: "Path-name hygiene",
+    parent: "system",
+    refresh: () => refreshPathHygiene(),
   },
   "sys-packages": {
     manual: true,

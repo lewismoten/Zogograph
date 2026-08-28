@@ -27,10 +27,7 @@ function pathHygieneStart(bool $enabled): array
 function pathHygieneObserve(string $path, string $name, array &$state): void
 {
     if (!$state['enabled']) return;
-    $reason = null;
-    if (preg_match('/[\x00-\x1f\x7f]/', $name)) $reason = 'contains a control character';
-    elseif (preg_match('/^\s|\s$/u', $name)) $reason = 'starts or ends with whitespace';
-    elseif (str_starts_with($name, '-')) $reason = 'starts with a dash and can be treated as a command option';
+    $reason = pathHygieneReason($name);
     if ($reason === null) return;
 
     $state['total']++;
@@ -39,6 +36,14 @@ function pathHygieneObserve(string $path, string $name, array &$state): void
         return;
     }
     $state['findings'][] = ['path' => $path, 'reason' => $reason];
+}
+
+function pathHygieneReason(string $name): ?string
+{
+    if (preg_match('/[\x00-\x1f\x7f]/', $name)) return 'contains a control character';
+    if (preg_match('/^\s|\s$/u', $name)) return 'starts or ends with whitespace';
+    if (str_starts_with($name, '-')) return 'starts with a dash and can be treated as a command option';
+    return null;
 }
 
 function pathHygieneStore(PDO $pdo, int $scanId, array $state): void
@@ -60,4 +65,25 @@ function pathHygieneLast(PDO $pdo): ?array
     $findings = json_decode((string)$row['findings_json'], true);
     return ['checked_at' => (int)$row['checked_at'], 'findings' => is_array($findings) ? $findings : [],
         'total' => (int)$row['findings_total'], 'truncated' => (bool)$row['truncated']];
+}
+
+function pathHygieneRename(array $config, PDO $pdo, string $path, string $name): array
+{
+    $last = pathHygieneLast($pdo);
+    $known = array_column($last['findings'] ?? [], 'path');
+    if (!in_array($path, $known, true)) throw new ActionRefused('that path is not in the latest hygiene scan');
+    if ($name === '' || $name === '.' || $name === '..' || str_contains($name, '/') || str_contains($name, "\0")) throw new ActionRefused('enter one valid file or directory name');
+    if (pathHygieneReason($name) !== null) throw new ActionRefused('the replacement name is still shell-confusing');
+    $root = realpath((string)$config['scan_root']);
+    $real = realpath($path);
+    if ($root === false || $real === false || ($real !== $root && !str_starts_with($real . '/', rtrim($root, '/') . '/'))) throw new ActionRefused('path is no longer inside the scan root');
+    if (is_link($path)) throw new ActionRefused('symlinks cannot be renamed here');
+    $destination = dirname($path) . '/' . $name;
+    if (file_exists($destination) || is_link($destination)) throw new ActionRefused('a path with that name already exists');
+    if (!rename($path, $destination)) throw new ActionRefused('the filesystem refused the rename');
+
+    $findings = array_values(array_filter($last['findings'], fn(array $row): bool => ($row['path'] ?? '') !== $path));
+    $pdo->prepare('UPDATE path_hygiene_scans SET findings_json = ?, findings_total = ? WHERE scan_id = (SELECT MAX(scan_id) FROM path_hygiene_scans)')
+        ->execute([json_encode($findings, JSON_UNESCAPED_SLASHES), max(0, $last['total'] - 1)]);
+    return ['from' => $path, 'to' => $destination];
 }

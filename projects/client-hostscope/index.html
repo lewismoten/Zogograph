@@ -460,6 +460,10 @@
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Marketplace</span>
     </a>
+    <a class="nav-item nav-sub" href="#/sys-path-hygiene" data-nav="sys-path-hygiene" data-parent="system">
+      <span class="nav-icon" aria-hidden="true">›</span>
+      <span class="nav-label">Path-name hygiene</span>
+    </a>
     <a class="nav-item nav-sub" href="#/sys-packages" data-nav="sys-packages" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Package runtime</span>
@@ -2601,6 +2605,14 @@
   <div class="panel-head"><h2>Marketplace</h2></div>
   <p class="muted small sub-note">Local package manifests only. Enabling never executes package code. A few fixed, core-owned capabilities may be authorized; requested capabilities remain visible for review.</p>
   <div id="marketplaceBody"></div>
+</section>
+
+<section class="view" data-view="sys-path-hygiene" hidden>
+<section class="panel">
+  <div class="panel-head"><h2>Path-name hygiene</h2></div>
+  <p class="muted small sub-note">An optional, advisory check that runs during the account disk walk. It does not send notifications. Rename only paths you recognize; the change is immediate and recorded in the audit log.</p>
+  <div id="pathHygieneBody"></div>
+</section>
 </section>
 </section>
 

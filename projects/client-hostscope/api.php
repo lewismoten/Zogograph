@@ -256,6 +256,8 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'uptime' => uptimeView($config, $pdo, $signedIn),
         'health' => healthCheck($config, $pdo, $signedIn),
         'diagnose' => diagnoseView($config, $pdo, $signedIn),
+        'path-hygiene' => pathHygieneView($config, $pdo, $signedIn),
+        'path-hygiene-rename' => doPathHygieneRename($config, $pdo, $post),
         'self' => selfReport($config, $pdo, $signedIn),
         'problems' => problemLog($config, $signedIn),
         'session' => sessionState($config),
@@ -383,6 +385,7 @@ function requireActionAccess(array $config, string $action): void
         'installed' => 'sys-installed', 'symlinks' => 'storage-links',
         'tail' => 'log-stream', 'last-lines' => 'log-stream', 'log-stream' => 'log-stream',
         'health' => 'system', 'self' => 'system', 'problems' => 'sys-problems',
+        'path-hygiene' => 'sys-path-hygiene', 'path-hygiene-rename' => 'sys-path-hygiene',
         'scan-schedule' => 'scans-account', 'host-setup' => 'scans-host',
         'ai-memories' => 'sys-memory', 'ai-reports' => 'sys-reports',
         'ai-sessions' => 'sys-ai-billing',
@@ -5042,6 +5045,23 @@ function diagnoseView(array $config, PDO $pdo, bool $signedIn): array
         throw new ActionRefused('sign in to see the diagnosis');
     }
     return diagnose($config, $pdo);
+}
+
+function pathHygieneView(array $config, PDO $pdo, bool $signedIn): array
+{
+    if (!$signedIn) throw new ActionRefused('sign in to review path names');
+    $enabled = pathHygieneEnabled($config, $pdo);
+    return ['enabled' => $enabled, 'last' => $enabled ? pathHygieneLast($pdo) : null,
+        'can_change' => accessAllows($config, 'write')];
+}
+
+function doPathHygieneRename(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    try { $result = pathHygieneRename($config, $pdo, (string)($_POST['path'] ?? ''), (string)($_POST['name'] ?? '')); }
+    catch (ActionRefused $error) { throw $error; }
+    logAction($pdo, 'path_hygiene_rename', $result['from'], 'ok', 0, 0, 'renamed to ' . $result['to']);
+    return ['ok' => true, 'result' => $result, 'last' => pathHygieneLast($pdo)];
 }
 
 /** Keeps a deliberate diagnostic exception out of later runs and alerts. */
