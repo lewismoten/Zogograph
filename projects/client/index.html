@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="HostScope is a private, self-hosted dashboard for understanding server capacity, health, and activity.">
+<meta name="description" content="Zogograph is a private, self-hosted platform for observing server activity, recording evidence, and explaining what it means.">
 <meta name="theme-color" content="#0b1018">
-<title>HostScope — server monitoring</title>
+<title>Zogograph — infrastructure observation</title>
 <link rel="stylesheet" href="index.css">
 <script src="index.js" defer></script>
 </head>
@@ -32,7 +32,7 @@
 
   <a class="brand" href="#/overview">
     <span class="brand-text">
-      <strong>HostScope</strong>
+      <strong>Zogograph</strong>
       <small>clear server monitoring</small>
     </span>
   </a>
@@ -522,7 +522,7 @@
   <div class="scrim" id="scrim" hidden></div>
 
   <main id="main">
-    <h1 id="pageTitle" class="sr-only">HostScope server monitoring dashboard</h1>
+    <h1 id="pageTitle" class="sr-only">Zogograph infrastructure observation dashboard</h1>
     <div id="notice"></div>
     <section id="updateBanner" hidden aria-live="polite"></section>
     <!--
@@ -545,7 +545,7 @@
 
 <section class="view" data-view="overview" hidden>
 <section class="panel onboarding" id="onboarding" hidden aria-labelledby="onboardingTitle">
-  <div class="panel-head"><h2 id="onboardingTitle">Finish setting up HostScope</h2></div>
+  <div class="panel-head"><h2 id="onboardingTitle">Finish setting up Zogograph</h2></div>
   <div id="onboardingBody"></div>
 </section>
 <div class="gauges" id="gauges"></div>
@@ -2592,7 +2592,7 @@
 
 <section class="view" data-view="sys-peers" hidden>
 <section class="panel">
-  <div class="panel-head"><h2>Trusted HostScope servers</h2></div>
+  <div class="panel-head"><h2>Trusted Zogograph servers</h2></div>
   <p class="muted small sub-note">A trusted server is explicitly configured here and checked through HTTPS OpenID Connect discovery. Saving it does not share data or sign anyone in; those authorization-code steps are deliberately separate.</p>
   <div id="peersAdminBody"></div>
 </section>
@@ -2609,7 +2609,7 @@
 <section class="view" data-view="sys-encryption" hidden>
 <section class="panel">
   <div class="panel-head"><h2>Data protection</h2></div>
-  <p class="muted small sub-note">This page reports HostScope evidence, not assumptions. It never shows key paths or key material. Change protection choices in the setup wizard; recovery and sealing stay CLI-only so a browser session cannot handle a private key.</p>
+  <p class="muted small sub-note">This page reports Zogograph evidence, not assumptions. It never shows key paths or key material. Change protection choices in the setup wizard; recovery and sealing stay CLI-only so a browser session cannot handle a private key.</p>
   <div id="encryptionBody"></div>
 </section>
 </section>

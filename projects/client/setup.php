@@ -461,7 +461,7 @@ function webPage(
     $out = [];
     $out[] = '<!doctype html><html lang="en"><head><meta charset="utf-8">';
     $out[] = '<meta name="viewport" content="width=device-width, initial-scale=1">';
-    $out[] = '<title>HostScope — setup</title>';
+    $out[] = '<title>Zogograph — setup</title>';
     $out[] = '<link rel="stylesheet" href="index.css">';
     $out[] = '<style>'
         . 'body{max-width:1180px;padding-top:0}'
@@ -507,7 +507,7 @@ function webPage(
 
     $out[] = '<header class="setup-header"><a class="setup-brand" href="?section=basics">'
         . '<span class="poll" aria-hidden="true"><svg viewBox="0 0 36 36"><circle class="poll-track" cx="18" cy="18" r="15"></circle><circle class="poll-fill" cx="18" cy="18" r="15"></circle><circle class="poll-host-track" cx="18" cy="18" r="9"></circle><circle class="poll-host-fill" cx="18" cy="18" r="9"></circle></svg><span class="poll-dot"></span></span>'
-        . '<strong>HostScope</strong><small>Setup</small></a><a href="./">Open dashboard</a></header>';
+        . '<strong>Zogograph</strong><small>Setup</small></a><a href="./">Open dashboard</a></header>';
     $out[] = '<h1>Setup</h1>';
 
     $out[] = '<details open><summary>Installation checks</summary><table class="preflight"><thead><tr><th>Check</th><th>State</th><th>Detail</th></tr></thead><tbody>';
@@ -817,7 +817,7 @@ function runCli(
 
     if ($has('--help') || $has('-h')) {
         echo <<<TEXT
-        HostScope — config wizard
+        Zogograph — config wizard
 
           php setup.php              ask, then print the config to paste
           php setup.php --write      ask, then write lib/config.php
@@ -836,7 +836,7 @@ function runCli(
     $quiet = $has('--defaults');
 
     say('');
-    say('  HostScope — config wizard');
+    say('  Zogograph — config wizard');
     foreach (setupPreflight($root, $targetPath) as $check) {
         say('  [' . strtoupper($check['state']) . '] ' . $check['label'] . ': ' . $check['detail']);
     }

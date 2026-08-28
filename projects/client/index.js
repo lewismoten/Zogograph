@@ -623,7 +623,7 @@ function showBuildUpdate(build) {
   const required = build.browserRefreshRequired === true;
   const message = required
     ? "A compatibility update is ready. Reload before continuing so this browser uses the matching dashboard."
-    : "A newer HostScope update is available. Reload when you want to see it.";
+    : "A newer Zogograph update is available. Reload when you want to see it.";
   banner.replaceChildren();
   const text = document.createElement("span"); text.textContent = message;
   const reload = document.createElement("button"); reload.type = "button"; reload.textContent = "Reload now";
@@ -3673,7 +3673,7 @@ function renderOnboarding(overview) {
 
   const intro = document.createElement("p");
   intro.className = "muted small";
-  intro.textContent = "HostScope is configured but does not yet have enough local evidence to show its full dashboard.";
+  intro.textContent = "Zogograph is configured but does not yet have enough local evidence to show its full dashboard.";
   const list = document.createElement("ol");
   list.className = "onboarding-list";
   const step = (text, href, label) => {
@@ -32302,9 +32302,9 @@ function showView(view, push = true) {
       || (Boolean(query) && !navSearchMatches(link));
   }
 
-  document.title = `${VIEWS[view].label} · HostScope`;
+  document.title = `${VIEWS[view].label} · Zogograph`;
   const pageTitle = $("pageTitle");
-  if (pageTitle) pageTitle.textContent = `${VIEWS[view].label} — HostScope server monitoring`;
+  if (pageTitle) pageTitle.textContent = `${VIEWS[view].label} — Zogograph infrastructure observation`;
 
   /*
    * The pending strip is per-page, so changing page changes what belongs in it.
