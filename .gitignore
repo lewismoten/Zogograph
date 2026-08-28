@@ -1,9 +1,13 @@
-# Holds the password hash and the mask secret.
-projects/client-hostscope/lib/config.php
+# Preserved local client runtime-data backup during repository extraction.
+# The active ignored copy now lives in the sibling `../client` repository.
+projects/client/data/
 
-# The database, its write-ahead log, and anything else the collector leaves.
+# Root transition database retained during the repository split.
 data/*
 !data/.htaccess
+
+# Legacy paths retained for older local installations until they are migrated.
+projects/client-hostscope/lib/config.php
 projects/client-hostscope/data/*
 !projects/client-hostscope/data/.htaccess
 projects/commercial-services/key-custody/config.php
