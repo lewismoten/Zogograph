@@ -2461,6 +2461,7 @@ button.link.tiny:hover { opacity: 1; }
 .chat-say button { flex: 0 0 auto; align-self: flex-end; }
 
 input.wide-field { width: 100%; max-width: 34em; }
+input.field-invalid { border-color: #d96666; outline: 2px solid rgba(217, 102, 102, .3); }
 
 @media (max-width: 620px) {
   .chat-panel {

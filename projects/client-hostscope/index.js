@@ -11770,12 +11770,32 @@ function renderPathHygiene(data) {
 }
 
 function showPathHygieneRename(row) {
-  const name = document.createElement("input"); name.className = "wide-field"; name.value = String(row.path).split("/").pop().trim();
-  showFormDialog("Rename path", [fieldRow("New name", name, `Current: ${visiblePathName(row.path)}`)], async () => {
+  const name = document.createElement("input"); name.id = "pathHygieneRenameName"; name.className = "wide-field"; name.value = String(row.path).split("/").pop().trim();
+  const feedback = document.createElement("div"); feedback.className = "small";
+  const rowField = fieldRow("New name", name, `Current: ${visiblePathName(row.path)}`);
+  rowField.lastElementChild.appendChild(feedback);
+  showFormDialog("Rename path", [rowField], async () => {
     const result = await post("path-hygiene-rename", { path: row.path, name: name.value });
     $("noteDialog").close(); renderPathHygiene({ enabled: true, last: result.last, can_change: true });
     notice(`Renamed to ${result.result.to}.`, true);
   }, "Rename");
+  const button = $("noteForm").querySelector("button[type=submit]");
+  const validate = () => {
+    const value = name.value;
+    let why = "";
+    if (!value || value === "." || value === ".." || value.includes("/") || value.includes("\0")) why = "Enter one file or directory name, without a slash.";
+    else if (/[\u0000-\u001f\u007f]/.test(value)) why = "Control characters are not allowed.";
+    else if (/^\s|\s$/u.test(value)) why = "Names cannot start or end with whitespace.";
+    else if (value.startsWith("-")) why = "Names cannot start with a dash.";
+    name.setCustomValidity(why);
+    name.classList.toggle("field-invalid", Boolean(why));
+    feedback.className = why ? "small error" : "small muted";
+    feedback.textContent = why || "This name is safe to rename.";
+    button.disabled = Boolean(why);
+  };
+  name.addEventListener("input", validate);
+  validate();
+  name.focus();
 }
 
 async function refreshEncryptionStatus() {
