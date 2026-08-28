@@ -84,6 +84,7 @@ The provisional VPS can route separately deployed projects at these paths:
 | `site/` | `https://zogograph.com/` | product, documentation, account, subscription, and upgrade links |
 | `marketplace/` | `https://market.zogograph.com/` | package review, catalogue, publisher workflow, and purchases |
 | `updates/` | `https://updates.zogograph.com/` | signed manual download and version-check service |
+| `client-remote/` | operator-managed private path | restricted collector or ciphertext-replica setup and signed remote updates |
 | `services/key-custody/` | `https://services.zogograph.com/key-custody/` | optional tenant-isolated wrapped-key custody |
 | `services/replica-relay/` | `https://services.zogograph.com/replica-relay/` | optional ciphertext-only artifact relay |
 | `services/ai-proxy/` | `https://services.zogograph.com/ai-proxy/` | future opt-in model proxy |
@@ -123,6 +124,7 @@ local recovery custody, and no commercial-service dependency.
 | custody enrolled-client subscription readiness | diagnostic only | separate endpoint-restricted launcher, explicit grants, and encrypted package secret references |
 | remote envelope upload, verification, or remote unwrap recovery | not enabled | `client/CUSTODY_ARTIFACT_CONTRACT.md`; requires a dedicated reviewed release gate |
 | ciphertext replica upload/recovery | not enabled | relay package and fleet recovery/retry/deletion contract |
+| signed remote-client release publication and policy-aware staging/apply | usable | offline `updates/bin/sign-remote-release.php`; `client-remote` protected Setup and private updater |
 
 This boundary is intentional. It lets a customer validate a provider and their
 enrollment without quietly turning a configuration test into a key-release or

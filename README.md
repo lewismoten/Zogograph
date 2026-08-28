@@ -6,7 +6,7 @@ records. The deployable projects have been extracted into sibling repositories.
 | project | role |
 | --- | --- |
 | [Client](../client/) | Customer dashboard, collection, alerts, local storage, and fleet control. |
-| [Remote client](../client-remote/) | Future minimal collector, replica, or key-custody deployment. |
+| [Remote client](../client-remote/) | Restricted collector or ciphertext-replica deployment. |
 | [Public site](../site/) | Product, documentation, subscriptions, and upgrades. |
 | [Zogograph Market](../market/) | Reviewed commercial catalog and purchases. |
 | [Updates](../updates/) | Signed downloads and version-check service. |

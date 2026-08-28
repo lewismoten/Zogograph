@@ -94,7 +94,10 @@ general secret store.
   readiness only; it cannot store an envelope, unwrap a key, or access an
   artifact/database path.
 - The update service publishes a signed manifest and validates release-file
-  hashes before a client accepts an update.
+  hashes before a client accepts an update. Remote-client releases use a
+  separately pinned Ed25519 key and `zogograph.remote-release.v1` manifest;
+  their updater stages or atomically applies only a verified ZIP according to
+  the remote node's protected update policy.
 - The replica relay proves it stores ciphertext only. The custody service proves
   it cannot receive customer metric databases or payment-card data. These two
   roles never share a database, key directory, or service credential.
