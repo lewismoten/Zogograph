@@ -50,7 +50,7 @@ as a variable. Do not disable host-key checking in the workflow.
 
 `client-hostscope-deploy.yml` runs on pushes to `develop` and the current
 `feature-dashboard-professional-polish` development branch when they change
-`projects/client-hostscope/`. It can also be run manually from any selected
+`projects/client/`. It can also be run manually from any selected
 ref. Change the `push.branches` list when the development branch changes.
 
 Each run:
