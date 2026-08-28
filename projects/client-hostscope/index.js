@@ -31842,11 +31842,12 @@ const VIEWS = {
   },
   "sys-notes": {
     label: "Forensics",
+    parent: "system",
     refresh: () => refreshNotes(),
   },
   "sys-snapshots": {
     label: "Database copies",
-    parent: "sys-notes",
+    parent: "system",
     refresh: () => refreshNotes(),
   },
   "sys-peers": {
