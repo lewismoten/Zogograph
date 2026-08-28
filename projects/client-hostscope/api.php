@@ -38,6 +38,7 @@ date_default_timezone_set($config['timezone'] ?? 'UTC');
 define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
 require_once __DIR__ . '/lib/db.php';
+require_once __DIR__ . '/lib/api-json.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/access.php';
 require_once __DIR__ . '/lib/mask.php';
@@ -108,12 +109,12 @@ $post = $_SERVER['REQUEST_METHOD'] === 'POST';
 
 try {
     $pdo = db($config);
-    echo json_encode(route($config, $pdo, $action, $post), JSON_UNESCAPED_SLASHES);
+    echo apiJson(route($config, $pdo, $action, $post));
 } catch (ActionRefused $e) {
     // An expected refusal, not a fault: the message is written for the person
     // reading it and is safe to show.
     http_response_code(403);
-    echo json_encode(['error' => $e->getMessage()]);
+    echo apiJson(['error' => $e->getMessage()]);
 }
 // Anything else falls through to the boundary installed above, which logs it
 // with a reference and returns that reference as JSON.
