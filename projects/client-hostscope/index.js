@@ -12067,10 +12067,10 @@ function renderMarketplace(data) {
 
 function showMarketplaceInstallDialog() {
   const manifest = document.createElement("textarea");
-  manifest.className = "wide-field"; manifest.rows = 18; manifest.spellcheck = false;
+  manifest.className = "wide-field"; manifest.rows = 18; manifest.maxLength = 65536; manifest.spellcheck = false;
   manifest.placeholder = '{\n  "id": "uptime-guidance",\n  "version": "1.0.0"\n}';
   showFormDialog("Install local marketplace manifest", [
-    fieldRow("Manifest JSON", manifest, "This saves only a validated JSON manifest in the configured local catalog. It cannot upload or execute code."),
+    fieldRow("Manifest JSON", manifest, "This saves only validated JSON, up to 64 KiB, in the local catalog. It cannot upload or execute code."),
   ], async () => {
     await post("marketplace-install", { manifest: manifest.value });
     await refreshMarketplace();

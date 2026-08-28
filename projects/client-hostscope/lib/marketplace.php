@@ -10,6 +10,13 @@ const MARKETPLACE_MAX_PACKAGES = 200;
 const MARKETPLACE_MAX_MANIFEST_BYTES = 65536;
 const MARKETPLACE_SIGNATURE_ALGORITHM = 'ed25519';
 
+/** Existing installs predating marketplace settings use this private default. */
+function marketplaceDirectory(array $config): string
+{
+    $configured = trim((string)($config['marketplace']['directory'] ?? ''));
+    return $configured !== '' ? $configured : __DIR__ . '/../data/marketplace';
+}
+
 /** @return array{id:string,version:string,name:string,publisher:string,summary:string,license:string,capabilities:list<string>,recommendations:list<array{rule:string,severity:string,reason:string}>,compatibility:array{min_php?:string,max_php?:string,min_schema?:int,max_schema?:int},signature:?array{key_id:string,algorithm:string,value:string}} */
 function marketplaceManifest(array $raw): array
 {
@@ -140,7 +147,7 @@ function marketplaceAlertRecommendations(array $config, PDO $pdo): array
 /** @return array{packages:list<array>,errors:list<string>} */
 function marketplaceCatalog(array $config): array
 {
-    $directory = (string)($config['marketplace']['directory'] ?? '');
+    $directory = marketplaceDirectory($config);
     if ($directory === '' || !is_dir($directory) || !is_readable($directory)) return ['packages' => [], 'errors' => []];
     $packages = []; $errors = [];
     foreach (array_slice(scandir($directory) ?: [], 0, MARKETPLACE_MAX_PACKAGES + 2) as $entry) {
@@ -212,11 +219,11 @@ function marketplaceManifestJson(array $manifest): string
 
 function marketplaceWritableDirectory(array $config): string
 {
-    $directory = rtrim((string)($config['marketplace']['directory'] ?? ''), '/');
-    if ($directory === '' || is_link($directory)) throw new InvalidArgumentException('marketplace directory is unsafe');
+    $directory = rtrim(marketplaceDirectory($config), '/');
+    if (is_link($directory)) throw new InvalidArgumentException('marketplace directory is a symlink; choose a real private directory instead');
     if (!is_dir($directory) && !mkdir($directory, 0750, true)) throw new InvalidArgumentException('marketplace directory cannot be created');
     $directory = realpath($directory);
-    if ($directory === false || !is_dir($directory) || !is_writable($directory)) throw new InvalidArgumentException('marketplace directory is not writable');
+    if ($directory === false || !is_dir($directory) || !is_writable($directory)) throw new InvalidArgumentException('marketplace directory is not writable by PHP');
     return $directory;
 }
 
@@ -267,8 +274,8 @@ function marketplaceInstallManifest(array $config, PDO $pdo, string $json, strin
 function marketplaceHistory(array $config, string $id): array
 {
     if (!preg_match('/^[a-z][a-z0-9-]{1,62}$/', $id)) throw new InvalidArgumentException('package id is invalid');
-    $directory = (string)($config['marketplace']['directory'] ?? '');
-    if ($directory === '' || is_link($directory)) return [];
+    $directory = marketplaceDirectory($config);
+    if (is_link($directory)) return [];
     $history = rtrim($directory, '/') . '/.history/' . $id;
     if (!is_dir($history) || is_link($history) || !is_readable($history)) return [];
     $rows = [];
