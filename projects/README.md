@@ -31,3 +31,6 @@ ownership, customer protection defaults, and launch gates.
 [IMPLEMENTATION_DIRECTION.md](IMPLEMENTATION_DIRECTION.md) is the concise
 current-state handoff: recommended customer defaults, optional package choices,
 configuration authority, and decisions that require later owner review.
+
+[REMOTE_RELEASE_RUNBOOK.md](REMOTE_RELEASE_RUNBOOK.md) documents the signed
+remote-client archive, publication, public-key pinning, and update-policy flow.
