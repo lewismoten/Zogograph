@@ -1,17 +1,17 @@
-# HostScope projects
+# Zogograph projects
 
-This repository is a workspace for independently deployable HostScope
-projects. The complete customer deployment now lives in `client-hostscope/`.
+This repository is a workspace for independently deployable Zogograph
+projects. The complete customer deployment now lives in `client/`.
 
-- `commercial-site/` — public product, documentation, account, subscription,
+- `site/` — public product, documentation, account, subscription,
   and upgrade experience.
-- `commercial-marketplace/` — reviewed commercial catalog and purchase flow.
-- `commercial-updates/` — signed release downloads and version-check API.
-- `commercial-services/` — optional hosted services such as AI proxy and key
+- `marketplace/` — reviewed commercial catalog and purchase flow.
+- `updates/` — signed release downloads and version-check API.
+- `services/` — optional hosted services such as AI proxy and key
   custody; never required by a self-managed client.
-- `client-hostscope/` — full customer deployment: dashboard, collection,
+- `client/` — full customer deployment: dashboard, collection,
   alerts, local storage, and fleet control.
-- `client-hostscope-remote/` — future barebones collector/replica deployment,
+- `client-remote/` — future barebones collector/replica deployment,
   separate from the full dashboard client.
 
 Each project owns its deployment boundary, credentials, release process, and

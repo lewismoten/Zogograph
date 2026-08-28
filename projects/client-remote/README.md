@@ -1,6 +1,6 @@
-# Remote HostScope client
+# Zogograph remote client
 
-This future minimal deployment is for a machine that supplies collection,
+This future minimal Zogograph deployment is for a machine that supplies collection,
 ciphertext replication, or key-custody duties without exposing the full
 dashboard and administration surface.
 

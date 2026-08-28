@@ -1,4 +1,4 @@
-# Commercial updates
+# Zogograph updates
 
 This project provides manual release downloads, signed release metadata, and a
 minimal version-check API. Client installations must continue to operate when

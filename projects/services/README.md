@@ -1,6 +1,6 @@
-# Commercial services
+# Zogograph services
 
-Optional HostScope-operated services live here. They are separate from the
+Optional Zogograph-operated services live here. They are separate from the
 public site and are never required for local collection, dashboard access, or
 local encrypted copies.
 

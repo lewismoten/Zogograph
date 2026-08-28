@@ -1,6 +1,6 @@
-# Commercial marketplace
+# Zogograph Market
 
-The commercial marketplace publishes reviewed packages and service plans. It is
+Zogograph Market publishes reviewed packages and service plans. It is
 distinct from the customer's local marketplace catalog: local packages remain
 administrator-installed and do not require a commercial account.
 
