@@ -1,6 +1,0 @@
-.env
-.DS_Store
-dist/
-**/data/*
-!**/data/.htaccess
-**/config.php

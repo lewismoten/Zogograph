@@ -1,19 +1,19 @@
 # Zogograph projects
 
-This repository is a workspace for independently deployable Zogograph
-projects. The complete customer deployment now lives in `client/`; every
-project has its own manifest, lockfile, environment example, build/test
-commands, deployment workflow, and deployment documentation.
+This directory retains shared Zogograph planning and migration records. The
+deployable projects now live in sibling repositories; each owns its manifest,
+lockfile, environment example, build/test commands, deployment workflow, and
+deployment documentation.
 
-- `site/` — public product, documentation, account, subscription,
+- `../site/` — public product, documentation, account, subscription,
   and upgrade experience.
-- `marketplace/` — reviewed commercial catalog and purchase flow.
-- `updates/` — signed release downloads and version-check API.
-- `services/` — optional hosted services such as AI proxy and key
+- `../market/` — reviewed commercial catalog and purchase flow.
+- `../updates/` — signed release downloads and version-check API.
+- `../services/` — optional hosted services such as AI proxy and key
   custody; never required by a self-managed client.
-- `client/` — full customer deployment: dashboard, collection,
+- `../client/` — full customer deployment: dashboard, collection,
   alerts, local storage, and fleet control.
-- `client-remote/` — future barebones collector/replica deployment,
+- `../client-remote/` — future barebones collector/replica deployment,
   separate from the full dashboard client.
 
 Each project owns its deployment boundary, credentials, release process, and

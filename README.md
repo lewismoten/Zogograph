@@ -1,16 +1,16 @@
 # Zogograph workspace
 
-This repository is being separated into independently deployable Zogograph
-projects.
+This repository contains Zogograph rebrand, migration, and shared-planning
+records. The deployable projects have been extracted into sibling repositories.
 
 | project | role |
 | --- | --- |
-| [Client](projects/client/) | Customer dashboard, collection, alerts, local storage, and fleet control. |
-| [Remote client](projects/client-remote/) | Future minimal collector, replica, or key-custody deployment. |
-| [Public site](projects/site/) | Product, documentation, subscriptions, and upgrades. |
-| [Zogograph Market](projects/marketplace/) | Reviewed commercial catalog and purchases. |
-| [Updates](projects/updates/) | Signed downloads and version-check service. |
-| [Services](projects/services/) | Optional AI proxy, key custody, and ciphertext replica services. |
+| [Client](../client/) | Customer dashboard, collection, alerts, local storage, and fleet control. |
+| [Remote client](../client-remote/) | Future minimal collector, replica, or key-custody deployment. |
+| [Public site](../site/) | Product, documentation, subscriptions, and upgrades. |
+| [Zogograph Market](../market/) | Reviewed commercial catalog and purchases. |
+| [Updates](../updates/) | Signed downloads and version-check service. |
+| [Services](../services/) | Optional AI proxy, key custody, and ciphertext replica services. |
 
 Each project owns its own deployment and credentials. No client installation
 depends on a commercial service by default.
