@@ -38,7 +38,11 @@ jobs:
           for setting in SNAPSHOT_ID DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_KNOWN_HOSTS SNAPSHOT_PATH DEPLOY_SSH_PRIVATE_KEY; do
             test -n "${!setting}" || { echo "Missing required restore setting: $setting"; exit 1; }
           done
-          case "$SNAPSHOT_ID" in *[!A-Za-z0-9._-]*|'') echo 'Invalid snapshot ID.' >&2; exit 1;; esac
+          for setting in DEPLOY_PATH SNAPSHOT_PATH; do
+            case "${!setting}" in /*) ;; *) echo "$setting must be an absolute path." >&2; exit 1;; esac
+            case "${!setting}" in *[!A-Za-z0-9._/-]*) echo "$setting contains an unsafe character." >&2; exit 1;; esac
+          done
+          case "$SNAPSHOT_ID" in *[!A-Za-z0-9._-]*|''|.|..) echo 'Invalid snapshot ID.' >&2; exit 1;; esac
 
       - name: Install SSH key
         shell: bash

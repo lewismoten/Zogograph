@@ -40,6 +40,10 @@ jobs:
           for setting in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_URL DEPLOY_KNOWN_HOSTS SNAPSHOT_PATH DEPLOY_SSH_PRIVATE_KEY; do
             test -n "${!setting}" || { echo "Missing required deployment setting: $setting"; exit 1; }
           done
+          for setting in DEPLOY_PATH SNAPSHOT_PATH; do
+            case "${!setting}" in /*) ;; *) echo "$setting must be an absolute path." >&2; exit 1;; esac
+            case "${!setting}" in *[!A-Za-z0-9._/-]*) echo "$setting contains an unsafe character." >&2; exit 1;; esac
+          done
           test -d projects/client-hostscope
 
       - name: Assemble release

@@ -28,6 +28,13 @@ The deployment user needs read/write access to both deployment and snapshot
 paths, and the server needs `bash`, `rsync`, and `sqlite3`. Do not make either
 the deployment path or snapshot path world-readable.
 
+`DEPLOY_PATH` and `SNAPSHOT_PATH` must be existing absolute paths using only
+letters, digits, `.`, `_`, `-`, and `/`. This intentionally rejects spaces,
+quotes, line feeds, and relative paths. In particular, re-enter
+`SNAPSHOT_PATH` manually if it was pasted from a source that might have added a
+trailing line feed. The paths are resolved before use, and snapshots may not be
+inside the deployment path, including through a symlink.
+
 Get the known-host entry from a trusted administrative connection, for example:
 
 ```sh
@@ -61,6 +68,14 @@ output. Historical files below `data/migration-backups/` are deliberately not
 opened as live databases. The workflow only finds live databases below `data/`;
 if a configuration points at a database outside the deploy path, back that
 store up separately.
+
+Snapshots are first made in a private sibling staging directory and renamed
+only after every file copy, database backup, and manifest write succeeds. A
+failed run therefore leaves no usable snapshot and can retry the same ID. Each
+completed snapshot contains `MANIFEST.json`, `SNAPSHOT_ID`, and separate
+SHA-256 manifests for application and database files. Restore verifies those
+hashes before it changes the live site; a changed or incomplete snapshot is
+refused.
 
 ## Restoring a snapshot
 
