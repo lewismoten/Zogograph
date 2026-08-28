@@ -56,6 +56,7 @@ const IDLE_POLL_MS = 30000;
 const LIVE_POLL_MS = 10000;
 /** While a scan is running, so its finishing is noticed promptly. */
 const SCAN_POLL_MS = 5000;
+const BUILD_POLL_MS = 60000;
 
 /*
  * How soon to look again when something is expected and has not arrived.
@@ -117,6 +118,8 @@ const state = {
   hostCharted: [],
   busy: false,
 };
+
+const buildState = { current: null, announced: null, checking: false };
 
 const $ = id => document.getElementById(id);
 const escapeRegex = text => String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -606,6 +609,53 @@ function clearStaleNotice() {
     return;
   }
   notice("");
+}
+
+/* ----------------------------------------------------------- application -- */
+
+function buildIdentity(build) {
+  return [build?.commit, build?.runId, build?.createdAt].filter(Boolean).join(":");
+}
+
+function showBuildUpdate(build) {
+  const banner = $("updateBanner");
+  if (!banner) return;
+  const required = build.browserRefreshRequired === true;
+  const message = required
+    ? "A compatibility update is ready. Reload before continuing so this browser uses the matching dashboard."
+    : "A newer HostScope update is available. Reload when you want to see it.";
+  banner.replaceChildren();
+  const text = document.createElement("span"); text.textContent = message;
+  const reload = document.createElement("button"); reload.type = "button"; reload.textContent = "Reload now";
+  reload.addEventListener("click", () => location.reload());
+  banner.append(text, reload);
+  banner.hidden = false;
+}
+
+async function checkForBuildUpdate() {
+  if (document.hidden || buildState.checking) return;
+  buildState.checking = true;
+  try {
+    const response = await fetch(`./build.json?at=${Date.now()}`, {
+      cache: "no-store", credentials: "same-origin",
+    });
+    if (!response.ok) return;
+    const build = await response.json();
+    const identity = buildIdentity(build);
+    if (!identity) return;
+    if (buildState.current === null) {
+      buildState.current = identity;
+      return;
+    }
+    if (buildState.current !== identity && buildState.announced !== identity) {
+      buildState.announced = identity;
+      showBuildUpdate(build);
+    }
+  } catch {
+    // Deployment metadata is optional and must never interrupt monitoring.
+  } finally {
+    buildState.checking = false;
+  }
 }
 
 /* ------------------------------------------------------------------ cards -- */
@@ -33556,7 +33606,10 @@ window.addEventListener("resize", () => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) refreshAll();
+  if (!document.hidden) {
+    refreshAll();
+    checkForBuildUpdate();
+  }
 });
 
 /* ------------------------------------------------------------------ start -- */
@@ -33978,6 +34031,8 @@ installChatDrag();
 applyRoute();
 writeRoute(true);
 schedule();
+checkForBuildUpdate();
+setInterval(checkForBuildUpdate, BUILD_POLL_MS);
 
 /*
  * The dials advance themselves from here on.

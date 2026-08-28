@@ -17,6 +17,7 @@ Repository **variables**:
 | `DEPLOY_URL` | public HTTPS URL for the install, without a trailing slash |
 | `DEPLOY_KNOWN_HOSTS` | exact `known_hosts` line for the server's SSH host key |
 | `SNAPSHOT_PATH` | absolute private path for snapshots, outside the web root and deploy path |
+| `CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED` | optional `true` when this release requires open browsers to reload; otherwise omit or use `false` |
 
 Repository **secret**:
 
@@ -61,6 +62,13 @@ Each run:
 4. uses `rsync --delete` for application files while explicitly preserving
    `data/`, `lib/config.php`, and `.well-known/` on the server; and
 5. fetches `build.json` over HTTPS to confirm the deployed commit.
+
+Open dashboards check `build.json` once a minute. A new ordinary build shows a
+non-disruptive **Reload now** message. Set
+`CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED=true` for a deployment that changes
+the browser/server contract; the same prompt then clearly says the reload is
+required before continuing. The browser does not silently discard an in-progress
+form or other operator work.
 
 SQLite files below `data/` are captured with SQLite’s online `.backup` command,
 not copied together with their WAL files. Snapshot IDs are printed in the job

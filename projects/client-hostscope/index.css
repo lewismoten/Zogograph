@@ -335,6 +335,20 @@ tr.clickable:hover { background: #202020; }
 }
 #notice.ok { background: #1c4b2a; }
 
+#updateBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #173a55;
+  border: 1px solid #39779e;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+#updateBanner[hidden] { display: none; }
+#updateBanner button { white-space: nowrap; }
+
 #alertBanner {
   border: 1px solid #7a5a30;
   background: #2b2114;

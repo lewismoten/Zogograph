@@ -27,6 +27,7 @@ jobs:
       DEPLOY_URL: ${{ vars.DEPLOY_URL }}
       DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
       SNAPSHOT_PATH: ${{ vars.SNAPSHOT_PATH }}
+      CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED: ${{ vars.CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED }}
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
 
     steps:
@@ -69,6 +70,7 @@ jobs:
           release=release/client-hostscope
           created_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           version="$(git describe --tags --always)"
+          case "${CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED:-}" in ''|false) browser_refresh_required=false;; true) browser_refresh_required=true;; *) echo 'CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED must be true or false.' >&2; exit 1;; esac
           cat > "$release/build.json" <<EOF
           {
             "commit": "${GITHUB_SHA}",
@@ -79,7 +81,8 @@ jobs:
             "version": "${version}",
             "repo": "${GITHUB_REPOSITORY}",
             "application": "HostScope",
-            "part": "client-hostscope"
+            "part": "client-hostscope",
+            "browserRefreshRequired": ${browser_refresh_required}
           }
           EOF
           cat "$release/build.json"
