@@ -17,7 +17,12 @@ if [ -n "$(find "$site" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
     command -v sqlite3 >/dev/null || { echo 'sqlite3 is required on the deployment server for safe snapshots.' >&2; exit 1; }
     # Some shared-host SSH jails do not expose /dev/fd, so avoid Bash process
     # substitution here. Deployment paths must not contain newline characters.
-    find "$site/data" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print |
+    # Migration backups are already historical database copies. They are not
+    # live stores and can be deliberately unreadable to the web deployment
+    # user, so do not try to open each one as a current SQLite database.
+    find "$site/data" \
+      -path "$site/data/migration-backups" -prune -o \
+      -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print |
     while IFS= read -r database; do
       relative=${database#"$site"/}
       destination="$snapshot/databases/$relative"

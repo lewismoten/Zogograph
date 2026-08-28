@@ -57,8 +57,10 @@ Each run:
 
 SQLite files below `data/` are captured with SQLite’s online `.backup` command,
 not copied together with their WAL files. Snapshot IDs are printed in the job
-output. The workflow only finds databases below `data/`; if a configuration
-points at a database outside the deploy path, back that store up separately.
+output. Historical files below `data/migration-backups/` are deliberately not
+opened as live databases. The workflow only finds live databases below `data/`;
+if a configuration points at a database outside the deploy path, back that
+store up separately.
 
 ## Restoring a snapshot
 
