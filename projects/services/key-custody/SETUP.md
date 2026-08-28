@@ -1,7 +1,7 @@
-# Set up the HostScope key-custody service
+# Set up the Zogograph key-custody service
 
 This is an optional remote key-hosting service. A customer does not need it to
-use HostScope’s local encrypted copies. Deploy it only when remote key custody
+use Zogograph’s local encrypted copies. Deploy it only when remote key custody
 solves a real recovery or separation-of-duties need.
 
 The recommended first deployment is one PHP service behind HTTPS, using its
@@ -16,11 +16,11 @@ writable or secret material outside the web root:
 
 | item | recommended location | rule |
 | --- | --- | --- |
-| service code | `/srv/hostscope/projects/commercial-services/key-custody` | deployed read-only by the PHP service account where practical |
-| SQLite metadata | `/var/lib/hostscope-key-custody/key-custody.db` | absolute, non-symlinked private directory; never serve it over HTTP |
-| service master key | `/secure/hostscope-key-custody/master.key` | absolute regular `0600` file, outside web root and normal metadata backup |
-| metadata backups | `/secure/hostscope-key-custody/backups/` | private, separately retained; test alongside the master-key recovery copy |
-| optional billing token | `/secure/hostscope-key-custody/billing.token` | separate `0600` file; its authority is subscription state only |
+| service code | `/srv/zogograph/services/key-custody` | deployed read-only by the PHP service account where practical |
+| SQLite metadata | `/var/lib/zogograph-key-custody/key-custody.db` | absolute, non-symlinked private directory; never serve it over HTTP |
+| service master key | `/secure/zogograph-key-custody/master.key` | absolute regular `0600` file, outside web root and normal metadata backup |
+| metadata backups | `/secure/zogograph-key-custody/backups/` | private, separately retained; test alongside the master-key recovery copy |
+| optional billing token | `/secure/zogograph-key-custody/billing.token` | separate `0600` file; its authority is subscription state only |
 
 The service refuses a relative, symlinked, or web-served SQLite database path.
 Private filesystem permissions reduce accidental disclosure, but they are not
@@ -33,7 +33,7 @@ Copy `config.sample.php` to the unserved `config.php`, then create the first
 master key:
 
 ```bash
-php scripts/master-key.php /secure/hostscope-key-custody/master.key
+php scripts/master-key.php /secure/zogograph-key-custody/master.key
 ```
 
 Set the resulting absolute path as `master_key_file` in `config.php`. Keep one
@@ -49,7 +49,7 @@ may remain blank for a no-cost, self-operated service.
 
 Add [`deploy/nginx.conf.example`](deploy/nginx.conf.example) to the HTTPS
 server block for the provisional
-`https://hostscope.clewismoten.com/services/key-custody/` path, or to a future
+`https://services.zogograph.com/key-custody/` path, or to a future
 dedicated custody hostname. It forwards the `Authorization` header, marks PHP
 requests as HTTPS, caps bodies at 2 MiB, and denies direct access to code,
 configuration, data, scripts, and tests.
@@ -62,7 +62,7 @@ Verify the public, credential-free health endpoint before provisioning:
 
 ```bash
 php scripts/manage-remote.php \
-  --base-url https://hostscope.clewismoten.com/services/key-custody \
+  --base-url https://services.zogograph.com/key-custody \
   health
 ```
 
@@ -82,11 +82,11 @@ private location before closing the terminal:
 
 | value | purpose | never give it to |
 | --- | --- | --- |
-| management token | customer account, key policy, enrollment, audit, and subscription requests | HostScope collector packages or billing control plane |
-| enrolled-client token and Ed25519 signing key | one named HostScope client deployment | browser settings, normal config, management console, or another client |
+| management token | customer account, key policy, enrollment, audit, and subscription requests | Zogograph collector packages or billing control plane |
+| enrolled-client token and Ed25519 signing key | one named Zogograph client deployment | browser settings, normal config, management console, or another client |
 | service master key | service-side custody wrapping-key protection | customers, client packages, marketplace, billing, or replica services |
 
-For a HostScope client, first save the service URL and tenant ID, run its
+For a Zogograph client, first save the service URL and tenant ID, run its
 credential-free endpoint test, then create two encrypted package-secret
 references for the enrolled-client pair. The client package accepts only those
 opaque references; it does not accept raw credentials in ordinary settings.
@@ -94,12 +94,12 @@ opaque references; it does not accept raw credentials in ordinary settings.
 ## 5. Manage keys and subscriptions safely
 
 Put a management token in an absolute owner-only file, for example
-`/secure/hostscope-key-custody/management.token`, then use the management CLI:
+`/secure/zogograph-key-custody/management.token`, then use the management CLI:
 
 ```bash
 php scripts/manage-remote.php \
-  --base-url https://hostscope.clewismoten.com/services/key-custody \
-  --token-file /secure/hostscope-key-custody/management.token \
+  --base-url https://services.zogograph.com/key-custody \
+  --token-file /secure/zogograph-key-custody/management.token \
   create-key primary 300
 ```
 
@@ -121,7 +121,7 @@ Create a consistent metadata backup regularly:
 
 ```bash
 php scripts/backup-metadata.php \
-  /secure/hostscope-key-custody/backups/metadata-$(date +%F).db
+  /secure/zogograph-key-custody/backups/metadata-$(date +%F).db
 ```
 
 Record the printed SHA-256 and test restoration using a non-production copy of

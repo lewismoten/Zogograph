@@ -35,7 +35,7 @@ and has passed its specific release gate:
 - self-managed fleet custody and ciphertext replicas. Replica endpoints store
   ciphertext only; custody endpoints authorize envelope unwraps and never
   receive customer metric databases.
-- third-party KMS/HSM adapters and the optional HostScope key-custody service.
+- third-party KMS/HSM adapters and the optional Zogograph key-custody service.
   Each is a provider package, not a core requirement.
 - MySQL/MariaDB storage and Redis cache/queue integrations. Neither is an
   encryption feature, and Redis is not a default durable metric store.
@@ -61,11 +61,11 @@ prerequisites; neither is a live-encryption or provider-connection claim.
 | defaults, labels, supported packages, policy choices | authenticated setup/product settings database and Protection UI | editing client source or a release manifest |
 | package-specific schedule, retention, provider endpoint, and replica policy | that package's schema-validated settings and private package database | adding secrets to `lib/config.php` |
 | enrollment credentials and provider secrets | encrypted package secret references | browser storage, URLs, logs, or normal configuration values |
-| commercial plans, prices, domains, service endpoints, and support matrix | commercial-site/marketplace administration database | embedding a provisional domain in a protocol or artifact identifier |
+| commercial plans, prices, domains, service endpoints, and support matrix | site/marketplace administration database | embedding a provisional domain in a protocol or artifact identifier |
 | custody entitlement | the separate commercial billing control plane | giving billing credentials custody or client-unwrapping permission |
 
 Until the settings migration is complete, the small bootstrap configuration is
-an exception: it contains only the paths required to open HostScope. Keep it
+an exception: it contains only the paths required to open Zogograph. Keep it
 private and seal it as an artifact; do not add long-lived commercial,
 management, or billing credentials there.
 

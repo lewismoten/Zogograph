@@ -8678,7 +8678,7 @@ function speakAssistantReply(session) {
   if (!last || voiceState.spoken.has(last.id)) return;
   voiceState.spoken.add(last.id);
   const utterance = configureUtterance(new SpeechSynthesisUtterance(String(last.content || "").slice(0, 6000)));
-  /* Do not let the microphone transcribe HostScope's own reply. Stop rather
+  /* Do not let the microphone transcribe Zogograph's own reply. Stop rather
    * than merely ignoring results: recognition engines can queue audio and
    * submit it after speech has finished. */
   const resumeListening = voiceState.listen && voiceState.listenMode === "always";
@@ -11893,7 +11893,7 @@ function packageRuntimeActions(row, canChange) {
     const operation = row.id === "sqlcipher-encrypted-sqlite" ? "sqlcipher_preflight" : row.id === "hostscope-key-custody" ? "custody_endpoint_probe" : "capability";
     probe.textContent = operation === "sqlcipher_preflight" ? "Run SQLCipher preflight" : operation === "custody_endpoint_probe" ? "Test custody endpoint" : "Run isolated probe";
     probe.addEventListener("click", async () => {
-      const inputNote = operation === "custody_endpoint_probe" ? "It uses only the saved endpoint and optional public TLS pin; it does not send an enrollment credential or key." : "It receives no HostScope settings, secrets, or live database path.";
+      const inputNote = operation === "custody_endpoint_probe" ? "It uses only the saved endpoint and optional public TLS pin; it does not send an enrollment credential or key." : "It receives no Zogograph settings, secrets, or live database path.";
       if (!(await confirmDialog(`Run the isolated ${operation} probe for ${row.id}?\n\n${inputNote} It does not enable the package or activate protection.`, "Run isolated probe"))) return;
       try {
         const result = await post("package-runtime-probe", { id: row.id, operation });
@@ -11914,7 +11914,7 @@ function packageRuntimeActions(row, canChange) {
   if (row.id === "hostscope-key-custody" && ["key_provider", "network_client"].every(capability => row.grants.includes(capability))) {
     const enrollment = document.createElement("button"); enrollment.className = "link"; enrollment.textContent = "Check enrolled credential";
     enrollment.addEventListener("click", async () => {
-      if (!(await confirmDialog("Send the two encrypted enrollment credentials once to the deployment-configured, endpoint-restricted sandbox?\n\nIt will only read custody subscription readiness. It cannot create an envelope, unwrap a key, or access a HostScope database.", "Check enrolled custody credential"))) return;
+      if (!(await confirmDialog("Send the two encrypted enrollment credentials once to the deployment-configured, endpoint-restricted sandbox?\n\nIt will only read custody subscription readiness. It cannot create an envelope, unwrap a key, or access a Zogograph database.", "Check enrolled custody credential"))) return;
       try { const result = await post("package-runtime-custody-enrollment-check", {}); showListDialog("Custody enrollment check", [factGrid([["State", result.result.state], ["Result", result.result.reason], ["Safety boundary", result.warning]])]); await refreshPackageRuntime(); }
       catch (error) { notice(String(error.message || error)); }
     });
@@ -11997,7 +11997,7 @@ async function showPackageRuntimeSecrets(row) {
     items.push(fieldRow("Unused reference to delete", select, "Only unused references can be deleted. The secret value is never displayed."));
     showFormDialog(`${row.id} secrets`, items, async () => {
       const reference = select.value;
-      if (!(await confirmDialog("Delete this unused encrypted secret? Its value cannot be recovered from HostScope after deletion.", "Delete unused secret"))) return;
+      if (!(await confirmDialog("Delete this unused encrypted secret? Its value cannot be recovered from Zogograph after deletion.", "Delete unused secret"))) return;
       await post("package-runtime-secret-delete", { id: row.id, reference });
       notice("Unused package secret deleted.", true);
     }, "Delete selected secret");
@@ -12046,9 +12046,9 @@ function renderEncryptionStatus(data) {
   if (data.setup_configuration?.state !== "ok") parts.push(note(`Setup configuration: ${data.setup_configuration?.detail || "status unavailable"}`));
   if (data.sqlcipher) parts.push(note(`Live SQLCipher option: ${data.sqlcipher.detail}`));
   if (data.mode === "none") {
-    parts.push(note("Protection is off. Live SQLite databases and ordinary copies remain unencrypted unless your host protects their storage separately. Start with the setup wizard's Encryption section; HostScope will not generate, upload, or store a private key from this page."));
+    parts.push(note("Protection is off. Live SQLite databases and ordinary copies remain unencrypted unless your host protects their storage separately. Start with the setup wizard's Encryption section; Zogograph will not generate, upload, or store a private key from this page."));
   } else if (data.mode === "operator_managed_volume") {
-    parts.push(note("HostScope records your host/VM protection policy but cannot verify it. The displayed evidence is your declaration, not a verified encrypted copy. Confirm that every selected database, SQLite WAL/SHM companion, configuration file, log, export, and backup destination is covered."));
+    parts.push(note("Zogograph records your host/VM protection policy but cannot verify it. The displayed evidence is your declaration, not a verified encrypted copy. Confirm that every selected database, SQLite WAL/SHM companion, configuration file, log, export, and backup destination is covered."));
   } else if (data.mode === "sealed_copies_local") {
     parts.push(note("Verified encrypted copies protect backup artifacts, not the running SQLite database. Run `php cron.php --seal` and then `php cron.php --recovery-drill` from the server after setup. The drill decrypts and validates current copies without touching live data; schedule seals separately. Recovery requires the private key outside the web root and an explicit CLI restore."));
     parts.push(note("Bootstrap configuration recovery is deliberately CLI-only: `scripts/restore-config.php` authenticates and parses the sealed PHP without executing it, atomically replaces `lib/config.php`, and leaves the prior configuration as a sealed rollback artifact. Test the recovered settings before deleting that artifact."));
@@ -12089,7 +12089,7 @@ function renderEncryptionStatus(data) {
       actions.append(seal, drill, remote, remoteDrill); parts.push(actions);
     }
   } else {
-    parts.push(note("The selected protection mode is not available in this HostScope release. Keep the current data and recovery key safe while choosing a supported package or local mode."));
+    parts.push(note("The selected protection mode is not available in this Zogograph release. Keep the current data and recovery key safe while choosing a supported package or local mode."));
   }
   const artifacts = data.artifacts?.length ? data.artifacts : null;
   if (artifacts) {
@@ -12119,7 +12119,7 @@ function showCustodyEnvelopeDialog(candidates) {
     select.appendChild(option);
   }
   showFormDialog("Add remote custody recovery envelope", [
-    fieldRow("Verified local artifact", select, "HostScope will recheck this local artifact’s ciphertext hash before doing anything remotely."),
+    fieldRow("Verified local artifact", select, "Zogograph will recheck this local artifact’s ciphertext hash before doing anything remotely."),
     note("This sends only the selected artifact’s fresh in-memory data key, the configured custody key identifier, and the enrolled-client credentials to the separately configured one-shot sandbox. The sandbox seals the key for custody and returns only a receipt digest. It never receives a database path, database bytes, plaintext, local recovery key, billing credential, or management token. Local recovery remains required."),
   ], async () => {
     if (!(await confirmDialog("Add an optional remote key-recovery envelope for this verified local artifact?\n\nThis is an extra recovery path, not a replacement for your local recovery key or a database upload. The configured custody service will receive a sealed data-key envelope only.", "Store remote recovery envelope"))) return;
@@ -12137,7 +12137,7 @@ function showCustodyRecoveryDrillDialog(candidates) {
     select.appendChild(option);
   }
   showFormDialog("Remote custody recovery drill", [
-    fieldRow("Artifact with stored remote envelope", select, "The selected artifact must already have a stored custody envelope. HostScope will recheck its ciphertext before requesting a temporary key release."),
+    fieldRow("Artifact with stored remote envelope", select, "The selected artifact must already have a stored custody envelope. Zogograph will recheck its ciphertext before requesting a temporary key release."),
     note("The custody key is returned only through the isolated worker’s private process pipe, used in memory to authenticate a temporary recovered file, then discarded. The temporary file is removed. Neither key nor plaintext appears in this browser."),
   ], async () => {
     if (!(await confirmDialog("Run a non-destructive remote custody recovery drill for this artifact?\n\nThis asks custody to release one temporary data key solely to authenticate the existing sealed copy. The key and temporary plaintext are discarded.", "Run remote recovery drill"))) return;
@@ -12260,7 +12260,7 @@ function renderPeers(data) {
   add.disabled = !data.writable || capacity.remaining === 0;
   add.title = capacity.remaining === 0
     ? "This edition has reached its remote-host limit. Remove or replace a server to free a slot."
-    : "Add a trusted remote HostScope server.";
+    : "Add a trusted remote Zogograph server.";
   add.addEventListener("click", () => showPeerDialog());
   parts.push(add);
 
@@ -12340,7 +12340,7 @@ function renderPeers(data) {
               const result = await post("peer-transport-rotate", { name: row.name });
               renderPeers(result);
               showListDialog(`Pair ${row.label}`, [
-                note("The previous credential is revoked. Copy this complete replacement into the remote HostScope configuration within 24 hours; it activates on first delivery and is not shown again."),
+                note("The previous credential is revoked. Copy this complete replacement into the remote Zogograph configuration within 24 hours; it activates on first delivery and is not shown again."),
                 paste(result.transport_enrollment),
               ]);
               notice("Remote-delivery credential rotated.", true);
@@ -12403,13 +12403,13 @@ function showPeerDialog(row = null) {
     renderPeers(result);
     if (result.transport_secret) {
       showListDialog(`Pair ${label.value || name.value}`, [
-        note("Copy this complete one-time pairing fragment into the remote HostScope configuration within 24 hours. It activates on first delivery and is not shown again."),
+        note("Copy this complete one-time pairing fragment into the remote Zogograph configuration within 24 hours. It activates on first delivery and is not shown again."),
         paste(result.transport_enrollment),
       ]);
     }
     notice(result.rows.find(item => item.name === name.value)?.has_oidc
       ? "Trusted server saved. Test OIDC discovery before using the read connection."
-      : "Remote delivery peer saved. Copy its one-time pairing fragment to the remote HostScope.", true);
+      : "Remote delivery peer saved. Copy its one-time pairing fragment to the remote Zogograph.", true);
   });
 }
 
@@ -15513,7 +15513,7 @@ function openDisplayPreferences() {
   const pitch = document.createElement("input"); pitch.type = "range"; pitch.min = "0"; pitch.max = "2"; pitch.step = ".1"; pitch.value = String(current.pitch);
   const volume = document.createElement("input"); volume.type = "range"; volume.min = "0"; volume.max = "1"; volume.step = ".1"; volume.value = String(current.volume);
   const test = document.createElement("button"); test.type = "button"; test.className = "link"; test.textContent = "Test voice";
-  test.addEventListener("click", () => { const utterance = configureUtterance(new SpeechSynthesisUtterance("HostScope voice settings are ready.")); const selected = (window.speechSynthesis?.getVoices() || []).find(item => item.voiceURI === voice.value); if (selected) utterance.voice = selected; utterance.rate = Number(rate.value); utterance.pitch = Number(pitch.value); utterance.volume = Number(volume.value); window.speechSynthesis?.cancel(); window.speechSynthesis?.speak(utterance); });
+  test.addEventListener("click", () => { const utterance = configureUtterance(new SpeechSynthesisUtterance("Zogograph voice settings are ready.")); const selected = (window.speechSynthesis?.getVoices() || []).find(item => item.voiceURI === voice.value); if (selected) utterance.voice = selected; utterance.rate = Number(rate.value); utterance.pitch = Number(pitch.value); utterance.volume = Number(volume.value); window.speechSynthesis?.cancel(); window.speechSynthesis?.speak(utterance); });
   showFormDialog("Display preferences", [
     fieldRow("Text size", textSize, "Applies to this browser only."),
     fieldRow("Motion", motion, "Reduce motion disables decorative animation and transitions in this browser."),
@@ -32089,7 +32089,7 @@ const HELP_PROFILES = {
     ],
   },
   system: {
-    purpose: "Shows how HostScope itself is configured, scheduled, and retaining the data it collects.",
+    purpose: "Shows how Zogograph itself is configured, scheduled, and retaining the data it collects.",
     useful: "Use it to verify that the monitor is healthy before drawing conclusions from its measurements or changing its configuration.",
     commands: ["php health.php", "php cron.php --vitals --quiet", "crontab -l"],
     links: [
@@ -33655,7 +33655,7 @@ $("displayPreferences").addEventListener("click", openDisplayPreferences);
 $("totpRecoveryCodes").addEventListener("click", async () => {
   if (!state.signedIn || !state.access?.write) return;
   const code = await askTextDialog("Create recovery codes", "Current verification code", "",
-    "This replaces every previous recovery code. Store the new one-time codes offline; HostScope will show them only once.");
+    "This replaces every previous recovery code. Store the new one-time codes offline; Zogograph will show them only once.");
   if (code === null) return;
   try {
     const result = await post("totp-recovery-codes", { totp: code });
@@ -33663,7 +33663,7 @@ $("totpRecoveryCodes").addEventListener("click", async () => {
     list.className = "terminal-editor-diff";
     list.textContent = result.codes.join("\n");
     showListDialog("Save these recovery codes", [list],
-      "Each code works once in place of the authenticator code. This is the only time HostScope can display them; store them offline and do not put them in a password manager shared with your sign-in password.");
+      "Each code works once in place of the authenticator code. This is the only time Zogograph can display them; store them offline and do not put them in a password manager shared with your sign-in password.");
     notice("Eight new one-time recovery codes are ready to save.", true);
   } catch (error) {
     notice(String(error.message || error));

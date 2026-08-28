@@ -5,6 +5,7 @@
   "description": "The public Zogograph website.",
   "scripts": {
     "build": "sh build.sh",
-    "test": "sh test.sh"
+    "test": "sh test.sh",
+    "start": "php -S 127.0.0.1:4177 -t dist"
   }
 }

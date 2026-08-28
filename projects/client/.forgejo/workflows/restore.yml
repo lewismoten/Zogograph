@@ -1,4 +1,4 @@
-name: Restore Client HostScope Snapshot
+name: Restore Zogograph Client Snapshot
 
 on:
   workflow_dispatch:
@@ -8,17 +8,17 @@ on:
         required: true
         type: string
       confirmation:
-        description: Type restore-hostscope-snapshot to confirm
+        description: Type restore-zogograph-snapshot to confirm
         required: true
         type: string
 
 concurrency:
-  group: client-hostscope-lifecycle
+  group: zogograph-client-lifecycle
   cancel-in-progress: false
 
 jobs:
   restore:
-    if: ${{ github.event.inputs.confirmation == 'restore-hostscope-snapshot' }}
+    if: ${{ github.event.inputs.confirmation == 'restore-zogograph-snapshot' }}
     runs-on: ubuntu-latest
     env:
       SNAPSHOT_ID: ${{ github.event.inputs.snapshot_id }}

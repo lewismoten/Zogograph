@@ -35,9 +35,9 @@ if ($command === 'keygen') {
     $publisher = trim((string)($options['--publisher'] ?? ''));
     if (isset($options['--stdin']) || !preg_match('/^[a-z][a-z0-9-]{1,62}$/', $keyId) || $publisher === '') packageSignUsage();
     $pair = sodium_crypto_sign_keypair();
-    fwrite(STDOUT, "Configure this publisher key in HostScope package trust settings:\n"
+    fwrite(STDOUT, "Configure this publisher key in Zogograph package trust settings:\n"
         . json_encode(['key_id' => $keyId, 'publisher' => $publisher, 'public_key' => base64_encode(sodium_crypto_sign_publickey($pair))], JSON_PRETTY_PRINT) . "\n\n"
-        . "Private signing key — store offline; HostScope will not retain it:\n" . base64_encode(sodium_crypto_sign_secretkey($pair)) . "\n");
+        . "Private signing key — store offline; Zogograph will not retain it:\n" . base64_encode(sodium_crypto_sign_secretkey($pair)) . "\n");
     exit(0);
 }
 if ($command === 'verify') {

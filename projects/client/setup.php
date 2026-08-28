@@ -627,12 +627,12 @@ function webPage(
         $out[] = '</form><details><summary>Create a local encryption key for verified encrypted copies</summary>'
             . '<p class="help">This quick-start action creates a new Base64 256-bit key at an absolute, '
             . 'private path outside this web directory. It refuses to replace an existing file, does not '
-            . 'show the key in the browser, and creates it readable only by the HostScope service account. '
+            . 'show the key in the browser, and creates it readable only by the Zogograph service account. '
             . 'Keep a separately protected offline recovery copy before enabling encrypted copies.</p>'
             . '<form method="post"><input type="hidden" name="intent" value="create-local-key">'
             . '<input type="hidden" name="setup_key_create_token" value="' . h(setupKeyCreateToken()) . '">'
             . '<label>New private key-file path<input type="text" name="key_path" '
-            . 'placeholder="/secure/hostscope/primary.key" autocomplete="off"></label>'
+            . 'placeholder="/secure/zogograph/primary.key" autocomplete="off"></label>'
             . ($configured && !$unlocked
                 ? '<label>Current setup password<input type="password" name="current_password" autocomplete="current-password"></label>'
                 : '')

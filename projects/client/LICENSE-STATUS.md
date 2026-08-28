@@ -1,7 +1,7 @@
 # License status
 
 The intended commercial model is source-visible self-hosting: customers may
-install and modify HostScope for their own internal use, while unauthorized
+install and modify Zogograph for their own internal use, while unauthorized
 redistribution, resale, and competing hosted copies remain prohibited.
 
 The final license text requires legal review and an owner decision. Until an

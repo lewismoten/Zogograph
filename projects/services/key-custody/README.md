@@ -1,4 +1,4 @@
-# HostScope key-custody service
+# Zogograph key-custody service
 
 This is the optional commercial remote key-hosting service. It is not a
 dependency of local sealed copies, self-managed fleet custody, collection, or
@@ -38,7 +38,7 @@ memory.
 
 See `openapi.json` for the API contract. The companion client integration will
 be the optional `hostscope-key-custody` package. Until it is installed and
-enabled, HostScope uses the local key file or self-managed fleet options.
+enabled, Zogograph uses the local key file or self-managed fleet options.
 
 For the SQLite-first VPS deployment, private-path layout, tenant provisioning,
 credential separation, billing boundary, and recovery procedure, start with
@@ -139,13 +139,13 @@ Copy `config.sample.php` to `config.php`, create a private Base64 256-bit
 `master_key_file`, and provision the first tenant:
 
 ```bash
-php scripts/master-key.php /secure/hostscope-key-custody/master.key
+php scripts/master-key.php /secure/zogograph-key-custody/master.key
 php scripts/provision-tenant.php "Example customer"
 ```
 
 Set the generated absolute path in `config.php`; keep the SQLite database in a
 private directory outside the deployed service web root (the sample uses
-`/var/lib/hostscope-key-custody/key-custody.db`). Keep the printed management
+`/var/lib/zogograph-key-custody/key-custody.db`). Keep the printed management
 token, client token, and client signing private key separately; the service
 retains only token hashes and the signing public key and cannot show the token
 or private key again. `api.php` currently implements key list/create, signed
@@ -203,7 +203,7 @@ provider can supply a staged multi-master-key migration without downtime.
 ### Optional commercial billing control plane
 
 Customer management tokens can request a plan change and open the configured
-billing portal. A payment provider or commercial-site backend applies the
+billing portal. A payment provider or site backend applies the
 result through a different, opt-in endpoint; it must never use a customer
 token or enrolled-client credential. Create a separate private token file:
 

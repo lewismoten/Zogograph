@@ -12,7 +12,7 @@ $config = ['alerts' => ['site_url' => 'https://status.example/']];
 $link = dashboardLink($config);
 $rows = [['severity' => 'info', 'subject' => 'Later'], ['severity' => 'critical', 'subject' => 'Now']];
 $text = telegramAlertText($config, $rows);
-telegramExpect(str_starts_with($text, 'HostScope CRITICAL'), 'Telegram summary did not lead with worst severity');
+telegramExpect(str_starts_with($text, 'Zogograph CRITICAL'), 'Telegram summary did not lead with worst severity');
 telegramExpect(strpos($text, 'CRITICAL — Now') < strpos($text, 'INFO — Later'), 'Telegram alerts were not severity ordered');
 telegramExpect(str_ends_with($text, $link), 'Telegram summary lost its dashboard link');
 

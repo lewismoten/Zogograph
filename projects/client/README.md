@@ -1,11 +1,19 @@
-# HostScope
+# Zogograph
 
-A PHP collector and a static dashboard that watch a home directory and tell you
-before it fills up.
+A PHP collector and static dashboard for Zogograph: server observation,
+monitoring, diagnostics, and operations. It watches a home directory and tells
+you before it fills up.
 
 It answers three questions: **what is happening now**, **what is growing**, and
 **where do I go to fix it** — and it emails you when something jumps, because a
 monitor you have to remember to look at is a monitor that tells you afterwards.
+
+## Local development
+
+This project runs independently. Use `npm ci`, `npm test`, and `npm run build`;
+then run `npm start` for `http://127.0.0.1:4173`. The normal production base URL
+is `https://demo.zogograph.com/`. Copy `.env.example` only for deployment
+settings—runtime configuration remains in the protected setup process.
 
 ## Files
 
@@ -54,10 +62,10 @@ trash / logs / temp. Minutes of IO on a large account, so hourly at most.
 ## Install
 
 ```bash
-mkdir -p ~/public_html/stats.example.com
+mkdir -p ~/public_html/demo.zogograph.com
 # everything except data/ and lib/config.php
 cp -r cron.php host-cron.php api.php setup.php index.html index.css index.js \
-      lib .htaccess ~/public_html/stats.example.com/
+      lib .htaccess ~/public_html/demo.zogograph.com/
 ```
 
 Then open `setup.php` in a browser and fill the form in. It writes
@@ -87,7 +95,7 @@ disappears automatically once the evidence exists.
 
 ### Migration safety
 
-Before HostScope applies a schema migration to an existing SQLite database, it
+Before Zogograph applies a schema migration to an existing SQLite database, it
 creates a consistent private snapshot in `data/migration-backups/`. It uses
 SQLite's own backup operation, so the copy includes committed WAL data and does
 not need the `sqlite3` executable. Keep this directory outside the web root or
@@ -100,7 +108,7 @@ the migration instead of failing on an “already exists” error.
 
 If an upgrade must be rolled back, stop the web and cron processes first, keep
 a copy of the current database, then replace the affected database file with
-the corresponding snapshot. Start HostScope again with the matching application
+the corresponding snapshot. Start Zogograph again with the matching application
 version; a newer application will correctly see the old schema as needing an
 upgrade and will make a new snapshot before changing it.
 
@@ -1826,7 +1834,7 @@ private, non-shell-history source when a terminal cannot hide input.
 
 **Display** in the header provides local browser-only text-size and motion
 preferences. The default motion setting follows the operating system; choosing
-reduced motion disables HostScope's decorative transitions and animation.
+reduced motion disables Zogograph's decorative transitions and animation.
 
 - `lib/config.php` holds the password hash and the mask secret. It is
   gitignored, and `lib/.htaccess` denies the whole directory.
@@ -2019,11 +2027,11 @@ next new-reading interval.
 
 ### OpenID provider for trusted peers
 
-HostScope can optionally act as an OpenID Connect provider for explicitly
+Zogograph can optionally act as an OpenID Connect provider for explicitly
 registered trusted-peer clients. It supports authorization code with S256 PKCE,
 strict registered callback matching, short-lived RS256 ID tokens, and auditable
 authorization/token grants. This is a peer identity feature; it is not an
-external-provider replacement for local HostScope sign-in.
+external-provider replacement for local Zogograph sign-in.
 
 Retention settings include accepted remote vital payloads (400 days by default)
 and remote replay receipts (two days). Replay receipts always retain at least
@@ -2044,7 +2052,7 @@ Telegram alert batches are deliberately compact: the highest severity comes
 first, at most twenty short alert subjects are included, any omitted count is
 stated, and the dashboard link is retained inside Telegram's message limit.
 
-If PHP's `mail()` refuses every recipient in an alert batch, HostScope retains
+If PHP's `mail()` refuses every recipient in an alert batch, Zogograph retains
 the exact message and retries it from later alert runs with one-minute to
 one-hour backoff. A batch accepted for any recipient is never retried, avoiding
 duplicate messages after the local mail queue takes ownership; any recipients

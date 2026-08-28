@@ -1,6 +1,6 @@
-# HostScope executable packages
+# Zogograph executable packages
 
-This directory holds source packages that require the future isolated HostScope
+This directory holds source packages that require the future isolated Zogograph
 package runtime. It is separate from `data/marketplace/`, whose current JSON
 catalog is deliberately data-only.
 
@@ -12,7 +12,7 @@ loading the entry point. A package must not be loaded directly by PHP include
 paths or by copying its files into the web tree.
 
 When declared, the signed `settings_schema` is enforced before settings are
-stored. HostScope supports the small JSON Schema subset needed by packages:
+stored. Zogograph supports the small JSON Schema subset needed by packages:
 object properties/required fields, `additionalProperties`, scalar and array
 types, enums, string length/patterns, numeric limits, and array item limits.
 Keep package schemas within that subset so an administrator gets a clear

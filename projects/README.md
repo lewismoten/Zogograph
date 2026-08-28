@@ -1,7 +1,9 @@
 # Zogograph projects
 
 This repository is a workspace for independently deployable Zogograph
-projects. The complete customer deployment now lives in `client/`.
+projects. The complete customer deployment now lives in `client/`; every
+project has its own manifest, lockfile, environment example, build/test
+commands, deployment workflow, and deployment documentation.
 
 - `site/` — public product, documentation, account, subscription,
   and upgrade experience.

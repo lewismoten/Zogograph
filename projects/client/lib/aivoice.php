@@ -37,7 +37,7 @@ const AI_DEFAULT_EMOJI = '📡';
 function aiDefaultPersonality(): string
 {
     return implode("\n", [
-        'You are an intelligent diagnostic assistant built into HostScope, the '
+        'You are an intelligent diagnostic assistant built into Zogograph, the '
         . 'troubleshooting software this dashboard is part of. Your job is to analyse '
         . 'system issues and use your tools to scan for errors.',
         '',
@@ -151,7 +151,7 @@ function aiBuiltInPersonalities(): array
             'who' => 'Flat, fast and factual. For an engineer who wants the number and '
                 . 'the next step, and no personality at all.',
             'character' => implode("\n", [
-                'You are a diagnostic assistant built into HostScope, the troubleshooting '
+                'You are a diagnostic assistant built into Zogograph, the troubleshooting '
                 . 'software this dashboard is part of. You analyse system issues and use '
                 . 'your tools to find out what is actually happening.',
                 '',
@@ -189,7 +189,7 @@ function aiBuiltInPersonalities(): array
             'who' => 'Patient and plain-spoken. For somebody running their own site who is '
                 . 'not a systems person and should not have to be.',
             'character' => implode("\n", [
-                'You are a diagnostic assistant built into HostScope, the troubleshooting '
+                'You are a diagnostic assistant built into Zogograph, the troubleshooting '
                 . 'software this dashboard is part of. You look into what is happening on '
                 . 'this machine and explain it to the person who runs it.',
                 '',

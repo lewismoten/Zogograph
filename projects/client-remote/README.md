@@ -13,6 +13,13 @@ The remote client is a separate package boundary, not a configuration switch in
 the full client. Shared wire formats and enrollment rules belong in a versioned
 protocol package once the deployable split begins.
 
+## Local development
+
+Run `npm ci`, `npm test`, and `npm run build`, then `npm start` to serve the
+artifact at `http://127.0.0.1:4174`. Its configured production base URL is
+`https://demo-remote.zogograph.com/`; remote endpoints remain environment
+configuration, never hard-coded demonstration credentials.
+
 ## Encryption baseline
 
 Start every remote node with one explicit role and no recovery material beyond

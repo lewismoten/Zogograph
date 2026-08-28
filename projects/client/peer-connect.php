@@ -5,7 +5,7 @@ require_once __DIR__ . '/lib/boot.php';
 installErrorBoundary('html');
 require_once __DIR__ . '/lib/setupstore.php';
 $file = __DIR__ . '/lib/config.php';
-if (!is_file($file)) { http_response_code(503); exit('HostScope is not configured.'); }
+if (!is_file($file)) { http_response_code(503); exit('Zogograph is not configured.'); }
 $config = loadConfiguredSettings($file);
 require_once __DIR__ . '/lib/db.php';
 require_once __DIR__ . '/lib/auth.php';

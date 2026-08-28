@@ -35,7 +35,7 @@ while ($args !== []) {
 
 $configFile = __DIR__ . '/../lib/config.php';
 if (!is_file($configFile)) {
-    fwrite(STDERR, "No lib/config.php; configure HostScope before resetting a password.\n");
+    fwrite(STDERR, "No lib/config.php; configure Zogograph before resetting a password.\n");
     exit(1);
 }
 

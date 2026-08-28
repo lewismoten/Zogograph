@@ -182,7 +182,7 @@ function retentionCatalogue(): array
             'column' => 'taken_at',
             'recommended' => 400,
             'never_recommended' => false,
-            'what' => 'Accepted vital payloads sent by paired remote HostScope installations.',
+            'what' => 'Accepted vital payloads sent by paired remote Zogograph installations.',
             'why' => 'Matches local scan history while keeping fleet-delivery evidence bounded.',
             'rolls_up' => false,
         ],

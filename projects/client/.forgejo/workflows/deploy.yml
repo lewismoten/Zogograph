@@ -1,4 +1,4 @@
-name: Deploy Client HostScope
+name: Deploy Zogograph Client
 
 on:
   push:
@@ -6,15 +6,11 @@ on:
       - develop
       - feature-dashboard-professional-polish
     paths:
-      - projects/client/**
-      - .forgejo/workflows/client-hostscope-deploy.yml
-      - .forgejo/scripts/hostscope-snapshot.sh
-      - .forgejo/scripts/hostscope-snapshot-prune.sh
-      - .forgejo/scripts/hostscope-restore.sh
+      - '**'
   workflow_dispatch:
 
 concurrency:
-  group: client-hostscope-lifecycle
+  group: zogograph-client-lifecycle
   cancel-in-progress: false
 
 jobs:
@@ -49,29 +45,35 @@ jobs:
           done
           case "${SNAPSHOT_RETENTION:-3}" in *[!0-9]*|'') echo 'SNAPSHOT_RETENTION must be a whole number.' >&2; exit 1;; esac
           [ "${SNAPSHOT_RETENTION:-3}" -ge 1 ] && [ "${SNAPSHOT_RETENTION:-3}" -le 50 ] || { echo 'SNAPSHOT_RETENTION must be between 1 and 50.' >&2; exit 1; }
-          test -d projects/client
+          test -f package.json
+
+      - name: Validate, test, and build
+        shell: bash
+        run: npm ci && npm test && npm run build
 
       - name: Assemble release
         shell: bash
         run: |
           set -euo pipefail
           command -v rsync >/dev/null || { apt-get update; apt-get install -y rsync; }
-          release=release/client
+          release=.release
           mkdir -p "$release"
           rsync -a --delete \
             --exclude='.git/' \
+            --exclude='.release/' \
+            --exclude='dist/' \
             --exclude='data/***' \
             --exclude='lib/config.php' \
             --exclude='tests/' \
             --exclude='deploy/' \
             --exclude='*.md' \
-            projects/client/ "$release/"
+            ./ "$release/"
 
       - name: Create build manifest
         shell: bash
         run: |
           set -euo pipefail
-          release=release/client
+          release=.release
           created_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           version="$(git describe --tags --always)"
           case "${CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED:-}" in ''|false) browser_refresh_required=false;; true) browser_refresh_required=true;; *) echo 'CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED must be true or false.' >&2; exit 1;; esac
@@ -84,7 +86,7 @@ jobs:
             "createdAt": "${created_at}",
             "version": "${version}",
             "repo": "${GITHUB_REPOSITORY}",
-            "application": "HostScope",
+            "application": "Zogograph",
             "part": "client",
             "browserRefreshRequired": ${browser_refresh_required}
           }
@@ -132,7 +134,7 @@ jobs:
             --exclude='lib/config.php' \
             --exclude='.well-known/' \
             -e "ssh -i $HOME/.ssh/hostscope_deploy_key -p ${DEPLOY_PORT:-22} -o BatchMode=yes -o IdentitiesOnly=yes" \
-            release/client/ \
+            .release/ \
             "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
 
       - name: Verify deployed build

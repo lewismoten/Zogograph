@@ -17,7 +17,7 @@ When the isolated runtime eventually opens a selected database, the adapter
 will prove more than driver availability: after applying the caller-owned
 256-bit key it reads the SQLite schema and requires SQLCipher's full
 `cipher_integrity_check` to return `ok`. A wrong key, a plaintext file, or an
-integrity failure is refused before HostScope enables WAL or performs any
+integrity failure is refused before Zogograph enables WAL or performs any
 application work.
 
 Before activation the runtime must create and verify a sealed recovery artifact,
@@ -36,7 +36,7 @@ listed in its own hashes. Create a publisher key once and keep the private key
 offline:
 
 ```bash
-php scripts/package-sign.php keygen --key-id hostscope-release --publisher "HostScope"
+php scripts/package-sign.php keygen --key-id zogograph-release --publisher "Zogograph"
 ```
 
 After reviewing a package release, sign its manifest and write the output back
@@ -44,7 +44,7 @@ to `manifest.json` through the release process:
 
 ```bash
 php scripts/package-sign.php sign --package plugins/sqlcipher-encrypted-sqlite \
-  --key-id hostscope-release
+  --key-id zogograph-release
 ```
 
 Any changed, added, removed, or symlinked immutable file makes integrity

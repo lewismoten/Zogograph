@@ -1,7 +1,7 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "HostScope Key Custody API",
+    "title": "Zogograph Key Custody API",
     "version": "1.0.0-draft",
     "description": "Optional remote custody for wrapped per-artifact data-key envelopes. An enrolled client receives only an X25519 public wrapping key, seals its fresh data key locally, and may later request that named artifact data key through separately authenticated unwrap authorization."
   },

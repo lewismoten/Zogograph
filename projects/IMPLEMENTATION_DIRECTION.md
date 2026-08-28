@@ -1,21 +1,21 @@
-# HostScope implementation direction
+# Zogograph implementation direction
 
-This is the practical handoff for the current HostScope direction. It is the
+This is the practical handoff for the current Zogograph direction. It is the
 short source of truth for what a customer can use now, which choices remain
 optional, and where an operator or product owner changes those choices later.
-It uses the current HostScope name and provisional VPS URL as replaceable
+It uses the current Zogograph name and configured deployment URL as replaceable
 deployment content, not protocol values.
 
 Read [DIRECTION.md](DIRECTION.md) for service boundaries and
 [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md) for the deployment gates.
 The detailed client design is in
-[client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md](client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md).
+[client/ENCRYPTION_AND_FLEET_PLAN.md](client/ENCRYPTION_AND_FLEET_PLAN.md).
 
 ## Recommended customer starting point
 
-The full `client-hostscope/` deployment is self-contained. A customer should
+The full `client/` deployment is self-contained. A customer should
 be able to install it, collect locally, and use local protection without an
-account on any HostScope commercial service.
+account on any Zogograph commercial service.
 
 1. Start with SQLite and HTTPS.
 2. Protect the bootstrap configuration, `setup.db`, and `stats.db` using
@@ -27,7 +27,7 @@ account on any HostScope commercial service.
    warrant the extra protected-copy size and recovery responsibility.
 
 This protects copied databases, snapshots, and backup media. It does not make
-a live SQLite database encrypted while HostScope is running. For that distinct
+a live SQLite database encrypted while Zogograph is running. For that distinct
 need, the operator may rely on host/volume encryption or install the optional
 SQLCipher package on a specifically tested platform.
 
@@ -66,7 +66,7 @@ release constants, source edits, browser storage, URLs, or command arguments.
 | client store scope, copy schedule, retention, drills | client `setup.db`, through Setup/Protection UI and API | customer administrator | never prune the newest verified artifact |
 | package endpoint, policy, and private state | signed package schema plus package-private database | customer administrator | a package cannot read another package's state |
 | enrolled-client bearer/signing material | encrypted package secret references | customer administrator | plaintext is never returned to the browser or normal settings API |
-| public name, domain, pricing, support links, plan labels | commercial-site and marketplace administration databases | commercial operator | changing these does not change package, artifact, or key IDs |
+| public name, domain, pricing, support links, plan labels | site and marketplace administration databases | commercial operator | changing these does not change package, artifact, or key IDs |
 | service entitlement and capacity | commercial billing control plane | commercial operator | a billing token cannot manage or unwrap customer keys |
 | service master keys and service backups | private service deployment and offline recovery procedure | service operator | never share them with the commercial site or marketplace |
 
@@ -81,12 +81,12 @@ The provisional VPS can route separately deployed projects at these paths:
 
 | project | provisional path | purpose |
 | --- | --- | --- |
-| `commercial-site/` | `/` | product, documentation, account, subscription, and upgrade links |
-| `commercial-marketplace/` | `/marketplace/` | package review, catalogue, publisher workflow, and purchases |
-| `commercial-updates/` | `/updates/` | signed manual download and version-check service |
-| `commercial-services/key-custody/` | `/services/key-custody/` | optional tenant-isolated wrapped-key custody |
-| `commercial-services/replica-relay/` | `/services/replica-relay/` | optional ciphertext-only artifact relay |
-| `commercial-services/ai-proxy/` | `/services/ai-proxy/` | future opt-in model proxy |
+| `site/` | `https://zogograph.com/` | product, documentation, account, subscription, and upgrade links |
+| `marketplace/` | `https://market.zogograph.com/` | package review, catalogue, publisher workflow, and purchases |
+| `updates/` | `https://updates.zogograph.com/` | signed manual download and version-check service |
+| `services/key-custody/` | `https://services.zogograph.com/key-custody/` | optional tenant-isolated wrapped-key custody |
+| `services/replica-relay/` | `https://services.zogograph.com/replica-relay/` | optional ciphertext-only artifact relay |
+| `services/ai-proxy/` | `https://services.zogograph.com/ai-proxy/` | future opt-in model proxy |
 
 Each deployment has an independent OS account where practical, database,
 configuration, private storage, backup set, logs, deploy credential, and
@@ -116,12 +116,12 @@ local recovery custody, and no commercial-service dependency.
 
 | capability | status | configuration/review location |
 | --- | --- | --- |
-| local sealed-copy encryption and recovery drills | usable | client Protection settings and `client-hostscope/SETUP.md` |
+| local sealed-copy encryption and recovery drills | usable | client Protection settings and `client/SETUP.md` |
 | setup-store record encryption with a local external key | usable | client bootstrap key-path configuration and Setup/Protection UI |
 | SQLCipher platform inspection/preflight | diagnostic only | installed SQLCipher package plus reviewed isolated launcher |
 | custody endpoint identity probe | diagnostic only | installed custody package settings and no-secret launcher |
 | custody enrolled-client subscription readiness | diagnostic only | separate endpoint-restricted launcher, explicit grants, and encrypted package secret references |
-| remote envelope upload, verification, or remote unwrap recovery | not enabled | `client-hostscope/CUSTODY_ARTIFACT_CONTRACT.md`; requires a dedicated reviewed release gate |
+| remote envelope upload, verification, or remote unwrap recovery | not enabled | `client/CUSTODY_ARTIFACT_CONTRACT.md`; requires a dedicated reviewed release gate |
 | ciphertext replica upload/recovery | not enabled | relay package and fleet recovery/retry/deletion contract |
 
 This boundary is intentional. It lets a customer validate a provider and their

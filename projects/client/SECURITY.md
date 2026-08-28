@@ -7,7 +7,7 @@ or customer-data disclosure. Report it privately to the address configured in
 `security.contact` on the affected installation. If that field is blank, use
 the installation owner's established private support channel.
 
-Include the HostScope version or commit, deployment type, affected URL or
+Include the Zogograph version or commit, deployment type, affected URL or
 feature, a minimal reproduction, impact, and any relevant log reference. Do
 not send passwords, API keys, raw databases, full request captures, or private
 host paths unless the owner requests an encrypted transfer.

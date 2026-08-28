@@ -22,7 +22,7 @@ For a harmless demonstration in a throwaway directory inside the configured
 scan root, create a file with a trailing space:
 
 ```sh
-touch 'HostScope path hygiene demo '
+touch 'Zogograph path hygiene demo '
 ```
 
 Run `php cron.php --scan`, refresh **What is wrong**, then delete the test file

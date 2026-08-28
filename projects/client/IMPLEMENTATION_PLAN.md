@@ -1,6 +1,6 @@
-# HostScope completion plan
+# Zogograph completion plan
 
-This is the working implementation plan for the HostScope product-completion
+This is the working implementation plan for the Zogograph product-completion
 directive. It is deliberately a living delivery record, not a statement that
 the product is complete.
 

@@ -8,6 +8,12 @@ It must not receive or store customer monitoring data, encryption keys, or
 database copies. It links to optional services through authenticated account
 flows rather than becoming part of a client installation's runtime path.
 
+## Local development
+
+Run `npm ci`, `npm test`, and `npm run build`, then `npm start` to serve the
+standalone site at `http://127.0.0.1:4177`. Production is canonical at
+`https://zogograph.com/`; `www.zogograph.com` redirects there.
+
 ## Deployment and naming
 
 The canonical public address is `https://zogograph.com/`; `www.zogograph.com`

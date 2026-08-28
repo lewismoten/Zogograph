@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 /* This worker is for a separately deployed OS/container sandbox only. It
  * exposes a deliberately harmless first operation: provider capability facts.
- * It receives no HostScope config, secrets, core database handles, or private
+ * It receives no Zogograph config, secrets, core database handles, or private
  * package database path. */
 if (PHP_SAPI !== 'cli') { http_response_code(403); exit("CLI-only worker.\n"); }
 if (getenv('HOSTSCOPE_PACKAGE_SANDBOX') !== '1') { fwrite(STDERR, "Refusing to run outside an attested package sandbox.\n"); exit(77); }

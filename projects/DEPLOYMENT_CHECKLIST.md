@@ -1,7 +1,7 @@
 # Recommended deployment checklist
 
-This is the initial deployment direction for HostScope. It is intentionally
-conservative: the full customer client works without a HostScope-operated
+This is the initial deployment direction for Zogograph. It is intentionally
+conservative: the full customer client works without a Zogograph-operated
 service, encryption is opt-in, and each public or commercial role has an
 independent security boundary.
 
@@ -19,14 +19,14 @@ to share secrets or writable directories.
 
 | project | provisional route | first responsibility | database and secrets |
 | --- | --- | --- | --- |
-| `commercial-site/` | `/` | product pages, documentation, account entry, subscription/upgrade links | separate commercial-site administration database; payment-provider references only, never raw payment data or customer recovery keys |
-| `commercial-marketplace/` | `/marketplace/` | reviewed package catalogue, publisher submissions, purchases | separate marketplace database; package-review and publisher credentials only |
-| `commercial-updates/` | `/updates/` | signed manual downloads and version-check API | release metadata database and offline-protected signing key; no billing or custody data |
-| `commercial-services/replica-relay/` | `/services/replica-relay/` | optional encrypted-artifact relay | separate tenant metadata database and private ciphertext-only artifact directory; no unwrap authority |
-| `commercial-services/key-custody/` | `/services/key-custody/` | optional wrapped-key envelope custody | separate tenant database and private master-key directory; no customer databases, replica artifacts, or payment data |
-| `commercial-services/ai-proxy/` | `/services/ai-proxy/` | future opt-in model-provider proxy | separate policy/audit database and provider-secret store; never customer encryption keys |
-| `client-hostscope/` | customer-controlled | complete collector, dashboard, setup, and local protection | customer-owned setup/account/host/assistant stores and local key material as selected by its administrator |
-| `client-hostscope-remote/` | customer-controlled | future minimal collector, replica, or custodian role | only the stores and credentials required by its declared role; no full dashboard by default |
+| `site/` | `https://zogograph.com/` | product pages, documentation, account entry, subscription/upgrade links | separate site administration database; payment-provider references only, never raw payment data or customer recovery keys |
+| `marketplace/` | `https://market.zogograph.com/` | reviewed package catalogue, publisher submissions, purchases | separate marketplace database; package-review and publisher credentials only |
+| `updates/` | `https://updates.zogograph.com/` | signed manual downloads and version-check API | release metadata database and offline-protected signing key; no billing or custody data |
+| `services/replica-relay/` | `https://services.zogograph.com/replica-relay/` | optional encrypted-artifact relay | separate tenant metadata database and private ciphertext-only artifact directory; no unwrap authority |
+| `services/key-custody/` | `https://services.zogograph.com/key-custody/` | optional wrapped-key envelope custody | separate tenant database and private master-key directory; no customer databases, replica artifacts, or payment data |
+| `services/ai-proxy/` | `https://services.zogograph.com/ai-proxy/` | future opt-in model-provider proxy | separate policy/audit database and provider-secret store; never customer encryption keys |
+| `client/` | `https://demo.zogograph.com/` | complete collector, dashboard, setup, and local protection | customer-owned setup/account/host/assistant stores and local key material as selected by its administrator |
+| `client-remote/` | `https://demo-remote.zogograph.com/` | future minimal collector, replica, or custodian role | only the stores and credentials required by its declared role; no full dashboard by default |
 
 The listed URL paths are deployment settings for the current VPS. They can
 move to separate domains later. Clients must retain a configured service base
@@ -66,13 +66,13 @@ settings and exposed by the website/API. They must not be release constants.
 | selected stores, schedule, retention, recovery-drill interval | client encryption settings in `setup.db` | none |
 | package provider URL, replication policy, optional storage backend | that package's schema-validated settings and private package database | none |
 | provider enrollment credentials and keys | encrypted package secret references or a deliberately selected custody provider | never place in normal configuration, URLs, browser storage, or logs |
-| public labels, domains, support links, prices, plans, and supported-package matrix | commercial-site/marketplace administration databases | no client protocol or artifact changes required |
+| public labels, domains, support links, prices, plans, and supported-package matrix | site/marketplace administration databases | no client protocol or artifact changes required |
 | hosted-service capacity and entitlement | commercial billing control plane; services consume a narrow entitlement | billing credentials never grant client-key unwraps |
 
 `lib/config.php` remains a small private bootstrap file only: paths and the
 minimum required to open the client settings. It must be sealed as a protected
 artifact and restored only through the guarded recovery procedure in
-[`client-hostscope/SETUP.md`](client-hostscope/SETUP.md). Do not grow it into a
+[`client/SETUP.md`](client/SETUP.md). Do not grow it into a
 general secret store.
 
 ## Required launch gates
@@ -127,6 +127,6 @@ Keep these in administration records so they can change without editing source:
   share, package vulnerability response, and any payment-provider integration.
 
 Detailed encryption rationale and release gates remain in
-[`client-hostscope/ENCRYPTION_REVIEW.md`](client-hostscope/ENCRYPTION_REVIEW.md)
+[`client/ENCRYPTION_REVIEW.md`](client/ENCRYPTION_REVIEW.md)
 and
-[`client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md`](client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md).
+[`client/ENCRYPTION_AND_FLEET_PLAN.md`](client/ENCRYPTION_AND_FLEET_PLAN.md).

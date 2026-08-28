@@ -1,6 +1,6 @@
-# Set up HostScope
+# Set up Zogograph
 
-HostScope is a dependency-free PHP site. You need a PHP-capable web host, a
+Zogograph is a dependency-free PHP site. You need a PHP-capable web host, a
 scheduled-task facility, and access to the account whose home directory you
 want to monitor. No Composer, Node.js, or external database server is needed.
 
@@ -14,7 +14,7 @@ Make sure the host provides:
 - a cron editor or shell access for the hosting account; and
 - a web-server user that can write `data/` and, during initial setup, `lib/`.
 
-HostScope stores its measurements and settings in SQLite files under `data/`.
+Zogograph stores its measurements and settings in SQLite files under `data/`.
 That directory must be private: it must never be served as a downloadable web
 directory. The included `.htaccess` files enforce this on Apache when
 `AllowOverride` is enabled. For Nginx, start with
@@ -22,7 +22,7 @@ directory. The included `.htaccess` files enforce this on Apache when
 
 ## 1. Deploy the application
 
-Create the document root for the HostScope site, such as
+Create the document root for the Zogograph site, such as
 `~/public_html/stats.example.com`, and upload the **complete release** there.
 Keep the directory layout intact: in particular, `lib/`, `data/`, and their
 included `.htaccess` files must remain in place.
@@ -35,7 +35,7 @@ If you deploy through SSH, replace the example paths below with yours:
 
 ```bash
 mkdir -p ~/public_html/stats.example.com
-cd /path/to/hostscope-release
+cd /path/to/zogograph-release
 cp -R . ~/public_html/stats.example.com/
 ```
 
@@ -66,7 +66,7 @@ Complete the form, set an administrator password, and save. The wizard writes
 the minimal `lib/config.php` bootstrap and stores the remaining settings in
 `data/setup.db`.
 
-If you configure a local encryption key, HostScope also encrypts the complete
+If you configure a local encryption key, Zogograph also encrypts the complete
 settings record in `setup.db` automatically. The bootstrap retains only the
 key's absolute path—not the key material—so retain an owner-only offline copy
 of that key with your private setup-database backup. Without a configured key,
@@ -119,10 +119,10 @@ Use absolute paths, and replace both placeholders with your own paths:
 
 ```cron
 # Cheap system and account readings, plus alert evaluation.
-* * * * * /absolute/path/to/php /absolute/path/to/hostscope/cron.php --vitals --alerts --quiet
+* * * * * /absolute/path/to/php /absolute/path/to/zogograph/cron.php --vitals --alerts --quiet
 
 # Full storage scan and retention cleanup.
-7 * * * * /absolute/path/to/php /absolute/path/to/hostscope/cron.php --scan --alerts --prune --quiet
+7 * * * * /absolute/path/to/php /absolute/path/to/zogograph/cron.php --scan --alerts --prune --quiet
 ```
 
 `--quiet` keeps successful cron runs silent and reports failures through cron's
@@ -136,16 +136,16 @@ disk, and system information, enable **Also collect host-wide readings** in the
 setup wizard and add this job to **root's** crontab, not the account crontab:
 
 ```cron
-*/5 * * * * /absolute/path/to/php /absolute/path/to/hostscope/host-cron.php --collect --prune --quiet
+*/5 * * * * /absolute/path/to/php /absolute/path/to/zogograph/host-cron.php --collect --prune --quiet
 ```
 
 Run the printed command once as root to verify it. Skip this step if you do not
-administer the machine; HostScope continues to work with account-level data.
+administer the machine; Zogograph continues to work with account-level data.
 
 The host collector records its own process tree separately from server totals:
 CPU and memory gauges retain the total reading, with the monitor shown as a
 darker arc and the non-monitor workload named beside it. Alerts still use the
-total. Load average cannot be split exactly by process on Linux, so HostScope
+total. Load average cannot be split exactly by process on Linux, so Zogograph
 shows the collector tree's currently runnable tasks beside the total load
 instead of presenting an invented "load excluding monitoring" number.
 
@@ -164,7 +164,7 @@ reference in [README.md](README.md).
 
 ## Optional: encrypted database copies
 
-HostScope starts with encryption disabled. In the setup wizard, each
+Zogograph starts with encryption disabled. In the setup wizard, each
 administrator chooses the protection mode, the configuration/database stores to
 protect, the key custody method, and a copy schedule and retention preference.
 The first built-in mode creates verified encrypted **copies** of selected
@@ -180,9 +180,9 @@ installed and its platform checks have passed.
 
 | situation | recommended setup choice | important limit |
 | --- | --- | --- |
-| shared host, single VPS, or a first installation | local encrypted copies; protect configuration, `setup`, and `account`; run daily and retain 30 days | protects copies and backup media, not the live SQLite files while HostScope runs |
-| host/VM/managed platform already encrypts its disks | record host/VM protection for the selected live stores, then still make encrypted recovery copies | HostScope records this as an operator statement; it cannot prove the platform's disk-encryption setting |
-| live SQLite files must be encrypted by HostScope | install the SQLCipher package only on a HostScope-tested PHP/PDO image and run its disposable preflight | do not activate it on an ordinary PDO SQLite build or treat a sealed copy as live-store encryption |
+| shared host, single VPS, or a first installation | local encrypted copies; protect configuration, `setup`, and `account`; run daily and retain 30 days | protects copies and backup media, not the live SQLite files while Zogograph runs |
+| host/VM/managed platform already encrypts its disks | record host/VM protection for the selected live stores, then still make encrypted recovery copies | Zogograph records this as an operator statement; it cannot prove the platform's disk-encryption setting |
+| live SQLite files must be encrypted by Zogograph | install the SQLCipher package only on a Zogograph-tested PHP/PDO image and run its disposable preflight | do not activate it on an ordinary PDO SQLite build or treat a sealed copy as live-store encryption |
 | organization needs remote recovery, KMS/HSM, or hosted custody | install and review the compatible custody/replica/provider package, then enroll it through the Protection page | remote custody and replicas remain off until the provider runtime and recovery/availability gates are complete |
 
 The local encrypted-copy path is the initial recommendation because it works
@@ -205,7 +205,7 @@ or alongside a database export. Use the CLI form when the web-service account
 cannot write the intended private directory.
 
 ```bash
-php scripts/encryption-key.php create /secure/hostscope/primary.key
+php scripts/encryption-key.php create /secure/zogograph/primary.key
 ```
 
 In the setup wizard's **Encryption** section, select **Encrypted copies with a
@@ -219,7 +219,7 @@ artifact directory defaults to
 the protected `data/sealed/` directory; set a private absolute path if you need
 the copies elsewhere. Choose manual, daily, or weekly scheduling and a local
 retention period; configure the matching job in your host scheduler. During an
-explicit `--seal` run, HostScope prunes only old verified artifacts whose hash
+explicit `--seal` run, Zogograph prunes only old verified artifacts whose hash
 still matches and never removes the newest verified artifact for a store. Set
 retention to zero to retain every local encrypted copy.
 
@@ -239,7 +239,7 @@ It is off by default so the quick-install 30-day policy stays easy to predict.
 If the host, VM, container volume, or managed database storage is already
 encrypted at rest, select **My host/VM encrypts the selected live stores** and
 choose the protected stores. This records the operator's policy but does not
-attempt to verify host-level encryption or create HostScope copies.
+attempt to verify host-level encryption or create Zogograph copies.
 
 Run a first copy, then schedule future copies separately from normal
 collection. An administrator with write access can use **System → Protection**
@@ -265,14 +265,14 @@ overwrites a live database. It is the low-risk first proof that the local key
 and artifact format can be opened; use the CLI restore instructions below for
 an actual replacement recovery exercise.
 
-The default **Recovery-drill review period** is 90 days. HostScope warns in the
+The default **Recovery-drill review period** is 90 days. Zogograph warns in the
 Protection view and through normal encryption-recovery alerts when a store's
 last drill becomes older than that period. Choose a shorter interval for more
 critical systems, or set it to `0` only if you deliberately want the required
 first drill without recurring reminders.
 
 Each new sealed artifact is fully decrypted into a short-lived private temporary
-file before HostScope records it as verified. A sealing run also briefly keeps a
+file before Zogograph records it as verified. A sealing run also briefly keeps a
 SQLite snapshot and its ciphertext, so plan for about twice the selected source
 size plus a small margin at the encrypted-copy destination. The dashboard shows
 its conservative estimate and warns when observed free space is lower. A failed
@@ -285,28 +285,28 @@ after nine days. Manual policies never infer a missed run. A warning means the
 most recent verified ciphertext may still be usable, but it no longer meets the
 recovery point objective you selected.
 
-When normal alert delivery is enabled, HostScope also adds the configurable
+When normal alert delivery is enabled, Zogograph also adds the configurable
 **Encrypted-copy recovery needs attention** rule. It warns when a selected
 store has no verified copy, has not completed its first non-destructive
 recovery drill, has an overdue drill review, or has missed its selected
 schedule, and reports an error when a retained copy fails verification or the
 configured local key is no longer usable. It deliberately does not alert for
-host/VM volume protection: HostScope cannot verify a host encryption claim.
+host/VM volume protection: Zogograph cannot verify a host encryption claim.
 
 ```cron
 # Daily encrypted copies. This does nothing unless encryption.mode is selected.
-19 3 * * * /absolute/path/to/php /absolute/path/to/hostscope/cron.php --seal --quiet
+19 3 * * * /absolute/path/to/php /absolute/path/to/zogograph/cron.php --seal --quiet
 
 # Weekly full ciphertext/authentication re-check. It creates no new copy and
 # decrypts each retained artifact only into a short-lived private temporary file.
-43 4 * * 0 /absolute/path/to/php /absolute/path/to/hostscope/cron.php --verify-sealed --quiet
+43 4 * * 0 /absolute/path/to/php /absolute/path/to/zogograph/cron.php --verify-sealed --quiet
 
 # Quarterly non-destructive recovery drill. Keep this at or below the selected
 # Recovery-drill review period; the default 90 days makes this a good start.
-17 5 1 1,4,7,10 * /absolute/path/to/php /absolute/path/to/hostscope/cron.php --recovery-drill --quiet
+17 5 1 1,4,7,10 * /absolute/path/to/php /absolute/path/to/zogograph/cron.php --recovery-drill --quiet
 ```
 
-The key is never kept in HostScope configuration or its databases. A lost key
+The key is never kept in Zogograph configuration or its databases. A lost key
 cannot be recovered from a sealed copy. See
 [ENCRYPTION_AND_FLEET_PLAN.md](ENCRYPTION_AND_FLEET_PLAN.md) for the current
 scope, limitations, rotation design, and planned self-managed fleet custody.
@@ -331,23 +331,23 @@ To inspect a copy during recovery, decrypt it to a new private file and remove
 that plaintext file when you finish:
 
 ```bash
-php scripts/encryption-key.php decrypt /secure/hostscope/primary.key account.sealed restored-account.db
+php scripts/encryption-key.php decrypt /secure/zogograph/primary.key account.sealed restored-account.db
 ```
 
 To restore an account database from a sealed copy, stop the web server and all
-HostScope cron jobs first. The restore command requires that acknowledgement,
+Zogograph cron jobs first. The restore command requires that acknowledgement,
 fully authenticates and checks the decrypted SQLite candidate, seals a snapshot
 of the current account database, replaces it atomically, and removes stale WAL/SHM
 files. The short-lived decrypted candidate is removed even when the restore is
-refused. It must be run from the deployed HostScope directory as the account
+refused. It must be run from the deployed Zogograph directory as the account
 that owns the files:
 
 ```bash
 php scripts/restore-account.php --sealed /secure/account.sealed \
-  --key /secure/hostscope/primary.key --writers-stopped
+  --key /secure/zogograph/primary.key --writers-stopped
 ```
 
-Do not restart HostScope until that command exits successfully. This restores
+Do not restart Zogograph until that command exits successfully. This restores
 only the account database; configuration, host, and assistant artifacts are
 intentionally separate recovery operations because they have different owners
 and availability contracts.
@@ -359,11 +359,11 @@ atomically replaces it, and removes stale WAL/SHM companions:
 
 ```bash
 php scripts/restore-store.php --store setup --sealed /secure/setup.sealed \
-  --key /secure/hostscope/primary.key --writers-stopped
+  --key /secure/zogograph/primary.key --writers-stopped
 php scripts/restore-store.php --store host --sealed /secure/host.sealed \
-  --key /secure/hostscope/primary.key --writers-stopped
+  --key /secure/zogograph/primary.key --writers-stopped
 php scripts/restore-store.php --store ai --sealed /secure/ai.sealed \
-  --key /secure/hostscope/primary.key --writers-stopped
+  --key /secure/zogograph/primary.key --writers-stopped
 ```
 
 When `--sealed` and `--key` are used, the printed pre-restore rollback path
@@ -377,12 +377,12 @@ encryption settings. To restore the separately sealed bootstrap `lib/config.php`
 use the explicit CLI command below. It decrypts and parses PHP without executing
 it, saves the prior bootstrap as a sealed artifact under `data/recovery/`, then
 atomically replaces `lib/config.php`; `--confirm` is required because the next
-HostScope request will use the recovered settings. Keep the printed `.sealed`
+Zogograph request will use the recovered settings. Keep the printed `.sealed`
 prior copy with the recovery key until the recovered configuration is tested.
 
 ```bash
 php scripts/restore-config.php --sealed /secure/config.sealed \
-  --key /secure/hostscope/primary.key --confirm
+  --key /secure/zogograph/primary.key --confirm
 ```
 
 The `--store setup` recovery path uses only the minimal bootstrap first, so it
@@ -402,8 +402,8 @@ instead of deleting it, and switches the saved encryption setting only after
 those steps succeed:
 
 ```bash
-php scripts/encryption-key.php create /secure/hostscope/replacement.key
-php scripts/rotate-sealed-copies.php --new-key /secure/hostscope/replacement.key --confirm
+php scripts/encryption-key.php create /secure/zogograph/replacement.key
+php scripts/rotate-sealed-copies.php --new-key /secure/zogograph/replacement.key --confirm
 php cron.php --verify-sealed
 ```
 
@@ -419,7 +419,7 @@ affected store has a current verified replacement, then authenticates each old
 artifact before removal:
 
 ```bash
-php scripts/retire-superseded-sealed.php --old-key /secure/hostscope/primary.key --confirm
+php scripts/retire-superseded-sealed.php --old-key /secure/zogograph/primary.key --confirm
 ```
 
 ## Optional: signed executable packages

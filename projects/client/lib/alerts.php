@@ -318,7 +318,7 @@ function setupConfigurationEncryptionAlerts(array $config): array
 }
 
 /** Emits one evidence-based alert for a configured portable encryption policy.
- * It intentionally says nothing for protection modes HostScope cannot verify. */
+ * It intentionally says nothing for protection modes Zogograph cannot verify. */
 function encryptionRecoveryAlerts(array $config, PDO $pdo): array
 {
     $settings = (array)($config['encryption'] ?? []);
@@ -342,7 +342,7 @@ function encryptionRecoveryAlerts(array $config, PDO $pdo): array
     }
     $problems = [];
     try { encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), dirname(__DIR__)); }
-    catch (Throwable) { $problems[] = 'The private local key is unavailable to HostScope.'; }
+    catch (Throwable) { $problems[] = 'The private local key is unavailable to Zogograph.'; }
     foreach ($failed as $store) $problems[] = "A retained encrypted copy for {$store} failed verification.";
     $maximumAge = encryptionScheduleMaximumAge((string)($settings['backup_schedule'] ?? 'manual'));
     foreach ($stores as $store) {
@@ -372,7 +372,7 @@ function packageRuntimeIntegrityAlerts(PDO $pdo): array
     if (count($failed) > 10) $detail[] = (count($failed) - 10) . ' additional installed package(s) failed integrity verification.';
     return [['rule' => 'package_integrity', 'severity' => 'error',
         'subject' => 'Installed package integrity needs attention',
-        'detail' => "HostScope did not execute these packages. Review or remove the altered files before enabling them.\n" . implode("\n", $detail)]];
+        'detail' => "Zogograph did not execute these packages. Review or remove the altered files before enabling them.\n" . implode("\n", $detail)]];
 }
 
 /** Latest failed or available-update result from the root-only collector. */
@@ -1165,7 +1165,7 @@ function sendAlertEmail(array $config, PDO $pdo, array $raised): void
             : count($raised) . ' things need looking at'
     );
 
-    $lines = ['HostScope on ' . $host, ''];
+    $lines = ['Zogograph on ' . $host, ''];
 
     $link = dashboardLink($config);
     if ($link !== null) {
@@ -1367,7 +1367,7 @@ function telegramAlertText(array $config, array $raised): string
     usort($raised, fn(array $a, array $b): int =>
         severityRank((string)$b['severity']) <=> severityRank((string)$a['severity']));
     $worst = worstSeverity(array_column($raised, 'severity'));
-    $lines = [sprintf('HostScope %s on %s', strtoupper($worst), php_uname('n'))];
+    $lines = [sprintf('Zogograph %s on %s', strtoupper($worst), php_uname('n'))];
     $shown = 0;
     foreach ($raised as $alert) {
         $subject = preg_replace('/\s+/', ' ', trim((string)($alert['subject'] ?? ''))) ?: 'Untitled alert';
@@ -1439,7 +1439,7 @@ function sendTelegramMessage(array $telegram, string $text): array
 function sendTestTelegram(array $config): array
 {
     $telegram = (array)($config['alerts']['telegram'] ?? []);
-    $result = sendTelegramMessage($telegram, 'HostScope test on ' . php_uname('n') . "\nNothing has tripped.");
+    $result = sendTelegramMessage($telegram, 'Zogograph test on ' . php_uname('n') . "\nNothing has tripped.");
     return ['sent' => $result['sent'], 'to' => (string)($telegram['chat_id'] ?? ''), 'error' => $result['error']];
 }
 
@@ -1815,7 +1815,7 @@ function sendTestEmail(array $config, PDO $pdo): array
 
     $host = php_uname('n');
     $body = array_merge(
-        ['HostScope on ' . $host, '', 'This is a test. Nothing has tripped.', ''],
+        ['Zogograph on ' . $host, '', 'This is a test. Nothing has tripped.', ''],
         statusReport($pdo),
         ['', 'Alerts are ' . (($rules['enabled'] ?? false) ? 'enabled' : 'DISABLED in the config') . '.']
     );
@@ -1826,7 +1826,7 @@ function sendTestEmail(array $config, PDO $pdo): array
         $headers[] = 'From: ' . $from;
     }
 
-    $sent = @mail($to, "[test] $host HostScope", implode("\n", $body), implode("\r\n", $headers));
+    $sent = @mail($to, "[test] $host Zogograph", implode("\n", $body), implode("\r\n", $headers));
 
     return [
         'sent' => (bool)$sent,

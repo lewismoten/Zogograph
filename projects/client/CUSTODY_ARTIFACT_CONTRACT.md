@@ -1,7 +1,7 @@
 # Remote custody artifact contract
 
 This contract defines the next implementation step after enrolled-client
-readiness. It preserves HostScope’s low-cost local recovery path while allowing
+readiness. It preserves Zogograph’s low-cost local recovery path while allowing
 an optional remote custody provider to add a separate recovery envelope.
 
 The first implementation now supports explicit, per-artifact envelope storage

@@ -146,7 +146,7 @@ function marketplaceCompatibility(PDO $pdo, array $manifest): array
     if (isset($requires['min_schema']) && $schema < $requires['min_schema']) $problems[] = 'requires schema ' . $requires['min_schema'] . ' or newer';
     if (isset($requires['max_schema']) && $schema > $requires['max_schema']) $problems[] = 'requires schema ' . $requires['max_schema'] . ' or older';
     return $problems === []
-        ? ['status' => 'compatible', 'detail' => 'Compatible with this HostScope runtime.', 'can_enable' => true, 'schema' => $schema]
+        ? ['status' => 'compatible', 'detail' => 'Compatible with this Zogograph runtime.', 'can_enable' => true, 'schema' => $schema]
         : ['status' => 'incompatible', 'detail' => implode('; ', $problems), 'can_enable' => false, 'schema' => $schema];
 }
 
@@ -204,7 +204,7 @@ function marketplaceSetEnabled(array $config, PDO $pdo, string $id, bool $enable
     if (!is_array($package)) throw new InvalidArgumentException('package is not available in the local catalog');
     $compatibility = marketplaceCompatibility($pdo, $package);
     if ($enabled && !$package['provenance']['can_enable']) throw new InvalidArgumentException('package provenance cannot be verified');
-    if ($enabled && !$compatibility['can_enable']) throw new InvalidArgumentException('package is incompatible with this HostScope runtime');
+    if ($enabled && !$compatibility['can_enable']) throw new InvalidArgumentException('package is incompatible with this Zogograph runtime');
     marketplaceRecordState($pdo, $package['id'], $package['version'], $enabled, $actor);
     return $package + ['compatibility' => $compatibility, 'enabled' => $enabled];
 }
@@ -265,7 +265,7 @@ function marketplaceInstallManifest(array $config, PDO $pdo, string $json, strin
     $provenance = marketplaceProvenance($config, $manifest);
     if (!$provenance['can_enable']) throw new InvalidArgumentException('package provenance cannot be verified');
     $compatibility = marketplaceCompatibility($pdo, $manifest);
-    if (!$compatibility['can_enable']) throw new InvalidArgumentException('package is incompatible with this HostScope runtime');
+    if (!$compatibility['can_enable']) throw new InvalidArgumentException('package is incompatible with this Zogograph runtime');
     $directory = marketplaceWritableDirectory($config);
     $target = $directory . '/' . $manifest['id'] . '.json';
     $revision = null;
@@ -324,7 +324,7 @@ function marketplaceRollback(array $config, PDO $pdo, string $id, string $revisi
     if ($manifest['id'] !== $id) throw new InvalidArgumentException('package revision does not match its id');
     $provenance = marketplaceProvenance($config, $manifest);
     $compatibility = marketplaceCompatibility($pdo, $manifest);
-    if (!$provenance['can_enable'] || !$compatibility['can_enable']) throw new InvalidArgumentException('package revision cannot run on this HostScope instance');
+    if (!$provenance['can_enable'] || !$compatibility['can_enable']) throw new InvalidArgumentException('package revision cannot run on this Zogograph instance');
     $target = $directory . '/' . $id . '.json';
     if (is_file($target)) {
         if (is_link($target) || filesize($target) > MARKETPLACE_MAX_MANIFEST_BYTES) throw new InvalidArgumentException('existing package manifest is unsafe');

@@ -44,7 +44,7 @@ function peerTransportResponse(string $response): array
     $decoded = json_decode($response, true);
     $version = is_array($decoded) ? (int)($decoded['protocol_version'] ?? 0) : 0;
     if (!is_array($decoded) || empty($decoded['ok']) || $version !== PEER_TRANSPORT_PROTOCOL) {
-        throw new ActionRefused('remote controller protocol is incompatible; update both HostScope installations');
+        throw new ActionRefused('remote controller protocol is incompatible; update both Zogograph installations');
     }
     return $decoded;
 }

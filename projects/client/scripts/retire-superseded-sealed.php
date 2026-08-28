@@ -10,7 +10,7 @@ if (count($argv) !== 4 || $argv[1] !== '--old-key' || $argv[3] !== '--confirm') 
     fwrite(STDERR, "Usage: php scripts/retire-superseded-sealed.php --old-key /absolute/private/old.key --confirm\n"); exit(64);
 }
 try {
-    if (!is_file($configFile)) throw new RuntimeException('HostScope is not configured');
+    if (!is_file($configFile)) throw new RuntimeException('Zogograph is not configured');
     $config = loadConfiguredSettings($configFile);
     $retired = encryptionRetireSupersededArtifacts($config, db($config), $root, $argv[2]);
     echo "Retired {$retired} superseded sealed artifact(s). Keep independent offline recovery records as required by your policy.\n";

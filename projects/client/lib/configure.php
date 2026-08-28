@@ -81,7 +81,7 @@ function configFields(array $sample): array
             'label' => 'Encryption mode',
             'help' => 'Off keeps all current storage unencrypted. Sealed copies make separately encrypted, '
                 . 'verified snapshots; they do not alter the live database or its journal. Host-managed '
-                . 'volume protection is configured and operated outside HostScope.',
+                . 'volume protection is configured and operated outside Zogograph.',
             'default' => (string)($sample['encryption']['mode'] ?? 'none'),
             'options' => [
                 'none' => 'Off — do not encrypt anything',
@@ -132,7 +132,7 @@ function configFields(array $sample): array
             'type' => 'text',
             'label' => 'Private key-file path',
             'help' => 'Create it first with scripts/encryption-key.php. It must be an absolute, non-symlink '
-                . 'file outside this web directory and readable only by the HostScope service account.',
+                . 'file outside this web directory and readable only by the Zogograph service account.',
             'default' => (string)($sample['encryption']['local_key_file'] ?? ''),
             'validate' => fn(string $v): ?string => $v !== '' && str_starts_with($v, '/')
                 ? null : 'Enter an absolute private key-file path.',
@@ -171,7 +171,7 @@ function configFields(array $sample): array
             'path' => ['encryption', 'backup_schedule'],
             'type' => 'choice',
             'label' => 'Encrypted-copy schedule',
-            'help' => 'HostScope records this preference; configure the matching cron or host-scheduler job. '
+            'help' => 'Zogograph records this preference; configure the matching cron or host-scheduler job. '
                 . 'Manual creates copies only when cron.php --seal is run.',
             'default' => (string)($sample['encryption']['backup_schedule'] ?? 'daily'),
             'options' => ['manual' => 'Manual only', 'daily' => 'Daily', 'weekly' => 'Weekly'],
@@ -182,7 +182,7 @@ function configFields(array $sample): array
             'path' => ['encryption', 'retention_days'],
             'type' => 'int',
             'label' => 'Local encrypted-copy retention target (days)',
-            'help' => 'Zero means keep every copy. During an explicit sealing run, HostScope prunes only old verified local artifacts whose ciphertext hash still matches, and never the newest verified copy for a store.',
+            'help' => 'Zero means keep every copy. During an explicit sealing run, Zogograph prunes only old verified local artifacts whose ciphertext hash still matches, and never the newest verified copy for a store.',
             'default' => (int)($sample['encryption']['retention_days'] ?? 30),
             'validate' => fn(string $v): ?string => ctype_digit($v) && (int)$v <= 36500
                 ? null : 'Enter a whole number from 0 to 36500.',
@@ -210,7 +210,7 @@ function configFields(array $sample): array
             'path' => ['encryption', 'recovery_drill_max_age_days'],
             'type' => 'int',
             'label' => 'Recovery-drill review period (days)',
-            'help' => 'HostScope warns when a selected store has not completed a non-destructive recovery drill within this period. Ninety days is the recommended starting point; zero disables periodic reminders after the first required drill.',
+            'help' => 'Zogograph warns when a selected store has not completed a non-destructive recovery drill within this period. Ninety days is the recommended starting point; zero disables periodic reminders after the first required drill.',
             'default' => (int)($sample['encryption']['recovery_drill_max_age_days'] ?? 90),
             'validate' => fn(string $v): ?string => ctype_digit($v) && (int)$v <= 36500
                 ? null : 'Enter a whole number from 0 to 36500.',
@@ -1136,7 +1136,7 @@ function renderConfig(array $config, string $libDir): string
         'declare(strict_types=1);',
         '',
         '/*',
-        " * HostScope configuration, written by setup.php on $when.",
+        " * Zogograph configuration, written by setup.php on $when.",
         ' *',
         ' * Every option is described in lib/config.sample.php. This file holds the',
         ' * password hash and the mask secret, so it is gitignored and lib/.htaccess',

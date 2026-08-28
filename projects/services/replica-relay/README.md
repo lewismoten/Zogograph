@@ -1,4 +1,4 @@
-# HostScope replica relay
+# Zogograph replica relay
 
 This optional commercial service stores verified **ciphertext only** for an
 enrolled customer. It has no custody key, key-encryption key, unwrap operation,

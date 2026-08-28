@@ -41,7 +41,7 @@ if ($action === 'jwks') {
 if ($action === 'authorize') {
     startSession($config);
     if (!isSignedIn()) {
-        $json(['error' => 'sign in to HostScope before authorizing a trusted client'], 401);
+        $json(['error' => 'sign in to Zogograph before authorizing a trusted client'], 401);
     }
     $clientId = (string)($_GET['client_id'] ?? '');
     $redirect = (string)($_GET['redirect_uri'] ?? '');

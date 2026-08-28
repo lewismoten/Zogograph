@@ -77,7 +77,7 @@ function setupStoreConfigurationProtection(string $configFile): array
             : 'No full setup configuration record was found.'];
     } catch (Throwable) {
         return ['state' => 'error',
-            'detail' => 'HostScope could not verify the encrypted setup configuration. Check the private key path and restore only a verified backup.'];
+            'detail' => 'Zogograph could not verify the encrypted setup configuration. Check the private key path and restore only a verified backup.'];
     }
 }
 
@@ -95,7 +95,7 @@ function setupStoreConfigurationProtectionForSettings(array $settings, string $w
         }
         return ['state' => 'warning', 'detail' => 'The full setup configuration is permission-protected but not encrypted at rest.'];
     } catch (Throwable) {
-        return ['state' => 'error', 'detail' => 'HostScope could not verify the encrypted setup configuration. Check the private key path and restore only a verified backup.'];
+        return ['state' => 'error', 'detail' => 'Zogograph could not verify the encrypted setup configuration. Check the private key path and restore only a verified backup.'];
     }
 }
 

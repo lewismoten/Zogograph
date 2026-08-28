@@ -92,7 +92,7 @@ $say = function (string $line) use ($quiet): void {
 
 if (in_array('--help', $jobs, true) || in_array('-h', $jobs, true)) {
     echo <<<TEXT
-    HostScope collector
+    Zogograph collector
 
       php cron.php --vitals     take one cheap reading (disk, memory, cpu)
       php cron.php --scan       walk the tree and record what is where
@@ -397,7 +397,7 @@ function sendReportEmail(array $config, PDO $pdo, string $period, array $report)
     $label = aiReportPeriods()[$period]['label'] ?? ucfirst($period);
 
     $body = [
-        'HostScope on ' . $host,
+        'Zogograph on ' . $host,
         '',
         $report['body'],
         '',

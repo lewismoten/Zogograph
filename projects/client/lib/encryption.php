@@ -262,7 +262,7 @@ function encryptionSealConfiguredCopies(array $config, PDO $account, string $web
     if (($settings['mode'] ?? 'none') === 'none') return [];
     if (($settings['mode'] ?? '') === 'operator_managed_volume') return [];
     if (($settings['mode'] ?? '') !== 'sealed_copies_local') {
-        throw new RuntimeException('the selected encryption mode is unavailable in this HostScope release');
+        throw new RuntimeException('the selected encryption mode is unavailable in this Zogograph release');
     }
     $key = encryptionReadLocalKey((string)($settings['local_key_file'] ?? ''), $webRoot);
     try { $directory = encryptionArtifactDirectory($config, $webRoot); }
@@ -406,10 +406,10 @@ function encryptionValidateSettings(array $config, string $webRoot): void
     if ($stores === []) throw new InvalidArgumentException('select at least one database or configuration artifact to protect');
     if ($mode === 'operator_managed_volume') return;
     if ($mode !== 'sealed_copies_local') {
-        throw new InvalidArgumentException('the selected encryption mode is unavailable in this HostScope release');
+        throw new InvalidArgumentException('the selected encryption mode is unavailable in this Zogograph release');
     }
     if (($settings['key_custody'] ?? 'local_private_file') !== 'local_private_file') {
-        throw new InvalidArgumentException('the selected key-custody method is unavailable in this HostScope release');
+        throw new InvalidArgumentException('the selected key-custody method is unavailable in this Zogograph release');
     }
     encryptionValidateArtifactDirectory((string)($settings['artifact_directory'] ?? ''), $webRoot);
     encryptionValidateRetentionSettings($settings);
@@ -457,11 +457,11 @@ function encryptionStatus(PDO $pdo, array $config, string $webRoot): array
     if ($mode === 'operator_managed_volume') {
         $status['ready'] = $stores !== [];
         $status['evidence'] = $stores === [] ? 'none' : 'operator_declared';
-        $status['warnings'][] = 'HostScope cannot verify host or volume encryption. Confirm that the selected databases, WAL files, logs, and backups are covered by your host policy.';
+        $status['warnings'][] = 'Zogograph cannot verify host or volume encryption. Confirm that the selected databases, WAL files, logs, and backups are covered by your host policy.';
         return $status;
     }
     if ($mode !== 'sealed_copies_local') {
-        $status['warnings'][] = 'The selected encryption mode is not available in this HostScope release.';
+        $status['warnings'][] = 'The selected encryption mode is not available in this Zogograph release.';
         return $status;
     }
     if (!encryptionAvailable()) $status['warnings'][] = 'OpenSSL AES-256-GCM support is unavailable.';
@@ -566,8 +566,8 @@ function encryptionSensitiveSourceWarnings(array $paths, array $stores): array
             $warnings[] = $store === 'host'
                 ? "The selected {$label} permits access beyond the documented dashboard group-read handoff; restrict it before treating protection as ready."
                 : (in_array($store, ['config', 'setup'], true)
-                    ? "The selected {$label} is readable by group or other users; restrict it to the HostScope service account before treating protection as ready."
-                    : "The selected {$label} is readable or writable by group or other users; restrict it to the HostScope service account before treating protection as ready.");
+                    ? "The selected {$label} is readable by group or other users; restrict it to the Zogograph service account before treating protection as ready."
+                    : "The selected {$label} is readable or writable by group or other users; restrict it to the Zogograph service account before treating protection as ready.");
         }
     }
     return $warnings;
@@ -867,7 +867,7 @@ function encryptionOpenFile(string $source, string $destination, string $kek): v
     }
     try {
         if (encryptionReadExact($in, strlen(ENCRYPTION_MAGIC)) !== ENCRYPTION_MAGIC) {
-            throw new RuntimeException('the artifact is not a HostScope sealed copy');
+            throw new RuntimeException('the artifact is not a Zogograph sealed copy');
         }
         [$header, $headerText] = encryptionReadArtifactHeader($in);
         $prefix = base64_decode((string)($header['nonce_prefix'] ?? ''), true);
@@ -918,7 +918,7 @@ function encryptionReadArtifactDataKey(string $source, string $kek, string $arti
     $in = fopen($source, 'rb');
     if ($in === false) throw new RuntimeException('could not open the sealed artifact');
     try {
-        if (encryptionReadExact($in, strlen(ENCRYPTION_MAGIC)) !== ENCRYPTION_MAGIC) throw new RuntimeException('the artifact is not a HostScope sealed copy');
+        if (encryptionReadExact($in, strlen(ENCRYPTION_MAGIC)) !== ENCRYPTION_MAGIC) throw new RuntimeException('the artifact is not a Zogograph sealed copy');
         [$header] = encryptionReadArtifactHeader($in);
         if (!hash_equals((string)$header['artifact_id'], $artifactId)) throw new RuntimeException('the sealed artifact identity does not match its ledger');
         $wrapped = base64_decode((string)($header['wrapped_key'] ?? ''), true);
@@ -941,7 +941,7 @@ function encryptionOpenFileWithDataKey(string $source, string $destination, stri
     $in = fopen($source, 'rb'); $out = encryptionWithPrivateUmask(fn() => @fopen($destination, 'xb'));
     if ($in === false || $out === false) { if (is_resource($in)) fclose($in); if (is_resource($out)) fclose($out); throw new RuntimeException('could not open sealed-artifact recovery files'); }
     try {
-        if (encryptionReadExact($in, strlen(ENCRYPTION_MAGIC)) !== ENCRYPTION_MAGIC) throw new RuntimeException('the artifact is not a HostScope sealed copy');
+        if (encryptionReadExact($in, strlen(ENCRYPTION_MAGIC)) !== ENCRYPTION_MAGIC) throw new RuntimeException('the artifact is not a Zogograph sealed copy');
         [$header, $headerText] = encryptionReadArtifactHeader($in);
         if (!hash_equals((string)$header['artifact_id'], $artifactId)) throw new RuntimeException('the sealed artifact identity does not match its recovery ledger');
         $prefix = base64_decode((string)($header['nonce_prefix'] ?? ''), true);

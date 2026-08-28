@@ -1,6 +1,6 @@
 # Continuous deployment
 
-The Forgejo workflows in the repository root deploy this application with
+The Forgejo workflows in `.forgejo/workflows/` deploy this application with
 `rsync`, without replacing the live configuration or SQLite stores. They are
 safe for the existing installation after the following Forgejo settings exist.
 
@@ -13,12 +13,12 @@ Repository **variables**:
 | `DEPLOY_HOST` | SSH hostname or IP address |
 | `DEPLOY_PORT` | SSH port; leave empty for `22` |
 | `DEPLOY_USER` | restricted deployment user |
-| `DEPLOY_PATH` | absolute web-root path for this HostScope install |
+| `DEPLOY_PATH` | absolute web-root path for this Zogograph client install |
 | `DEPLOY_URL` | public HTTPS URL for the install, without a trailing slash |
 | `DEPLOY_KNOWN_HOSTS` | exact `known_hosts` line for the server's SSH host key |
 | `SNAPSHOT_PATH` | absolute private path for snapshots, outside the web root and deploy path |
 | `SNAPSHOT_RETENTION` | optional whole number from `1` to `50`; defaults to `3` complete snapshots |
-| `CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED` | optional `true` when this release requires open browsers to reload; otherwise omit or use `false` |
+| `CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED` | legacy compatibility variable: optional `true` when this release requires open browsers to reload; otherwise omit or use `false` |
 
 Repository **secret**:
 
@@ -48,10 +48,9 @@ as a variable. Do not disable host-key checking in the workflow.
 
 ## Deploying
 
-`client-hostscope-deploy.yml` runs on pushes to `develop` and the current
-`feature-dashboard-professional-polish` development branch when they change
-`projects/client/`. It can also be run manually from any selected
-ref. Change the `push.branches` list when the development branch changes.
+`deploy.yml` runs on pushes to the configured development branches and can be
+run manually from any selected ref. The workflow assumes this directory is the
+repository root, so it has no monorepo path dependency.
 
 Each run:
 
@@ -74,7 +73,7 @@ restore use one lifecycle lock, so retention cannot race a restore.
 
 Open dashboards check `build.json` once a minute. A new ordinary build shows a
 non-disruptive **Reload now** message. Set
-`CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED=true` for a deployment that changes
+`CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED=true` (a preserved legacy variable) for a deployment that changes
 the browser/server contract; the same prompt then clearly says the reload is
 required before continuing. The browser does not silently discard an in-progress
 form or other operator work.
@@ -97,11 +96,11 @@ refused.
 ## Restoring a snapshot
 
 Before restoring, pause the account and host collector cron jobs so they do not
-write while files are replaced. In Forgejo, run **Restore Client HostScope
+write while files are replaced. In Forgejo, run **Restore Zogograph Client
 Snapshot**, enter the snapshot ID, and type exactly:
 
 ```text
-restore-hostscope-snapshot
+restore-zogograph-snapshot
 ```
 
 The restore job snapshots the current site first, restores application and

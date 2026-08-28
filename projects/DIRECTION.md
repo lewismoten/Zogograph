@@ -1,9 +1,9 @@
-# HostScope product and deployment direction
+# Zogograph product and deployment direction
 
-This is the decision record for the separated HostScope projects. It gives a
+This is the decision record for the separated Zogograph projects. It gives a
 safe launch direction while keeping customer-facing choices in authenticated,
 database-backed settings instead of source code. It deliberately uses
-**HostScope** and the current provisional URL as replaceable labels. The
+**Zogograph** and configured deployment URLs as replaceable labels. The
 companion [IMPLEMENTATION_DIRECTION.md](IMPLEMENTATION_DIRECTION.md) records
 which parts are usable now versus deliberately staged.
 
@@ -15,12 +15,12 @@ the provisional public origin:
 
 | deployment | provisional public location | role | must not share |
 | --- | --- | --- | --- |
-| commercial site | `https://hostscope.clewismoten.com/` | product pages, documentation, account entry, subscription and upgrade links | service databases and service secrets |
-| marketplace | `/marketplace/` | reviewed package catalogue, purchase records and submission workflow | client package runtime and custody keys |
-| updates | `/updates/` | signed download distribution and version-check API | marketplace payment data and client credentials |
-| key custody | `/services/key-custody/` | tenant-isolated wrapped-key envelopes and unwrap authorization | replicas, metrics, payment information, and customer databases |
-| future AI proxy | `/services/ai-proxy/` | opt-in model-provider policy and request forwarding | custody data and marketplace credentials |
-| future replica relay | `/services/replica-relay/` | encrypted artifact storage and verification | usable data keys or unwrap authority |
+| commercial site | `https://zogograph.com/` | product pages, documentation, account entry, subscription and upgrade links | service databases and service secrets |
+| marketplace | `https://market.zogograph.com/` | reviewed package catalogue, purchase records and submission workflow | client package runtime and custody keys |
+| updates | `https://updates.zogograph.com/` | signed download distribution and version-check API | marketplace payment data and client credentials |
+| key custody | `https://services.zogograph.com/key-custody/` | tenant-isolated wrapped-key envelopes and unwrap authorization | replicas, metrics, payment information, and customer databases |
+| future AI proxy | `https://services.zogograph.com/ai-proxy/` | opt-in model-provider policy and request forwarding | custody data and marketplace credentials |
+| future replica relay | `https://services.zogograph.com/replica-relay/` | encrypted artifact storage and verification | usable data keys or unwrap authority |
 
 Each row gets its own environment configuration, database, filesystem account
 where practical, backup policy, log stream, deploy credential, and release
@@ -35,12 +35,12 @@ commercial service to collect locally.
 
 ## Naming and endpoint policy
 
-Do not embed `hostscope.clewismoten.com`, a product name, or a path prefix in
+Do not embed a deployment hostname, product name, or path prefix in
 the client protocol, encrypted artifact identifier, signing-key identifier, or
 peer identity. The current URL is a deployment setting only.
 
 - Public site labels, domains, support URLs, pricing copy, and logo assets are
-  commercial-site content settings.
+  site content settings.
 - Package publishers and product package names use stable opaque identifiers;
   display names can change during a rebrand.
 - A client stores an administrator-configured service base URL and a pinned
@@ -146,7 +146,7 @@ envelope, unwrap a key, or receive an artifact/database path. This preserves
 customer choice without claiming that an untested provider is already
 protecting live data.
 
-`commercial-services/replica-relay/` is now a separately deployable,
+`services/replica-relay/` is now a separately deployable,
 ciphertext-only reference service with isolated tenant enrollment, SQLite
 metadata, private artifact files, and a signed API. It is not yet an end-user
 client capability: no full-client relay package may upload to it until the
@@ -176,10 +176,10 @@ administrator has an approved certificate-key rotation process; CA and hostname
 verification remain required whether or not a pin is used.
 
 The detailed encryption design and implementation state live in
-[`client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md`](client-hostscope/ENCRYPTION_AND_FLEET_PLAN.md).
+[`client/ENCRYPTION_AND_FLEET_PLAN.md`](client/ENCRYPTION_AND_FLEET_PLAN.md).
 The operator-facing review checklist is
-[`client-hostscope/ENCRYPTION_REVIEW.md`](client-hostscope/ENCRYPTION_REVIEW.md).
+[`client/ENCRYPTION_REVIEW.md`](client/ENCRYPTION_REVIEW.md).
 The concise set of adopted defaults and future configuration locations is
-[`client-hostscope/ENCRYPTION_DECISIONS.md`](client-hostscope/ENCRYPTION_DECISIONS.md).
+[`client/ENCRYPTION_DECISIONS.md`](client/ENCRYPTION_DECISIONS.md).
 The deployment handoff and launch gates are collected in
 [`DEPLOYMENT_CHECKLIST.md`](DEPLOYMENT_CHECKLIST.md).

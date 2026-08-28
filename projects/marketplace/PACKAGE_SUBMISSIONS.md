@@ -15,8 +15,8 @@ customer monitoring data, or a database copy.
    during publisher enrollment.
 4. Review package identity, capabilities, dependency and storage declarations,
    security model, license, source, and compatibility evidence.
-5. Publish marketplace approval as separate HostScope provenance. Never
-   re-sign a customer package as though HostScope authored it.
+5. Publish marketplace approval as separate Zogograph provenance. Never
+   re-sign a customer package as though Zogograph authored it.
 
 ## Future API
 
@@ -37,7 +37,7 @@ Start with free private package signing/testing and free submission for
 open-source or private-review packages. Every executable package receives
 manual security and compatibility review; no customer package is automatically
 published, even when its signature verifies. Reviewers publish an independent
-HostScope approval record and never replace the publisher signature.
+Zogograph approval record and never replace the publisher signature.
 
 Do not set a submission fee or expedited-review promise at launch. Revisit
 pricing after tracking review effort and published package demand. For paid

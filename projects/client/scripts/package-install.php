@@ -18,7 +18,7 @@ function packageInstallUsage(): never
 }
 
 $configFile = __DIR__ . '/../lib/config.php';
-if (!is_file($configFile)) { fwrite(STDERR, "HostScope is not configured.\n"); exit(1); }
+if (!is_file($configFile)) { fwrite(STDERR, "Zogograph is not configured.\n"); exit(1); }
 $config = loadConfiguredSettings($configFile);
 $pdo = db($config);
 $command = $argv[1] ?? '';

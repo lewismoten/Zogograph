@@ -1,7 +1,7 @@
 # Encryption decisions to review later
 
 This is the operator/product-owner checklist for encryption. It separates
-decisions that HostScope can safely default from decisions that must remain
+decisions that Zogograph can safely default from decisions that must remain
 changeable in the website and database-backed settings.
 
 The adopted first-release choices and exact future change locations are kept
@@ -18,7 +18,7 @@ in [ENCRYPTION_DECISIONS.md](ENCRYPTION_DECISIONS.md).
 | copy policy | daily, retain 30 days | Encryption package settings | A useful starting point; it is not an automatic deletion promise until retention automation is installed. |
 | live-store protection | operator-managed volume where available | Setup → Encryption | Protects SQLite, WAL, logs, and config together without changing application queries. |
 | remote replication | off | Fleet Encryption → Replicas | A replica should never be created without a deliberately enrolled peer. |
-| commercial services | off | Marketplace → installed package | A customer deployment must never depend on HostScope-operated services. |
+| commercial services | off | Marketplace → installed package | A customer deployment must never depend on Zogograph-operated services. |
 | remote service identity | normal HTTPS CA and hostname validation | provider package settings | This is the low-friction portable default; an optional SPKI pin adds a deliberate certificate-key rotation procedure. |
 
 These are seeded settings, not hard-coded policy. The only bootstrap values
@@ -39,13 +39,13 @@ authenticated website/API.
 | SQLCipher support | per supported PHP/OS build | SQLCipher package | The package must prove WAL, backup, migration, crash recovery, and performance behavior. It must not fall back to plaintext SQLite. |
 | MySQL/MariaDB backend | when multi-node query/write needs outweigh SQLite simplicity | storage package | It is a storage backend, not an encryption feature. It adds credentials, migrations, backups, and server operations. |
 | Redis | when an explicit cache/queue use case exists | cache package | Redis is not durable encrypted metric storage by default; an exposed Redis service is a serious data-disclosure risk. |
-| Commercial key hosting | before pricing or customer onboarding | commercial-services/key-custody package | Keep key custody and ciphertext replication as separate tenant-isolated roles; establish recovery, deletion, audit, and incident terms. |
+| Commercial key hosting | before pricing or customer onboarding | services/key-custody package | Keep key custody and ciphertext replication as separate tenant-isolated roles; establish recovery, deletion, audit, and incident terms. |
 | TLS public-key pin | before enabling it or rotating a pinned service certificate key | provider package settings | A pin supplements CA validation but can block recovery if it is not migrated before the service certificate key changes. |
-| Product/domain naming | before public launch or rebrand | commercial-site deployment settings | Domains and labels must not change encrypted artifact identifiers, peer identities, signing keys, or stored customer data. |
+| Product/domain naming | before public launch or rebrand | site deployment settings | Domains and labels must not change encrypted artifact identifiers, peer identities, signing keys, or stored customer data. |
 
 ## Setup configuration at rest
 
-When a valid local HostScope key file is configured, `lib/setupstore.php`
+When a valid local Zogograph key file is configured, `lib/setupstore.php`
 automatically stores the complete authenticated configuration as an
 AES-256-GCM encrypted, versioned record in `setup.db`. It derives a distinct
 configuration key from the local key, uses fixed authenticated associated data,
@@ -56,7 +56,7 @@ implement its own field vault.
 
 `lib/config.php` retains only the database/scan/timezone bootstrap and the
 absolute locator of the external key; it never contains the key itself. If an
-encrypted configuration cannot be opened, HostScope fails closed instead of
+encrypted configuration cannot be opened, Zogograph fails closed instead of
 silently falling back to a bootstrap without its authentication policy. Keep a
 private backup of both the setup database and the owner-only key file, then
 verify a restart/recovery before relying on the change.
@@ -69,7 +69,7 @@ key path deliberately returns to the private-permissions-only form, so do not
 do that until a recovery copy is verified.
 
 This is not live database/volume encryption: `setup.db` is decrypted by the
-HostScope process while in use. Use encrypted storage/volume protection or a
+Zogograph process while in use. Use encrypted storage/volume protection or a
 verified future SQLCipher package when an attacker with offline disk access is
 in scope.
 
@@ -84,11 +84,11 @@ configuration migration and updated customer-facing terms, not a protocol fork.
 | --- | --- | --- |
 | Commercial review | Free private signing/testing; manual review for every executable package; no automatic publication. | Early review volume should be manageable and security-sensitive packages need human inspection. Add paid expedited review only after measured review time and a published SLA. |
 | Marketplace price | $0 to submit/open-source packages; charge only for commercial package sales through a configurable revenue share. | Avoid charging before the marketplace creates distribution value. Set the percentage, payout threshold, refund window, and tax handling in commercial marketplace settings after legal/accounting review. |
-| SQLCipher support | Support only tested PHP/OS/container images published by HostScope; report all other environments as unavailable. | SQLCipher builds and PDO driver behavior vary. Expand the support matrix only after automated WAL, migration, backup, crash-recovery, and performance results pass for that image. |
+| SQLCipher support | Support only tested PHP/OS/container images published by Zogograph; report all other environments as unavailable. | SQLCipher builds and PDO driver behavior vary. Expand the support matrix only after automated WAL, migration, backup, crash-recovery, and performance results pass for that image. |
 | Local retention | Daily sealed copy, retain 30 days; prune only during an explicit sealing run after hash verification, never the newest verified copy per store. | This provides a usable baseline without silently deleting the last local recovery data. Recommended future minimum: retain 7 daily, 4 weekly, and 12 monthly verified artifacts, all configurable per policy. |
 | Fleet replication | Off by default; recommend 2 encrypted replicas when at least 3 independently administered hosts are enrolled. | One remote copy improves availability but is not redundancy; two replicas tolerate one failure. Do not count the owner as a remote replica. |
 | Fleet custody | Off at launch; self-managed custody first, with two-of-three threshold recovery only after independent review. | Custody is harder to recover safely than ciphertext replication. A single remote key service becomes a critical availability and trust dependency. |
-| HostScope key hosting | Do not launch with key hosting. Launch optional ciphertext replica storage first; reconsider custody only after mature fleet custody, incident response, recovery drills, tenant isolation, and legal/privacy terms exist. | Hosting both encrypted artifacts and unwrap capability increases blast radius and operational obligations. Keep those roles separate even if both services are later sold. |
+| Zogograph key hosting | Do not launch with key hosting. Launch optional ciphertext replica storage first; reconsider custody only after mature fleet custody, incident response, recovery drills, tenant isolation, and legal/privacy terms exist. | Hosting both encrypted artifacts and unwrap capability increases blast radius and operational obligations. Keep those roles separate even if both services are later sold. |
 | MySQL/MariaDB | Do not ship as an encryption substitute. Offer only as an advanced storage-backend package after the package runtime is stable. | It adds server operations and credentials without automatically solving key custody or at-rest encryption. |
 | Redis | Do not offer as metric storage. Offer later only as a bounded cache/queue package with TLS, authentication, eviction policy, and no secrets by default. | Redis is easy to expose accidentally and is not a durable replacement for the metric database. |
 
@@ -100,7 +100,7 @@ unbounded list of host distributions:
 
 - **Portable:** standard PHP 8.1+ with PDO SQLite; sealed-copy package and
   operator-managed volume protection only.
-- **Verified SQLCipher:** HostScope-published container images and selected VPS
+- **Verified SQLCipher:** Zogograph-published container images and selected VPS
   images where the exact PHP/PDO SQLCipher driver build is continuously tested.
 - **Unsupported but detectable:** any other environment; show why the package
   cannot activate and offer sealed copies or host-volume guidance.
@@ -118,7 +118,7 @@ Use one versioned service namespace, independent of a provisional domain:
 
 The first service names should be `key-custody`, `replica-relay`, and
 `entitlements`. A client stores a configured base URL and pinned enrollment
-identity, never a literal `hostscope.clewismoten.com` URL. On the provisional
+identity, never a literal deployment URL. On the provisional
 VPS, those services can initially live beneath separate paths, for example
 `/services/key-custody/`; moving each to its own domain later must preserve the
 same versioned API and peer identity.
@@ -163,7 +163,7 @@ Recommended package families:
   driver is installed.
 - `fleet-custody` and `fleet-replica` — self-managed peer custody and
   ciphertext replication.
-- `kms-*` — optional third-party or HostScope key-provider adapters.
+- `kms-*` — optional third-party or Zogograph key-provider adapters.
 - `storage-mysql` / `storage-mariadb` — optional transactional storage
   backends.
 - `cache-redis` — optional bounded cache/queue integration, never a default

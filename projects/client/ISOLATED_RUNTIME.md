@@ -1,6 +1,6 @@
 # Isolated package runtime design
 
-Executable packages are an optional upgrade. HostScope never loads a package
+Executable packages are an optional upgrade. Zogograph never loads a package
 entry point in the dashboard, cron, setup, or API PHP process. A signed package
 is only a reviewed registry record until an operator deploys a separate runtime
 that satisfies this document.
@@ -16,12 +16,13 @@ dedicated container or operating-system service account. Mount only:
 
 - the immutable, verified package release, read-only;
 - that package's private data directory, read/write;
-- a single request/response channel owned by HostScope; and
+- a single request/response channel owned by Zogograph; and
 - explicitly approved, short-lived input values.
 
-HostScope includes `scripts/package-runtime-worker.php` as the initial runner
+Zogograph includes `scripts/package-runtime-worker.php` as the initial runner
 component. It refuses to start unless its launcher sets
-`HOSTSCOPE_PACKAGE_SANDBOX=1`, accepts one bounded request, and does not
+the legacy `HOSTSCOPE_PACKAGE_SANDBOX=1` compatibility marker, accepts one
+bounded request, and does not
 receive configuration, core database handles, or package private-data paths.
 The normal probe operations receive no secrets. The marker is an operator
 attestation, not sandbox proof: run the worker only from the container/OS
@@ -73,7 +74,7 @@ path/image tag. It intentionally does not mount core data, configuration, or
 key files; add a package-private data mount only for a later signed operation
 that has passed its release gate.
 
-Do not mount the HostScope web root, core databases, setup database, bootstrap
+Do not mount the Zogograph web root, core databases, setup database, bootstrap
 configuration, key files, SSH agent, Docker socket, home directory, or a broad
 host filesystem. Disable outbound networking by default; grant it only for a
 package with the signed `network_client` capability and an operator-approved
@@ -132,7 +133,7 @@ needs it, never expose a vault listing, and must redact it from logs and errors.
   signing key. Local signing proves authorship to the local trust store; it is
   not marketplace review or a security certification.
 
-Until these controls are implemented and independently tested, HostScope keeps
+Until these controls are implemented and independently tested, Zogograph keeps
 the `isolated_package_runtime` capability unavailable. The deployment-attested
 probe and custody enrollment-readiness check are diagnostic evidence, not
 envelope/unwrap execution authority. Packages that require that capability
@@ -155,5 +156,5 @@ printf '%s\n' '{"api":"1.0","operation":"sqlcipher_preflight","package_id":"sqlc
 
 The only successful responses are a bounded `unavailable` driver explanation
 or `preflight-ready` evidence from a random temporary sandbox database. Neither
-response enables a package, opens a HostScope database, changes a live store,
+response enables a package, opens a Zogograph database, changes a live store,
 or proves a migration/recovery procedure.

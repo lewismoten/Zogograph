@@ -221,7 +221,7 @@ function alertCatalogue(): array
             'cooldown' => 6 * SPAN_HOUR,
             'view' => 'sys-packages',
             'why' => 'A signed installed package has changed, is missing a declared file, '
-                . 'or contains an unexpected file. HostScope does not execute it while the mismatch remains.',
+                . 'or contains an unexpected file. Zogograph does not execute it while the mismatch remains.',
         ],
     ];
 }
@@ -615,7 +615,7 @@ function selfDiagnosis(array $config): array
     return [
         'who' => 'account',
         'why' => 'This dashboard\'s own error log, if the site itself is misbehaving.',
-        'when' => 'HostScope itself is not loading',
+        'when' => 'Zogograph itself is not loading',
         'command' => 'tail -40 '
             . escapeshellarg(dirname((string)($config['database'] ?? '')) . '/error.log'),
     ];

@@ -24,6 +24,14 @@ list.
 - New deployment documentation uses Zogograph domains and project directories.
   Existing deployment paths are valid until an administrator moves them using a
   backup-verified migration.
+- Legacy `hostscope` appears in client workflow helper filenames, snapshot
+  staging names, and the optional browser-refresh variable. Those deployment
+  identifiers are intentionally retained because changing them in-place could
+  interrupt a running snapshot/restore lifecycle; their public workflow names
+  and manifest labels are now Zogograph.
+- The immutable encryption magic (`HOSTSCOPE-SEAL-1`), peer HTTP headers,
+  storage keys, plugin IDs, and signed package metadata remain wire-format or
+  persisted compatibility identifiers, not public branding.
 
 ## Remaining public-surface review
 

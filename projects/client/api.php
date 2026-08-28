@@ -5753,7 +5753,7 @@ function doPackageRuntimeCustodyEnrollmentCheck(array $config, PDO $pdo, bool $p
     catch (InvalidArgumentException|RuntimeException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, 'package_runtime_custody_enrollment_check', 'hostscope-key-custody', 'ok', 0, 0, 'credential accepted; no envelope, unwrap, or key operation requested');
     return ['ok' => true, 'result' => $result,
-        'warning' => 'The enrolled-client credential was delivered only to the configured one-shot credential-check sandbox. This checked subscription readiness only; it did not create an envelope, unwrap a key, or access a HostScope database.'];
+        'warning' => 'The enrolled-client credential was delivered only to the configured one-shot credential-check sandbox. This checked subscription readiness only; it did not create an envelope, unwrap a key, or access a Zogograph database.'];
 }
 
 /** Explicitly adds one optional recovery envelope; it never uploads ciphertext
@@ -5767,7 +5767,7 @@ function doPackageRuntimeCustodyEnvelopeStore(array $config, PDO $pdo, bool $pos
     catch (InvalidArgumentException|RuntimeException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, 'package_runtime_custody_envelope_store', $artifactId, 'ok', 0, 0, 'stored optional remote DEK envelope receipt; local recovery copy retained');
     return ['ok' => true, 'artifact_id' => $artifactId, 'result' => $result,
-        'warning' => 'The custody sandbox received only this artifact’s in-memory data key and enrolled-client credentials. It stored a sealed key envelope; no HostScope database, artifact bytes, plaintext, local recovery key, or billing credential was sent. Local recovery remains required.'];
+        'warning' => 'The custody sandbox received only this artifact’s in-memory data key and enrolled-client credentials. It stored a sealed key envelope; no Zogograph database, artifact bytes, plaintext, local recovery key, or billing credential was sent. Local recovery remains required.'];
 }
 
 function doPackageRuntimeCustodyRecoveryDrill(array $config, PDO $pdo, bool $post): array

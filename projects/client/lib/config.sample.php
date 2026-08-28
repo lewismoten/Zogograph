@@ -28,7 +28,7 @@ return [
      * database. The 256-bit key file must be outside the web root, a regular
      * non-symlink file, and mode 0600. `operator_managed_volume` records an
      * operator's choice to protect the selected live stores using their host,
-     * VM, or managed-volume encryption; HostScope cannot verify that claim.
+     * VM, or managed-volume encryption; Zogograph cannot verify that claim.
      */
     'encryption' => [
         'mode' => 'none', // none, sealed_copies_local, or operator_managed_volume
@@ -82,7 +82,7 @@ return [
          *
          * 'probe_invokers' => [
          *   'sqlcipher-encrypted-sqlite' => [
-         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/hostscope/sqlcipher-probe.yml', 'run', '--rm', '-T', 'package-worker'],
+         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/zogograph/sqlcipher-probe.yml', 'run', '--rm', '-T', 'package-worker'],
          *     'isolation_profile' => 'container-no-network-readonly-v1',
          *     'package_manifest_sha256' => 'the installed manifest.json SHA-256',
          *   ],
@@ -99,7 +99,7 @@ return [
          *
          * 'custody_credential_check_invokers' => [
          *   'hostscope-key-custody' => [
-         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/hostscope/custody-credential-check.yml', 'run', '--rm', '-T', 'package-worker'],
+         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/zogograph/custody-credential-check.yml', 'run', '--rm', '-T', 'package-worker'],
          *     'isolation_profile' => 'container-one-shot-egress-restricted-v1',
          *     'network_egress_origin' => 'https://custody.example',
          *     'package_manifest_sha256' => 'the installed manifest.json SHA-256',
@@ -113,7 +113,7 @@ return [
          *
          * 'custody_envelope_invokers' => [
          *   'hostscope-key-custody' => [
-         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/hostscope/custody-envelope-store.yml', 'run', '--rm', '-T', 'package-worker'],
+         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/zogograph/custody-envelope-store.yml', 'run', '--rm', '-T', 'package-worker'],
          *     'isolation_profile' => 'container-one-shot-egress-restricted-v1',
          *     'network_egress_origin' => 'https://custody.example',
          *     'package_manifest_sha256' => 'the exact installed manifest SHA-256',
@@ -128,7 +128,7 @@ return [
          *
          * 'custody_unwrap_invokers' => [
          *   'hostscope-key-custody' => [
-         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/hostscope/custody-recovery-unwrap.yml', 'run', '--rm', '-T', 'package-worker'],
+         *     'command' => ['/usr/bin/docker', 'compose', '-f', '/etc/zogograph/custody-recovery-unwrap.yml', 'run', '--rm', '-T', 'package-worker'],
          *     'isolation_profile' => 'container-one-shot-egress-restricted-v1',
          *     'network_egress_origin' => 'https://custody.example',
          *     'package_manifest_sha256' => 'the exact installed manifest SHA-256',
@@ -487,12 +487,12 @@ return [
     // The dashboard writes this list when an operator presses Ignore.
     'diagnostic_ignores' => [],
 
-    /* Named, explicitly trusted HostScope installations. Signed remote vital
+    /* Named, explicitly trusted Zogograph installations. Signed remote vital
      * delivery has its own one-time credential and does not need OIDC. OIDC is
      * an optional interactive read connection and must be configured in full. */
     'peers' => [],
 
-    /* Set these only on a remote HostScope installation after its controller
+    /* Set these only on a remote Zogograph installation after its controller
      * shows the one-time pairing credential. The remote cron sends its newest
      * local vital reading over HTTPS; private controller names need an exact
      * allowlist entry to avoid accidental internal SSRF. */
@@ -512,7 +512,7 @@ return [
     ],
 
     /* The self-hosted Free edition includes this controller plus three remote
-     * HostScope installations. Future offline licenses or hosted plans use the
+     * Zogograph installations. Future offline licenses or hosted plans use the
      * same single entitlement field; no user data is withheld when it expires. */
     'edition' => [
         'name' => 'Free',

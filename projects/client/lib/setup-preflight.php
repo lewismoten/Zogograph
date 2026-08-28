@@ -12,7 +12,7 @@ function setupCommandCapability(): array
 }
 
 /**
- * Installation facts that decide what HostScope can safely promise.
+ * Installation facts that decide what Zogograph can safely promise.
  *
  * `$runtime` is only an injectable observation seam for reproducible checks;
  * normal setup calls it with no override and reads the live PHP runtime.
@@ -38,7 +38,7 @@ function setupPreflight(string $root, string $targetPath, ?array $runtime = null
 
     return [
         ['label' => 'PHP', 'state' => $phpOk ? 'ok' : 'error',
-            'detail' => 'PHP ' . $phpVersion . ($phpOk ? ' is supported.' : ' is too old; HostScope needs PHP 8.1 or newer.')],
+            'detail' => 'PHP ' . $phpVersion . ($phpOk ? ' is supported.' : ' is too old; Zogograph needs PHP 8.1 or newer.')],
         ['label' => 'SQLite', 'state' => $sqlite ? 'ok' : 'error',
             'detail' => $sqlite ? 'PDO SQLite is available.' : 'PDO SQLite is required for collected data and settings.'],
         ['label' => 'Data directory', 'state' => is_dir($data) && is_writable($data) ? 'ok' : 'error',

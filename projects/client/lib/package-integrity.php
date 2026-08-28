@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-/* Integrity contract for future executable HostScope packages. A signature
+/* Integrity contract for future executable Zogograph packages. A signature
  * protects the manifest and the manifest protects every immutable package
  * file. Runtime package data is deliberately excluded. */
 

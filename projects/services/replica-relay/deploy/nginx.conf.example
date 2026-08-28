@@ -6,7 +6,7 @@ location = /services/replica-relay { return 308 /services/replica-relay/; }
 # preserve the original binary body for the client's Ed25519 signature check.
 location ~ ^/services/replica-relay(/v1/.*)$ {
     include fastcgi_params;
-    fastcgi_param SCRIPT_FILENAME /srv/hostscope/projects/commercial-services/replica-relay/api.php;
+    fastcgi_param SCRIPT_FILENAME /srv/zogograph/services/replica-relay/api.php;
     fastcgi_param PATH_INFO $1;
     fastcgi_param HTTPS on;
     fastcgi_param HTTP_AUTHORIZATION $http_authorization;

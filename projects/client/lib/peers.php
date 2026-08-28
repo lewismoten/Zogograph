@@ -4,7 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/entitlement.php';
 require_once __DIR__ . '/peertransport.php';
 
-/* Trusted HostScope peers are configured locally, never discovered from a
+/* Trusted Zogograph peers are configured locally, never discovered from a
  * browser-supplied address. OIDC is an optional read-connection; signed vital
  * delivery works independently and never grants a remote control access. */
 

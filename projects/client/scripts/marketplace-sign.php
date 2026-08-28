@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /* Publisher helper: it only reads a named local manifest and writes signed JSON
- * to stdout. Private keys are never stored by HostScope. */
+ * to stdout. Private keys are never stored by Zogograph. */
 if (PHP_SAPI !== 'cli') {
     http_response_code(403);
     exit("This publisher command is CLI-only.\n");
@@ -55,7 +55,7 @@ if ($command === 'keygen') {
     $private = base64_encode(sodium_crypto_sign_secretkey($pair));
     fwrite(STDOUT, "Add this public key to lib/config.php:\n\n"
         . "'trusted_keys' => [\n    '" . $keyId . "' => ['publisher' => " . var_export($publisher, true) . ", 'public_key' => '" . $public . "'],\n],\n\n"
-        . "Private signing key — store it offline; HostScope will not retain it:\n" . $private . "\n");
+        . "Private signing key — store it offline; Zogograph will not retain it:\n" . $private . "\n");
     exit(0);
 }
 

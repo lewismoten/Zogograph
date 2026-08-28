@@ -121,7 +121,7 @@ function diagnosePathHygiene(array $config, PDO $pdo): array
     return [finding('watch', 'Some paths have shell-confusing names',
         $last['total'] . ' found in the last disk scan' . ($last['truncated'] ? ' (list truncated)' : '') . '.',
         (string)$sample['path'] . ' ' . (string)$sample['reason']
-            . '. This is advisory only; HostScope does not email this finding.',
+            . '. This is advisory only; Zogograph does not email this finding.',
         'Review the exact paths and rename only files you own', 'storage')];
 }
 
@@ -352,7 +352,7 @@ function diagnoseCpu(PDO $pdo, ?array $vitals, ?array $host): array
     if ($host !== null && $host['cpu_percent'] !== null && (float)$host['cpu_percent'] >= 85) {
         $monitoring = ($host['monitoring_cpu_percent'] ?? null) === null
             ? ''
-            : sprintf(' The collector tree accounted for %.1f%% of that interval; the rest is workload outside HostScope.',
+            : sprintf(' The collector tree accounted for %.1f%% of that interval; the rest is workload outside Zogograph.',
                 (float)$host['monitoring_cpu_percent']);
         $out[] = finding(
             'warning',

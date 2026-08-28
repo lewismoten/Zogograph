@@ -1,8 +1,8 @@
-# HostScope marketplace plan
+# Zogograph marketplace plan
 
 ## Scope
 
-HostScope’s marketplace is a catalog of optional, locally installed extension
+Zogograph’s marketplace is a catalog of optional, locally installed extension
 packages: integrations, alert-rule packs, dashboards, and guided-operation
 packs. It is not an app store that downloads or runs arbitrary code from the
 browser.
@@ -62,7 +62,7 @@ platform prerequisite is missing.
 ### Implemented local provenance
 
 Manifests may carry an Ed25519 signature. When a signature is present,
-HostScope verifies it against a locally configured publisher key and refuses to
+Zogograph verifies it against a locally configured publisher key and refuses to
 enable a malformed, untrusted, or invalidly signed package. Unsigned packages
 remain local-only administrator-reviewed manifests. Compatibility ranges,
 including PHP and database-schema bounds, are checked before enablement; a

@@ -289,7 +289,7 @@ function esc(string $text): string
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HostScope — health</title>
+<title>Zogograph — health</title>
 <style>
 :root { color-scheme: dark; }
 body {
@@ -310,7 +310,7 @@ code { background: #000; padding: 1px 5px; border-radius: 4px; }
 </head>
 <body>
 
-<h1>HostScope — health</h1>
+<h1>Zogograph — health</h1>
 
 <p class="verdict <?= $missing === 0 && $broken === 0 ? 'ok' : '' ?>"><?= esc($verdict) ?></p>
 

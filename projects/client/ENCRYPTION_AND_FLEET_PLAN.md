@@ -5,7 +5,7 @@
 This is a product and implementation plan. The client can create opt-in,
 verified encrypted copies of selected SQLite/configuration artifacts; it does
 **not** yet encrypt a live SQLite database. A separate reference key-custody
-service exists under `../commercial-services/key-custody/`, but it remains
+service exists under `../services/key-custody/`, but it remains
 optional, disabled by default, and is not a prerequisite for a self-managed
 client. Encryption remains off until an administrator explicitly enables it in
 setup.
@@ -18,10 +18,10 @@ in [CUSTODY_ARTIFACT_CONTRACT.md](CUSTODY_ARTIFACT_CONTRACT.md).
 
 ## Goal and threat boundary
 
-The baseline promise is narrow and testable: a copied encrypted HostScope
+The baseline promise is narrow and testable: a copied encrypted Zogograph
 artifact cannot be read without a currently authorized key. It protects lost
 disks, copied database files, snapshots, and backup media. It does not protect
-an attacker who controls a running HostScope process after it has obtained an
+an attacker who controls a running Zogograph process after it has obtained an
 active key; that is a host-compromise problem and needs normal account, process,
 and operating-system hardening as well.
 
@@ -42,13 +42,13 @@ be a data disclosure bug.
 | logs and exports | may contain paths, errors, or query data | opt-in encrypted archive/export; do not silently claim they are database encryption |
 
 The setup page must make these choices explicit. It must never silently enable
-encryption, upload a key, or contact another HostScope server.
+encryption, upload a key, or contact another Zogograph server.
 
 ## Architecture decisions
 
 ### 1. Core owns the safety contracts; packages provide encryption methods
 
-HostScope core needs versioned artifact metadata, key identifiers,
+Zogograph core needs versioned artifact metadata, key identifiers,
 algorithm-agility rules, authorization, auditing, recovery evidence, package
 signatures, a settings/secrets interface, and a key-provider interface. These
 are compatibility and data-recovery contracts, so they cannot be delegated to
@@ -115,8 +115,8 @@ Every mode displays its recovery consequence before activation.
 | --- | --- | --- | --- |
 | Manual unlock | operator supplies an unlock secret after restart | highest separation for an unattended key | collection and dashboard cannot start until unlocked |
 | Local protected file | outside document root, owner-readable only | simple single-server deployments | a host/account compromise can read the key |
-| Host-managed encrypted volume | operating system or hosting platform | transparent protection for live SQLite, WAL, logs, and configuration | key custody is outside HostScope; availability follows the host |
-| HostScope fleet custodian | one or more explicitly enrolled HostScope peers hold wrapped-DEK material | self-managed remote custody and failover | requires mutually authenticated key protocol, cache policy, and recovery quorum |
+| Host-managed encrypted volume | operating system or hosting platform | transparent protection for live SQLite, WAL, logs, and configuration | key custody is outside Zogograph; availability follows the host |
+| Zogograph fleet custodian | one or more explicitly enrolled Zogograph peers hold wrapped-DEK material | self-managed remote custody and failover | requires mutually authenticated key protocol, cache policy, and recovery quorum |
 | External provider | optional marketplace/plugin integration | organizations already using a compatible KMS/HSM | never a default and never required for core encryption |
 
 `.htaccess` prevents HTTP delivery; it is not encryption and does not protect a
@@ -132,7 +132,7 @@ Key expiry cannot make an already copied plaintext database unreadable, and it
 cannot revoke a copied key. It can limit future access to sealed artifacts:
 
 1. A provider issues a short-lived authorization to unwrap a named DEK.
-2. HostScope caches the unwrapped DEK only in process memory, with a bounded
+2. Zogograph caches the unwrapped DEK only in process memory, with a bounded
    TTL. The setup choice states whether collectors may keep running after that
    TTL.
 3. When a key version expires, the provider refuses new unwraps. Removing all
@@ -151,7 +151,7 @@ verified recovery path before encryption can be marked ready.
 
 ## Fleet roles and replication
 
-A HostScope installation may separately act as:
+A Zogograph installation may separately act as:
 
 - **owner** — produces encrypted artifacts for its own data;
 - **replica** — stores ciphertext and availability metadata only; and
@@ -224,7 +224,7 @@ and migrations but do not get broad access to core or other-package data.
 
 Marketplace packages provide encryption methods: sealed copies, SQLCipher,
 self-managed fleet custody, ciphertext replicas, cloud KMS/HSM adapters,
-commercial HostScope key hosting, storage backends, and optional caches. The
+commercial Zogograph key hosting, storage backends, and optional caches. The
 client now has a signed package registry, explicit capability grants,
 schema-validated database-backed settings, encrypted secret references,
 per-package SQLite data, declarative private migrations, browser-visible

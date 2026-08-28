@@ -4,6 +4,13 @@ Optional Zogograph-operated services live here. They are separate from the
 public site and are never required for local collection, dashboard access, or
 local encrypted copies.
 
+## Local development
+
+Run `npm ci`, `npm test`, and `npm run build`, then `npm start` to serve the
+assembled reference applications at `http://127.0.0.1:4176`. Their production
+origin is `https://services.zogograph.com/`; each service retains separately
+configured credentials, storage, and deployment paths.
+
 ## Deployment boundary
 
 `services.zogograph.com` is the public service-domain boundary, not permission
@@ -40,7 +47,7 @@ unwrap it.
 
 ## Recommended launch order
 
-Do not launch HostScope-operated key custody with the first commercial service
+Do not launch Zogograph-operated key custody with the first commercial service
 release. Begin, if needed, with an optional ciphertext-only replica relay after
 tenant isolation, rate limits, retention/deletion controls, verification,
 support escalation, and incident response are proven. A relay must not receive
