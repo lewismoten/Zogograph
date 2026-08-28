@@ -43,6 +43,7 @@ function pathHygieneReason(string $name): ?string
     if (preg_match('/[\x00-\x1f\x7f]/', $name)) return 'contains a control character';
     if (preg_match('/^\s|\s$/u', $name)) return 'starts or ends with whitespace';
     if (str_starts_with($name, '-')) return 'starts with a dash and can be treated as a command option';
+    if (strpbrk($name, '?*[]{}~$&;|<>()`\'"!' . '\\') !== false) return 'contains a shell or wildcard character';
     return null;
 }
 

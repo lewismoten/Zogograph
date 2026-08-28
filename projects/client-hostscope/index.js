@@ -11787,6 +11787,7 @@ function showPathHygieneRename(row) {
     else if (/[\u0000-\u001f\u007f]/.test(value)) why = "Control characters are not allowed.";
     else if (/^\s|\s$/u.test(value)) why = "Names cannot start or end with whitespace.";
     else if (value.startsWith("-")) why = "Names cannot start with a dash.";
+    else if (/[?*[\]{}~$&;|<>()`'"!\\\\]/.test(value)) why = "Names cannot contain shell or wildcard characters.";
     name.setCustomValidity(why);
     name.classList.toggle("field-invalid", Boolean(why));
     feedback.className = why ? "small error" : "small muted";
