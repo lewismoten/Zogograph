@@ -194,6 +194,17 @@ function migrationStatementApplied(PDO $pdo, string $sql): bool
 function migrations(): array
 {
     return [
+        57 => [
+            /* A bounded record of the opt-in path hygiene pass. The scan
+             * already visits every directory entry, so this adds no walk. */
+            'CREATE TABLE path_hygiene_scans (
+                scan_id INTEGER PRIMARY KEY REFERENCES scans(id) ON DELETE CASCADE,
+                checked_at INTEGER NOT NULL,
+                findings_json TEXT NOT NULL,
+                findings_total INTEGER NOT NULL,
+                truncated INTEGER NOT NULL DEFAULT 0
+            )',
+        ],
         56 => [
             /* Remote custody is additive recovery evidence for a local sealed
              * artifact. This ledger deliberately stores no DEK or envelope. */

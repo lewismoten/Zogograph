@@ -1,10 +1,11 @@
 <?php
 declare(strict_types=1);
 
-/* A local marketplace is deliberately data-only. A manifest advertises a
- * package for review; it does not load files, register hooks, or execute code. */
+/* A local marketplace is deliberately data-only. A manifest never loads files
+ * or executes package code. A small fixed core capability may be authorized
+ * only when it is explicitly listed below. */
 
-const MARKETPLACE_CAPABILITIES = ['alert_recommendations'];
+const MARKETPLACE_CAPABILITIES = ['alert_recommendations', 'path_hygiene'];
 const MARKETPLACE_MAX_PACKAGES = 200;
 const MARKETPLACE_MAX_MANIFEST_BYTES = 65536;
 const MARKETPLACE_SIGNATURE_ALGORITHM = 'ed25519';

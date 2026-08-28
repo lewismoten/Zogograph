@@ -68,6 +68,7 @@ marketplaceExpect($api !== false && str_contains($api, "'marketplace' => 'sys-ma
     && str_contains($api, "'marketplace-rollback' => doMarketplaceRollback")
     && str_contains($api, "function doMarketplaceEnable(array \$config, PDO \$pdo, bool \$post): array\n{\n    requireWrite(\$post);")
     && str_contains($api, "function doMarketplaceInstall(array \$config, PDO \$pdo, bool \$post): array\n{\n    requireWrite(\$post);")
+    && str_contains($api, "function doMarketplaceInstallPathHygiene(array \$config, PDO \$pdo, bool \$post): array\n{\n    requireWrite(\$post);")
     && str_contains($api, "function marketplaceHistoryView(array \$config, bool \$post): array\n{\n    requireWrite(\$post);")
     && str_contains($api, "function doMarketplaceRollback(array \$config, PDO \$pdo, bool \$post): array\n{\n    requireWrite(\$post);"),
     'marketplace administration route is missing its write authorization');

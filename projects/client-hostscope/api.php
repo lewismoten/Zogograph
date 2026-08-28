@@ -304,6 +304,7 @@ function route(array $config, PDO $pdo, string $action, bool $post): array
         'marketplace' => marketplaceView($config, $pdo, $signedIn),
         'marketplace-enable' => doMarketplaceEnable($config, $pdo, $post),
         'marketplace-install' => doMarketplaceInstall($config, $pdo, $post),
+        'marketplace-install-path-hygiene' => doMarketplaceInstallPathHygiene($config, $pdo, $post),
         'marketplace-history' => marketplaceHistoryView($config, $post),
         'marketplace-rollback' => doMarketplaceRollback($config, $pdo, $post),
         'package-runtime' => packageRuntimeView($config, $pdo, $signedIn),
@@ -359,6 +360,7 @@ function requireActionAccess(array $config, string $action): void
         'note-marks' => 'sys-notes', 'note-snapshots' => 'sys-notes',
         'chart-series' => 'charts', 'charts' => 'charts',
         'peers' => 'sys-peers', 'marketplace' => 'sys-marketplace',
+        'marketplace-install-path-hygiene' => 'sys-marketplace',
         'package-runtime' => 'sys-packages',
         'package-runtime-probe' => 'sys-packages',
         'package-runtime-custody-diagnostic-approve' => 'sys-packages',
@@ -5634,6 +5636,23 @@ function doMarketplaceInstall(array $config, PDO $pdo, bool $post): array
     catch (InvalidArgumentException $error) { throw new ActionRefused($error->getMessage()); }
     logAction($pdo, 'marketplace_install', $result['package']['id'], 'ok', 0, 0,
         $result['package']['version'] . '; local manifest; prior=' . ($result['revision'] ?? 'none'));
+    return ['ok' => true, 'package' => $result['package']];
+}
+
+/** Installs only the reviewed, bundled manifest; it never accepts a path. */
+function doMarketplaceInstallPathHygiene(array $config, PDO $pdo, bool $post): array
+{
+    requireWrite($post);
+    $json = @file_get_contents(__DIR__ . '/marketplace/hostscope-path-hygiene.json');
+    if (!is_string($json)) throw new ActionRefused('the bundled path-name hygiene manifest is unavailable');
+    try {
+        $result = marketplaceInstallManifest($config, $pdo, $json, currentAccountName());
+        if ($result['package']['id'] !== 'hostscope-path-hygiene') throw new RuntimeException('bundled manifest identity did not match');
+    } catch (InvalidArgumentException|RuntimeException $error) {
+        throw new ActionRefused($error->getMessage());
+    }
+    logAction($pdo, 'marketplace_install_bundled', 'hostscope-path-hygiene', 'ok', 0, 0,
+        $result['package']['version']);
     return ['ok' => true, 'package' => $result['package']];
 }
 

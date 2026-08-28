@@ -20,6 +20,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/configure.php';
+require_once __DIR__ . '/marketplace.php';
+require_once __DIR__ . '/path-hygiene.php';
 
 /* ---------------------------------------------------------------- vitals -- */
 
@@ -562,11 +564,12 @@ function runScan(array $config, PDO $pdo): array
 
     $seenInodes = [];
     $linkCounts = [];
+    $pathHygiene = pathHygieneStart(pathHygieneEnabled($config, $pdo));
 
     try {
         walk($root, $root, $rules, $excluded, $dirBytes, $dirFiles, $fileBytes,
              $totals, $types, $extensions, $seenFiles, $seenDirs, $seenBytes,
-             $seenInodes, $linkCounts);
+             $seenInodes, $linkCounts, 0, $pathHygiene);
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
@@ -678,6 +681,7 @@ function runScan(array $config, PDO $pdo): array
             $error,
             $scanId,
         ]);
+        pathHygieneStore($pdo, $scanId, $pathHygiene);
         $pdo->commit();
     } catch (Throwable $e) {
         $pdo->rollBack();
@@ -744,7 +748,8 @@ function walk(
     int &$seenBytes,
     array &$seenInodes = [],
     array &$linkCounts = [],
-    int $depth = 0
+    int $depth = 0,
+    array &$pathHygiene = []
 ): array {
     if ($depth > 40 || isExcludedPath($dir, $excluded)) {
         return [0, 0];
@@ -764,6 +769,7 @@ function walk(
             continue;
         }
         $full = $dir . DIRECTORY_SEPARATOR . $entry;
+        pathHygieneObserve($full, $entry, $pathHygiene);
 
         // Never follow a link. Following them double counts at best and walks
         // out of the scan root at worst.
@@ -775,7 +781,7 @@ function walk(
             [$childBytes, $childFiles] = walk(
                 $full, $root, $rules, $excluded, $dirBytes, $dirFiles, $fileBytes,
                 $totals, $types, $extensions, $seenFiles, $seenDirs, $seenBytes,
-                $seenInodes, $linkCounts, $depth + 1
+                $seenInodes, $linkCounts, $depth + 1, $pathHygiene
             );
             $bytes += $childBytes;
             $files += $childFiles;
@@ -1407,4 +1413,3 @@ function diskstatsDiagnosis(string $procRoot = '/proc'): string
         . 'reads the real device counters, and this account\'s own I/O is still '
         . 'measured from its processes.';
 }
-

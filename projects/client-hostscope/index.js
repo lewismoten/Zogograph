@@ -12004,12 +12004,20 @@ function showCustodyRecoveryDrillDialog(candidates) {
 
 function renderMarketplace(data) {
   const body = $("marketplaceBody");
-  const parts = [note("Packages are discovered from the configured local marketplace directory. Remote downloads and executable hooks are not supported.")];
+  const parts = [note("Packages are discovered from the configured local marketplace directory. Remote downloads and executable hooks are not supported. A package can only authorize a documented core-owned capability.")];
   if (data.errors?.length) parts.push(note(`Ignored manifests: ${data.errors.join("; ")}`));
   if (data.can_change) {
     const install = document.createElement("button"); install.type = "button"; install.className = "primary"; install.textContent = "Install local manifest";
     install.addEventListener("click", showMarketplaceInstallDialog);
     parts.push(install);
+    if (!data.packages.some(row => row.id === "hostscope-path-hygiene")) {
+      const bundled = document.createElement("button"); bundled.type = "button"; bundled.className = "link"; bundled.textContent = "Install Path-name hygiene";
+      bundled.addEventListener("click", async () => {
+        try { await post("marketplace-install-path-hygiene"); await refreshMarketplace(); notice("Path-name hygiene installed for review. Enable it, then run a disk scan.", true); }
+        catch (error) { notice(String(error.message || error)); }
+      });
+      parts.push(bundled);
+    }
   }
   if (!data.packages.length) { parts.push(note("No valid local package manifests were found.")); body.replaceChildren(...parts); return; }
   const filter = document.createElement("input"); filter.type = "search"; filter.className = "wide-field"; filter.placeholder = "Search packages, publishers, or capabilities"; filter.setAttribute("aria-label", "Search marketplace packages");

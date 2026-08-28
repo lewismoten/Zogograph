@@ -74,6 +74,7 @@ function diagnose(array $config, PDO $pdo): array
         diagnoseUnits($hostPdo),
         diagnoseAlerts($pdo, $now),
         diagnoseDates($config, $pdo, $now),
+        diagnosePathHygiene($config, $pdo),
     ] as $group) {
         foreach ($group as $finding) {
             if (!diagnosisIgnored($config, (string)$finding['key'])) {
@@ -105,6 +106,23 @@ function diagnose(array $config, PDO $pdo): array
         'worst' => $worst,
         'at' => $now,
     ];
+}
+
+function diagnosePathHygiene(array $config, PDO $pdo): array
+{
+    if (!function_exists('pathHygieneEnabled') || !pathHygieneEnabled($config, $pdo)) return [];
+    $last = pathHygieneLast($pdo);
+    if ($last === null) return [finding('unknown', 'Path-name hygiene has not run',
+        'Enabled, but no completed disk scan has recorded it yet.',
+        'The check runs during the normal account disk walk and does not send notifications.',
+        'Run or review disk scans', 'storage')];
+    if ($last['total'] === 0) return [];
+    $sample = $last['findings'][0] ?? ['path' => '(not retained)', 'reason' => 'has an unsafe name'];
+    return [finding('watch', 'Some paths have shell-confusing names',
+        $last['total'] . ' found in the last disk scan' . ($last['truncated'] ? ' (list truncated)' : '') . '.',
+        (string)$sample['path'] . ' ' . (string)$sample['reason']
+            . '. This is advisory only; HostScope does not email this finding.',
+        'Review the latest disk scan and rename only files you own', 'storage')];
 }
 
 /** A deliberate exception is configuration, not an acknowledged alert. */
