@@ -6,6 +6,9 @@ declare(strict_types=1);
  * only when it is explicitly listed below. */
 
 const MARKETPLACE_CAPABILITIES = ['alert_recommendations', 'path_hygiene'];
+/* A package can place only a core-owned capability in a view explicitly
+ * approved for that capability. Manifest data never becomes browser code. */
+const MARKETPLACE_CAPABILITY_VIEWS = ['path_hygiene' => ['storage']];
 const MARKETPLACE_MAX_PACKAGES = 200;
 const MARKETPLACE_MAX_MANIFEST_BYTES = 65536;
 const MARKETPLACE_SIGNATURE_ALGORITHM = 'ed25519';
@@ -17,7 +20,7 @@ function marketplaceDirectory(array $config): string
     return $configured !== '' ? $configured : __DIR__ . '/../data/marketplace';
 }
 
-/** @return array{id:string,version:string,name:string,publisher:string,summary:string,license:string,capabilities:list<string>,recommendations:list<array{rule:string,severity:string,reason:string}>,compatibility:array{min_php?:string,max_php?:string,min_schema?:int,max_schema?:int},signature:?array{key_id:string,algorithm:string,value:string}} */
+/** @return array{id:string,version:string,name:string,publisher:string,summary:string,license:string,capabilities:list<string>,recommendations:list<array{rule:string,severity:string,reason:string}>,view_contributions:list<array{capability:string,view:string,keywords:list<string>,priority:string,before:list<string>,after:list<string>}>,compatibility:array{min_php?:string,max_php?:string,min_schema?:int,max_schema?:int},signature:?array{key_id:string,algorithm:string,value:string}} */
 function marketplaceManifest(array $raw): array
 {
     $id = trim((string)($raw['id'] ?? ''));
@@ -48,6 +51,20 @@ function marketplaceManifest(array $raw): array
         $recommendations[] = compact('rule', 'severity', 'reason');
     }
     if (count($recommendations) > 30) throw new InvalidArgumentException('package has too many recommendations');
+    $view_contributions = [];
+    foreach ((array)($raw['view_contributions'] ?? []) as $contribution) {
+        if (!is_array($contribution) || array_diff(array_keys($contribution), ['capability', 'view', 'keywords', 'priority', 'before', 'after']) !== []) throw new InvalidArgumentException('package view contribution is invalid');
+        $capability = (string)($contribution['capability'] ?? '');
+        $view = (string)($contribution['view'] ?? '');
+        if (!in_array($capability, $capabilities, true) || !in_array($view, MARKETPLACE_CAPABILITY_VIEWS[$capability] ?? [], true)) throw new InvalidArgumentException('package view contribution is not supported');
+        $keywords = array_values(array_unique(array_filter((array)($contribution['keywords'] ?? []), fn($value): bool => is_string($value) && preg_match('/^[\pL\pN][\pL\pN _-]{0,39}$/u', $value))));
+        $priority = (string)($contribution['priority'] ?? 'medium');
+        $before = array_values(array_unique(array_filter((array)($contribution['before'] ?? []), fn($value): bool => is_string($value) && preg_match('/^[a-z][a-z0-9-]{1,62}$/', $value))));
+        $after = array_values(array_unique(array_filter((array)($contribution['after'] ?? []), fn($value): bool => is_string($value) && preg_match('/^[a-z][a-z0-9-]{1,62}$/', $value))));
+        if (count($keywords) > 12 || count($before) > 12 || count($after) > 12 || !in_array($priority, ['high', 'medium', 'low'], true) || array_intersect($before, $after) !== []) throw new InvalidArgumentException('package view contribution is invalid');
+        $view_contributions[] = compact('capability', 'view', 'keywords', 'priority', 'before', 'after');
+    }
+    if (count($view_contributions) > 8) throw new InvalidArgumentException('package has too many view contributions');
     $compatibility = [];
     if (array_key_exists('compatibility', $raw)) {
         if (!is_array($raw['compatibility'])) throw new InvalidArgumentException('package compatibility is invalid');
@@ -78,7 +95,7 @@ function marketplaceManifest(array $raw): array
         $signature = compact('key_id', 'algorithm', 'value');
     }
     sort($capabilities, SORT_STRING);
-    return compact('id', 'version', 'name', 'publisher', 'summary', 'license', 'capabilities', 'recommendations', 'compatibility', 'signature');
+    return compact('id', 'version', 'name', 'publisher', 'summary', 'license', 'capabilities', 'recommendations', 'view_contributions', 'compatibility', 'signature');
 }
 
 /** Stable signed bytes: package JSON objects have lexical keys, arrays keep their order. */

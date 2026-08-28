@@ -387,7 +387,7 @@ function requireActionAccess(array $config, string $action): void
         'installed' => 'sys-installed', 'symlinks' => 'storage-links',
         'tail' => 'log-stream', 'last-lines' => 'log-stream', 'log-stream' => 'log-stream',
         'health' => 'system', 'self' => 'system', 'problems' => 'sys-problems',
-        'path-hygiene' => 'sys-path-hygiene', 'path-hygiene-rename' => 'sys-path-hygiene',
+        'path-hygiene' => 'storage', 'path-hygiene-rename' => 'storage',
         'scan-schedule' => 'scans-account', 'host-setup' => 'scans-host',
         'ai-memories' => 'sys-memory', 'ai-reports' => 'sys-reports',
         'ai-sessions' => 'sys-ai-billing',

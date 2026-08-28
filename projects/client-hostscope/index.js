@@ -23006,7 +23006,7 @@ function navSearchMatches(link) {
   const query = $("navSearch")?.value.trim().toLowerCase() ?? "";
   if (!query) return true;
   const parent = link.dataset.parent ? VIEWS[link.dataset.parent]?.label ?? "" : "";
-  return `${link.dataset.nav} ${link.textContent} ${parent}`.toLowerCase().includes(query);
+  return `${link.dataset.nav} ${link.textContent} ${link.dataset.pluginKeywords ?? ""} ${parent}`.toLowerCase().includes(query);
 }
 
 function syncNavigationSearch() {
@@ -31671,7 +31671,7 @@ const VIEWS = {
    */
   charts: { label: "Over time", parent: "overview", refresh: () => refreshVitals() },
 
-  storage: { label: "Storage", parent: null, refresh: () => refreshScans() },
+  storage: { label: "Storage", parent: null, refresh: async () => { await refreshScans(); await refreshPathHygiene(); } },
   "storage-io": { label: "How hard the disks are working", parent: "storage", refresh: () => refreshHost() },
   "storage-files": {
     label: "Largest & growth", parent: "storage",
@@ -31910,11 +31910,6 @@ const VIEWS = {
     label: "Marketplace",
     parent: "system",
     refresh: () => refreshMarketplace(),
-  },
-  "sys-path-hygiene": {
-    label: "Path-name hygiene",
-    parent: "system",
-    refresh: () => refreshPathHygiene(),
   },
   "sys-packages": {
     manual: true,
@@ -32219,7 +32214,8 @@ function renderViewGuide(view) {
  */
 function readRoute() {
   const raw = location.hash.replace(/^#\/?/, "");
-  const [path, query] = raw.split("?");
+  const [requestedPath, query] = raw.split("?");
+  const path = requestedPath === "sys-path-hygiene" ? "storage" : requestedPath;
   const params = new URLSearchParams(query || "");
 
   return {

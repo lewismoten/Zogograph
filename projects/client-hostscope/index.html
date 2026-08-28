@@ -113,7 +113,7 @@
       <span class="nav-label">Calendar</span>
       <span class="nav-badge" data-badge="calendar" hidden></span>
     </a>
-    <a class="nav-item" href="#/storage" data-nav="storage">
+    <a class="nav-item" href="#/storage" data-nav="storage" data-plugin-keywords="path path-name hygiene shell filename">
       <span class="nav-icon" aria-hidden="true">▤</span>
       <span class="nav-label">Storage</span>
       <span class="nav-badge" data-badge="storage" hidden></span>
@@ -460,10 +460,6 @@
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Marketplace</span>
     </a>
-    <a class="nav-item nav-sub" href="#/sys-path-hygiene" data-nav="sys-path-hygiene" data-parent="system">
-      <span class="nav-icon" aria-hidden="true">›</span>
-      <span class="nav-label">Path-name hygiene</span>
-    </a>
     <a class="nav-item nav-sub" href="#/sys-packages" data-nav="sys-packages" data-parent="system">
       <span class="nav-icon" aria-hidden="true">›</span>
       <span class="nav-label">Package runtime</span>
@@ -753,6 +749,12 @@
     </p>
     <canvas id="categoryChart"></canvas>
   </section>
+
+<section class="panel wide" id="pathHygienePanel">
+  <div class="panel-head"><h2>Path-name hygiene</h2></div>
+  <p class="muted small sub-note">An optional, advisory check that runs during the account disk walk. It does not send notifications. Rename only paths you recognize; the change is immediate and recorded in the audit log.</p>
+  <div id="pathHygieneBody"></div>
+</section>
 </div>
 </section>
 
@@ -2601,14 +2603,6 @@
   <div class="panel-head"><h2>Marketplace</h2></div>
   <p class="muted small sub-note">Local package manifests only. Enabling never executes package code. A few fixed, core-owned capabilities may be authorized; requested capabilities remain visible for review.</p>
   <div id="marketplaceBody"></div>
-</section>
-</section>
-
-<section class="view" data-view="sys-path-hygiene" hidden>
-<section class="panel">
-  <div class="panel-head"><h2>Path-name hygiene</h2></div>
-  <p class="muted small sub-note">An optional, advisory check that runs during the account disk walk. It does not send notifications. Rename only paths you recognize; the change is immediate and recorded in the audit log.</p>
-  <div id="pathHygieneBody"></div>
 </section>
 </section>
 
