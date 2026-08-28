@@ -18,14 +18,14 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      HOSTSCOPE_DEPLOY_HOST: ${{ vars.HOSTSCOPE_DEPLOY_HOST }}
-      HOSTSCOPE_DEPLOY_PORT: ${{ vars.HOSTSCOPE_DEPLOY_PORT }}
-      HOSTSCOPE_DEPLOY_USER: ${{ vars.HOSTSCOPE_DEPLOY_USER }}
-      HOSTSCOPE_DEPLOY_PATH: ${{ vars.HOSTSCOPE_DEPLOY_PATH }}
-      HOSTSCOPE_DEPLOY_URL: ${{ vars.HOSTSCOPE_DEPLOY_URL }}
-      HOSTSCOPE_DEPLOY_KNOWN_HOSTS: ${{ vars.HOSTSCOPE_DEPLOY_KNOWN_HOSTS }}
-      HOSTSCOPE_SNAPSHOT_PATH: ${{ vars.HOSTSCOPE_SNAPSHOT_PATH }}
-      HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_URL: ${{ vars.DEPLOY_URL }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      SNAPSHOT_PATH: ${{ vars.SNAPSHOT_PATH }}
+      DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
 
     steps:
       - name: Checkout repository
@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for setting in HOSTSCOPE_DEPLOY_HOST HOSTSCOPE_DEPLOY_USER HOSTSCOPE_DEPLOY_PATH HOSTSCOPE_DEPLOY_URL HOSTSCOPE_DEPLOY_KNOWN_HOSTS HOSTSCOPE_SNAPSHOT_PATH HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY; do
+          for setting in DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_URL DEPLOY_KNOWN_HOSTS SNAPSHOT_PATH DEPLOY_SSH_PRIVATE_KEY; do
             test -n "${!setting}" || { echo "Missing required deployment setting: $setting"; exit 1; }
           done
           test -d projects/client-hostscope
@@ -83,8 +83,8 @@ jobs:
         run: |
           set -euo pipefail
           install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/hostscope_deploy_key"
-          printf '%s\n' "$HOSTSCOPE_DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/hostscope_deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/hostscope_deploy_key" "$HOME/.ssh/known_hosts"
 
       - name: Install rsync
@@ -100,10 +100,10 @@ jobs:
           set -euo pipefail
           snapshot_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_SHA}"
           printf 'id=%s\n' "$snapshot_id" >> "$GITHUB_OUTPUT"
-          ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${HOSTSCOPE_DEPLOY_PORT:-22}" \
+          ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${DEPLOY_PORT:-22}" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
-            "${HOSTSCOPE_DEPLOY_USER}@${HOSTSCOPE_DEPLOY_HOST}" \
-            bash -s -- "$HOSTSCOPE_DEPLOY_PATH" "$HOSTSCOPE_SNAPSHOT_PATH" "$snapshot_id" <<'REMOTE'
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            bash -s -- "$DEPLOY_PATH" "$SNAPSHOT_PATH" "$snapshot_id" <<'REMOTE'
           set -eu
           site=$1
           snapshots=$2
@@ -139,15 +139,15 @@ jobs:
             --exclude='data/***' \
             --exclude='lib/config.php' \
             --exclude='.well-known/' \
-            -e "ssh -i $HOME/.ssh/hostscope_deploy_key -p ${HOSTSCOPE_DEPLOY_PORT:-22} -o BatchMode=yes -o IdentitiesOnly=yes" \
+            -e "ssh -i $HOME/.ssh/hostscope_deploy_key -p ${DEPLOY_PORT:-22} -o BatchMode=yes -o IdentitiesOnly=yes" \
             release/client-hostscope/ \
-            "${HOSTSCOPE_DEPLOY_USER}@${HOSTSCOPE_DEPLOY_HOST}:${HOSTSCOPE_DEPLOY_PATH}/"
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PATH}/"
 
       - name: Verify deployed build
         shell: bash
         run: |
           set -euo pipefail
-          build_url="${HOSTSCOPE_DEPLOY_URL%/}/build.json"
+          build_url="${DEPLOY_URL%/}/build.json"
           for attempt in 1 2 3 4 5; do
             deployed="$(curl --fail --silent --show-error --location --connect-timeout 10 --max-time 30 "${build_url}?run=${GITHUB_RUN_ID}" | sed -n 's/.*"commit": "\([^"]*\)".*/\1/p')" || deployed=''
             [ "$deployed" = "$GITHUB_SHA" ] && exit 0

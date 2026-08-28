@@ -22,20 +22,20 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SNAPSHOT_ID: ${{ github.event.inputs.snapshot_id }}
-      HOSTSCOPE_DEPLOY_HOST: ${{ vars.HOSTSCOPE_DEPLOY_HOST }}
-      HOSTSCOPE_DEPLOY_PORT: ${{ vars.HOSTSCOPE_DEPLOY_PORT }}
-      HOSTSCOPE_DEPLOY_USER: ${{ vars.HOSTSCOPE_DEPLOY_USER }}
-      HOSTSCOPE_DEPLOY_PATH: ${{ vars.HOSTSCOPE_DEPLOY_PATH }}
-      HOSTSCOPE_DEPLOY_KNOWN_HOSTS: ${{ vars.HOSTSCOPE_DEPLOY_KNOWN_HOSTS }}
-      HOSTSCOPE_SNAPSHOT_PATH: ${{ vars.HOSTSCOPE_SNAPSHOT_PATH }}
-      HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+      SNAPSHOT_PATH: ${{ vars.SNAPSHOT_PATH }}
+      DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
 
     steps:
       - name: Validate restore settings
         shell: bash
         run: |
           set -euo pipefail
-          for setting in SNAPSHOT_ID HOSTSCOPE_DEPLOY_HOST HOSTSCOPE_DEPLOY_USER HOSTSCOPE_DEPLOY_PATH HOSTSCOPE_DEPLOY_KNOWN_HOSTS HOSTSCOPE_SNAPSHOT_PATH HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY; do
+          for setting in SNAPSHOT_ID DEPLOY_HOST DEPLOY_USER DEPLOY_PATH DEPLOY_KNOWN_HOSTS SNAPSHOT_PATH DEPLOY_SSH_PRIVATE_KEY; do
             test -n "${!setting}" || { echo "Missing required restore setting: $setting"; exit 1; }
           done
           case "$SNAPSHOT_ID" in *[!A-Za-z0-9._-]*|'') echo 'Invalid snapshot ID.' >&2; exit 1;; esac
@@ -45,8 +45,8 @@ jobs:
         run: |
           set -euo pipefail
           install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/hostscope_deploy_key"
-          printf '%s\n' "$HOSTSCOPE_DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$HOME/.ssh/hostscope_deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/hostscope_deploy_key" "$HOME/.ssh/known_hosts"
 
       - name: Install rsync
@@ -62,10 +62,10 @@ jobs:
           set -euo pipefail
           backup_id="pre-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_SHA}"
           printf 'id=%s\n' "$backup_id" >> "$GITHUB_OUTPUT"
-          ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${HOSTSCOPE_DEPLOY_PORT:-22}" \
+          ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${DEPLOY_PORT:-22}" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
-            "${HOSTSCOPE_DEPLOY_USER}@${HOSTSCOPE_DEPLOY_HOST}" \
-            bash -s -- "$HOSTSCOPE_DEPLOY_PATH" "$HOSTSCOPE_SNAPSHOT_PATH" "$backup_id" <<'REMOTE'
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            bash -s -- "$DEPLOY_PATH" "$SNAPSHOT_PATH" "$backup_id" <<'REMOTE'
           set -eu
           site=$1
           snapshots=$2
@@ -92,10 +92,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${HOSTSCOPE_DEPLOY_PORT:-22}" \
+          ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${DEPLOY_PORT:-22}" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
-            "${HOSTSCOPE_DEPLOY_USER}@${HOSTSCOPE_DEPLOY_HOST}" \
-            bash -s -- "$HOSTSCOPE_DEPLOY_PATH" "$HOSTSCOPE_SNAPSHOT_PATH" "$SNAPSHOT_ID" <<'REMOTE'
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            bash -s -- "$DEPLOY_PATH" "$SNAPSHOT_PATH" "$SNAPSHOT_ID" <<'REMOTE'
           set -eu
           site=$1
           snapshots=$2
