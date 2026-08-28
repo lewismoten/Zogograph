@@ -19,11 +19,14 @@ if [ -d "$snapshot/site/data" ]; then
     "$snapshot/site/data/" "$site/data/"
 fi
 if [ -d "$snapshot/databases" ]; then
-  while IFS= read -r -d '' source; do
+  # See hostscope-snapshot.sh: use a portable pipe rather than /dev/fd-backed
+  # process substitution for restricted SSH environments.
+  find "$snapshot/databases" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print |
+  while IFS= read -r source; do
     relative=${source#"$snapshot/databases"/}
     destination="$site/$relative"
     mkdir -p "$(dirname "$destination")"
     rm -f "${destination}-wal" "${destination}-shm" "${destination}-journal"
     rsync -a "$source" "$destination"
-  done < <(find "$snapshot/databases" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print0)
+  done
 fi

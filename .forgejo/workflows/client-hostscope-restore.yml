@@ -70,7 +70,7 @@ jobs:
           ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${DEPLOY_PORT:-22}" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "bash '$remote_script' '$DEPLOY_PATH' '$SNAPSHOT_PATH' '$backup_id'; rm -f '$remote_script'"
+            "bash '$remote_script' '$DEPLOY_PATH' '$SNAPSHOT_PATH' '$backup_id' && rm -f '$remote_script'"
 
       - name: Restore application and database snapshot
         shell: bash
@@ -84,7 +84,7 @@ jobs:
           ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${DEPLOY_PORT:-22}" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "bash '$remote_script' '$DEPLOY_PATH' '$SNAPSHOT_PATH' '$SNAPSHOT_ID'; rm -f '$remote_script'"
+            "bash '$remote_script' '$DEPLOY_PATH' '$SNAPSHOT_PATH' '$SNAPSHOT_ID' && rm -f '$remote_script'"
 
       - name: Report restore safety snapshot
         run: 'echo "Current site preserved first as ${{ steps.pre_restore_snapshot.outputs.id }}"'

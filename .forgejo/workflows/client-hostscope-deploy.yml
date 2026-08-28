@@ -108,7 +108,7 @@ jobs:
           ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${DEPLOY_PORT:-22}" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "bash '$remote_script' '$DEPLOY_PATH' '$SNAPSHOT_PATH' '$snapshot_id'; rm -f '$remote_script'"
+            "bash '$remote_script' '$DEPLOY_PATH' '$SNAPSHOT_PATH' '$snapshot_id' && rm -f '$remote_script'"
 
       - name: Upload application files
         shell: bash
