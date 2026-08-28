@@ -8,6 +8,8 @@ on:
     paths:
       - projects/client-hostscope/**
       - .forgejo/workflows/client-hostscope-deploy.yml
+      - .forgejo/scripts/hostscope-snapshot.sh
+      - .forgejo/scripts/hostscope-restore.sh
   workflow_dispatch:
 
 concurrency:
