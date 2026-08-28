@@ -20,5 +20,6 @@ function apiCompactValue(mixed $value): mixed
 
 function apiJson(mixed $value): string
 {
-    return json_encode(apiCompactValue($value), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    return json_encode(apiCompactValue($value), JSON_UNESCAPED_SLASHES
+        | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR);
 }

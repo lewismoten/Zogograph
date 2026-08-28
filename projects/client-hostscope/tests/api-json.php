@@ -15,4 +15,6 @@ apiJsonExpect($value['nested']['small'] === 0, 'sub-five-decimal float was not c
 apiJsonExpect($value['nested']['negative'] === -12.12346, 'nested float was not rounded');
 $json = apiJson(['number' => 0.123456789]);
 apiJsonExpect($json === '{"number":0.12346}', 'wire JSON retained excess floating-point precision');
+$invalid = apiJson(['text' => "bad\xB1text"]);
+apiJsonExpect(str_contains($invalid, '\\ufffd'), 'invalid UTF-8 invalidated the API response');
 echo "API JSON checks passed\n";

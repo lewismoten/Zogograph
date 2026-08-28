@@ -88,6 +88,12 @@ DirectoryIndex index.html
   Header always set Cache-Control "no-store"
 </IfModule>
 
+# API responses can carry large chart series. Compress JSON when Apache has
+# mod_deflate; dynamic responses remain no-store and Vary is set by the module.
+<IfModule mod_filter.c>
+  AddOutputFilterByType DEFLATE application/json application/problem+json
+</IfModule>
+
 <IfModule mod_rewrite.c>
   RewriteEngine On
   # A login sends a password. Never over plain HTTP.

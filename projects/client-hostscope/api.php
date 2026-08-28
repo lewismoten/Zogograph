@@ -20,13 +20,14 @@ declare(strict_types=1);
  */
 require_once __DIR__ . '/lib/boot.php';
 require_once __DIR__ . '/lib/setupstore.php';
+require_once __DIR__ . '/lib/api-json.php';
 installErrorBoundary('json');
 
 $configFile = __DIR__ . '/lib/config.php';
 if (!is_file($configFile)) {
     http_response_code(503);
     header('Content-Type: application/json');
-    echo json_encode(['error' => 'Not configured. Copy lib/config.sample.php to lib/config.php.']);
+    echo apiJson(['error' => 'Not configured. Copy lib/config.sample.php to lib/config.php.']);
     exit;
 }
 
@@ -38,7 +39,6 @@ date_default_timezone_set($config['timezone'] ?? 'UTC');
 define('DISKMON_LOG', dirname((string)$config['database']) . '/error.log');
 
 require_once __DIR__ . '/lib/db.php';
-require_once __DIR__ . '/lib/api-json.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/access.php';
 require_once __DIR__ . '/lib/mask.php';
@@ -98,9 +98,10 @@ require_once __DIR__ . '/lib/encryption.php';
 // renderConfig, so the email page can save through the same writer setup uses.
 require_once __DIR__ . '/lib/configure.php';
 
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
+header('X-HostScope-API-Version: 1.0');
 
 startSession($config);
 
