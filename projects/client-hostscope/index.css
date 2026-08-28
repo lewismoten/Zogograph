@@ -2468,6 +2468,10 @@ input.field-invalid { border-color: #d96666; outline: 2px solid rgba(217, 102, 1
   border-radius: 3px;
   font-weight: 700;
 }
+#pathHygieneTable td.name { word-break: normal; }
+.path-hygiene-prefix { color: var(--dim); white-space: nowrap; }
+.path-hygiene-offending { color: var(--text); font-weight: 700; white-space: nowrap; }
+.path-hygiene-separator { color: var(--dim); padding-inline: .35ch; }
 
 @media (max-width: 620px) {
   .chat-panel {

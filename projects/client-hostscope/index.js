@@ -11747,16 +11747,28 @@ function visiblePathName(path) {
 function visiblePathNode(path) {
   const markers = { " ": ["·", "space"], "\t": ["⇥", "tab"], "\r": ["␍", "carriage return"], "\n": ["␊", "line feed"] };
   const node = document.createDocumentFragment();
-  for (const character of String(path)) {
-    const marker = markers[character];
-    if (!marker) { node.append(document.createTextNode(character)); continue; }
-    const visible = document.createElement("span");
-    visible.className = "path-hygiene-whitespace";
-    visible.textContent = marker[0];
-    visible.title = marker[1];
-    visible.setAttribute("aria-label", marker[1]);
-    node.append(visible);
-  }
+  const parts = String(path).split("/");
+  parts.forEach((part, index) => {
+    if (index) {
+      const separator = document.createElement("span");
+      separator.className = "path-hygiene-separator";
+      separator.textContent = index === 1 && parts[0] === "" ? "/ " : " / ";
+      node.append(separator);
+    }
+    const segment = document.createElement("span");
+    segment.className = index === parts.length - 1 ? "path-hygiene-offending" : "path-hygiene-prefix";
+    for (const character of part) {
+      const marker = markers[character];
+      if (!marker) { segment.append(document.createTextNode(character)); continue; }
+      const visible = document.createElement("span");
+      visible.className = "path-hygiene-whitespace";
+      visible.textContent = marker[0];
+      visible.title = marker[1];
+      visible.setAttribute("aria-label", marker[1]);
+      segment.append(visible);
+    }
+    node.append(segment);
+  });
   return node;
 }
 
