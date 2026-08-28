@@ -4,6 +4,19 @@ Optional Zogograph-operated services live here. They are separate from the
 public site and are never required for local collection, dashboard access, or
 local encrypted copies.
 
+## Deployment boundary
+
+`services.zogograph.com` is the public service-domain boundary, not permission
+to combine service roles. Key custody and ciphertext replica relay remain
+separate deployable applications with separate databases, private paths,
+credentials, deployment users, and rollback procedures. Do not share cookies
+across `zogograph.com`, Market, or client demonstrations by default.
+
+The existing service projects carry their own setup and smoke-test procedures.
+When extracted into their own repositories, each receives repository-specific
+`DEPLOY_*` values; a workflow for one service must not deploy the other's
+artifact or persistent store.
+
 The recommended provisional VPS paths, future domain migration rule, and
 service separation policy are in [`../DIRECTION.md`](../DIRECTION.md).
 
