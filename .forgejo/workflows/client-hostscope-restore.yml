@@ -13,7 +13,7 @@ on:
         type: string
 
 concurrency:
-  group: client-hostscope-restore
+  group: client-hostscope-lifecycle
   cancel-in-progress: false
 
 jobs:
@@ -64,7 +64,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          backup_id="pre-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_SHA}"
+          backup_id="pre-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}"
           printf 'id=%s\n' "$backup_id" >> "$GITHUB_OUTPUT"
           remote_script=".hostscope-snapshot-${GITHUB_RUN_ID}.sh"
           rsync -az \

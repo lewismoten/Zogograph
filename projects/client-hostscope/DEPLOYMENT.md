@@ -17,6 +17,7 @@ Repository **variables**:
 | `DEPLOY_URL` | public HTTPS URL for the install, without a trailing slash |
 | `DEPLOY_KNOWN_HOSTS` | exact `known_hosts` line for the server's SSH host key |
 | `SNAPSHOT_PATH` | absolute private path for snapshots, outside the web root and deploy path |
+| `SNAPSHOT_RETENTION` | optional whole number from `1` to `50`; defaults to `3` complete snapshots |
 | `CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED` | optional `true` when this release requires open browsers to reload; otherwise omit or use `false` |
 
 Repository **secret**:
@@ -62,6 +63,14 @@ Each run:
 4. uses `rsync --delete` for application files while explicitly preserving
    `data/`, `lib/config.php`, and `.well-known/` on the server; and
 5. fetches `build.json` over HTTPS to confirm the deployed commit.
+
+Snapshot directories use the short, collision-safe `<run-id>-<attempt>` form,
+such as `1941-1`; the commit remains in the public `build.json` and each
+snapshot's manifest. After a deployment has verified over HTTPS, the workflow
+removes only older **complete** snapshots beyond
+`SNAPSHOT_RETENTION` (three by default). Incomplete directories, symlinks, and
+unrecognized directories are left alone for manual review. Deployment and
+restore use one lifecycle lock, so retention cannot race a restore.
 
 Open dashboards check `build.json` once a minute. A new ordinary build shows a
 non-disruptive **Reload now** message. Set

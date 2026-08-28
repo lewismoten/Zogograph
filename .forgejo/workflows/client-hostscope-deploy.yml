@@ -9,12 +9,13 @@ on:
       - projects/client-hostscope/**
       - .forgejo/workflows/client-hostscope-deploy.yml
       - .forgejo/scripts/hostscope-snapshot.sh
+      - .forgejo/scripts/hostscope-snapshot-prune.sh
       - .forgejo/scripts/hostscope-restore.sh
   workflow_dispatch:
 
 concurrency:
-  group: client-hostscope-deploy-${{ github.ref_name }}
-  cancel-in-progress: true
+  group: client-hostscope-lifecycle
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -27,6 +28,7 @@ jobs:
       DEPLOY_URL: ${{ vars.DEPLOY_URL }}
       DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
       SNAPSHOT_PATH: ${{ vars.SNAPSHOT_PATH }}
+      SNAPSHOT_RETENTION: ${{ vars.SNAPSHOT_RETENTION }}
       CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED: ${{ vars.CLIENT_HOSTSCOPE_BROWSER_REFRESH_REQUIRED }}
       DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
 
@@ -45,6 +47,8 @@ jobs:
             case "${!setting}" in /*) ;; *) echo "$setting must be an absolute path." >&2; exit 1;; esac
             case "${!setting}" in *[!A-Za-z0-9._/-]*) echo "$setting contains an unsafe character." >&2; exit 1;; esac
           done
+          case "${SNAPSHOT_RETENTION:-3}" in *[!0-9]*|'') echo 'SNAPSHOT_RETENTION must be a whole number.' >&2; exit 1;; esac
+          [ "${SNAPSHOT_RETENTION:-3}" -ge 1 ] && [ "${SNAPSHOT_RETENTION:-3}" -le 50 ] || { echo 'SNAPSHOT_RETENTION must be between 1 and 50.' >&2; exit 1; }
           test -d projects/client-hostscope
 
       - name: Assemble release
@@ -107,7 +111,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          snapshot_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_SHA}"
+          snapshot_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}"
           printf 'id=%s\n' "$snapshot_id" >> "$GITHUB_OUTPUT"
           remote_script=".hostscope-snapshot-${GITHUB_RUN_ID}.sh"
           rsync -az \
@@ -143,6 +147,20 @@ jobs:
             sleep 5
           done
           exit 1
+
+      - name: Retain recent complete snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote_script=".hostscope-snapshot-prune-${GITHUB_RUN_ID}.sh"
+          rsync -az \
+            -e "ssh -i $HOME/.ssh/hostscope_deploy_key -p ${DEPLOY_PORT:-22} -o BatchMode=yes -o IdentitiesOnly=yes" \
+            .forgejo/scripts/hostscope-snapshot-prune.sh \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_script}"
+          ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${DEPLOY_PORT:-22}" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "bash '$remote_script' '$SNAPSHOT_PATH' '${SNAPSHOT_RETENTION:-3}' && rm -f '$remote_script'"
 
       - name: Report snapshot
         run: 'echo "Pre-deploy snapshot: ${{ steps.snapshot.outputs.id }}"'
