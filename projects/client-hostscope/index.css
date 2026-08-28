@@ -2462,6 +2462,12 @@ button.link.tiny:hover { opacity: 1; }
 
 input.wide-field { width: 100%; max-width: 34em; }
 input.field-invalid { border-color: #d96666; outline: 2px solid rgba(217, 102, 102, .3); }
+.path-hygiene-whitespace {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  border-radius: 3px;
+  font-weight: 700;
+}
 
 @media (max-width: 620px) {
   .chat-panel {

@@ -11744,6 +11744,22 @@ function visiblePathName(path) {
   return String(path).replace(/ /g, "·").replace(/\t/g, "⇥").replace(/\r/g, "␍").replace(/\n/g, "␊");
 }
 
+function visiblePathNode(path) {
+  const markers = { " ": ["·", "space"], "\t": ["⇥", "tab"], "\r": ["␍", "carriage return"], "\n": ["␊", "line feed"] };
+  const node = document.createDocumentFragment();
+  for (const character of String(path)) {
+    const marker = markers[character];
+    if (!marker) { node.append(document.createTextNode(character)); continue; }
+    const visible = document.createElement("span");
+    visible.className = "path-hygiene-whitespace";
+    visible.textContent = marker[0];
+    visible.title = marker[1];
+    visible.setAttribute("aria-label", marker[1]);
+    node.append(visible);
+  }
+  return node;
+}
+
 function renderPathHygiene(data) {
   const body = $("pathHygieneBody");
   if (!data.enabled) { body.replaceChildren(note("Install and enable Path-name hygiene in the Marketplace to use this check.")); return; }
@@ -11755,7 +11771,7 @@ function renderPathHygiene(data) {
     const holder = document.createElement("div"); holder.id = "pathHygieneTable"; parts.push(holder);
     body.replaceChildren(...parts);
     renderTable("pathHygieneTable", last.findings, [
-      { label: "Exact path", className: "name", render: row => { const code = document.createElement("code"); code.textContent = visiblePathName(row.path); code.title = row.path; return code; } },
+      { label: "Exact path", className: "name", render: row => { const code = document.createElement("code"); code.append(visiblePathNode(row.path)); code.title = row.path; return code; } },
       { label: "Why", render: row => row.reason },
       { label: "", className: "row-actions", render: row => {
         const wrap = document.createDocumentFragment();
