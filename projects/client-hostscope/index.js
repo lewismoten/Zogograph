@@ -12033,7 +12033,7 @@ function renderMarketplace(data) {
     { label: "What it offers", className: "cmd", render: row => row.summary },
     { label: "Capabilities", render: row => row.capabilities.join(", ") },
     { label: "Trust", render: row => row.provenance.status },
-    { label: "Compatibility", render: row => row.compatibility.status },
+    { label: "Compatibility", render: row => row.compatibility?.status || "server will verify" },
     { label: "License", render: row => row.license },
     { label: "Status", render: row => row.requires_reapproval ? "review required" : row.enabled ? "enabled" : "not enabled" },
     { label: "", className: "row-actions", render: row => {
@@ -12049,8 +12049,12 @@ function renderMarketplace(data) {
       wrap.appendChild(history);
       const button = document.createElement("button"); button.className = row.enabled ? "link danger" : "link";
       button.textContent = row.enabled ? "Disable" : "Enable";
-      button.disabled = !row.provenance.can_enable || !row.compatibility.can_enable;
-      button.title = row.provenance.can_enable && row.compatibility.can_enable ? "" : `${row.provenance.detail} ${row.compatibility.detail}`;
+      // The API validates again on POST. An older cached API response can lack
+      // compatibility evidence, which is not a reason to hide an otherwise
+      // valid enable request from its authoritative server-side check.
+      const canEnable = row.provenance?.can_enable !== false && row.compatibility?.can_enable !== false;
+      button.disabled = !canEnable;
+      button.title = canEnable ? "" : [row.provenance?.detail, row.compatibility?.detail].filter(Boolean).join(" ");
       button.addEventListener("click", async () => {
         if (!(await confirmDialog(`${row.enabled ? "Disable" : "Enable"} ${row.name}?\n\nCapabilities: ${row.capabilities.join(", ")}`, row.enabled ? "Disable package" : "Enable package"))) return;
         try { await post("marketplace-enable", { id: row.id, enabled: row.enabled ? "0" : "1" }); await refreshMarketplace(); notice(`${row.name} ${row.enabled ? "disabled" : "enabled"}.`, true); }
