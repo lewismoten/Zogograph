@@ -10,19 +10,19 @@ Repository **variables**:
 
 | Variable | Value |
 | --- | --- |
-| `HOSTSCOPE_DEPLOY_HOST` | SSH hostname or IP address |
-| `HOSTSCOPE_DEPLOY_PORT` | SSH port; leave empty for `22` |
-| `HOSTSCOPE_DEPLOY_USER` | restricted deployment user |
-| `HOSTSCOPE_DEPLOY_PATH` | absolute web-root path for this HostScope install |
-| `HOSTSCOPE_DEPLOY_URL` | public HTTPS URL for the install, without a trailing slash |
-| `HOSTSCOPE_DEPLOY_KNOWN_HOSTS` | exact `known_hosts` line for the server's SSH host key |
-| `HOSTSCOPE_SNAPSHOT_PATH` | absolute private path for snapshots, outside the web root and deploy path |
+| `DEPLOY_HOST` | SSH hostname or IP address |
+| `DEPLOY_PORT` | SSH port; leave empty for `22` |
+| `DEPLOY_USER` | restricted deployment user |
+| `DEPLOY_PATH` | absolute web-root path for this HostScope install |
+| `DEPLOY_URL` | public HTTPS URL for the install, without a trailing slash |
+| `DEPLOY_KNOWN_HOSTS` | exact `known_hosts` line for the server's SSH host key |
+| `SNAPSHOT_PATH` | absolute private path for snapshots, outside the web root and deploy path |
 
 Repository **secret**:
 
 | Secret | Value |
 | --- | --- |
-| `HOSTSCOPE_DEPLOY_SSH_PRIVATE_KEY` | private key for the deployment user; its public key belongs in that user’s `authorized_keys` |
+| `DEPLOY_SSH_PRIVATE_KEY` | private key for the deployment user; its public key belongs in that user’s `authorized_keys` |
 
 The deployment user needs read/write access to both deployment and snapshot
 paths, and the server needs `bash`, `rsync`, and `sqlite3`. Do not make either

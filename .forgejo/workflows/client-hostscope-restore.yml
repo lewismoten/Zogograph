@@ -62,68 +62,29 @@ jobs:
           set -euo pipefail
           backup_id="pre-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_SHA}"
           printf 'id=%s\n' "$backup_id" >> "$GITHUB_OUTPUT"
+          remote_script=".hostscope-snapshot-${GITHUB_RUN_ID}.sh"
+          rsync -az \
+            -e "ssh -i $HOME/.ssh/hostscope_deploy_key -p ${DEPLOY_PORT:-22} -o BatchMode=yes -o IdentitiesOnly=yes" \
+            .forgejo/scripts/hostscope-snapshot.sh \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_script}"
           ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${DEPLOY_PORT:-22}" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            bash -s -- "$DEPLOY_PATH" "$SNAPSHOT_PATH" "$backup_id" <<'REMOTE'
-          set -eu
-          site=$1
-          snapshots=$2
-          snapshot_id=$3
-          case "$snapshots" in "$site"|"$site"/*) echo 'Snapshot path must be outside the deploy path.' >&2; exit 1;; esac
-          snapshot="$snapshots/$snapshot_id"
-          test ! -e "$snapshot" || { echo "Snapshot already exists: $snapshot" >&2; exit 1; }
-          mkdir -p "$snapshot/site" "$snapshot/databases"
-          rsync -a --delete --exclude='*.db' --exclude='*.db-*' --exclude='*.sqlite' --exclude='*.sqlite-*' --exclude='*.sqlite3' --exclude='*.sqlite3-*' "$site/" "$snapshot/site/"
-          if [ -d "$site/data" ]; then
-            command -v sqlite3 >/dev/null || { echo 'sqlite3 is required on the deployment server for safe snapshots.' >&2; exit 1; }
-            find "$site/data" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print0 |
-              while IFS= read -r -d '' database; do
-                relative=${database#"$site"/}
-                destination="$snapshot/databases/$relative"
-                mkdir -p "$(dirname "$destination")"
-                sqlite3 "$database" ".backup '$destination'"
-              done
-          fi
-          printf '%s\n' "$snapshot_id" > "$snapshot/SNAPSHOT_ID"
-          REMOTE
+            "bash '$remote_script' '$DEPLOY_PATH' '$SNAPSHOT_PATH' '$backup_id'; rm -f '$remote_script'"
 
       - name: Restore application and database snapshot
         shell: bash
         run: |
           set -euo pipefail
+          remote_script=".hostscope-restore-${GITHUB_RUN_ID}.sh"
+          rsync -az \
+            -e "ssh -i $HOME/.ssh/hostscope_deploy_key -p ${DEPLOY_PORT:-22} -o BatchMode=yes -o IdentitiesOnly=yes" \
+            .forgejo/scripts/hostscope-restore.sh \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${remote_script}"
           ssh -i "$HOME/.ssh/hostscope_deploy_key" -p "${DEPLOY_PORT:-22}" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=15 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            bash -s -- "$DEPLOY_PATH" "$SNAPSHOT_PATH" "$SNAPSHOT_ID" <<'REMOTE'
-          set -eu
-          site=$1
-          snapshots=$2
-          snapshot_id=$3
-          snapshot="$snapshots/$snapshot_id"
-          test -f "$snapshot/SNAPSHOT_ID" || { echo "Unknown snapshot: $snapshot_id" >&2; exit 1; }
-          test -d "$snapshot/site" || { echo "Snapshot site files are missing." >&2; exit 1; }
-          # Leave the database files out of this pass; they are restored from
-          # SQLite's consistent .backup copies below, never from a WAL copy.
-          rsync -a --delete --exclude='data/***' --exclude='.well-known/' "$snapshot/site/" "$site/"
-          if [ -d "$snapshot/site/data" ]; then
-            rsync -a --delete \
-              --exclude='*.db' --exclude='*.db-*' \
-              --exclude='*.sqlite' --exclude='*.sqlite-*' \
-              --exclude='*.sqlite3' --exclude='*.sqlite3-*' \
-              "$snapshot/site/data/" "$site/data/"
-          fi
-          if [ -d "$snapshot/databases" ]; then
-            find "$snapshot/databases" -type f \( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) -print0 |
-              while IFS= read -r -d '' source; do
-                relative=${source#"$snapshot/databases"/}
-                destination="$site/$relative"
-                mkdir -p "$(dirname "$destination")"
-                rm -f "${destination}-wal" "${destination}-shm" "${destination}-journal"
-                rsync -a "$source" "$destination"
-              done
-          fi
-          REMOTE
+            "bash '$remote_script' '$DEPLOY_PATH' '$SNAPSHOT_PATH' '$SNAPSHOT_ID'; rm -f '$remote_script'"
 
       - name: Report restore safety snapshot
         run: 'echo "Current site preserved first as ${{ steps.pre_restore_snapshot.outputs.id }}"'
