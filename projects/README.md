@@ -32,9 +32,6 @@ ownership, customer protection defaults, and launch gates.
 current-state handoff: recommended customer defaults, optional package choices,
 configuration authority, and decisions that require later owner review.
 
-[CLIENT_PLUGIN_AND_CARD_MODULARITY_CHECKLIST.md](CLIENT_PLUGIN_AND_CARD_MODULARITY_CHECKLIST.md)
-defines the staged registry, navigation, localization, UI-kit, and safety work
-needed to make client features and signed packages modular.
 
 [REMOTE_RELEASE_RUNBOOK.md](REMOTE_RELEASE_RUNBOOK.md) documents the signed
 remote-client archive, publication, public-key pinning, and update-policy flow.
