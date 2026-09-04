@@ -200,6 +200,32 @@ data-only and its documented isolated execution runtime is still future work.
   package-created sections in both areas, stale links, localization reload,
   multiple packages sharing an insertion point, and cleanup after disable.
 
+## 9. Resolve the observed regressions and preserve them as tests
+
+- [ ] Fix the uptime-event contract mismatch: its caller uses
+  `ZogographUptimeEventsCard.text(...)`, but the card has no `text` method.
+  The registry contract must make text/formatting capability explicit and test
+  every public card API before a page invokes it.
+- [ ] Fix the `core-ai-identity-settings` manifest mismatch. Its renderer is
+  passed `aiPortraitAlt`, but that helper is absent from the manifest helper
+  list, so normal helper-contract validation rejects the card. Add a test that
+  compares every destructured renderer helper to its declared manifest helpers
+  and every helper supplied by its caller.
+- [ ] Fix CPU card accumulation. “Where the time goes” appends its state cards
+  on every refresh while “Waiting to run” already clears its holder first;
+  this produces repeated cards such as “Stolen by the host” and “Waiting for
+  storage.” Require the shared card lifecycle to replace a card's owned
+  container atomically, rather than append into an ambient holder, and add a
+  repeated-refresh fixture asserting one of each expected CPU card.
+- [ ] Treat the `VM… reportAllChanges/startTime` trace as unassigned until it
+  reproduces in a clean browser profile with extensions disabled. `VM` source
+  and `installHook.js` can be injected by browser tooling; record browser,
+  extension state, reproduction route, and whether the error survives a clean
+  profile before attributing it to client code. Do not suppress it blindly.
+- [ ] Add a console-clean browser acceptance test for each route and locale:
+  no uncaught exceptions, no invalid card manifests, no duplicate cards after
+  initial render, polling refresh, locale change, route change, and return.
+
 ## Completion gates
 
 - [ ] No feature-specific card globals remain outside the compatibility adapter;
