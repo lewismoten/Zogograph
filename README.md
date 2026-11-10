@@ -1,3 +1,5 @@
+![Zogograph: server monitoring dashboard brand](docs/images/social-preview.jpg)
+
 # Zogograph workspace
 
 This repository contains Zogograph rebrand, migration, and shared-planning
