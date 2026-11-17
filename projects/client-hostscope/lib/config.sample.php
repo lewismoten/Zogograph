@@ -1055,6 +1055,21 @@ return [
          */
         'owner' => '',
 
+        /*
+         * How often a crontab line is allowed to produce a reading.
+         *
+         * hostCronLine() recommends every five minutes and explains why: a
+         * full reading walks every process, slab cache and service unit, and
+         * none of it changes meaningfully faster than that. This is the
+         * backstop for when the installed crontab says otherwise - by hand,
+         * by a WHM template, by a line copied from an install that wanted
+         * something faster - so an over-eager schedule costs a skipped
+         * collection instead of a database that grows five times the
+         * intended rate and a root writer that is five times as likely to
+         * still be running when the next tick fires.
+         */
+        'collect_interval_seconds' => 300,
+
         'keep_days' => 14,
 
         /*
