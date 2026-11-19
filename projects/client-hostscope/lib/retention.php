@@ -127,7 +127,7 @@ function retentionSkipColumns(): array
  *
  * @return array{compacted: int, removed: int, protected: int, tiers: array}
  */
-function compactVitals(PDO $pdo, array $rules, ?int $now = null): array
+function compactVitals(PDO $pdo, array $rules, ?int $now = null, ?int $bucketLimit = null): array
 {
     $now ??= time();
     $pad = max(0, (int)$rules['protect_hours']) * 3600;
@@ -136,6 +136,7 @@ function compactVitals(PDO $pdo, array $rules, ?int $now = null): array
     $tiers = [];
     $compacted = 0;
     $removed = 0;
+    $more = false;
 
     $bands = [
         // [bucket seconds, oldest edge of the band, newest edge of the band]
@@ -146,6 +147,13 @@ function compactVitals(PDO $pdo, array $rules, ?int $now = null): array
                           $rules['raw_days'] > 0 ? $now - (int)$rules['raw_days'] * 86400 : null],
     ];
 
+    /*
+     * Caller passes $bucketLimit when it wants this split into short, lockable
+     * steps rather than one long transaction (see prune.php). Once a tier has
+     * more buckets waiting than the limit allows, later tiers are left for the
+     * next call rather than piling more work onto an already-full batch - the
+     * 'more' flag tells the caller to come back.
+     */
     foreach ($bands as $name => [$bucket, $from, $to]) {
         if ($to === null) {
             // The tier below is set to keep everything for ever, so nothing can
@@ -154,10 +162,31 @@ function compactVitals(PDO $pdo, array $rules, ?int $now = null): array
             continue;
         }
 
-        $done = compactBand($pdo, $columns, $bucket, $from, $to, $pad);
+        if ($more) {
+            // A previous tier already used up this batch's budget.
+            $tiers[$name] = 0;
+            continue;
+        }
+
+        $done = compactBand($pdo, $columns, $bucket, $from, $to, $pad, $bucketLimit);
         $tiers[$name] = $done['buckets'];
         $compacted += $done['buckets'];
         $removed += $done['removed'];
+        if (!empty($done['more'])) {
+            $more = true;
+        }
+    }
+
+    if ($more) {
+        // Flat deletes below run after compaction is fully drained, so a
+        // batched caller stops here and calls again.
+        return [
+            'compacted' => $compacted,
+            'removed' => $removed,
+            'tiers' => $tiers,
+            'kept_days' => [],
+            'more' => true,
+        ];
     }
 
     // Anything past the last tier, when that tier is not "for ever".
@@ -212,6 +241,7 @@ function compactVitals(PDO $pdo, array $rules, ?int $now = null): array
         'removed' => $removed,
         'tiers' => $tiers,
         'kept_days' => $kept,
+        'more' => false,
     ];
 }
 
@@ -220,7 +250,7 @@ function compactVitals(PDO $pdo, array $rules, ?int $now = null): array
  *
  * @return array{buckets: int, removed: int}
  */
-function compactBand(PDO $pdo, array $columns, int $bucket, ?int $from, int $to, int $pad): array
+function compactBand(PDO $pdo, array $columns, int $bucket, ?int $from, int $to, int $pad, ?int $limit = null): array
 {
     $min = retentionMinColumns();
     $skip = retentionSkipColumns();
@@ -259,7 +289,15 @@ function compactBand(PDO $pdo, array $columns, int $bucket, ?int $from, int $to,
     $buckets = $read->fetchAll(PDO::FETCH_ASSOC);
 
     if ($buckets === []) {
-        return ['buckets' => 0, 'removed' => 0];
+        return ['buckets' => 0, 'removed' => 0, 'more' => false];
+    }
+
+    // $limit splits a tier that would otherwise be one long run into short,
+    // commit-sized steps (see prune.php): take the first $limit buckets this
+    // call, and tell the caller whether any are left for the next one.
+    $more = $limit !== null && count($buckets) > $limit;
+    if ($limit !== null) {
+        $buckets = array_slice($buckets, 0, $limit);
     }
 
     $insert = $pdo->prepare(
@@ -302,7 +340,7 @@ function compactBand(PDO $pdo, array $columns, int $bucket, ?int $from, int $to,
         $insert->execute($values);
     }
 
-    return ['buckets' => count($buckets), 'removed' => $removed];
+    return ['buckets' => count($buckets), 'removed' => $removed, 'more' => $more];
 }
 
 /**

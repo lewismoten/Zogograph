@@ -238,7 +238,10 @@ function cronJobs(): array
 {
     return [
         'vitals' => ['--vitals', '--alerts', '--quiet'],
-        'scan' => ['--scan', '--alerts', '--prune', '--quiet'],
+        // Retention moved to prune.php, which has its own lock and its own
+        // schedule - see that file. Carrying --prune here again would put
+        // the same unbounded sweep back on the every-minute vitals line.
+        'scan' => ['--scan', '--alerts', '--quiet'],
     ];
 }
 
